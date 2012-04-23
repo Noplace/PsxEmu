@@ -1,0 +1,114 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{93C78BE1-472F-495C-9E4F-37CB8DA7E8C9}</ProjectGuid>
+    <RootNamespace>PsxEmu</RootNamespace>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+    <CharacterSet>MultiByte</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <OutDir>$(SolutionDir)..\Output\$(Platform)\$(Configuration)\</OutDir>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <IntDir>$(SolutionDir)..\Output\$(Platform)\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>Disabled</Optimization>
+      <AssemblerOutput>AssemblyAndSourceCode</AssemblerOutput>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <StackReserveSize>8388608</StackReserveSize>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <AssemblerOutput>AssemblyCode</AssemblerOutput>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="Code\display_window.cpp" />
+    <ClCompile Include="Code\emulation\psx\cpu\cpu.cpp" />
+    <ClCompile Include="Code\emulation\psx\debug_assist.cpp" />
+    <ClCompile Include="Code\emulation\psx\cpu\gte.cpp" />
+    <ClCompile Include="Code\emulation\psx\io\io_interface.cpp" />
+    <ClCompile Include="Code\emulation\psx\bios\kernel.cpp" />
+    <ClCompile Include="Code\emulation\psx\spu\spu.cpp" />
+    <ClCompile Include="Code\emulation\psx\system.cpp" />
+    <ClCompile Include="Code\utilities\cdrom\cdrom.cpp" />
+    <ClCompile Include="Code\winmain.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Code\display_window.h" />
+    <ClInclude Include="Code\emulation\psx\component.h" />
+    <ClInclude Include="Code\emulation\psx\cpu\cpu.h" />
+    <ClInclude Include="Code\emulation\psx\cpu\cpu_context.h" />
+    <ClInclude Include="Code\emulation\psx\debug_assist.h" />
+    <ClInclude Include="Code\emulation\psx\cpu\gte.h" />
+    <ClInclude Include="Code\emulation\psx\io\io_interface.h" />
+    <ClInclude Include="Code\emulation\psx\bios\kernel.h" />
+    <ClInclude Include="Code\emulation\psx\spu\spu.h" />
+    <ClInclude Include="Code\emulation\psx\system.h" />
+    <ClInclude Include="Code\emulation\psx\types.h" />
+    <ClInclude Include="Code\utilities\cdrom\iso9660.h" />
+    <ClInclude Include="Code\utilities\lean\hash_table.h" />
+    <ClInclude Include="Resource\ui.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Resource\ui.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\VisualEssence\VisualEssence.vcxproj">
+      <Project>{b5fda7c1-8125-4e2f-ba95-8a7e7cce635e}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\..\WinCore\WinCore.vcxproj">
+      <Project>{43ac74e9-a89d-4e31-8c01-fa2cce27f5c2}</Project>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

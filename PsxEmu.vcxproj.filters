@@ -1,0 +1,122 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+    <Filter Include="Code">
+      <UniqueIdentifier>{b1065651-0e93-40af-9f37-e7d272b0da2b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Code\utilities">
+      <UniqueIdentifier>{b5b47ff8-989d-46ef-88b9-824c4e892909}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Code\utilities\windows">
+      <UniqueIdentifier>{108efa29-16b4-44be-9074-4af8a84e7095}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Content">
+      <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
+      <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
+    </Filter>
+    <Filter Include="Content\UI">
+      <UniqueIdentifier>{c7308f52-3f0e-4850-9610-eaed13b15db8}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Code\emulation">
+      <UniqueIdentifier>{172ec2b4-365e-4752-96e0-ff66dcc17afe}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Code\emulation\psx">
+      <UniqueIdentifier>{5c484b40-73f0-4de8-8ec7-82d1be2cd7f9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Code\utilities\lean">
+      <UniqueIdentifier>{cdcd62ec-e94b-4477-beda-ad93d5ac2fdf}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Code\utilities\cdrom">
+      <UniqueIdentifier>{13a8ca2d-0089-48ff-a968-c79462af2164}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="Code\winmain.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\display_window.cpp">
+      <Filter>Code</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\system.cpp">
+      <Filter>Code\emulation\psx</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\utilities\cdrom\cdrom.cpp">
+      <Filter>Code\utilities\cdrom</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\debug_assist.cpp">
+      <Filter>Code\emulation\psx</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\cpu\cpu.cpp">
+      <Filter>Code\emulation\psx</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\bios\kernel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\spu\spu.cpp">
+      <Filter>Code\emulation\psx</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\cpu\gte.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\io\io_interface.cpp">
+      <Filter>Code\emulation\psx</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Code\display_window.h">
+      <Filter>Code</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\types.h">
+      <Filter>Code\emulation\psx</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\system.h">
+      <Filter>Code\emulation\psx</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\utilities\lean\hash_table.h">
+      <Filter>Code\utilities\lean</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\component.h">
+      <Filter>Code\emulation\psx</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\utilities\cdrom\iso9660.h">
+      <Filter>Code\utilities\cdrom</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\debug_assist.h">
+      <Filter>Code\emulation\psx</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\ui.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\cpu\cpu.h">
+      <Filter>Code\emulation\psx</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\cpu\cpu_context.h">
+      <Filter>Code\emulation\psx</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\bios\kernel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\spu\spu.h">
+      <Filter>Code\emulation\psx</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\cpu\gte.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\io\io_interface.h">
+      <Filter>Code\emulation\psx</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Resource\ui.rc">
+      <Filter>Content</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+</Project>
