@@ -52,7 +52,7 @@ void DisplayWindow::Step() {
 
   timing.span_accumulator += time_span;
   //while (timing.span_accumulator >= dt) {
-    psx_sys.Step();
+    //psx_sys.Step();
     timing.span_accumulator -= dt;
   //}
 

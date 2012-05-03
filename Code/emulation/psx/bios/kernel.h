@@ -25,7 +25,7 @@ class Kernel : public Component {
    void putc(char c,int fd);
 
 #ifndef NDEBUG
-   DebugAssist debug;
+   //DebugAssist debug;
    DebugAssist psxout;
 #endif
 };

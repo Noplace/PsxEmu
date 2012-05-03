@@ -17,9 +17,13 @@ namespace psx {
 class Component {
  public:
   System& system() { return *system_; }
-  void set_system(System* system) { system_ = system; }
+  void set_system(System* system) { 
+    system_ = system;
+  }
  protected:
   System* system_;
+  Cpu* cpu_;
+  IOInterface* io_;
 };
 
 }

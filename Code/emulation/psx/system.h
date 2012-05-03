@@ -14,7 +14,8 @@
 #include <WinCore/types.h>
 #include <memory.h>
 #include "types.h"
-#ifndef NDEBUG
+#ifdef _DEBUG
+#include <Windows.h>
 #include <assert.h>
 #include <stdio.h>
 #include <sys/types.h>
@@ -27,6 +28,7 @@
 #include "cpu/gte.h"
 #include "gpu/gpu.h"
 #include "spu/spu.h"
+#include "io/root_counter.h"
 #include "io/io_interface.h"
 #include "bios/kernel.h"
 
@@ -35,6 +37,7 @@ namespace emulation {
 namespace psx {
 
 class System {
+ friend DebugAssist;
  public:
   System();
   ~System();
@@ -49,7 +52,7 @@ class System {
   IOInterface& io() { return io_; };
   uint8_t* ram() { return io_.ram_buffer.u8; }
   uint8_t* bios() { return io_.bios_buffer.u8; }
-  DebugAssist log;
+  DebugAssist csvlog;
  private:
    CpuContext cpu_context_;
    Cpu cpu_;

@@ -16,7 +16,7 @@ namespace psx {
 
 struct CpuContext {
   
-union {
+  union {
     uint32_t reg[32];
     struct {
       uint32_t zero;
@@ -122,10 +122,11 @@ union {
   uint8_t sa() { return ((code>>6) & 0x1F); }
   uint32_t target() { return (code & 0x3FFFFFF); }
 
-  uint32_t& gpr_rd() { return gp.reg[rd()]; }
-  uint32_t& gpr_rt() { return gp.reg[rt()]; }
-  uint32_t& gpr_rs() { return gp.reg[rs()]; }
+  //uint32_t& gpr_rd() { return gp.reg[rd()]; }
+  //uint32_t& gpr_rt() { return gp.reg[rt()]; }
+  //uint32_t& gpr_rs() { return gp.reg[rs()]; }
 
+  
   
 };
 

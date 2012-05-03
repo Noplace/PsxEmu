@@ -54,29 +54,33 @@ System::~System() {
 *******************************************************************************/
 int System::Initialize() {
   #if defined(_DEBUG)
-    log.Open("log.txt");
+    csvlog.system_ = this;
+    csvlog.Open("log.csv");
   #endif
  
   io_.set_system(this);
-  io_.Initialize();
-
-  LoadBiosFromFile("D:\\Personal\\Projects\\PsxEmu\\Bios\\SCPH1001.BIN");
-
   cpu_.set_system(this);
+  spu_.set_system(this);
+  kernel_.set_system(this);
+
+  auto set_comp_systems = [&](Component& comp) {
+    //comp.set_system(this);
+    //comp.cpu_ = &this->cpu();
+    //comp.io_ = &this->io();
+  };
+
+
+  io_.Initialize();
+  LoadBiosFromFile("D:\\Personal\\Projects\\PsxEmu\\Bios\\SCPH1001.BIN");
   cpu_.set_context(&cpu_context_);
   cpu_.Initialize();
-
   cpu_.Reset();
-
   spu_.Initialize();
-  spu_.set_system(this);
-
   kernel_.Initialize();
-  kernel_.set_system(this);
-  
-  /*while (cpu_.context()->pc!=0x80030000) {
+
+  while (cpu_.context()->pc!=0x80030000) {
 	   Step();
-  }*/
+  }
 
   return 0;
 }
@@ -96,7 +100,21 @@ int System::Deinitialize() {
 * 
 *******************************************************************************/
 void System::Step() {
+
   cpu_.ExecuteInstruction();
+  if (cpu_.context()->pc == 0xa0 || 
+      cpu_.context()->pc == 0xb0 || 
+      cpu_.context()->pc == 0xc0) {
+        //bios call
+        kernel_.Call();
+        int a= 1;
+  }
+
+  io_.rootcounter_[0].Tick();
+  io_.rootcounter_[1].Tick();
+  io_.rootcounter_[2].Tick();
+  io_.rootcounter_[3].Tick();
+
 
   if (io_.interrupt_reg() & io_.interrupt_mask())	{
 		if ((cpu_.context()->ctrl.SR & 0x400)&&(cpu_.context()->ctrl.SR & 1))	{
@@ -106,14 +124,6 @@ void System::Step() {
 		}
 	}
 
-  if (cpu_.context()->pc == 0xa0 || 
-      cpu_.context()->pc == 0xb0 || 
-      cpu_.context()->pc == 0xc0) {
-        //bios call
-        kernel_.Call();
-        int a= 1;
-        
-  }
 }
 
 /******************************************************************************

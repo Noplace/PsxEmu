@@ -1,4 +1,5 @@
 #include "../system.h"
+#include <stdio.h>
 
 #define KERNEL_DEBUG
 
@@ -22,7 +23,7 @@ void Kernel::Initialize() {
 
 void Kernel::Call() {
   int call_type = system().cpu().context()->pc&0xff;
-  int call_index = system().cpu().context()->gp.t1;
+  int call_index = system().cpu().context()->gp.t1 & 0xFF;
   CpuContext* context = system().cpu().context();
 
   if (system().cpu().bios_logged[((call_type & 0x7F) >> 4) - 2][call_index] == false) {
@@ -31,13 +32,13 @@ void Kernel::Call() {
   }
 
   #if defined(_DEBUG) && defined(KERNEL_DEBUG)
-    BiosCall call = debug.bios_call_[((call_type & 0x7F) >> 4) - 2][call_index];
-    if (system_->log.fp) {
-      fprintf(system_->log.fp,"call @ %08X $%02X $%02X %s \n",system().cpu().context()->prev_pc,call.address,call.operation,call.prototype);
+    BiosCall call = system_->csvlog.bios_call_[((call_type & 0x7F) >> 4) - 2][call_index];
+    if (system_->csvlog.fp) {
+      fprintf(system_->csvlog.fp,"call @ %08X $%02X $%02X %s \n",system_->cpu().context()->prev_pc,call.address,call.operation,call.prototype);
     }
-    if (system().cpu().bioscode.fp) {
-      fprintf(system().cpu().bioscode.fp,"call @ %08X $%02X $%02X %s \n",system().cpu().context()->prev_pc,call.address,call.operation,call.prototype);
-    }
+    //if (system().cpu().bioscode.fp) {
+      //fprintf(system().cpu().bioscode.fp,"call @ %08X $%02X $%02X %s \n",system().cpu().context()->prev_pc,call.address,call.operation,call.prototype);
+   // }
   #endif
 
   if (call_type == 0xa0) {
@@ -54,7 +55,12 @@ void Kernel::Call() {
         //context->pc = context->gp.ra();
         break;
       }
-
+      case 0x44: 
+        //context->gp.t1 = 0x18;
+        //context->gp.t2 = 0xB0;
+        //context->pc = context->gp.t2;
+        break;
+                 
       case 0x3F: {
         #ifdef KERNEL_DEBUG
           //if (debug.fp)
@@ -74,6 +80,7 @@ void Kernel::Call() {
         break;
       }
       case 0x3D: {
+        fputc(context->gp.a0,psxout.fp);
         //putc(context->gp.a0(),context->gp.a1());
         //context->pc = context->gp.ra();
         break;
@@ -85,7 +92,7 @@ void Kernel::Call() {
     switch (call_index) {
       case 0x18: 
         //putc(context->gp.a0(),context->gp.a1());
-        //fputc(context->gp.a0(),psxout.fp);
+        fputc(context->gp.a0,psxout.fp);
         //context->pc = context->gp.ra();
         break;
 
@@ -100,7 +107,7 @@ void Kernel::Call() {
 
 void Kernel::putc(char c,int fd) {
   #if defined(_DEBUG) && defined(KERNEL_DEBUG)
-    if (debug.fp)
+    if (psxout.fp)
       fputc(c,psxout.fp);
   #endif
 }

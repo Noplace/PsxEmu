@@ -35,11 +35,7 @@ class IOInterface : public Component {
   void Write32(uint32_t address,uint32_t data);
   uint32_t& interrupt_reg() { return io_buffer.u32[0x0070>>2]; }
   uint32_t& interrupt_mask() { return io_buffer.u32[0x0074>>2]; }
- private:
-#ifndef NDEBUG
-   DebugAssist debug;
-#endif
-  bool IsValid(uint32_t address,int alignment);
+  RootCounter rootcounter_[4];
 };
 
 }
