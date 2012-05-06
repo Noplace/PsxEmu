@@ -60,6 +60,7 @@ int System::Initialize() {
  
   io_.set_system(this);
   cpu_.set_system(this);
+  gpu_.set_system(this);
   spu_.set_system(this);
   kernel_.set_system(this);
 
@@ -75,6 +76,7 @@ int System::Initialize() {
   cpu_.set_context(&cpu_context_);
   cpu_.Initialize();
   cpu_.Reset();
+  gpu_.Initialize();
   spu_.Initialize();
   kernel_.Initialize();
 
@@ -86,6 +88,9 @@ int System::Initialize() {
 }
 
 int System::Deinitialize() {
+  spu_.Deinitialize();
+  gpu_.Deinitialize();
+  cpu_.Deinitialize();
   io_.Deinitialize();
   return 0;
 }

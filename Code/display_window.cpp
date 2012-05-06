@@ -34,9 +34,11 @@ void DisplayWindow::Initialize() {
   memset(&timing,0,sizeof(timing));
   timer.Calibrate();
   timing.prev_cycles = timer.GetCurrentCycles();
+  
   gfx = new graphics::ContextD3D9();
   gfx->Initialize();
   gfx->CreateDisplay(this);
+  psx_sys.gpu().set_gfx(gfx);
   psx_sys.Initialize();
   Show();
 }
@@ -52,7 +54,7 @@ void DisplayWindow::Step() {
 
   timing.span_accumulator += time_span;
   //while (timing.span_accumulator >= dt) {
-    //psx_sys.Step();
+    psx_sys.Step();
     timing.span_accumulator -= dt;
   //}
 
@@ -64,6 +66,9 @@ void DisplayWindow::Step() {
   timing.render_time_span += time_span;
   if (timing.render_time_span >= 16.667) {
     gfx->ClearTarget();
+    gfx->Begin();
+
+    gfx->End();
     gfx->Render();
     ++timing.fps_counter;
     timing.render_time_span = 0;

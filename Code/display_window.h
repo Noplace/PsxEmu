@@ -25,7 +25,7 @@ class DisplayWindow: public core::windows::Window {
     int OnCommand(WPARAM wParam,LPARAM lParam);
   private:
     emulation::psx::System psx_sys;
-    graphics::Context* gfx;
+    graphics::ContextD3D9* gfx;
     utilities::Timer<double> timer;
     struct {
       uint64_t extra_cycles;

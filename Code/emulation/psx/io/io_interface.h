@@ -35,6 +35,12 @@ class IOInterface : public Component {
   void Write32(uint32_t address,uint32_t data);
   uint32_t& interrupt_reg() { return io_buffer.u32[0x0070>>2]; }
   uint32_t& interrupt_mask() { return io_buffer.u32[0x0074>>2]; }
+  union {
+    struct {
+      uint32_t unused;
+    };
+    uint32_t raw;
+  } dma_enable;
   RootCounter rootcounter_[4];
 };
 

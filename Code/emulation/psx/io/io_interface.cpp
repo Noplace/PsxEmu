@@ -191,8 +191,12 @@ uint32_t IOInterface::Read32(uint32_t address) {
   }
   */
   switch (address) {
-    case 0x1f801070: return  interrupt_reg();
-    case 0x1f801074: return  interrupt_mask();
+    case 0x1F801070: return interrupt_reg();
+    case 0x1F801074: return interrupt_mask();
+    case 0x1F8010F0: return dma_enable.raw;
+    case 0x1F801810: 
+    case 0x1F801814: return system_->gpu().Read(address);
+    
   }
 
   //todo: hardware io
@@ -331,8 +335,11 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
   }*/
 
   switch (address) {
-    case 0x1f801070:   interrupt_reg() = data;/*interrupt_reg &= (interrupt_mask&data);*/  return;
-    case 0x1f801074:   interrupt_mask() = data;  return;
+    case 0x1F801070: interrupt_reg() = data;/*interrupt_reg &= (interrupt_mask&data);*/  return;
+    case 0x1F801074: interrupt_mask() = data;  return;
+    case 0x1F8010F0: dma_enable.raw = data; return;
+    case 0x1F801810: 
+    case 0x1F801814: system_->gpu().Write(address,data); return;
   }
 
   if (address >= 0x1F801000 && address <= 0x1F802FFF ) {

@@ -11,7 +11,7 @@
 #include "../system.h"
 
 //#define CSVOUT
-#define CPU_DEBUG
+//#define CPU_DEBUG
 //#define BIOSCALL
 
 namespace emulation {
@@ -333,6 +333,8 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
   if (physical_address >= 0x00000000 && physical_address <= 0x001FFFFF) {
     buffer = &system_->io().ram_buffer;
     target_address = physical_address & 0x001FFFFF;
+    //if (target_address == 0x30000)
+    //  DebugBreak();
   }
 
   if (physical_address >= 0x1F000000 && physical_address <= 0x1F00FFFF) {
@@ -457,14 +459,16 @@ void Cpu::BNE() {
 }
 
 void Cpu::BLEZ() {
-  bool cond = ((context_->gp.reg[rs_] & 0x80000000)==1) || (context_->gp.reg[rs_] = 0 );
+  int32_t r = (int32_t)context_->gp.reg[rs_];
+  bool cond = r <= 0; //((context_->gp.reg[rs_] & 0x80000000)==1) || (context_->gp.reg[rs_] = 0 );
   if (cond==true) {//context_->gp.reg[rs_] <= 0) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
   }
 }
 
 void Cpu::BGTZ() {
-  bool cond = ((context_->gp.reg[rs_] & 0x80000000)==0) && (context_->gp.reg[rs_] != 0 );
+  int32_t r = (int32_t)context_->gp.reg[rs_];
+  bool cond = r > 0;//((context_->gp.reg[rs_] & 0x80000000)==0) && (context_->gp.reg[rs_] != 0 );
   if (cond==true) {//context_->gp.reg[rs_] > 0) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
   }
@@ -741,7 +745,6 @@ void Cpu::JALR() {
 void Cpu::SYSCALL() {
   context_->pc -= 4;
   RaiseException(context_->pc,kOtherException,kExceptionCodeSyscall);
-  throw;
 }
 
 void Cpu::BREAK() {
@@ -855,14 +858,16 @@ void Cpu::SLTU() {
 }
 
 void Cpu::BLTZ() {
-  bool cond = (context_->gp.reg[rs_] & 0x80000000)==0x80000000;
+  int32_t r = (int32_t)context_->gp.reg[rs_] ;
+  bool cond = r < 0; //(context_->gp.reg[rs_] & 0x80000000)==0x80000000;
   if (cond==true) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
   }
 }
 
 void Cpu::BGEZ() {
-  bool cond = (context_->gp.reg[rs_] & 0x80000000)==0;
+  int32_t r = (int32_t)context_->gp.reg[rs_] ;
+  bool cond = r >= 0;//(context_->gp.reg[rs_] & 0x80000000)==0;
   if (cond==true) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
   }

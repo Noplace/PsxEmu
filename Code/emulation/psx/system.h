@@ -47,7 +47,7 @@ class System {
   void LoadBiosFromMemory(void* buffer);
   void LoadBiosFromFile(char* filename);
   Cpu& cpu() { return cpu_; };
-  //Gpu& gpu() { return gpu_; };
+  Gpu& gpu() { return gpu_; };
   Spu& spu() { return spu_; };
   IOInterface& io() { return io_; };
   uint8_t* ram() { return io_.ram_buffer.u8; }
@@ -56,7 +56,7 @@ class System {
  private:
    CpuContext cpu_context_;
    Cpu cpu_;
-   //Gpu gpu_;
+   Gpu gpu_;
    Spu spu_;
    IOInterface io_;
    Kernel kernel_;

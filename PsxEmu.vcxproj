@@ -75,6 +75,7 @@
     <ClCompile Include="Code\emulation\psx\cpu\cpu.cpp" />
     <ClCompile Include="Code\emulation\psx\debug_assist.cpp" />
     <ClCompile Include="Code\emulation\psx\cpu\gte.cpp" />
+    <ClCompile Include="Code\emulation\psx\gpu\gpu.cpp" />
     <ClCompile Include="Code\emulation\psx\io\io_interface.cpp" />
     <ClCompile Include="Code\emulation\psx\bios\kernel.cpp" />
     <ClCompile Include="Code\emulation\psx\io\root_counter.cpp" />
@@ -90,6 +91,7 @@
     <ClInclude Include="Code\emulation\psx\cpu\cpu_context.h" />
     <ClInclude Include="Code\emulation\psx\debug_assist.h" />
     <ClInclude Include="Code\emulation\psx\cpu\gte.h" />
+    <ClInclude Include="Code\emulation\psx\gpu\gpu.h" />
     <ClInclude Include="Code\emulation\psx\io\io_interface.h" />
     <ClInclude Include="Code\emulation\psx\bios\kernel.h" />
     <ClInclude Include="Code\emulation\psx\io\root_counter.h" />
@@ -110,9 +112,6 @@
     <ProjectReference Include="..\..\WinCore\WinCore.vcxproj">
       <Project>{43ac74e9-a89d-4e31-8c01-fa2cce27f5c2}</Project>
     </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="C:\Users\u11111\Desktop\Graphics\ps_playstation_logo.png" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

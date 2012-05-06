@@ -1,7 +1,7 @@
 #include "../system.h"
 #include <stdio.h>
 
-#define KERNEL_DEBUG
+//#define KERNEL_DEBUG
 
 namespace emulation {
 namespace psx {
@@ -17,8 +17,8 @@ Kernel::~Kernel() {
 void Kernel::Initialize() {
   #if defined(_DEBUG) && defined(KERNEL_DEBUG)
     //debug.Open("kernel system calls.txt");
-    psxout.Open("psxout.txt");
   #endif
+  psxout.Open("psxout.txt");
 }
 
 void Kernel::Call() {
@@ -26,12 +26,12 @@ void Kernel::Call() {
   int call_index = system().cpu().context()->gp.t1 & 0xFF;
   CpuContext* context = system().cpu().context();
 
-  if (system().cpu().bios_logged[((call_type & 0x7F) >> 4) - 2][call_index] == false) {
-    system().cpu().inside_bios_call = true;
-    system().cpu().bios_logged[((call_type & 0x7F) >> 4) - 2][call_index] = true;
-  }
 
   #if defined(_DEBUG) && defined(KERNEL_DEBUG)
+    if (system().cpu().bios_logged[((call_type & 0x7F) >> 4) - 2][call_index] == false) {
+      system().cpu().inside_bios_call = true;
+      system().cpu().bios_logged[((call_type & 0x7F) >> 4) - 2][call_index] = true;
+    }
     BiosCall call = system_->csvlog.bios_call_[((call_type & 0x7F) >> 4) - 2][call_index];
     if (system_->csvlog.fp) {
       fprintf(system_->csvlog.fp,"call @ %08X $%02X $%02X %s \n",system_->cpu().context()->prev_pc,call.address,call.operation,call.prototype);
