@@ -1,13 +1,21 @@
-/******************************************************************************
-* Copyright Khalid Al-Kooheji 2010
-* Filename    : cpu_context.h
-* Description : 
-* 
-*
-* 
-* 
-* 
-*******************************************************************************/
+/*****************************************************************************************************************
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+*                                                                                                                *
+* Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
+* associated documentation files (the "Software"), to deal in the Software without restriction, including        *
+* without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell        *
+* copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the       *
+* following conditions:                                                                                          *
+*                                                                                                                *
+* The above copyright notice and this permission notice shall be included in all copies or substantial           *
+* portions of the Software.                                                                                      *
+*                                                                                                                *
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT          *
+* LIMITED TO THE WARRANTIES OF MERCHANTABILITY, * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.          *
+* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, * DAMAGES OR OTHER LIABILITY,      *
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
+* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
+*****************************************************************************************************************/
 #ifndef EMULATION_PSX_CPU_CONTEXT_H
 #define EMULATION_PSX_CPU_CONTEXT_H
 
@@ -72,7 +80,33 @@ struct CpuContext {
       uint32_t Count;
       uint32_t PortSize;
       uint32_t Compare;
-      uint32_t SR;
+      union {
+        struct {
+          uint32_t IEc:1;
+          uint32_t KUc:1;
+          uint32_t IEp:1;
+          uint32_t KUp:1;
+          uint32_t IEo:1;
+          uint32_t KUo:1;
+          uint32_t unused1:2;
+          uint32_t IM:8;
+          uint32_t IsC:1;
+          uint32_t SwC:1;
+          uint32_t PZ:1;
+          uint32_t CM:1;
+          uint32_t PE:1;
+          uint32_t TS:1;
+          uint32_t BEV:1;
+          uint32_t unused2:2;
+          uint32_t RE:1;
+          uint32_t unused3:2;
+          uint32_t CU0:1;
+          uint32_t CU1:1;
+          uint32_t CU2:1;
+          uint32_t CU3:1;
+        };
+        uint32_t raw;
+      } SR;
       uint32_t Cause;
       uint32_t EPC;
       uint32_t PRId;
@@ -97,11 +131,11 @@ struct CpuContext {
 
   uint32_t cpr2[32];
   uint64_t cycles;
-  uint64_t cycle_counter;
   uint32_t prev_pc;
   uint32_t pc;
   uint32_t code;
   uint32_t low,high;
+  uint8_t  current_cycles;
   bool branch_flag;
 
   CpuContext() : pc(0),code(0),low(0),high(0),branch_flag(false) {

@@ -1,13 +1,21 @@
-/******************************************************************************
-* Copyright Khalid Al-Kooheji 2010
-* Filename    : system.cpp
-* Description : 
-* 
-*
-* 
-* 
-* 
-*******************************************************************************/
+/*****************************************************************************************************************
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+*                                                                                                                *
+* Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
+* associated documentation files (the "Software"), to deal in the Software without restriction, including        *
+* without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell        *
+* copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the       *
+* following conditions:                                                                                          *
+*                                                                                                                *
+* The above copyright notice and this permission notice shall be included in all copies or substantial           *
+* portions of the Software.                                                                                      *
+*                                                                                                                *
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT          *
+* LIMITED TO THE WARRANTIES OF MERCHANTABILITY, * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.          *
+* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, * DAMAGES OR OTHER LIABILITY,      *
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
+* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
+*****************************************************************************************************************/
 #include "system.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,42 +24,16 @@
 namespace emulation {
 namespace psx {
 
-/******************************************************************************
-* Name        : System
-* Description : System Constructor
-* Parameters  : (none)
-*
-* Notes :
-* 
-* 
-*******************************************************************************/
 System::System() {
   memset(&cpu_context_,0,sizeof(cpu_context_));
+  mcf_ = 33868800;
 }
 
-/******************************************************************************
-* Name        : ~System
-* Description : System Destructor
-* Parameters  : (none)
-*
-* Notes :
-* 
-* 
-*******************************************************************************/
 System::~System() {
     
     
 }
 
-/******************************************************************************
-* Name        : Initialize
-* Description : initialize system
-* Parameters  : (none)
-*
-* Notes :
-* 
-* 
-*******************************************************************************/
 int System::Initialize() {
   #if defined(_DEBUG)
     csvlog.system_ = this;
@@ -95,17 +77,8 @@ int System::Deinitialize() {
   return 0;
 }
 
-/******************************************************************************
-* Name        : Cpu
-* Description : Cpu Constructor
-* Parameters  : (none)
-*
-* Notes :
-* 
-* 
-*******************************************************************************/
 void System::Step() {
-
+  cpu_.context()->current_cycles = 0;
   cpu_.ExecuteInstruction();
   if (cpu_.context()->pc == 0xa0 || 
       cpu_.context()->pc == 0xb0 || 
@@ -114,16 +87,12 @@ void System::Step() {
         kernel_.Call();
         int a= 1;
   }
+  
+  io_.Tick(cpu_.context()->current_cycles);
 
-  io_.rootcounter_[0].Tick();
-  io_.rootcounter_[1].Tick();
-  io_.rootcounter_[2].Tick();
-  io_.rootcounter_[3].Tick();
-
-
-  if (io_.interrupt_reg() & io_.interrupt_mask())	{
-		if ((cpu_.context()->ctrl.SR & 0x400)&&(cpu_.context()->ctrl.SR & 1))	{
-        cpu_.RaiseException(cpu_.context()->pc,kOtherException,kExceptionCodeInt);
+  if (io_.interrupt_reg & io_.interrupt_mask)	{
+    if ((cpu_.context()->ctrl.SR.raw & 0x400)&&(cpu_.context()->ctrl.SR.IEc))	{
+        cpu_.RaiseException(cpu_.context()->prev_pc,kOtherException,kExceptionCodeInt);
         cpu_.context()->ctrl.Cause |= 0x400;
 	   	  //Exception(0x400,branch_slot);
 		}
@@ -131,28 +100,10 @@ void System::Step() {
 
 }
 
-/******************************************************************************
-* Name        : LoadBiosFromMemory
-* Description : loads bios from a buffer in ram
-* Parameters  : buffer
-*
-* Notes : must be 0x80000 bytes
-* 
-* 
-*******************************************************************************/
 void System::LoadBiosFromMemory(void* buffer) {
   memcpy(io_.bios_buffer.u8,(uint8_t*)buffer,0x80000);
 }
 
-/******************************************************************************
-* Name        : LoadBiosFromFile
-* Description : loads bios file
-* Parameters  : filename
-*
-* Notes : must be 0x80000 bytes
-* 
-* 
-*******************************************************************************/
 void System::LoadBiosFromFile(char* filename) {
   FILE* fp = fopen(filename,"rb");
   fseek(fp,0,SEEK_END);

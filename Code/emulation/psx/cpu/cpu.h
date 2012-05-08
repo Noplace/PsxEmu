@@ -13,6 +13,24 @@
   R3000 Chip
 */
 #ifndef EMULATION_PSX_CPU_H
+/*****************************************************************************************************************
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+*                                                                                                                *
+* Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
+* associated documentation files (the "Software"), to deal in the Software without restriction, including        *
+* without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell        *
+* copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the       *
+* following conditions:                                                                                          *
+*                                                                                                                *
+* The above copyright notice and this permission notice shall be included in all copies or substantial           *
+* portions of the Software.                                                                                      *
+*                                                                                                                *
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT          *
+* LIMITED TO THE WARRANTIES OF MERCHANTABILITY, * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.          *
+* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, * DAMAGES OR OTHER LIABILITY,      *
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
+* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
+*****************************************************************************************************************/
 #define EMULATION_PSX_CPU_H
 
 namespace emulation {
@@ -302,19 +320,23 @@ class Cpu : public Component {
   void ExecuteInstruction();
   void RaiseException(uint32_t address, Exceptions exception, ExceptionCodes code);
   void Reset() { RaiseException(context_->pc,kResetException,kExceptionCodeInt); }
-  bool IsValidAddress(uint32_t address,int alignment) {
+  bool IsBusError() {
+    return !valid_address_flag_;
+  }
+  bool IsAddressError(uint32_t address,int alignment) {
     //not in kernel mode and accessing non kuseg
     //if (address > 0x7FFFFFFF)
-    //  if ((context_->ctrl.SR & 0x2) != 0) 
-    //   valid_address_flag_ = false;
+     // if ((context_->ctrl.SR & 0x2) != 0) 
+     //  return true;
     //misaligned read/write
     if ((address & (alignment-1)) != 0)
-      return false;//valid_address_flag_ = false;
+      return true;
 
-    return true;
+    return false;
   }
   uint32_t AddressTranslation(uint32_t virtual_address) {
     valid_address_flag_ = false;
+    if (virtual_address >= 0x1F000000 && virtual_address <= 0x1F00FFFF) { valid_address_flag_ = true; cache_flag_ = false; }
     if (virtual_address >= 0x00000000 && virtual_address <= 0x001FFFFF) { valid_address_flag_ = true; cache_flag_ = true; }
     if (virtual_address >= 0x1F800000 && virtual_address <= 0x1F8003FF) { valid_address_flag_ = true; cache_flag_ = false; }
     if (virtual_address >= 0x1F801000 && virtual_address <= 0x1FBFFFFF) { valid_address_flag_ = true; cache_flag_ = false; }

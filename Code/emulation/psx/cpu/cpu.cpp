@@ -1,17 +1,25 @@
-/******************************************************************************
-* Copyright Khalid Al-Kooheji 2010
-* Filename    : cpu.cpp
-* Description : 
-* 
-*
-* 
-* 
-* 
-*******************************************************************************/
+/*****************************************************************************************************************
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+*                                                                                                                *
+* Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
+* associated documentation files (the "Software"), to deal in the Software without restriction, including        *
+* without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell        *
+* copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the       *
+* following conditions:                                                                                          *
+*                                                                                                                *
+* The above copyright notice and this permission notice shall be included in all copies or substantial           *
+* portions of the Software.                                                                                      *
+*                                                                                                                *
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT          *
+* LIMITED TO THE WARRANTIES OF MERCHANTABILITY, * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.          *
+* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, * DAMAGES OR OTHER LIABILITY,      *
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
+* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
+*****************************************************************************************************************/
 #include "../system.h"
 
 //#define CSVOUT
-//#define CPU_DEBUG
+#define CPU_DEBUG
 //#define BIOSCALL
 
 namespace emulation {
@@ -84,15 +92,7 @@ Cpu::~Cpu() {
   #endif
 }
 
-/******************************************************************************
-* Name        : Initialize
-* Description : 
-* Parameters  : (none)
-* 
-* Notes :
-* 
-* 
-*******************************************************************************/
+
 int Cpu::Initialize() {
   cpu_ = this;
   icache_.Initialize();
@@ -100,25 +100,15 @@ int Cpu::Initialize() {
 
   index = 0;
   #if defined(_DEBUG) && defined(CPU_DEBUG) && defined(CSVOUT)
-    //fprintf(system_->csvlog.fp,"\"Counter\",\"PC\",\"Opcode\",\"Code\",\"RS Index\",\"RS Value\",\"RT Index\",\"RT Value\",\"RD Index\",\"RD Value\",\"imm\",\"jump address\",\"branch address\",\"l/s address\"\n");
-    
-    if (system_->csvlog.fp) {
-      fprintf(system_->csvlog.fp,"\"Counter\",\"PC\",\"Opcode\",\"Params\",\"\",");
-      fprintf(system_->csvlog.fp,"\"RS Index\",\"RS Value\",\"RT Index\",\"RT Value\",\"RD Index\",\"RD Value\",\"imm\",\"jump address\",\"branch address\",\"l/s address\"\n");
-      /*for (int i=0;i<32;++i) {
-        fprintf(system_->csvlog.fp,"\"r%d(%s)\",",i,DebugAssist::gpr[i]);
-      }*/
-      fprintf(system_->csvlog.fp,"\n");
-    }
-
-    assert(context_ != NULL);
+    system_->csvlog.OutputCSVHeader();
   #endif
   current_stage = 0;
   context_->gp.zero = 0;
   context_->ctrl.PRId = 0x00000002;
   //context_->ctrl.PRId = 3 << 8; //R3000A
-  context_->ctrl.SR = 0x10900000;//1111
-
+  context_->ctrl.SR.raw = 0x10900000;//1111
+  context_->cycles = 0;
+  context_->current_cycles = 0;
   return 0;
 }
 
@@ -153,40 +143,20 @@ void Cpu::ExecuteInstruction() {
   (this->*(machine_instruction_main_[opcode_]))();
   __inside_instruction = false;
 
-  //++context_->cycles;
-  //++context_->cycle_counter;
+  ++context_->cycles;
+  ++context_->current_cycles;
 }
 
-/******************************************************************************
-* Name        : RaiseException
-* Description : raise the specified exception and change pc
-* Parameters  : address , exception , code
-* 
-* Notes :
-* 
-*   So on an exception, the CPU:
-*   1) sets up EPC to point to the restart location.
-*   2) the pre-existing user-mode and interrupt-enable flags in SR are
-*       saved by pushing the 3-entry stack inside SR, and changing to
-*       kernel mode with interrupts disabled.
-*   3) Cause is setup so that software can see the reason for the
-*       exception. On address exceptions BadVaddr is also set. Memory
-*       management system exceptions set up some of the MMU
-*       registers too; see the chapter on memory management for more
-*       detail.
-*   4) transfers control to the exception entry point.  
-* 
-*******************************************************************************/
 void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes code) {
   #if defined(_DEBUG) && defined(CPU_DEBUG)
     if(system_->csvlog.fp)
-      fprintf(system_->csvlog.fp,"exception @ %08X address=0x%08X\texception=0x%08X\tcode=0x%08X\n",context_->prev_pc,address,exception,code);
+      fprintf(system_->csvlog.fp,"0x%08X,0x%08X,Exception,address,0x%08X,exception,0x%08X,code=0x%08X,SR,0x%08X\n",index,context_->prev_pc,address,exception,code,context_->ctrl.SR);
   #endif
   //save to epc
   context_->ctrl.EPC = context_->branch_flag == true ? address-4 : address;
 
   //push the bit stack for kernel,interrupt flags
-  uint32_t& sr = context_->ctrl.SR;
+  uint32_t& sr = context_->ctrl.SR.raw;
   sr = (sr & ~0x3F) | ((sr & 0xF) << 2) | 0x2;
 
   //set cause
@@ -199,14 +169,14 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
 
   //specific exception handling
   if (exception == kTLBMissException) {
-    if ((context_->ctrl.SR & 0x00400000) == 0) //BEV = 0
+    if ((context_->ctrl.SR.BEV) == 0) //BEV = 0
       context_->pc = 0x80000000;
     else
       context_->pc = 0xBFC00100;
   }
 
   if (exception == kOtherException) {
-    if ((context_->ctrl.SR & 0x00400000) == 0) //BEV = 0
+    if ((context_->ctrl.SR.BEV) == 0) //BEV = 0
       context_->pc = 0x80000080;
     else
       context_->pc = 0xBFC00180;
@@ -214,7 +184,7 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
 
   if (exception == kResetException) {
     //default state : 0101 0000 0110 0001 0000 0000 0000 0000
-    context_->ctrl.SR = 0x10900000;//0x50610000;
+    context_->ctrl.SR.raw = 0x10900000;//0x50610000;
     context_->ctrl.PRId = 0x00000002;
     context_->pc = 0xBFC00000;
   }
@@ -223,15 +193,22 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
 
 uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address, uint32_t virtual_address) {
   Cache* cache = nullptr;
-  if (IsValidAddress(virtual_address,size_bytes) == false) {
+  if (IsBusError() == true) {
+    context_->ctrl.BadVaddr = context_->prev_pc;
+    auto code = current_stage == 1 ? kExceptionCodeIBE : kExceptionCodeDBE;
+    RaiseException(context_->prev_pc,kOtherException,code);
+    return 0;
+  }
+
+  if (IsAddressError(virtual_address,size_bytes) == true) {
     context_->ctrl.BadVaddr = virtual_address;
     RaiseException(context_->prev_pc,kOtherException,kExceptionCodeAdEL);
     return 0;
   }
 
-  if ((context_->ctrl.SR & 0x10000) && current_stage != 1) { //cache isolation
+  if ((context_->ctrl.SR.IsC) && current_stage != 1) { //cache isolation
     uint32_t data;
-    if ((context_->ctrl.SR & 0x20000) == 0) { //check for swap!
+    if ((context_->ctrl.SR.SwC) == 0) { //check for swap!
       dcache_.Read(physical_address,data);
       if (size_bytes != 4)
         dcache_.InvalidateLine(physical_address);
@@ -285,7 +262,7 @@ uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address,
       //if (icache_.Read(physical_address,data)==true)//cache hit
       //  return data;
       //if (data!=buffer->u32[target_address>>2] && cache_hit == true)
-      //  DebugBreak();
+      //  BREAKPOINT();
       
     }
 
@@ -296,22 +273,25 @@ uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address,
     }
   }
 
-  throw;
+  BREAKPOINT();
   return 0;
 }
 
 void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physical_address, uint32_t virtual_address) {
   //todo: research about this value, ignore for now
-  if (virtual_address == 0xFFFE0130)  return;
-  if ((IsValidAddress(virtual_address,size_bytes) == false)) {
-    context_->ctrl.BadVaddr = virtual_address;
+  if (IsBusError() == true) { 
+    context_->ctrl.BadVaddr = context_->prev_pc;
+    return;
+  }
+  if ((IsAddressError(virtual_address,size_bytes) == true)) {
+    context_->ctrl.BadVaddr = context_->prev_pc;
     RaiseException(context_->prev_pc,kOtherException,kExceptionCodeAdES);
     return;
   }
 
-  if (context_->ctrl.SR & 0x10000) { //cache isolation
+  if (context_->ctrl.SR.IsC) { //cache isolation
     uint32_t cdata[4] = { data };
-    if ((context_->ctrl.SR & 0x20000) == 0) { //check for swap!
+    if ((context_->ctrl.SR.SwC) == 0) { //check for swap!
       dcache_.Write(physical_address,cdata);
       if (size_bytes != 4)
         dcache_.InvalidateLine(physical_address);
@@ -334,7 +314,7 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
     buffer = &system_->io().ram_buffer;
     target_address = physical_address & 0x001FFFFF;
     //if (target_address == 0x30000)
-    //  DebugBreak();
+    //  BREAKPOINT();
   }
 
   if (physical_address >= 0x1F000000 && physical_address <= 0x1F00FFFF) {
@@ -368,7 +348,7 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
     return;
   }
 
-  throw;
+  BREAKPOINT();
 }
 
 void Cpu::StageIF() {
@@ -530,17 +510,17 @@ void Cpu::COP0() {
     }
     //RFE
     case 0x10: {
-      context_->ctrl.SR = (context_->ctrl.SR & ~0xF) | ((context_->ctrl.SR >> 2) & 0xF);
+      context_->ctrl.SR.raw = (context_->ctrl.SR.raw & ~0xF) | ((context_->ctrl.SR.raw >> 2) & 0xF);
       break;
     }
     default:
-      throw;
+      BREAKPOINT();
   }
   Tick();
 }
 
 void Cpu::COP2() {
-  throw;
+  BREAKPOINT();
 }
 
 void Cpu::LB() {
@@ -743,12 +723,11 @@ void Cpu::JALR() {
 }
 
 void Cpu::SYSCALL() {
-  context_->pc -= 4;
-  RaiseException(context_->pc,kOtherException,kExceptionCodeSyscall);
+  RaiseException(context_->prev_pc,kOtherException,kExceptionCodeSyscall);
 }
 
 void Cpu::BREAK() {
-  throw;
+  BREAKPOINT();
 }
 
 void Cpu::MFHI() {

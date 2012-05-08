@@ -1,13 +1,21 @@
-/******************************************************************************
-* Copyright Khalid Al-Kooheji 2010
-* Filename    : types.h
-* Description : 
-* 
-*
-* 
-* 
-* 
-*******************************************************************************/
+/*****************************************************************************************************************
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+*                                                                                                                *
+* Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
+* associated documentation files (the "Software"), to deal in the Software without restriction, including        *
+* without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell        *
+* copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the       *
+* following conditions:                                                                                          *
+*                                                                                                                *
+* The above copyright notice and this permission notice shall be included in all copies or substantial           *
+* portions of the Software.                                                                                      *
+*                                                                                                                *
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT          *
+* LIMITED TO THE WARRANTIES OF MERCHANTABILITY, * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.          *
+* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, * DAMAGES OR OTHER LIABILITY,      *
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
+* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
+*****************************************************************************************************************/
 #ifndef EMULATION_PSX_TYPES_H
 #define EMULATION_PSX_TYPES_H
 
@@ -41,6 +49,20 @@ enum ExceptionCodes {
   kExceptionCodeRI       = 10 ,
   kExceptionCodeCpU      = 11 ,
   kExceptionCodeOv       = 12 
+};
+
+enum InterruptCodes { 
+  kInterruptVSYNC =  0x0001,
+  kInterruptGPU   =  0x0002,
+  kInterruptCDROM =  0x0004,
+  kInterruptDMA   =  0x0008,
+  kInterruptCNT0  =  0x0010,
+  kInterruptCNT1  =  0x0020,
+  kInterruptCNT2  =  0x0040,
+  kInterruptSIO0  =  0x0080,
+  kInterruptSIO1  =  0x0100,
+  kInterruptSPU   =  0x0200,
+  kInterruptPIO   =  0x0400
 };
 
 struct Buffer {

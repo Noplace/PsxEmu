@@ -16,3 +16,68 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
+#ifndef EMULATION_PSX_DMA_H
+#define EMULATION_PSX_DMA_H
+namespace emulation {
+namespace psx {
+
+struct DmaChannel{
+ uint32_t madr;
+ uint32_t bcr;
+ uint32_t chcr;
+ bool enable;
+};
+
+class Dma : public Component {
+ public:
+  Dma();
+  ~Dma();
+  int Initialize();
+  void SetInterrupt(int channel);
+  void Tick();
+  uint32_t Read(uint32_t address);
+  void Write(uint32_t address,uint32_t data);
+ private:
+  DmaChannel channels[7];
+  union {
+    struct {
+      uint32_t unused;
+    };
+    uint32_t raw;
+  } dma_enable;
+  union {
+    struct {
+      uint32_t fast_dma0:1;
+      uint32_t fast_dma1:1;
+      uint32_t fast_dma2:1;
+      uint32_t fast_dma3:1;
+      uint32_t fast_dma4:1;
+      uint32_t fast_dma5:1;
+      uint32_t fast_dma6:1;
+      uint32_t unused1:9;
+      uint32_t enable_dma0_interrupt:1;
+      uint32_t enable_dma1_interrupt:1;
+      uint32_t enable_dma2_interrupt:1;
+      uint32_t enable_dma3_interrupt:1;
+      uint32_t enable_dma4_interrupt:1;
+      uint32_t enable_dma5_interrupt:1;
+      uint32_t enable_dma6_interrupt:1;
+      uint32_t unused2:1;
+      uint32_t acknowledge_dma0_interrupt:1;
+      uint32_t acknowledge_dma1_interrupt:1;
+      uint32_t acknowledge_dma2_interrupt:1;
+      uint32_t acknowledge_dma3_interrupt:1;
+      uint32_t acknowledge_dma4_interrupt:1;
+      uint32_t acknowledge_dma5_interrupt:1;
+      uint32_t acknowledge_dma6_interrupt:1;
+      uint32_t unused3:1;
+    };
+    uint32_t raw;
+  } interrupt_control;
+  void Dma2();
+  void Dma6();
+};
+
+}
+}
+#endif

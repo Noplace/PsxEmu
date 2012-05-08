@@ -75,6 +75,9 @@
     <ClCompile Include="Code\emulation\psx\gpu\gpu.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Code\emulation\psx\io\dma.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Code\display_window.h">
@@ -123,6 +126,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Code\emulation\psx\gpu\gpu.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\io\dma.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

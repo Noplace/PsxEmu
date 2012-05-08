@@ -1,39 +1,28 @@
-/******************************************************************************
-* Filename    : io_interface.cpp
-* Description : 
-* 
-*
-* 
-* 
-* 
-*******************************************************************************/
-/*
-** kuseg 0x0000 0000 – 7FFF FFFF
-** kseg0 0x8000 0000 – 9FFF FFFF
-** kseg1 0xA000 0000 – BFFF FFFF
-** kseg2 0xC000 0000 – FFFF FFFF
-**
-**
-**
-*/
+/*****************************************************************************************************************
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+*                                                                                                                *
+* Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
+* associated documentation files (the "Software"), to deal in the Software without restriction, including        *
+* without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell        *
+* copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the       *
+* following conditions:                                                                                          *
+*                                                                                                                *
+* The above copyright notice and this permission notice shall be included in all copies or substantial           *
+* portions of the Software.                                                                                      *
+*                                                                                                                *
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT          *
+* LIMITED TO THE WARRANTIES OF MERCHANTABILITY, * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.          *
+* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, * DAMAGES OR OTHER LIABILITY,      *
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
+* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
+*****************************************************************************************************************/
 #include "../system.h"
-#include <assert.h>
 
 //#define IODEBUG
 
 namespace emulation {
 namespace psx {
 
-
-/******************************************************************************
-* Name        : Initialize
-* Description : Initialize
-* Parameters  : (none)
-*
-* Notes :
-* 
-* 
-*******************************************************************************/
 int IOInterface::Initialize() { 
   cpu_ = &system().cpu();
   bios_buffer.Alloc(0x80000);
@@ -45,9 +34,16 @@ int IOInterface::Initialize() {
 	//memset(HRam->u8,0,0x10000);
   memset(io_buffer.u8,0,0x2000);
   memset(parallel_port_buffer.u8,0,0xFFFF);
-  interrupt_reg() = 0x80;
-  interrupt_mask() = 0;
+  interrupt_reg = 0x80;
+  interrupt_mask = 0;
   memset(rootcounter_,0,sizeof(rootcounter_));
+  dma.set_system(system_);
+  dma.Initialize();
+
+  rootcounter_[0].mode.en = rootcounter_[1].mode.en = rootcounter_[2].mode.en = 1;
+  rootcounter_[3].WriteTarget(system_->master_clock_frequency() / 60);
+  rootcounter_[3].WriteMode(0x58);
+
   return 0;
 } 
 
@@ -57,6 +53,20 @@ int IOInterface::Deinitialize() {
   ram_buffer.Dealloc();
   bios_buffer.Dealloc();
   return 0;
+}
+
+void IOInterface::SetInterrupt(InterruptCodes interrupt) {
+  interrupt_reg |= interrupt;
+}
+
+void IOInterface::Tick(uint32_t cycles) {
+  rootcounter_[0].Tick(cycles);
+  rootcounter_[1].Tick(cycles);
+  rootcounter_[2].Tick(cycles);
+  if (rootcounter_[3].Tick(cycles)==true) {
+    SetInterrupt(kInterruptVSYNC);
+  }
+  dma.Tick();
 }
 
 /******************************************************************************
@@ -123,11 +133,8 @@ uint16_t IOInterface::Read16(uint32_t address) {
   }*/
 
   switch (address) {
-    case 0x1f801070: return  interrupt_reg()&0xFFFF;
-    case 0x1f801074: return  interrupt_mask()&0xFFFF;
-  }
-
-  switch (address) {
+    case 0x1F801070: return interrupt_reg&0xFFFF;
+    case 0x1F801074: return interrupt_mask&0xFFFF;
     case 0x1F801100: return rootcounter_[0].ReadCounter();
     case 0x1F801104: return rootcounter_[0].ReadMode(); 
     case 0x1F801108: return rootcounter_[0].ReadTarget(); 
@@ -167,38 +174,28 @@ uint32_t IOInterface::Read32(uint32_t address) {
     if (system_->csvlog.fp && cpu_->current_stage != 1)
       fprintf(system_->csvlog.fp,"-,-,IO Read 32,0x%08X\n",address);
   #endif
-  /*if (IsValid(address,4) == false) {
-    cpu_->context()->ctrl.BadVaddr = address;
-    cpu_->RaiseException(cpu_->context()->prev_pc,kOtherException,kExceptionCodeAdEL);
-    return 0;
-  }*/
 
+  if (address >= 0x1F801080 && address <= 0x1F8010F4) {
+    return dma.Read(address);
+  }
 
-  /*if ((address >= 0x00000000 && address <= 0x001FFFFF ) ||
-      (address >= 0x80000000 && address <= 0x801FFFFF ) ||
-      (address >= 0xA0000000 && address <= 0xA01FFFFF )) {
-    return ram_buffer.u32[(address & 0x001FFFFF)>>2];
-  }
-  
-  //todo: parallel port
-  if (address >= 0x1F000000 && address <= 0x1F00FFFF ) {
-    return parallel_port_buffer.u32[(address&0xFFFF)>>2];
-  }
-  
-  //todo: scratch pad
-  if (address >= 0x1F800000 && address <= 0x1F8003FF ) {
-    assert(1==0);
-  }
-  */
   switch (address) {
-    case 0x1F801070: return interrupt_reg();
-    case 0x1F801074: return interrupt_mask();
-    case 0x1F8010F0: return dma_enable.raw;
-    case 0x1F801810: 
-    case 0x1F801814: return system_->gpu().Read(address);
+    case 0x1F801070: return interrupt_reg;
+    case 0x1F801074: return interrupt_mask;
+    case 0x1F801100: return rootcounter_[0].ReadCounter();
+    case 0x1F801104: return rootcounter_[0].ReadMode(); 
+    case 0x1F801108: return rootcounter_[0].ReadTarget(); 
+    case 0x1F801110: return rootcounter_[1].ReadCounter();        
+    case 0x1F801114: return rootcounter_[1].ReadMode(); 
+    case 0x1F801118: return rootcounter_[1].ReadTarget(); 
+    case 0x1F801120: return rootcounter_[2].ReadCounter();
+    case 0x1F801124: return rootcounter_[2].ReadMode(); 
+    case 0x1F801128: return rootcounter_[2].ReadTarget(); 
+    case 0x1F801810: return system_->gpu().ReadData();
+    case 0x1F801814: return system_->gpu().ReadStatus();
     
   }
-
+  BREAKPOINT();
   //todo: hardware io
   if (address >= 0x1F801000 && address <= 0x1F802FFF ) {
     return io_buffer.u32[((address-0x1000)&0x1FFF)>>2];
@@ -212,7 +209,7 @@ uint32_t IOInterface::Read32(uint32_t address) {
 
   
 
-  assert(1==0);
+  BREAKPOINT();
   return 0;
 }
 
@@ -265,25 +262,10 @@ void IOInterface::Write16(uint32_t address,uint16_t data) {
     if (system_->csvlog.fp)
       fprintf(system_->csvlog.fp,"-,-,IO Write 16,Data=0x%04X @ 0x%08X\n",data,address);
   #endif
-  /*if (IsValid(address,2) == false) {
-    cpu_->context()->ctrl.BadVaddr = address;
-    cpu_->RaiseException(cpu_->context()->prev_pc,kOtherException,kExceptionCodeAdES);
-    return;
-  }*/
-
-  /*if ((address >= 0x00000000 && address <= 0x001FFFFF ) ||
-      (address >= 0x80000000 && address <= 0x801FFFFF ) ||
-      (address >= 0xA0000000 && address <= 0xA01FFFFF )) {
-    ram_buffer.u16[(address & 0x001FFFFF)>>1] = data;
-    return;
-  }
-  */
-  switch (address) {
-    case 0x1f801070:   io_buffer.u16[0x0070>>1] = data;  return;
-    case 0x1f801074:   io_buffer.u16[0x0074>>1] = data;  return;
-  }
 
   switch (address) {
+    case 0x1F801070: interrupt_reg = (interrupt_reg&0xFFFF0000)|(data & interrupt_mask & 0xFFFF);  return;
+    case 0x1F801074: interrupt_mask = (interrupt_mask&0xFFFF0000)|(data & 0xFFFF);  return;
     case 0x1F801100: return;
     case 0x1F801104: rootcounter_[0].WriteMode(data); return;
     case 0x1F801108: rootcounter_[0].WriteTarget(data); return;
@@ -302,8 +284,7 @@ void IOInterface::Write16(uint32_t address,uint16_t data) {
     system_->spu().Write(address,data);
     return;
   }
-
-  assert(1==0);
+  BREAKPOINT();
 }
 
 /******************************************************************************
@@ -321,33 +302,43 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
       fprintf(system_->csvlog.fp,"-,-,IO Write 32,Data=0x%08X @ 0x%08X\n",data,address);
   #endif
 
-  /*if (IsValid(address,4) == false) {
-    cpu_->context()->ctrl.BadVaddr = address;
-    cpu_->RaiseException(cpu_->context()->prev_pc,kOtherException,kExceptionCodeAdES);
+  if (address >= 0x1F801080 && address <= 0x1F8010F4) {
+    dma.Write(address,data);
     return;
-  }*/
-
-  /*if ((address >= 0x00000000 && address <= 0x001FFFFF ) ||
-      (address >= 0x80000000 && address <= 0x801FFFFF ) ||
-      (address >= 0xA0000000 && address <= 0xA01FFFFF )) {
-    ram_buffer.u32[(address & 0x001FFFFF)>>2] = data;
-    return;
-  }*/
-
-  switch (address) {
-    case 0x1F801070: interrupt_reg() = data;/*interrupt_reg &= (interrupt_mask&data);*/  return;
-    case 0x1F801074: interrupt_mask() = data;  return;
-    case 0x1F8010F0: dma_enable.raw = data; return;
-    case 0x1F801810: 
-    case 0x1F801814: system_->gpu().Write(address,data); return;
   }
 
+  switch (address) {
+    case 0x1F801000: hw_1000  = data; return;
+    case 0x1F801004: hw_1004  = data; return;
+    case 0x1F801008: hw_1008  = data; return;
+    case 0x1F80100C: hw_100C  = data; return;
+    case 0x1F801010: hw_1010  = data; return;
+    case 0x1F801014: spu_delay  = data; return;
+    case 0x1F801018: dv5_delay  = data; return;
+    case 0x1F80101C: hw_101C  = data; return;
+    case 0x1F801020: com_delay  = data; return;
+    case 0x1F801060: ram_size  = data; return;
+    case 0x1F801070: interrupt_reg = data & interrupt_mask;  return;
+    case 0x1F801074: interrupt_mask = data;  return;
+    case 0x1F801100: return;
+    case 0x1F801104: rootcounter_[0].WriteMode(data); return;
+    case 0x1F801108: rootcounter_[0].WriteTarget(data); return;
+    case 0x1F801110: return;
+    case 0x1F801114: rootcounter_[1].WriteMode(data); return;
+    case 0x1F801118: rootcounter_[1].WriteTarget(data); return;
+    case 0x1F801120: return;
+    case 0x1F801124: rootcounter_[2].WriteMode(data); return;
+    case 0x1F801128: rootcounter_[2].WriteTarget(data); return;
+    case 0x1F801810: system_->gpu().WriteData(data); return;
+    case 0x1F801814: system_->gpu().WriteStatus(data); return;
+  }
+  BREAKPOINT();
   if (address >= 0x1F801000 && address <= 0x1F802FFF ) {
     io_buffer.u32[((address-0x1000)&0x1FFF)>>2] = data;
     return;
   }
 
-  assert(1==0);
+  BREAKPOINT();
 }
 
 
