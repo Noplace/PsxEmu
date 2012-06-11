@@ -359,9 +359,7 @@ class Cpu : public Component {
     cache_flag_ = false;
     return 0xFFFFFFFF;
   }
-  void Tick() {
-    ++context_->cycles;
-  }
+  void Tick();
   uint32_t LoadMemory(bool cached, int size_bytes, uint32_t physical_address, uint32_t virtual_address);
   void StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physical_address, uint32_t virtual_address);
   CpuContext* context() { return context_; }

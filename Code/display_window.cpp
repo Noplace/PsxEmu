@@ -48,6 +48,7 @@ void DisplayWindow::Initialize() {
   gfx->CreateDisplay(this);
   psx_sys.gpu().set_gfx(gfx);
   psx_sys.Initialize();
+  psx_sys.LoadPsExe("D:\\Personal\\Projects\\PsxEmu\\test\\vblank\\VBLANK.EXE");
   Show();
 }
 
@@ -73,11 +74,20 @@ void DisplayWindow::Step() {
 
   timing.render_time_span += time_span;
   if (timing.render_time_span >= 16.667) {
-    gfx->ClearTarget();
-    gfx->Begin();
+    
+    emulation::psx::GfxVertex v[4] = {
+      {0,0,0,0xffffffff,0,0},
+      {100,0,0,0xffffffff,0,0},
+      {0,100,0,0xffffffff,0,0},
+      {100,100,0,0xffffffff,0,0}
+    };
+    
+    
+    gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
 
     gfx->End();
     gfx->Render();
+    gfx->Begin();
     ++timing.fps_counter;
     timing.render_time_span = 0;
   }

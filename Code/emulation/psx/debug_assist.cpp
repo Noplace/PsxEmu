@@ -16,8 +16,9 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
+#ifdef _DEBUG
 #include "system.h"
-
+#define PROG_ONLY
 #pragma warning(disable : 4996)
 
 namespace emulation {
@@ -517,6 +518,15 @@ void DebugAssist::OutputInstruction() {
 void DebugAssist::OutputInstruction2() {
   Cpu& cpu = system_->cpu_;
   CpuContext* context = cpu.context_;
+  #ifdef PROG_ONLY
+    if (context->prev_pc < 0x80000000 || context->prev_pc >= 0xBFC00000) {
+      return;
+    }
+  #endif
+
+  if (cpu.__inside_delay_slot == true)
+    fprintf(system_->csvlog.fp,"following is delay slot\n");
+
   int opcode = cpu.opcode_;
   if (opcode == 0)
     opcode += 64 +  system_->cpu_.funct_;
@@ -595,7 +605,11 @@ void DebugAssist::OutputInstruction2() {
       context->gp.reg[cpu.rs_],cpu.rt_,context->gp.reg[cpu.rt_],
       context->rd(),context->gp.reg[cpu.rd_],cpu.immediate_,
       cpu.immediate_32bit_sign_extended_,address0,address1,address2); */
+  if (cpu.__inside_delay_slot == true)
+   fprintf(system_->csvlog.fp,"end of delay slot\n");
+
 }
 
 }
 }
+#endif

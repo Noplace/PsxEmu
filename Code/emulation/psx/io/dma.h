@@ -37,6 +37,7 @@ class Dma : public Component {
   void Tick();
   uint32_t Read(uint32_t address);
   void Write(uint32_t address,uint32_t data);
+  DmaChannel& channel(int i) { return channels[i]; }
  private:
   DmaChannel channels[7];
   union {

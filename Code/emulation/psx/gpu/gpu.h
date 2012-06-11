@@ -31,6 +31,12 @@ namespace psx {
 
 struct GfxStruct;
 
+struct GfxVertex {
+  float x,y,z;
+  uint32_t color;
+  float u,v;
+};
+
 typedef struct
 {
  uint32_t color;
@@ -184,6 +190,7 @@ class Gpu : public Component {
   uint32_t  ReadStatus();
   void WriteData(uint32_t data);
   void WriteStatus(uint32_t data);
+  void FillCommandBuffer(uint32_t data);
  private:
   static Primitive primitives[256];
   union {
@@ -216,7 +223,7 @@ class Gpu : public Component {
   struct {
     uint8_t command;
     int param_count;
-    uint32_t buffer[32];
+    uint32_t buffer[0xFF];
   }command_buffer;
   struct {
     uint16_t clip_x;
@@ -232,6 +239,7 @@ class Gpu : public Component {
   void PrimitivePolyFT3();
   void PrimitivePolyF4();
   void PrimitivePolyG4();
+  void PrimitivePolyGT4();
   void PrimitiveDrawModeSetting();
   void PrimitiveTextureWindow();
   void PrimitiveClipAreaStart();

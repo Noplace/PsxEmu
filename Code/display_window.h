@@ -19,8 +19,8 @@
 #ifndef UISYSTEM_DISPLAY_WINDOW_H
 #define UISYSTEM_DISPLAY_WINDOW_H
 
-#include <WinCore/timer/timer2.h>
 #include <WinCore/windows/windows.h>
+#include <WinCore/timer/timer2.h>
 #include <VisualEssence/Code/ve.h>
 #include "../Resource/ui.h"
 #include "emulation/psx/system.h"

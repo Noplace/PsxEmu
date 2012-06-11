@@ -100,7 +100,7 @@ uint16_t  Spu::Read(uint32_t address) {
     case 0x1F801DAC: return spu_control2;
     case 0x1F801DAE: return spu_status2.raw;
   }
-  BREAKPOINT();
+  BREAKPOINT
   return 0;
 }
 
@@ -209,7 +209,7 @@ void Spu::Write(uint32_t address,uint16_t data) {
   }
 
 
-  BREAKPOINT();
+  BREAKPOINT
 }
 
 }

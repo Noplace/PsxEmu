@@ -18,13 +18,6 @@
 *****************************************************************************************************************/
 #pragma once
 
-#ifdef _DEBUG
-#define BREAKPOINT DebugBreak
-#define PC_BREAKPOINT(x) if (context_->pc==x) { DebugBreak(); }
-#else
-#define BREAKPOINT 
-#endif
-
 namespace emulation {
 namespace psx {
 

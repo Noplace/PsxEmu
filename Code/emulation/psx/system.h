@@ -30,12 +30,16 @@ class Dma;
 #include <memory.h>
 #include "types.h"
 #ifdef _DEBUG
+#define BREAKPOINT DebugBreak();
+#define PC_BREAKPOINT(x) if (context_->pc==x) { DebugBreak(); }
 #include <Windows.h>
 #include <assert.h>
 #include <stdio.h>
 #include <sys/types.h>
 #include <time.h>
 #include "debug_assist.h"
+#else
+#define BREAKPOINT 
 #endif
 #include "component.h"
 #include "cpu/cpu_context.h"
@@ -62,15 +66,19 @@ class System {
   void Step();
   void LoadBiosFromMemory(void* buffer);
   void LoadBiosFromFile(char* filename);
+  void LoadPsExe(char* filename);
   Cpu& cpu() { return cpu_; };
   Gpu& gpu() { return gpu_; };
   Spu& spu() { return spu_; };
   IOInterface& io() { return io_; };
+  Kernel& kernel() { return kernel_; };
   uint8_t* ram() { return io_.ram_buffer.u8; }
   uint8_t* bios() { return io_.bios_buffer.u8; }
   uint32_t master_clock_frequency() { return mcf_; }
   void set_master_clock_frequency(uint32_t mcf) { mcf_ = mcf; }
+  #ifdef _DEBUG
   DebugAssist csvlog;
+  #endif
  private:
   CpuContext cpu_context_;
   Cpu cpu_;

@@ -36,12 +36,13 @@ int IOInterface::Initialize() {
   memset(parallel_port_buffer.u8,0,0xFFFF);
   interrupt_reg = 0x80;
   interrupt_mask = 0;
-  memset(rootcounter_,0,sizeof(rootcounter_));
+  
   dma.set_system(system_);
   dma.Initialize();
 
+  memset(rootcounter_,0,sizeof(rootcounter_));
   rootcounter_[0].mode.en = rootcounter_[1].mode.en = rootcounter_[2].mode.en = 1;
-  rootcounter_[3].WriteTarget(system_->master_clock_frequency() / 60);
+  rootcounter_[3].target = (system_->master_clock_frequency() / 60);// * 64;
   rootcounter_[3].WriteMode(0x58);
 
   return 0;
@@ -63,8 +64,13 @@ void IOInterface::Tick(uint32_t cycles) {
   rootcounter_[0].Tick(cycles);
   rootcounter_[1].Tick(cycles);
   rootcounter_[2].Tick(cycles);
+  
   if (rootcounter_[3].Tick(cycles)==true) {
+    #ifdef _DEBUG
+    fprintf(system_->csvlog.fp,"0x%08x,0x%08x,vsync\n",cpu_->index,cpu_->context()->prev_pc);
+    #endif
     SetInterrupt(kInterruptVSYNC);
+
   }
   dma.Tick();
 }
@@ -83,7 +89,7 @@ uint8_t IOInterface::Read08(uint32_t address) {
     if (system_->csvlog.fp)
       fprintf(system_->csvlog.fp,"-,-,IO Read 08,0x%08X\n",address);
   #endif
-  
+  BREAKPOINT
   /*if (IsValid(address,1) == false) {
     cpu_->context()->ctrl.BadVaddr = address;
     cpu_->RaiseException(cpu_->context()->prev_pc,kOtherException,kExceptionCodeAdEL);
@@ -156,7 +162,7 @@ uint16_t IOInterface::Read16(uint32_t address) {
 
 
   
-  assert(1==0);
+  BREAKPOINT
   return 0;
 }
 
@@ -195,7 +201,7 @@ uint32_t IOInterface::Read32(uint32_t address) {
     case 0x1F801814: return system_->gpu().ReadStatus();
     
   }
-  BREAKPOINT();
+  BREAKPOINT
   //todo: hardware io
   if (address >= 0x1F801000 && address <= 0x1F802FFF ) {
     return io_buffer.u32[((address-0x1000)&0x1FFF)>>2];
@@ -209,7 +215,7 @@ uint32_t IOInterface::Read32(uint32_t address) {
 
   
 
-  BREAKPOINT();
+  BREAKPOINT
   return 0;
 }
 
@@ -239,13 +245,13 @@ void IOInterface::Write08(uint32_t address,uint8_t data) {
     ram_buffer.u8[(address & 0x001FFFFF)] = data;
     return;
   }*/
-
+    
   if (address >= 0x1F801000 && address <= 0x1F802FFF ) {
     io_buffer.u8[((address-0x1000)&0x1FFF)] = data;
     return;
   }
 
-  assert(1==0);
+  BREAKPOINT
 }
 
 /******************************************************************************
@@ -284,7 +290,7 @@ void IOInterface::Write16(uint32_t address,uint16_t data) {
     system_->spu().Write(address,data);
     return;
   }
-  BREAKPOINT();
+  BREAKPOINT
 }
 
 /******************************************************************************
@@ -332,13 +338,13 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
     case 0x1F801810: system_->gpu().WriteData(data); return;
     case 0x1F801814: system_->gpu().WriteStatus(data); return;
   }
-  BREAKPOINT();
+  BREAKPOINT
   if (address >= 0x1F801000 && address <= 0x1F802FFF ) {
     io_buffer.u32[((address-0x1000)&0x1FFF)>>2] = data;
     return;
   }
 
-  BREAKPOINT();
+  BREAKPOINT
 }
 
 

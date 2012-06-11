@@ -32,7 +32,7 @@ class Kernel : public Component {
  private:
    void putc(char c,int fd);
 
-#ifndef NDEBUG
+#ifdef _DEBUG
    //DebugAssist debug;
    DebugAssist psxout;
 #endif

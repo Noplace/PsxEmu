@@ -19,8 +19,11 @@
 #include <VisualEssence/Code/ve.h>
 #include "../system.h"
 
+#define GPU_DEBUG
+
 namespace emulation {
 namespace psx {
+
 
 inline uint32_t SelectBits(uint32_t data,uint32_t bitno,uint32_t size) {
   return (data>>bitno) & ((1<<size)-1);
@@ -137,7 +140,7 @@ Gpu::Primitive Gpu::primitives[256] =
 &Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,
 &Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,
 &Gpu::PrimitivePolyG4,&Gpu::PrimitivePolyG4,&Gpu::PrimitivePolyG4,&Gpu::PrimitivePolyG4,
-&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,
+&Gpu::PrimitivePolyGT4,&Gpu::PrimitivePolyGT4,&Gpu::PrimitivePolyGT4,&Gpu::PrimitivePolyGT4,
 //0x40
 &Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,
 &Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,
@@ -200,11 +203,16 @@ Gpu::Primitive Gpu::primitives[256] =
 &Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown
 };
 
+IDirect3DTexture9* vram_texture=0;
+IDirect3DSurface9* surface=0;
+
 Gpu::Gpu() {
   gs = new GfxStruct();
 }
 
 Gpu::~Gpu() {
+  vram_texture->Release();
+  surface->Release();
   delete gs;
 }
 
@@ -226,9 +234,37 @@ int Gpu::Initialize() {
   gs->camera.Initialize(gs->gfx);
   gs->camera.Ortho2D();
   gs->gfx->SetCamera(&gs->camera);
+  
+  D3DXMATRIX matIdentity;
+	D3DXMatrixIdentity(&matIdentity);
+  gs->gfx->device()->SetTransform(D3DTS_WORLD,&matIdentity);
+	gs->gfx->device()->SetRenderState(D3DRS_ZENABLE, 0 );
+	gs->gfx->device()->SetRenderState(D3DRS_LIGHTING, 0 );
+	gs->gfx->device()->SetRenderState(D3DRS_ALPHABLENDENABLE,1);
 
+
+	gs->gfx->device()->SetTextureStageState( 0, D3DTSS_COLORARG1, D3DTA_TEXTURE );
+	gs->gfx->device()->SetTextureStageState( 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE );  
+	gs->gfx->device()->SetTextureStageState( 0, D3DTSS_COLOROP, D3DTOP_MODULATE );
+	gs->gfx->device()->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_TEXTURE);
+	gs->gfx->device()->SetTextureStageState(0,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE);
+	gs->gfx->device()->SetTextureStageState( 0, D3DTSS_ALPHAOP,D3DTOP_MODULATE );
+  
+  gs->gfx->device()->CreateTexture(1024,512,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&vram_texture,0);
+  
+  vram_texture->GetSurfaceLevel(0,&surface);
+  //auto r = gs->gfx->device()->SetRenderTarget(0,surface);
+
+  gs->gfx->ClearTarget();
+	//G->DefaultLockFlag=D3DLOCK_DISCARD;
+	//G->DefaultPool=D3DPOOL_MANAGED;
+	//G->DefaultMipmapLevels=0;
+	gs->gfx->Begin();
+
+  data = 0;
   status.raw = 0x14802000;
   memset(&command_buffer,0,sizeof(command_buffer));
+  memset(&drawing,0,sizeof(drawing));
   return 0;
 }
 
@@ -238,7 +274,14 @@ int Gpu::Deinitialize() {
 }
 
 uint32_t Gpu::ReadData() {
-  return data;
+  if (status.dma==0x3) {
+    BREAKPOINT
+  }
+  if (status.dma==0x0) {
+    return data;
+  }
+  BREAKPOINT
+  return 0;
 }
 
 uint32_t Gpu::ReadStatus() {
@@ -249,18 +292,18 @@ uint32_t Gpu::ReadStatus() {
 void Gpu::WriteData(uint32_t data) {
   status.busy = 0;
   status.com = 0;
+  
 
-  if (command_buffer.param_count == 0) {
-    command_buffer.command = (data & 0xFF000000) >> 24;
-    data = (data & 0x00FFFFFF);
-  } 
-  command_buffer.buffer[command_buffer.param_count++] = data;
-
-  if (command_buffer.param_count == primitive_size[command_buffer.command]) {
-    (this->*(primitives[command_buffer.command]))();
-    command_buffer.param_count = 0;
+  if (status.dma==0x2) {
+    if ((system_->io().dma.channel(2).chcr & 0x401) == 0x401) {
+      FillCommandBuffer(data);
+    } else {
+      BREAKPOINT
+    }
   }
-
+  if (status.dma==0x0) {
+    FillCommandBuffer(data);
+  }
 
   status.com = 1;
   status.busy = 1;
@@ -281,7 +324,7 @@ void Gpu::WriteStatus(uint32_t data) {
       memset(&command_buffer,0,sizeof(command_buffer));
       break;
     case 0x02:
-      BREAKPOINT();
+      BREAKPOINT
       break;
     case 0x03:
       status.den = !(data & 0x1);
@@ -304,16 +347,49 @@ void Gpu::WriteStatus(uint32_t data) {
   return;
 }
 
+void Gpu::FillCommandBuffer(uint32_t data) {
+  this->data = data;
+  if (command_buffer.param_count == 0) {
+    
+    command_buffer.command = (data & 0xFF000000) >> 24;
+    data = (data & 0x00FFFFFF);
+    if (primitive_size[command_buffer.command] == 0)
+      return;
+
+    #if defined(GPU_DEBUG) && defined(_DEBUG)
+    char str[255];
+    sprintf(str,",,gpu command begin,0x%x,size,%d\n",command_buffer.command,primitive_size[command_buffer.command]);
+    fprintf(system_->csvlog.fp,str);
+    #endif
+  } 
+  command_buffer.buffer[command_buffer.param_count++] = data;
+  if (command_buffer.param_count == primitive_size[command_buffer.command]) {
+    #if defined(GPU_DEBUG) && defined(_DEBUG)
+    char str[255];
+    sprintf(str,",,gpu command end,0x%x,param_count,%d\n",command_buffer.command,command_buffer.param_count);
+    fprintf(system_->csvlog.fp,str);
+    #endif
+    (this->*(primitives[command_buffer.command]))();
+    command_buffer.param_count = 0;
+  }
+}
+
 void Gpu::UpdateGSSize() {
   int width_table[] = {256,384,320,0,512,0,640};
   int height = 240 << status.height;
   gs->gfx->window()->SetClientSize(width_table[status.width],height);
-  gs->camera.Ortho2D((FLOAT)drawing.offset_x,(FLOAT)drawing.offset_y,(FLOAT)width_table[status.width],(FLOAT)height);
+  gs->camera.Ortho2D(0,0,(FLOAT)width_table[status.width],(FLOAT)height);
+
+  auto world = XMMatrixTranslation((FLOAT)drawing.offset_x,(FLOAT)drawing.offset_y,0);
+  //D3DXMATRIX matIdentity;
+  gs->gfx->device()->SetTransform(D3DTS_WORLD,(D3DXMATRIX*)&world);
+
   gs->gfx->SetCamera(&gs->camera);
+  gs->gfx->SetViewport((float)-drawing.clip_x,(float)-drawing.clip_y,(float)drawing.clip_w-drawing.clip_x,(float)drawing.clip_h-drawing.clip_y,0.0f,1.0f);
 }
 
 void Gpu::PrimitiveUnknown() {
-  BREAKPOINT();
+  BREAKPOINT
 }
 
 
@@ -353,7 +429,18 @@ void Gpu::PrimitivePolyF4() {
  //G2DPoly4 destpoly;
  memcpy(&poly,command_buffer.buffer,sizeof(PolyF4));
  
- uint32_t color = poly.color;
+ uint32_t color = 0xff000000|poly.color;
+
+   emulation::psx::GfxVertex v[4] = {
+     {poly.x0,poly.y0,0,color,0,0},
+      {poly.x1,poly.y1,0,color,0,0},
+      {poly.x2,poly.y2,0,color,0,0},
+      {poly.x3,poly.y3,0,color,0,0}
+    };
+    
+    
+    gs->gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
+
 
  /*memset(&destpoly,0,sizeof(destpoly));
  destpoly.v[0].c=0xff000000|color&0xffffff;
@@ -377,6 +464,18 @@ void Gpu::PrimitivePolyG4() {
  //G2DPoly4 destpoly;
  memcpy(&poly,command_buffer.buffer,sizeof(PolyG4));
 
+
+   emulation::psx::GfxVertex v[4] = {
+     {poly.x0,poly.y0,0,0xff000000|poly.color0,0,0},
+      {poly.x1,poly.y1,0,0xff000000|poly.color1,0,0},
+      {poly.x2,poly.y2,0,0xff000000|poly.color2,0,0},
+      {poly.x3,poly.y3,0,0xff000000|poly.color3,0,0}
+    };
+    
+    
+    gs->gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
+
+
  /*memset(&destpoly,0,sizeof(destpoly));
  destpoly.v[0].c=0xff000000|(swap_color(poly.color0)&0xffffff);
  destpoly.v[1].c=0xff000000|(swap_color(poly.color1)&0xffffff);
@@ -391,6 +490,56 @@ void Gpu::PrimitivePolyG4() {
  destpoly.v[3].x=poly.x3;
  destpoly.v[3].y=poly.y3;
 destpoly.tex=0;
+ Gpu->GP->GP2DPoly4(&destpoly);*/
+}
+
+
+void Gpu::PrimitivePolyGT4() {
+ PolyGT4 poly;
+ //G2DPoly4 destpoly;
+ unsigned long tp;
+
+ memcpy(&poly,command_buffer.buffer,sizeof(PolyGT4));
+ tp=poly.tpage;
+
+
+   emulation::psx::GfxVertex v[4] = {
+     {poly.x0,poly.y0,0,0xff000000|poly.color0,0,0},
+      {poly.x1,poly.y1,0,0xff000000|poly.color1,0,0},
+      {poly.x2,poly.y2,0,0xff000000|poly.color2,0,0},
+      {poly.x3,poly.y3,0,0xff000000|poly.color3,0,0}
+    };
+    
+    
+    gs->gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
+
+
+ /*
+ //U32Bit color = swap_color(poly.color0);
+ memset(&destpoly,0,sizeof(destpoly));
+ destpoly.v[0].c=Gpu->SetTransMode(tp,swap_color(poly.color0));
+ destpoly.v[1].c=Gpu->SetTransMode(tp,swap_color(poly.color1));
+ destpoly.v[2].c=Gpu->SetTransMode(tp,swap_color(poly.color2));
+ destpoly.v[3].c=Gpu->SetTransMode(tp,swap_color(poly.color3));
+ destpoly.v[0].x=poly.x0;
+ destpoly.v[0].y=poly.y0;
+ destpoly.v[0].u=poly.u0*0.00390625f;
+ destpoly.v[0].v=poly.v0*0.00390625f;
+ destpoly.v[1].x=poly.x1;
+ destpoly.v[1].y=poly.y1;
+ destpoly.v[1].u=poly.u1*0.00390625f;
+ destpoly.v[1].v=poly.v1*0.00390625f;
+ destpoly.v[2].x=poly.x2;
+ destpoly.v[2].y=poly.y2;
+ destpoly.v[2].u=poly.u2*0.00390625f;
+ destpoly.v[2].v=poly.v2*0.00390625f;
+ destpoly.v[3].x=poly.x3;
+ destpoly.v[3].y=poly.y3;
+ destpoly.v[3].u=poly.u3*0.00390625f;
+ destpoly.v[3].v=poly.v3*0.00390625f;
+
+
+ destpoly.tex=Gpu->LoadTexture(tp,poly.clut,poly.color0);
  Gpu->GP->GP2DPoly4(&destpoly);*/
 }
 
@@ -419,25 +568,19 @@ void Gpu::PrimitiveTextureWindow() {
 void Gpu::PrimitiveClipAreaStart() {
   drawing.clip_x = (uint16_t)(command_buffer.buffer[0]&0x3ff);
   drawing.clip_y = (uint16_t)((command_buffer.buffer[0]&0xffc00)>>10);
-  //Gpu->GP->BufDrawOffset(Gpu->ClipX+Gpu->OffsetX,Gpu->ClipY+Gpu->OffsetY);
-  //_cprintf("cx,cy:%d %d\n",Gpu->ClipX,Gpu->ClipY);
+  UpdateGSSize();
 }
 
 void Gpu::PrimitiveClipAreaEnd() {
   drawing.clip_w = (uint16_t)((command_buffer.buffer[0]&0x3ff));
   drawing.clip_h = (uint16_t)((command_buffer.buffer[0]&0xffc00)>>10);
-  //_cprintf("cw,ch:%d %d\n",Gpu->ClipW,Gpu->ClipH);
+  UpdateGSSize();
 }
 
 void Gpu::PrimitiveDrawOffset() {
-	//D3DXMATRIX m;
   drawing.offset_x = (uint16_t)(command_buffer.buffer[0] & 0x7ff);
   drawing.offset_y = (uint16_t)((command_buffer.buffer[0]&0x3ff800) >>11);
   UpdateGSSize();
-  //D3DXMatrixTransformation2D(&m,0,0,0,0,0,&D3DXVECTOR2(Gpu->DrawingOffsetX,Gpu->DrawingOffsetY));
-  //D3DXMatrixTranslation(&m, (float)Gpu->DrawingOffsetX, -(float)Gpu->DrawingOffsetY, 0.0f);
-  //Gpu->d3dDevice->SetTransform(D3DTS_WORLD,&m);
- // _cprintf("offset %d %d",Gpu->OffsetX,Gpu->OffsetY);
 }
 
 void Gpu::PrimitiveMaskSetting() {

@@ -18,7 +18,8 @@
 *****************************************************************************************************************/
 #include "../system.h"
 
-//#define CSVOUT
+bool output_inst = false;
+#define CSVOUT
 #define CPU_DEBUG
 //#define BIOSCALL
 
@@ -118,15 +119,7 @@ int Cpu::Deinitialize() {
   return 0;
 }
 
-/******************************************************************************
-* Name        : ExecuteInstruction
-* Description : 
-* Parameters  : (none)
-* 
-* Notes :
-* 
-* 
-*******************************************************************************/
+
 void Cpu::ExecuteInstruction() {
   context_->prev_pc = context_->pc;
   context_->gp.zero = 0; //make sure r0 is always 0.
@@ -136,7 +129,9 @@ void Cpu::ExecuteInstruction() {
   StageRD();
   current_stage = 3;
   #if defined(_DEBUG) && defined(CPU_DEBUG) && defined(CSVOUT)
-    system_->csvlog.OutputInstruction2();
+    if (output_inst == true) {
+      system_->csvlog.OutputInstruction2();
+    }
   #endif
   index++;
   __inside_instruction = true;
@@ -145,6 +140,14 @@ void Cpu::ExecuteInstruction() {
 
   ++context_->cycles;
   ++context_->current_cycles;
+
+    if (context_->pc == 0xa0 || 
+        context_->pc == 0xb0 || 
+        context_->pc == 0xc0) {
+          //bios call
+          system_->kernel().Call();
+          int a= 1;
+    }
 }
 
 void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes code) {
@@ -159,12 +162,15 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
   uint32_t& sr = context_->ctrl.SR.raw;
   sr = (sr & ~0x3F) | ((sr & 0xF) << 2) | 0x2;
 
+
   //set cause
   //todo : set ip flags correctly
   uint32_t& cause = context_->ctrl.Cause;
   cause = 0;
   cause |= context_->branch_flag == true ? 0x80000000 : 0;
   cause |= (code&0x1F)<<2;
+  if (code == kExceptionCodeInt)
+    cause |= (sr&0xFF00);
 
 
   //specific exception handling
@@ -191,8 +197,12 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
 
 }
 
+void Cpu::Tick() {
+  ++context_->cycles;
+  //system_->io().Tick(1);
+}
+
 uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address, uint32_t virtual_address) {
-  Cache* cache = nullptr;
   if (IsBusError() == true) {
     context_->ctrl.BadVaddr = context_->prev_pc;
     auto code = current_stage == 1 ? kExceptionCodeIBE : kExceptionCodeDBE;
@@ -250,20 +260,36 @@ uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address,
       case 4: return system_->io().Read32(physical_address);
     }
   }
-
+  
   if (buffer != nullptr) {
     if (cached == true) {
       uint32_t data;
       auto cache_hit = icache_.Read(physical_address,data);
-      icache_.Write(physical_address,&buffer->u32[(target_address&~0xF)>>2]);
-      //if (cache_hit == true)
+
+      if (cache_hit == true) {
+        uint32_t mask[] = {0x0,0xFF,0xFFFF,0xFFFFFF,0xFFFFFFFF};
+        data = ( data >> ((physical_address&0x3)<<3)) & mask[size_bytes];
+        return data;
+      }
+      else {
+        icache_.Write(physical_address,&buffer->u32[(target_address&~0xF)>>2]);
+        //Tick();Tick();Tick();Tick();Tick();Tick();
+      }
+
+      /*//if (cache_hit == true)
       //  return data&((1<<(8<<(size_bytes>>1)))-1);
       //fprintf(system_->csvlog.fp,",,cache read,0x%08x,cache data,0x%08X,actual data,0x%08X,hit=%d\n",physical_address,data,buffer->u32[target_address>>2],cache_hit);
       //if (icache_.Read(physical_address,data)==true)//cache hit
       //  return data;
-      //if (data!=buffer->u32[target_address>>2] && cache_hit == true)
-      //  BREAKPOINT();
-      
+      if (size_bytes == 4 && data!=buffer->u32[target_address>>2] && cache_hit == true) {
+        BREAKPOINT
+      }
+      if (size_bytes == 2 && data!=buffer->u16[target_address>>1] && cache_hit == true) {
+        BREAKPOINT
+      }
+      if (size_bytes == 1 && data!=buffer->u8[target_address] && cache_hit == true) {
+        BREAKPOINT
+      }*/
     }
 
     switch (size_bytes) {
@@ -273,7 +299,7 @@ uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address,
     }
   }
 
-  BREAKPOINT();
+  BREAKPOINT
   return 0;
 }
 
@@ -313,8 +339,6 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
   if (physical_address >= 0x00000000 && physical_address <= 0x001FFFFF) {
     buffer = &system_->io().ram_buffer;
     target_address = physical_address & 0x001FFFFF;
-    //if (target_address == 0x30000)
-    //  BREAKPOINT();
   }
 
   if (physical_address >= 0x1F000000 && physical_address <= 0x1F00FFFF) {
@@ -334,7 +358,7 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
       case 4: system_->io().Write32(physical_address,data); return;
     }
   }
-
+  
   if (buffer != nullptr) {
     switch (size_bytes) {
       case 1: buffer->u8[target_address] = data; break;
@@ -348,7 +372,7 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
     return;
   }
 
-  BREAKPOINT();
+  BREAKPOINT
 }
 
 void Cpu::StageIF() {
@@ -360,9 +384,6 @@ void Cpu::StageIF() {
 
 void Cpu::StageRD() {
   current_stage = 2;
-  //todo: decode based on instruction
-  //context_->opcode_ = context_->opcode();
-  //decoders[0](*context_);
   opcode_ = context_->opcode();
   immediate_ = context_->immediate();
   immediate_32bit_sign_extended_ = context_->immediate_32bit_sign_extended();
@@ -374,27 +395,10 @@ void Cpu::StageRD() {
   rs_ = context_->rs();
 }
 
-/******************************************************************************
-* Name        : Branch
-* Description : branch to given address, executing the delay slot instruction
-* Parameters  : address
-* 
-* Notes :
-* 
-* 
-*******************************************************************************/
 void Cpu::Jump(uint32_t address) {
- #if defined(_DEBUG) && defined(CPU_DEBUG) && defined(CSVOUT)
-    if (system_->csvlog.fp != NULL)
-      fprintf(system_->csvlog.fp,"following is delay slot\n");
-  #endif
   __inside_delay_slot = true;
   ExecuteInstruction();
   __inside_delay_slot = false;
-  #if defined(_DEBUG) && defined(CPU_DEBUG) && defined(CSVOUT)
-    if (system_->csvlog.fp != NULL)
-      fprintf(system_->csvlog.fp,"end of delay slot\n");
-  #endif
   context_->pc = address;
 }
 
@@ -414,16 +418,14 @@ void Cpu::REGIMM() {
 }
 
 void Cpu::J() {
-  auto temp = target_;
   Tick();
   Jump((context_->pc & 0xF0000000) | (target_ << 2));
 }
 
 void Cpu::JAL() {
-  auto temp = target_;
   context_->gp.ra = context_->pc + 4;
   Tick();
-  Jump((context_->pc & 0xF0000000) | (temp << 2));
+  Jump((context_->pc & 0xF0000000) | (target_ << 2));
 }
 
 void Cpu::BEQ() {
@@ -514,13 +516,13 @@ void Cpu::COP0() {
       break;
     }
     default:
-      BREAKPOINT();
+      BREAKPOINT;
   }
   Tick();
 }
 
 void Cpu::COP2() {
-  BREAKPOINT();
+  BREAKPOINT
 }
 
 void Cpu::LB() {
@@ -528,7 +530,7 @@ void Cpu::LB() {
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint8_t mem = LoadMemory(cache_flag_,1,physical_address,virtual_address);
   Tick();
-  context_->gp.reg[rt_] = (int32_t)mem;
+  context_->gp.reg[rt_] = (int8_t)mem;
   Tick();
 }
 
@@ -537,7 +539,7 @@ void Cpu::LH() {
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint16_t mem = LoadMemory(cache_flag_,2,physical_address,virtual_address);
   Tick();
-  context_->gp.reg[rt_] = (int32_t)mem;
+  context_->gp.reg[rt_] = (int16_t)mem;
   Tick();
 }
 
@@ -548,16 +550,16 @@ void Cpu::LWL() {
   Tick();
   switch (virtual_address & 0x3) {
     case 0:
-      context_->gp.reg[rt_] = mem;
+      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0x00FFFFFF) | (mem<<24);
       break;
     case 1:
-      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0x000000FF) | (mem<<8);
-      break;
-    case 2:
       context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0x0000FFFF) | (mem<<16);
       break;
+    case 2:
+      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0x000000FF) | (mem<<8);
+      break;
     case 3:
-      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0x00FFFFFF) | (mem<<24);
+      context_->gp.reg[rt_] = mem;
       break;
   }
   Tick();
@@ -578,7 +580,7 @@ void Cpu::LBU() {
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint32_t mem = LoadMemory(cache_flag_,1,physical_address,virtual_address);
   Tick();
-  context_->gp.reg[rt_] = mem;
+  context_->gp.reg[rt_] = (uint8_t)mem;
   Tick();
 }
 
@@ -587,7 +589,7 @@ void Cpu::LHU() {
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint32_t mem = LoadMemory(cache_flag_,2,physical_address,virtual_address);
   Tick();
-  context_->gp.reg[rt_] = mem;
+  context_->gp.reg[rt_] = (uint16_t)mem;
   Tick();
 }
 
@@ -694,17 +696,17 @@ void Cpu::SRA() {
 }
 
 void Cpu::SLLV() {
-  context_->gp.reg[rd_] = context_->gp.reg[rt_] << context_->gp.reg[rs_] & 0x1F;
+  context_->gp.reg[rd_] = context_->gp.reg[rt_] << (context_->gp.reg[rs_] & 0x1F);
   Tick();
 }
 
 void Cpu::SRLV() {
- context_->gp.reg[rd_] = context_->gp.reg[rt_] >> context_->gp.reg[rs_] & 0x1F;
+ context_->gp.reg[rd_] = context_->gp.reg[rt_] >> (context_->gp.reg[rs_] & 0x1F);
  Tick();
 }
 
 void Cpu::SRAV() {
-  context_->gp.reg[rd_] = (int32_t)context_->gp.reg[rt_] >> context_->gp.reg[rs_] & 0x1F;
+  context_->gp.reg[rd_] = (int32_t)context_->gp.reg[rt_] >> (context_->gp.reg[rs_] & 0x1F);
   Tick();
 }
 
@@ -727,7 +729,7 @@ void Cpu::SYSCALL() {
 }
 
 void Cpu::BREAK() {
-  BREAKPOINT();
+  BREAKPOINT
 }
 
 void Cpu::MFHI() {
@@ -736,7 +738,7 @@ void Cpu::MFHI() {
 }
 
 void Cpu::MTHI() {
-  context_->high  = context_->gp.reg[rd_];
+  context_->high  = context_->gp.reg[rs_];
   Tick();
 }
 
@@ -746,21 +748,21 @@ void Cpu::MFLO() {
 }
 
 void Cpu::MTLO() {
-  context_->low  = context_->gp.reg[rd_];
+  context_->low  = context_->gp.reg[rs_];
   Tick();
 }
 
 void Cpu::MULT() {
-  signed __int64 test = (int32_t)context_->gp.reg[rs_] * (int32_t)context_->gp.reg[rt_];
-  context_->low  = (uint32_t)(test & 0x00000000FFFFFFFFULL);
-  context_->high = (uint32_t)(test & 0xFFFFFFFF00000000ULL >> 32);
+  uint64_t test = int64_t((int64_t)((int32_t)context_->gp.reg[rs_]) * (int64_t)((int32_t)context_->gp.reg[rt_]));
+  context_->low  = (uint32_t)(test & 0xFFFFFFFF);
+  context_->high = (uint32_t)((test >> 32) & 0xFFFFFFFF);
   Tick();
 }
 
 void Cpu::MULTU() {
-  unsigned __int64 test = context_->gp.reg[rs_] * context_->gp.reg[rt_];
-  context_->low  = (uint32_t)(test & 0x00000000FFFFFFFFULL);
-  context_->high = (uint32_t)(test & 0xFFFFFFFF00000000ULL >> 32);
+  uint64_t test = uint64_t((uint64_t)((uint32_t)context_->gp.reg[rs_]) * (uint64_t)((uint32_t)context_->gp.reg[rt_]));
+  context_->low  = (uint32_t)(test & 0xFFFFFFFF);
+  context_->high = (uint32_t)((test >> 32) & 0xFFFFFFFF);
   Tick();
 }
 

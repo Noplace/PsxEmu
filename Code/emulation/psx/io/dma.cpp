@@ -18,6 +18,8 @@
 *****************************************************************************************************************/
 #include "..\system.h"
 
+#define DMA_DEBUG
+
 namespace emulation {
 namespace psx {
 
@@ -83,7 +85,7 @@ uint32_t Dma::Read(uint32_t address) {
    case 0x1f8010F4:	return interrupt_control.raw;
 	   }
 	
-  BREAKPOINT();
+  BREAKPOINT
   return 0;
 }
 
@@ -117,7 +119,12 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f8010a8:  
       if (!(channels[2].chcr&0x01000000)) {
         channels[2].chcr=data;
-        if (channels[2].chcr & 0x01000000 && channels[2].enable == true) { //dma_enable.raw & (8 << (2 * 4)))
+        if (channels[2].chcr & 0x01000000) {// && channels[2].enable == true) { //dma_enable.raw & (8 << (2 * 4)))
+            #if defined(DMA_DEBUG) && defined(_DEBUG)
+            char str[255];
+            sprintf(str,",,dma 2,chcr,0x%08x,bcr,0x%08x,madr,0x%08x\n",channels[2].chcr,channels[2].bcr,channels[2].madr);
+            fprintf(system_->csvlog.fp,str);
+            #endif
             Dma2();
         }
         channels[2].chcr&=0xfeffffff;  
@@ -219,28 +226,41 @@ void Dma::Dma2()
     uint32_t vaddress = channels[2].madr&0x1fffff;
 
     a1 = a2 = a3 = 0xFFFFFF;
-    while (1) {
+    do {
       packet_count = ((ram.u32[vaddress>>2] >> 24) & 0xff);
       if (packet_count!=0) {
-        for (unsigned int i=1;i<=packet_count;i++) {
-          gpu.WriteData(ram.u32[(vaddress>>2)+i]);
+        #if defined(DMA_DEBUG) && defined(_DEBUG)
+        char str[255];
+        sprintf(str,",,dma gpu param_count,%d\n",packet_count);
+        fprintf(system_->csvlog.fp,str);
+        #endif
+        auto mem = &ram.u32[(vaddress>>2)+1];
+        for (uint32_t i=0;i<packet_count;++i) {
+          gpu.WriteData(*mem++);
         }
-        if ((ram.u32[vaddress>>2]&0xffffff)==0xffffff) {
-	        break;
-        }
+        //if ((ram.u32[vaddress>>2]&0xffffff)==0xffffff) {
+	      //  break;
+        // }
+        vaddress=ram.u32[vaddress>>2]&0xffffff;
       }	
-      vaddress=ram.u32[vaddress>>2]&0x1fffff;
-      if (check_endless_loop(vaddress))
+      
+      if (check_endless_loop(vaddress)) {
+        #if defined(DMA_DEBUG) && defined(_DEBUG)
+        char str[255];
+        sprintf(str,",,dma endless loop detected\n");
+        fprintf(system_->csvlog.fp,str);
+        #endif
         break;
-    }
+      } 
+    } while (vaddress != 0xffffff);
 
     gpu.status.busy = 1;
   }
   if ((channels[2].chcr & 0x01000201) == 0x01000201) { 
-    BREAKPOINT();
+    BREAKPOINT
   }
   if ((channels[2].chcr & 0x01000200) == 0x01000200) { 
-    BREAKPOINT();
+    BREAKPOINT
   }
 }
 

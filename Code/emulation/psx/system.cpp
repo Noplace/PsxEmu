@@ -63,9 +63,11 @@ int System::Initialize() {
   kernel_.Initialize();
 
   while (cpu_.context()->pc!=0x80030000) {
-	   Step();
+	  cpu_.ExecuteInstruction();
+    //Step();
   }
-
+  extern bool output_inst;
+  output_inst = true;
   return 0;
 }
 
@@ -78,26 +80,19 @@ int System::Deinitialize() {
 }
 
 void System::Step() {
+  
+  uint32_t cycles = 0;
   cpu_.context()->current_cycles = 0;
   cpu_.ExecuteInstruction();
-  if (cpu_.context()->pc == 0xa0 || 
-      cpu_.context()->pc == 0xb0 || 
-      cpu_.context()->pc == 0xc0) {
-        //bios call
-        kernel_.Call();
-        int a= 1;
-  }
-  
-  io_.Tick(cpu_.context()->current_cycles);
+  cycles += cpu_.context()->current_cycles;
+
+  io_.Tick(cycles);
 
   if (io_.interrupt_reg & io_.interrupt_mask)	{
     if ((cpu_.context()->ctrl.SR.raw & 0x400)&&(cpu_.context()->ctrl.SR.IEc))	{
         cpu_.RaiseException(cpu_.context()->prev_pc,kOtherException,kExceptionCodeInt);
-        cpu_.context()->ctrl.Cause |= 0x400;
-	   	  //Exception(0x400,branch_slot);
 		}
 	}
-
 }
 
 void System::LoadBiosFromMemory(void* buffer) {
@@ -117,6 +112,46 @@ void System::LoadBiosFromFile(char* filename) {
   LoadBiosFromMemory(buffer);
   delete [] buffer;
   buffer = NULL;
+}
+
+void System::LoadPsExe(char* filename) {
+  struct PSXEXE {
+          unsigned char id[8];
+          unsigned long text;
+          unsigned long data;
+          unsigned long pc0;
+          unsigned long gp0;
+          unsigned long t_addr;
+          unsigned long t_size;
+          unsigned long d_addr;
+          unsigned long d_size;
+          unsigned long b_addr;
+          unsigned long b_size;
+          unsigned long S_addr;
+          unsigned long s_size;
+          unsigned long SavedSP;
+          unsigned long SavedFP;
+          unsigned long SavedGP;
+          unsigned long SavedRA;
+          unsigned long SavedS0;
+  };
+
+  FILE *fp;
+
+  fopen_s(&fp,filename,"rb");
+
+  if (fp) {
+    PSXEXE header;
+    fread(&header,sizeof(PSXEXE),1,fp);
+    fseek(fp,0x800,SEEK_SET);
+    //if (header.t_addr > 0x80000000) {
+      fread(&io_.ram_buffer.u8[header.t_addr&0x1FFFFF],header.t_size,1,fp);
+      fclose(fp);
+      cpu_context_.pc = header.pc0;
+      cpu_context_.gp.reg[28] = header.gp0;
+      cpu_context_.gp.reg[29] = (header.S_addr==0)?0x801fff00:header.S_addr;
+    //}
+  }
 }
 
 }
