@@ -21,9 +21,9 @@
 
 #include <WinCore/windows/windows.h>
 #include <WinCore/timer/timer2.h>
-#include <VisualEssence/Code/ve.h>
 #include "../Resource/ui.h"
 #include "emulation/psx/system.h"
+#include "minive/minive.h"
 
 namespace my_app {
 
@@ -43,8 +43,9 @@ class DisplayWindow: public core::windows::Window {
     int OnCommand(WPARAM wParam,LPARAM lParam);
   private:
     emulation::psx::System psx_sys;
-    graphics::ContextD3D9* gfx;
-    utilities::Timer<double> timer;
+    //graphics::ContextD3D9* gfx;
+    minive::Context* gfx;
+    utilities::Timer timer;
     struct {
       uint64_t extra_cycles;
       uint64_t current_cycles;

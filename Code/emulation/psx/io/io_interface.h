@@ -28,10 +28,11 @@ namespace psx {
 
 class IOInterface : public Component {
  public:
-  Buffer io_buffer;//[0x2000];
+  //Buffer io_buffer;//[0x2000];
   Buffer parallel_port_buffer;//[64*1024];
   Buffer ram_buffer;//[0x200000];
   Buffer bios_buffer;//[0x80000];
+  Buffer scratchpad;
 
   int Initialize();
   int Deinitialize();
@@ -46,6 +47,8 @@ class IOInterface : public Component {
   uint32_t interrupt_reg;
   uint32_t interrupt_mask;
   uint32_t hw_1000,hw_1004,hw_1008,hw_100C,hw_1010,hw_101C,ram_size,com_delay,spu_delay,dv5_delay;
+  uint32_t cache_control;
+  uint8_t io_post;
   RootCounter rootcounter_[4];
   Dma dma;
 };

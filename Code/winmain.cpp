@@ -17,6 +17,7 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "display_window.h"
+#include <float.h>
 
 template<typename T,size_t initial_size=10>
 class Array {
@@ -77,21 +78,23 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
   OutputDebugString(debug_str);
   sprintf(debug_str,"size1:%d - size2:%d\n",test1.size(), test2.capacity());
   OutputDebugString(debug_str);*/
-  my_app::DisplayWindow display_window;
-  //void read_iso_cd();
-  //read_iso_cd();
-  display_window.Initialize();
 
+  HeapSetInformation(NULL, HeapEnableTerminationOnCorruption, NULL, 0);
   MSG msg;
-  do {
-    if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-      TranslateMessage(&msg);
-      DispatchMessage(&msg);
-    } else {
-      display_window.Step();
-    }
-  } while(msg.message!=WM_QUIT);
- 
+  if (SUCCEEDED(CoInitialize(NULL))) {
+    my_app::DisplayWindow display_window;
+    display_window.Initialize();
+    do {
+      if (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+      } else {
+        display_window.Step();
+      }
+    } while(msg.message!=WM_QUIT);
+     CoUninitialize();
+  }
+
    //Return the exit code to the system. 
    return static_cast<int>(msg.wParam);
 }

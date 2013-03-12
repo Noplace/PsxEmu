@@ -20,11 +20,7 @@
 #define EMULATION_PSX_GPU_H
 
 
-//forward declare
-namespace graphics {
-class Context;
-class ContextD3D9;
-}
+#include "../../../minive/minive.h"
 
 namespace emulation {
 namespace psx {
@@ -183,7 +179,7 @@ class Gpu : public Component {
   typedef void (Gpu::*Primitive)();
   Gpu();
   ~Gpu();
-  void set_gfx(graphics::Context* gfx);
+  void set_gfx(minive::Context* gfx);
   int Initialize();
   int Deinitialize();
   uint32_t  ReadData();
@@ -203,18 +199,21 @@ class Gpu : public Component {
       uint32_t dfe:1;
       uint32_t md:1;
       uint32_t me:1;
-      uint32_t unused1:3;
+      uint32_t reserved:1;
+      uint32_t revflag:1;
+      uint32_t texdisable:1;
       uint32_t width:3;
       uint32_t height:1;
       uint32_t video:1;
       uint32_t isrgb24:1;
       uint32_t isinter:1;
       uint32_t den:1;
-      uint32_t unused2:2;
+      uint32_t irq1:1;
+      uint32_t dmareq:1;
       uint32_t busy:1;
       uint32_t img:1;
       uint32_t com:1;
-      uint32_t dma:2;
+      uint32_t dmadir:2;
       uint32_t lcf:1;
     };
     uint32_t raw;

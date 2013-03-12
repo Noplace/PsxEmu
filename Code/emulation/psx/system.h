@@ -51,6 +51,7 @@ class Dma;
 #include "io/dma.h"
 #include "io/io_interface.h"
 #include "bios/kernel.h"
+#include "mc/mc.h"
 
 
 namespace emulation {
@@ -71,6 +72,7 @@ class System {
   Gpu& gpu() { return gpu_; };
   Spu& spu() { return spu_; };
   IOInterface& io() { return io_; };
+  MC& mc() { return mc_; };
   Kernel& kernel() { return kernel_; };
   uint8_t* ram() { return io_.ram_buffer.u8; }
   uint8_t* bios() { return io_.bios_buffer.u8; }
@@ -85,6 +87,7 @@ class System {
   Gpu gpu_;
   Spu spu_;
   IOInterface io_;
+  MC mc_;
   Kernel kernel_;
   uint32_t mcf_;
 };

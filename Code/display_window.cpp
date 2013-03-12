@@ -43,12 +43,12 @@ void DisplayWindow::Initialize() {
   timer.Calibrate();
   timing.prev_cycles = timer.GetCurrentCycles();
   
-  gfx = new graphics::ContextD3D9();
-  gfx->Initialize();
-  gfx->CreateDisplay(this);
+  gfx = new minive::D3D11Context();
+  gfx->Initialize(640,480,false,handle(),false,1,0);
+
   psx_sys.gpu().set_gfx(gfx);
   psx_sys.Initialize();
-  psx_sys.LoadPsExe("D:\\Personal\\Projects\\PsxEmu\\test\\vblank\\VBLANK.EXE");
+ // psx_sys.LoadPsExe("D:\\Personal\\Projects\\PsxEmu\\test\\vblank\\VBLANK.EXE");
   Show();
 }
 
@@ -74,7 +74,7 @@ void DisplayWindow::Step() {
 
   timing.render_time_span += time_span;
   if (timing.render_time_span >= 16.667) {
-    
+    gfx->Clear();
     emulation::psx::GfxVertex v[4] = {
       {0,0,0,0xffffffff,0,0},
       {100,0,0,0xffffffff,0,0},
@@ -83,11 +83,12 @@ void DisplayWindow::Step() {
     };
     
     
-    gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
+//    gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
 
-    gfx->End();
-    gfx->Render();
-    gfx->Begin();
+   /// gfx->End();
+   // gfx->Render();
+   // gfx->Begin();
+    gfx->Present();
     ++timing.fps_counter;
     timing.render_time_span = 0;
   }
@@ -117,7 +118,7 @@ int DisplayWindow::OnCreate(WPARAM wParam,LPARAM lParam) {
 int DisplayWindow::OnDestroy(WPARAM wParam,LPARAM lParam) {
   psx_sys.Deinitialize();
   gfx->Deinitialize();
-  delete gfx;
+  SafeDelete(&gfx);
   PostQuitMessage(0);
   return 0;
 }

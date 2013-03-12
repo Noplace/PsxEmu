@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #include "../system.h"
 
-//#define IODEBUG
+#define IODEBUG
 
 namespace emulation {
 namespace psx {
@@ -27,12 +27,14 @@ int IOInterface::Initialize() {
   cpu_ = &system().cpu();
   bios_buffer.Alloc(0x80000);
   ram_buffer.Alloc(0x200000);
-  io_buffer.Alloc(0x2000);
+ // io_buffer.Alloc(0x2000);
   parallel_port_buffer.Alloc(64*1024);
+  scratchpad.Alloc(0x400);
   memset(ram_buffer.u8,0,0x200000);
+  memset(scratchpad.u8,0,0x400);
 	//memset(SRam->u8,0,0x1000);
 	//memset(HRam->u8,0,0x10000);
-  memset(io_buffer.u8,0,0x2000);
+//  memset(io_buffer.u8,0,0x2000);
   memset(parallel_port_buffer.u8,0,0xFFFF);
   interrupt_reg = 0x80;
   interrupt_mask = 0;
@@ -49,8 +51,9 @@ int IOInterface::Initialize() {
 } 
 
 int IOInterface::Deinitialize() {
+  scratchpad.Dealloc();
   parallel_port_buffer.Dealloc();
-  io_buffer.Dealloc();
+ // io_buffer.Dealloc();
   ram_buffer.Dealloc();
   bios_buffer.Dealloc();
   return 0;
@@ -87,7 +90,7 @@ void IOInterface::Tick(uint32_t cycles) {
 uint8_t IOInterface::Read08(uint32_t address) {
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
-      fprintf(system_->csvlog.fp,"-,-,IO Read 08,0x%08X\n",address);
+      fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Read 8,0x%08X\n",system().cpu().index,system().cpu().context()->prev_pc,address);
   #endif
   BREAKPOINT
   /*if (IsValid(address,1) == false) {
@@ -129,7 +132,7 @@ uint8_t IOInterface::Read08(uint32_t address) {
 uint16_t IOInterface::Read16(uint32_t address) {
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
-      fprintf(system_->csvlog.fp,"-,-,IO Read 16,0x%08X\n",address);
+      fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Read 16,0x%08X\n",system().cpu().index,system().cpu().context()->prev_pc,address);
   #endif
 
   /*if (IsValid(address,2) == false) {
@@ -178,8 +181,12 @@ uint16_t IOInterface::Read16(uint32_t address) {
 uint32_t IOInterface::Read32(uint32_t address) {
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp && cpu_->current_stage != 1)
-      fprintf(system_->csvlog.fp,"-,-,IO Read 32,0x%08X\n",address);
+      fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Read 32,0x%08X\n",system().cpu().index,system().cpu().context()->prev_pc,address);
   #endif
+
+  if (address == 0xFFFE0130) {
+    return cache_control;
+  }
 
   if (address >= 0x1F801080 && address <= 0x1F8010F4) {
     return dma.Read(address);
@@ -204,7 +211,8 @@ uint32_t IOInterface::Read32(uint32_t address) {
   BREAKPOINT
   //todo: hardware io
   if (address >= 0x1F801000 && address <= 0x1F802FFF ) {
-    return io_buffer.u32[((address-0x1000)&0x1FFF)>>2];
+    BREAKPOINT
+    return 0;//io_buffer.u32[((address-0x1000)&0x1FFF)>>2];
   }
   
   /*if (address >= 0xBFC00000 && address <= 0xBFC80000 ) {
@@ -231,7 +239,7 @@ uint32_t IOInterface::Read32(uint32_t address) {
 void IOInterface::Write08(uint32_t address,uint8_t data) {
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
-      fprintf(system_->csvlog.fp,"-,-,IO Write 08,Data=0x%02X @ 0x%08X\n",data,address);
+      fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Write 8,0x%08X,Data,0x%02X\n",system().cpu().index,system().cpu().context()->prev_pc,address,data);
   #endif
   /*if (IsValid(address,1) == false) {
     cpu_->context()->ctrl.BadVaddr = address;
@@ -245,9 +253,25 @@ void IOInterface::Write08(uint32_t address,uint8_t data) {
     ram_buffer.u8[(address & 0x001FFFFF)] = data;
     return;
   }*/
+
+  switch (address) {
+    case 0x1F802041:
+      io_post = data;
+      return;
+  };
     
+  if (address >= 0x1F802020 && address <= 0x1F8002F ) {
+    //io_buffer.u8[((address-0x1000)&0x1FFF)] = data;
+    BREAKPOINT
+    
+
+    return;
+  }
+
+
   if (address >= 0x1F801000 && address <= 0x1F802FFF ) {
-    io_buffer.u8[((address-0x1000)&0x1FFF)] = data;
+    //io_buffer.u8[((address-0x1000)&0x1FFF)] = data;
+    BREAKPOINT
     return;
   }
 
@@ -266,9 +290,9 @@ void IOInterface::Write08(uint32_t address,uint8_t data) {
 void IOInterface::Write16(uint32_t address,uint16_t data) {
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
-      fprintf(system_->csvlog.fp,"-,-,IO Write 16,Data=0x%04X @ 0x%08X\n",data,address);
+      fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Write 16,0x%08X,Data,0x%04X\n",system().cpu().index,system().cpu().context()->prev_pc,address,data);
   #endif
-
+    
   switch (address) {
     case 0x1F801070: interrupt_reg = (interrupt_reg&0xFFFF0000)|(data & interrupt_mask & 0xFFFF);  return;
     case 0x1F801074: interrupt_mask = (interrupt_mask&0xFFFF0000)|(data & 0xFFFF);  return;
@@ -305,9 +329,13 @@ void IOInterface::Write16(uint32_t address,uint16_t data) {
 void IOInterface::Write32(uint32_t address,uint32_t data) {
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
-      fprintf(system_->csvlog.fp,"-,-,IO Write 32,Data=0x%08X @ 0x%08X\n",data,address);
+      fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Write 32,0x%08X,Data,0x%08X\n",system().cpu().index,system().cpu().context()->prev_pc,address,data);
   #endif
 
+  if (address == 0xFFFE0130) {
+    cache_control = data;
+    return;
+  }
   if (address >= 0x1F801080 && address <= 0x1F8010F4) {
     dma.Write(address,data);
     return;
@@ -340,7 +368,7 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
   }
   BREAKPOINT
   if (address >= 0x1F801000 && address <= 0x1F802FFF ) {
-    io_buffer.u32[((address-0x1000)&0x1FFF)>>2] = data;
+    //io_buffer.u32[((address-0x1000)&0x1FFF)>>2] = data;
     return;
   }
 

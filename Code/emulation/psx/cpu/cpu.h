@@ -325,9 +325,9 @@ class Cpu : public Component {
   }
   bool IsAddressError(uint32_t address,int alignment) {
     //not in kernel mode and accessing non kuseg
-    //if (address > 0x7FFFFFFF)
-     // if ((context_->ctrl.SR & 0x2) != 0) 
-     //  return true;
+    if (address > 0x7FFFFFFF)
+      if ((context_->ctrl.SR.KUc) != 0) 
+        return true;
     //misaligned read/write
     if ((address & (alignment-1)) != 0)
       return true;
@@ -355,10 +355,35 @@ class Cpu : public Component {
     if (virtual_address >= 0xA0000000 && virtual_address <= 0xBFFFFFFF ) {
       return virtual_address & 0x1FFFFFFF;
     }
+    if (virtual_address >= 0xFFFE0000 && virtual_address <= 0xFFFE0134 ) {
+      valid_address_flag_ = true;
+      return virtual_address;
+    }
     //error i guess
     cache_flag_ = false;
     return 0xFFFFFFFF;
   }
+
+  /*uint32_t AddressTranslation(uint32_t virtual_address) {
+    if (virtual_address >= 0x00000000 && virtual_address <= 0x7FFFFFFF ) {
+      cache_flag_ = true;
+      return virtual_address;
+    } else if (virtual_address >= 0x80000000 && virtual_address <= 0x9FFFFFFF ) {
+      cache_flag_ = true;
+      return virtual_address & 0x7FFFFFFF;
+    } else  if (virtual_address >= 0xA0000000 && virtual_address <= 0xBFFFFFFF ) {
+      cache_flag_ = false;
+      return virtual_address & 0x1FFFFFFF;
+    } else if (virtual_address >= 0xC0000000 && virtual_address <= 0xFFFFFFFF ) {
+      cache_flag_ = false;
+      valid_address_flag_ = true;
+      return virtual_address;
+    }
+    //error i guess
+    valid_address_flag_ = false;
+    return 0xFFFFFFFF;
+  }*/
+
   void Tick();
   uint32_t LoadMemory(bool cached, int size_bytes, uint32_t physical_address, uint32_t virtual_address);
   void StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physical_address, uint32_t virtual_address);
@@ -385,7 +410,7 @@ class Cpu : public Component {
   uint8_t shamt_;
   bool __inside_instruction;
   bool __inside_delay_slot;
-  bool cache_flag_,valid_address_flag_;
+  bool cache_flag_, valid_address_flag_;
   void StageIF();
   void StageRD();
   void Jump(uint32_t address);

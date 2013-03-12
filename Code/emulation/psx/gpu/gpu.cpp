@@ -16,7 +16,6 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include <VisualEssence/Code/ve.h>
 #include "../system.h"
 
 #define GPU_DEBUG
@@ -30,9 +29,7 @@ inline uint32_t SelectBits(uint32_t data,uint32_t bitno,uint32_t size) {
 }
 
 struct GfxStruct {
-  graphics::ContextD3D9* gfx;
-  graphics::Camera camera;
-  graphics::InputLayout input_layout;
+  minive::Context* gfx;
 };
 
 uint8_t primitive_size[256]=
@@ -203,64 +200,22 @@ Gpu::Primitive Gpu::primitives[256] =
 &Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown,&Gpu::PrimitiveUnknown
 };
 
-IDirect3DTexture9* vram_texture=0;
-IDirect3DSurface9* surface=0;
 
 Gpu::Gpu() {
   gs = new GfxStruct();
 }
 
 Gpu::~Gpu() {
-  vram_texture->Release();
-  surface->Release();
+
   delete gs;
 }
 
-void Gpu::set_gfx(graphics::Context* gfx) {
-  this->gs->gfx = (graphics::ContextD3D9*)gfx;
+void Gpu::set_gfx(minive::Context* gfx) {
+  this->gs->gfx = gfx;
 }
 
 int Gpu::Initialize() {
-  graphics::InputElement gielements[] = 
-  {
-      {0, 0 , D3DDECLTYPE_FLOAT3  , D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0},
-      {0, 12, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR   , 0},
-      {0, 16, D3DDECLTYPE_FLOAT2  , D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0},
-      D3DDECL_END()
-  };
-
-  gs->gfx->CreateInputLayout(gielements,gs->input_layout);
-  gs->gfx->SetInputLayout(gs->input_layout);
-  gs->camera.Initialize(gs->gfx);
-  gs->camera.Ortho2D();
-  gs->gfx->SetCamera(&gs->camera);
-  
-  D3DXMATRIX matIdentity;
-	D3DXMatrixIdentity(&matIdentity);
-  gs->gfx->device()->SetTransform(D3DTS_WORLD,&matIdentity);
-	gs->gfx->device()->SetRenderState(D3DRS_ZENABLE, 0 );
-	gs->gfx->device()->SetRenderState(D3DRS_LIGHTING, 0 );
-	gs->gfx->device()->SetRenderState(D3DRS_ALPHABLENDENABLE,1);
-
-
-	gs->gfx->device()->SetTextureStageState( 0, D3DTSS_COLORARG1, D3DTA_TEXTURE );
-	gs->gfx->device()->SetTextureStageState( 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE );  
-	gs->gfx->device()->SetTextureStageState( 0, D3DTSS_COLOROP, D3DTOP_MODULATE );
-	gs->gfx->device()->SetTextureStageState(0,D3DTSS_ALPHAARG1,D3DTA_TEXTURE);
-	gs->gfx->device()->SetTextureStageState(0,D3DTSS_ALPHAARG2,D3DTA_DIFFUSE);
-	gs->gfx->device()->SetTextureStageState( 0, D3DTSS_ALPHAOP,D3DTOP_MODULATE );
-  
-  gs->gfx->device()->CreateTexture(1024,512,1,D3DUSAGE_RENDERTARGET,D3DFMT_A8R8G8B8,D3DPOOL_DEFAULT,&vram_texture,0);
-  
-  vram_texture->GetSurfaceLevel(0,&surface);
-  //auto r = gs->gfx->device()->SetRenderTarget(0,surface);
-
-  gs->gfx->ClearTarget();
-	//G->DefaultLockFlag=D3DLOCK_DISCARD;
-	//G->DefaultPool=D3DPOOL_MANAGED;
-	//G->DefaultMipmapLevels=0;
-	gs->gfx->Begin();
-
+ 
   data = 0;
   status.raw = 0x14802000;
   memset(&command_buffer,0,sizeof(command_buffer));
@@ -269,15 +224,15 @@ int Gpu::Initialize() {
 }
 
 int Gpu::Deinitialize() {
-  gs->gfx->DestoryInputLayout(gs->input_layout);
+  
   return 0;
 }
 
 uint32_t Gpu::ReadData() {
-  if (status.dma==0x3) {
+  if (status.dmadir==0x3) {
     BREAKPOINT
   }
-  if (status.dma==0x0) {
+  if (status.dmadir==0x0) {
     return data;
   }
   BREAKPOINT
@@ -294,14 +249,14 @@ void Gpu::WriteData(uint32_t data) {
   status.com = 0;
   
 
-  if (status.dma==0x2) {
+  if (status.dmadir==0x2) {
     if ((system_->io().dma.channel(2).chcr & 0x401) == 0x401) {
       FillCommandBuffer(data);
     } else {
       BREAKPOINT
     }
   }
-  if (status.dma==0x0) {
+  if (status.dmadir==0x0) {
     FillCommandBuffer(data);
   }
 
@@ -316,22 +271,36 @@ void Gpu::WriteStatus(uint32_t data) {
   uint32_t params = (data & 0x00FFFFFF);
   switch (command) {
     case 0x00:
-      status.raw = 0x14802000;
-      status.den = 1;
       memset(&command_buffer,0,sizeof(command_buffer));
+      status.raw = 0x14802000;
       break;
     case 0x01:
       memset(&command_buffer,0,sizeof(command_buffer));
       break;
     case 0x02:
-      BREAKPOINT
+      status.irq1 = 0;
       break;
     case 0x03:
       status.den = !(data & 0x1);
       break;
     case 0x04:
-      status.dma = data & 0x3;
+      status.dmadir = data & 0x3;
       break;
+    case 0x05: {
+      int x = data&0x3FF;
+      int y = (data&0x7FC00)>>10;
+      break;
+      }
+    case 0x06: {
+      int x = data&0xFFF;
+      int y = (data&0xFFF000)>>12;
+      break;
+      }
+    case 0x07: {
+      int x = data&0xFFF;
+      int y = (data&0xFFF000)>>12;
+      break;
+      }
     case 0x08: {
 	    int width0 = SelectBits(data,0,2);
       int width1 = SelectBits(data,6,1);
@@ -343,6 +312,11 @@ void Gpu::WriteStatus(uint32_t data) {
       UpdateGSSize();
       }
       break;
+    case 0x09:
+      status.texdisable = data&0x1;
+      break;
+    default:
+      BREAKPOINT
   }
   return;
 }
@@ -377,15 +351,15 @@ void Gpu::FillCommandBuffer(uint32_t data) {
 void Gpu::UpdateGSSize() {
   int width_table[] = {256,384,320,0,512,0,640};
   int height = 240 << status.height;
-  gs->gfx->window()->SetClientSize(width_table[status.width],height);
-  gs->camera.Ortho2D(0,0,(FLOAT)width_table[status.width],(FLOAT)height);
+  //gs->gfx->window()->SetClientSize(width_table[status.width],height);
+  //gs->camera.Ortho2D(0,0,(FLOAT)width_table[status.width],(FLOAT)height);
 
-  auto world = XMMatrixTranslation((FLOAT)drawing.offset_x,(FLOAT)drawing.offset_y,0);
+ // auto world = XMMatrixTranslation((FLOAT)drawing.offset_x,(FLOAT)drawing.offset_y,0);
   //D3DXMATRIX matIdentity;
-  gs->gfx->device()->SetTransform(D3DTS_WORLD,(D3DXMATRIX*)&world);
+ // gs->gfx->device()->SetTransform(D3DTS_WORLD,(D3DXMATRIX*)&world);
 
-  gs->gfx->SetCamera(&gs->camera);
-  gs->gfx->SetViewport((float)-drawing.clip_x,(float)-drawing.clip_y,(float)drawing.clip_w-drawing.clip_x,(float)drawing.clip_h-drawing.clip_y,0.0f,1.0f);
+  //gs->gfx->SetCamera(&gs->camera);
+  //gs->gfx->SetViewport((float)-drawing.clip_x,(float)-drawing.clip_y,(float)drawing.clip_w-drawing.clip_x,(float)drawing.clip_h-drawing.clip_y,0.0f,1.0f);
 }
 
 void Gpu::PrimitiveUnknown() {
@@ -439,7 +413,7 @@ void Gpu::PrimitivePolyF4() {
     };
     
     
-    gs->gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
+    //gs->gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
 
 
  /*memset(&destpoly,0,sizeof(destpoly));
@@ -473,7 +447,7 @@ void Gpu::PrimitivePolyG4() {
     };
     
     
-    gs->gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
+   // gs->gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
 
 
  /*memset(&destpoly,0,sizeof(destpoly));
@@ -511,7 +485,7 @@ void Gpu::PrimitivePolyGT4() {
     };
     
     
-    gs->gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
+    //gs->gfx->device()->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP,2,v,sizeof(emulation::psx::GfxVertex));
 
 
  /*

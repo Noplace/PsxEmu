@@ -78,6 +78,18 @@
     <ClCompile Include="Code\emulation\psx\io\dma.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="Code\minive\minive.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\minive\d3d11context.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\mc\mc.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\minive\d2d1context.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="Code\display_window.h">
@@ -131,10 +143,30 @@
     <ClInclude Include="Code\emulation\psx\io\dma.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="Code\minive\minive.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\minive\d3d11context.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\minive\context.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\mc\mc.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\minive\d2d1context.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Resource\ui.rc">
       <Filter>Content</Filter>
     </ResourceCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Resource\ps_tex.hlsl" />
+    <FxCompile Include="Resource\ps.hlsl" />
+    <FxCompile Include="Resource\vs.hlsl" />
   </ItemGroup>
 </Project>

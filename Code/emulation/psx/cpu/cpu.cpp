@@ -19,7 +19,8 @@
 #include "../system.h"
 
 bool output_inst = false;
-#define CSVOUT
+uint32_t until_address =0;
+//#define CSVOUT
 #define CPU_DEBUG
 //#define BIOSCALL
 
@@ -160,7 +161,7 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
 
   //push the bit stack for kernel,interrupt flags
   uint32_t& sr = context_->ctrl.SR.raw;
-  sr = (sr & ~0x3F) | ((sr & 0xF) << 2) | 0x2;
+  sr = (sr & ~0x3F) | ((sr & 0xF) << 2);
 
 
   //set cause
@@ -204,7 +205,7 @@ void Cpu::Tick() {
 
 uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address, uint32_t virtual_address) {
   if (IsBusError() == true) {
-    context_->ctrl.BadVaddr = context_->prev_pc;
+    //context_->ctrl.BadVaddr = context_->prev_pc; //bus errors leave it
     auto code = current_stage == 1 ? kExceptionCodeIBE : kExceptionCodeDBE;
     RaiseException(context_->prev_pc,kOtherException,code);
     return 0;
@@ -222,6 +223,7 @@ uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address,
       dcache_.Read(physical_address,data);
       if (size_bytes != 4)
         dcache_.InvalidateLine(physical_address);
+       // data = system_->io().scratchpad.u32[physical_address&0x3FF];
     } else {
       icache_.Read(physical_address,data);
       if (size_bytes != 4)
@@ -250,6 +252,7 @@ uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address,
   }
 
   if (physical_address >= 0x1F800000 && physical_address <= 0x1F8003FF) {
+    //return system_->io().scratchpad.u32[physical_address&0x3FF];
     return dcache_.lines[physical_address&0x3FF].data[0];
   }
 
@@ -267,7 +270,7 @@ uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address,
       auto cache_hit = icache_.Read(physical_address,data);
 
       if (cache_hit == true) {
-        uint32_t mask[] = {0x0,0xFF,0xFFFF,0xFFFFFF,0xFFFFFFFF};
+        const uint32_t mask[] = {0x0,0xFF,0xFFFF,0xFFFFFF,0xFFFFFFFF};
         data = ( data >> ((physical_address&0x3)<<3)) & mask[size_bytes];
         return data;
       }
@@ -276,20 +279,6 @@ uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address,
         //Tick();Tick();Tick();Tick();Tick();Tick();
       }
 
-      /*//if (cache_hit == true)
-      //  return data&((1<<(8<<(size_bytes>>1)))-1);
-      //fprintf(system_->csvlog.fp,",,cache read,0x%08x,cache data,0x%08X,actual data,0x%08X,hit=%d\n",physical_address,data,buffer->u32[target_address>>2],cache_hit);
-      //if (icache_.Read(physical_address,data)==true)//cache hit
-      //  return data;
-      if (size_bytes == 4 && data!=buffer->u32[target_address>>2] && cache_hit == true) {
-        BREAKPOINT
-      }
-      if (size_bytes == 2 && data!=buffer->u16[target_address>>1] && cache_hit == true) {
-        BREAKPOINT
-      }
-      if (size_bytes == 1 && data!=buffer->u8[target_address] && cache_hit == true) {
-        BREAKPOINT
-      }*/
     }
 
     switch (size_bytes) {
@@ -306,7 +295,8 @@ uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address,
 void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physical_address, uint32_t virtual_address) {
   //todo: research about this value, ignore for now
   if (IsBusError() == true) { 
-    context_->ctrl.BadVaddr = context_->prev_pc;
+    //context_->ctrl.BadVaddr = context_->prev_pc; //bus errors leave it
+    RaiseException(context_->prev_pc,kOtherException,kExceptionCodeDBE);
     return;
   }
   if ((IsAddressError(virtual_address,size_bytes) == true)) {
@@ -321,6 +311,7 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
       dcache_.Write(physical_address,cdata);
       if (size_bytes != 4)
         dcache_.InvalidateLine(physical_address);
+      //system_->io().scratchpad.u32[physical_address&0x3FF] = data;
     } else {
       icache_.Write(physical_address,cdata);
       if (size_bytes != 4)
@@ -348,10 +339,12 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
 
    if (physical_address >= 0x1F800000 && physical_address <= 0x1F8003FF) {
     dcache_.lines[physical_address&0x3FF].data[0] = data;
+    //system_->io().scratchpad.u32[physical_address&0x3FF] = data;
     return;
   }
 
-  if (physical_address >= 0x1F801000 && physical_address <= 0x1F802FFF) {
+  if ((physical_address >= 0x1F801000 && physical_address <= 0x1F802FFF)||
+    (physical_address >= 0xFFFE0000 && physical_address <= 0xFFFE0134)) {
     switch (size_bytes) {
       case 1: system_->io().Write08(physical_address,data&0xFF); return;
       case 2: system_->io().Write16(physical_address,data&0xFFFF); return;
@@ -400,6 +393,8 @@ void Cpu::Jump(uint32_t address) {
   ExecuteInstruction();
   __inside_delay_slot = false;
   context_->pc = address;
+  if (output_inst == true && until_address == context_->pc)
+    output_inst = false;
 }
 
 void Cpu::UNKNOWN() {
@@ -529,8 +524,11 @@ void Cpu::LB() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint8_t mem = LoadMemory(cache_flag_,1,physical_address,virtual_address);
+  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  context_->gp.reg[rt_] = (int8_t)mem;
+  //load delay
+  //ExecuteInstruction();
+  ref = (int8_t)mem;
   Tick();
 }
 
@@ -538,8 +536,11 @@ void Cpu::LH() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint16_t mem = LoadMemory(cache_flag_,2,physical_address,virtual_address);
+  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  context_->gp.reg[rt_] = (int16_t)mem;
+  //load delay
+  //ExecuteInstruction();
+  ref = (int16_t)mem;
   Tick();
 }
 
@@ -570,8 +571,11 @@ void Cpu::LW() {
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint32_t mem;
   mem = LoadMemory(cache_flag_,4,physical_address,virtual_address);
+  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  context_->gp.reg[rt_] = mem;
+  //load delay
+  //ExecuteInstruction();
+  ref = mem;
   Tick();
 }
 
@@ -579,8 +583,11 @@ void Cpu::LBU() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint32_t mem = LoadMemory(cache_flag_,1,physical_address,virtual_address);
+  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  context_->gp.reg[rt_] = (uint8_t)mem;
+  //load delay
+  //ExecuteInstruction();
+  ref = (uint8_t)mem;
   Tick();
 }
 
@@ -588,8 +595,11 @@ void Cpu::LHU() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint32_t mem = LoadMemory(cache_flag_,2,physical_address,virtual_address);
+  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  context_->gp.reg[rt_] = (uint16_t)mem;
+  //load delay
+  //ExecuteInstruction();
+  ref = (uint16_t)mem;
   Tick();
 }
 

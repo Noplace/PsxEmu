@@ -64,6 +64,7 @@
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <StackReserveSize>8388608</StackReserveSize>
+      <AdditionalDependencies>d2d1.lib ;dxgi.lib; d3d11.lib; dxguid.lib; kernel32.lib;user32.lib;gdi32.lib;winspool.lib;comdlg32.lib;advapi32.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;odbc32.lib;odbccp32.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -91,8 +92,12 @@
     <ClCompile Include="Code\emulation\psx\io\io_interface.cpp" />
     <ClCompile Include="Code\emulation\psx\bios\kernel.cpp" />
     <ClCompile Include="Code\emulation\psx\io\root_counter.cpp" />
+    <ClCompile Include="Code\emulation\psx\mc\mc.cpp" />
     <ClCompile Include="Code\emulation\psx\spu\spu.cpp" />
     <ClCompile Include="Code\emulation\psx\system.cpp" />
+    <ClCompile Include="Code\minive\d2d1context.cpp" />
+    <ClCompile Include="Code\minive\d3d11context.cpp" />
+    <ClCompile Include="Code\minive\minive.cpp" />
     <ClCompile Include="Code\utilities\cdrom\cdrom.cpp" />
     <ClCompile Include="Code\winmain.cpp" />
   </ItemGroup>
@@ -108,9 +113,14 @@
     <ClInclude Include="Code\emulation\psx\io\io_interface.h" />
     <ClInclude Include="Code\emulation\psx\bios\kernel.h" />
     <ClInclude Include="Code\emulation\psx\io\root_counter.h" />
+    <ClInclude Include="Code\emulation\psx\mc\mc.h" />
     <ClInclude Include="Code\emulation\psx\spu\spu.h" />
     <ClInclude Include="Code\emulation\psx\system.h" />
     <ClInclude Include="Code\emulation\psx\types.h" />
+    <ClInclude Include="Code\minive\context.h" />
+    <ClInclude Include="Code\minive\d2d1context.h" />
+    <ClInclude Include="Code\minive\d3d11context.h" />
+    <ClInclude Include="Code\minive\minive.h" />
     <ClInclude Include="Code\utilities\cdrom\iso9660.h" />
     <ClInclude Include="Code\utilities\lean\hash_table.h" />
     <ClInclude Include="Resource\ui.h" />
@@ -119,12 +129,25 @@
     <ResourceCompile Include="Resource\ui.rc" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\VisualEssence\VisualEssence.vcxproj">
-      <Project>{b5fda7c1-8125-4e2f-ba95-8a7e7cce635e}</Project>
-    </ProjectReference>
     <ProjectReference Include="..\..\WinCore\WinCore.vcxproj">
       <Project>{43ac74e9-a89d-4e31-8c01-fa2cce27f5c2}</Project>
     </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Resource\ps.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">4.0_level_9_3</ShaderModel>
+    </FxCompile>
+    <FxCompile Include="Resource\ps_tex.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">4.0_level_9_3</ShaderModel>
+    </FxCompile>
+    <FxCompile Include="Resource\vs.hlsl">
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Vertex</ShaderType>
+      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Vertex</ShaderType>
+      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">4.0_level_9_3</ShaderModel>
+    </FxCompile>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

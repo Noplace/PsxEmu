@@ -44,6 +44,7 @@ int System::Initialize() {
   cpu_.set_system(this);
   gpu_.set_system(this);
   spu_.set_system(this);
+  mc_.set_system(this);
   kernel_.set_system(this);
 
   auto set_comp_systems = [&](Component& comp) {
@@ -60,18 +61,20 @@ int System::Initialize() {
   cpu_.Reset();
   gpu_.Initialize();
   spu_.Initialize();
+  mc_.Initialize();
   kernel_.Initialize();
-
+  mc_.LoadFile("D:\\Personal\\Projects\\PsxEmu\\test\\ff7.mcr");
   while (cpu_.context()->pc!=0x80030000) {
-	  cpu_.ExecuteInstruction();
-    //Step();
+	  //cpu_.ExecuteInstruction();
+    Step();
   }
-  extern bool output_inst;
-  output_inst = true;
+  //extern bool output_inst;
+  //output_inst = true;
   return 0;
 }
 
 int System::Deinitialize() {
+  mc_.Deinitialize();
   spu_.Deinitialize();
   gpu_.Deinitialize();
   cpu_.Deinitialize();
@@ -80,7 +83,6 @@ int System::Deinitialize() {
 }
 
 void System::Step() {
-  
   uint32_t cycles = 0;
   cpu_.context()->current_cycles = 0;
   cpu_.ExecuteInstruction();

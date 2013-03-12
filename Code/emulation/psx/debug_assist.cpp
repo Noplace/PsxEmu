@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #ifdef _DEBUG
 #include "system.h"
-#define PROG_ONLY
+//#define PROG_ONLY
 #pragma warning(disable : 4996)
 
 namespace emulation {

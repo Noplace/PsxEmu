@@ -104,6 +104,10 @@ void Kernel::Call() {
         #if defined(_DEBUG) && defined(PSX_OUTPUT)
           fputc(context->gp.a0,psxout.fp);
         #endif
+          //extern bool output_inst;
+          //extern uint32_t until_address;
+          //output_inst = true;
+          //until_address = context->gp.ra;
         //putc(context->gp.a0(),context->gp.a1());
         //context->pc = context->gp.ra();
         break;
