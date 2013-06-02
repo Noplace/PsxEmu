@@ -83,6 +83,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="Code\cd\cdio.cpp" />
     <ClCompile Include="Code\display_window.cpp" />
     <ClCompile Include="Code\emulation\psx\cpu\cpu.cpp" />
     <ClCompile Include="Code\emulation\psx\debug_assist.cpp" />
@@ -102,6 +103,7 @@
     <ClCompile Include="Code\winmain.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Code\cd\cdio.h" />
     <ClInclude Include="Code\display_window.h" />
     <ClInclude Include="Code\emulation\psx\component.h" />
     <ClInclude Include="Code\emulation\psx\cpu\cpu.h" />

@@ -23,6 +23,8 @@
 namespace emulation {
 namespace psx {
 
+double video_clk;
+
 int IOInterface::Initialize() { 
   cpu_ = &system().cpu();
   bios_buffer.Alloc(0x80000);
@@ -44,8 +46,11 @@ int IOInterface::Initialize() {
 
   memset(rootcounter_,0,sizeof(rootcounter_));
   rootcounter_[0].mode.en = rootcounter_[1].mode.en = rootcounter_[2].mode.en = 1;
-  rootcounter_[3].target = (system_->master_clock_frequency() / 60);// * 64;
+  rootcounter_[3].target = (system_->master_clock_frequency() / 60) * 64;
   rootcounter_[3].WriteMode(0x58);
+
+  //vertical retrace timer expermintal code
+  video_clk = 0;
 
   return 0;
 } 
@@ -68,12 +73,19 @@ void IOInterface::Tick(uint32_t cycles) {
   rootcounter_[1].Tick(cycles);
   rootcounter_[2].Tick(cycles);
   
+
+  video_clk += cycles * 11.0 / 7.0;
+  if (video_clk >= 887040.0) {
+     //SetInterrupt(kInterruptVSYNC);
+    video_clk = 0;
+  }
+  
   if (rootcounter_[3].Tick(cycles)==true) {
     #ifdef _DEBUG
     fprintf(system_->csvlog.fp,"0x%08x,0x%08x,vsync\n",cpu_->index,cpu_->context()->prev_pc);
     #endif
-    SetInterrupt(kInterruptVSYNC);
-
+   SetInterrupt(kInterruptVSYNC);
+    int a =1;
   }
   dma.Tick();
 }

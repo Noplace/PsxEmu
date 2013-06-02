@@ -28,16 +28,19 @@ class RootCounter {
   uint32_t target;
   union {
     struct {
-      unsigned en:1;
-      unsigned _unused1:2;
-      unsigned tar:1;
-      unsigned irq1:1;
-      unsigned _unused2:1;
-      unsigned irq2:1;
-      unsigned _unused3:1;
-      unsigned clc:1;
-      unsigned div:1;
-      unsigned _unused4:21;
+      uint32_t en:1;
+      uint32_t syncmode:2;
+      uint32_t resetmode:1;
+      uint32_t irq_target:1;
+      uint32_t irq_0xffff:1;
+      uint32_t irqrepeat:1;
+      uint32_t irqpulse:1;
+      uint32_t clcsrc:2;
+      uint32_t intreq:1;
+      uint32_t reached_target:1;
+      uint32_t reached_0xffff:1;
+      uint32_t _unknown:3;
+      uint32_t _garbage:16;
     };
     uint32_t raw;
   }mode;
@@ -65,7 +68,7 @@ class RootCounter {
   bool Tick(uint32_t cycles) {
     if (mode.en == 0) {
       counter += cycles;
-      auto limit = mode.tar == 0? 0xffff:target;
+      auto limit = mode.resetmode == 0? 0xffff:target;
       if (counter >= limit) {
         counter = 0;
         return true;

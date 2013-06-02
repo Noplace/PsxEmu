@@ -63,11 +63,13 @@ int System::Initialize() {
   spu_.Initialize();
   mc_.Initialize();
   kernel_.Initialize();
-  mc_.LoadFile("D:\\Personal\\Projects\\PsxEmu\\test\\ff7.mcr");
-  while (cpu_.context()->pc!=0x80030000) {
+  //mc_.LoadFile("D:\\Personal\\Projects\\PsxEmu\\test\\ff7.mcr");
+  
+  //lets skip this and do proper emulation first
+  /*while (cpu_.context()->pc!=0x80030000) {
 	  //cpu_.ExecuteInstruction();
     Step();
-  }
+  }*/
   //extern bool output_inst;
   //output_inst = true;
   return 0;

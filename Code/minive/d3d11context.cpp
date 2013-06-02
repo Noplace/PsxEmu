@@ -61,7 +61,7 @@ int D3D11Context::Initialize(int width, int height, bool vsync, HWND hwnd, bool 
 	}
 
 	// Get the number of modes that fit the DXGI_FORMAT_R8G8B8A8_UNORM display format for the adapter output (monitor).
-	result = adapterOutput->GetDisplayModeList(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_ENUM_MODES_INTERLACED, &numModes, NULL);
+	result = adapterOutput->GetDisplayModeList(DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ENUM_MODES_INTERLACED, &numModes, NULL);
 	if(result != S_OK) {
 		Deinitialize();
 		return S_FALSE;
@@ -75,7 +75,7 @@ int D3D11Context::Initialize(int width, int height, bool vsync, HWND hwnd, bool 
 	}
 
 	// Now fill the display mode list structures.
-	result = adapterOutput->GetDisplayModeList(DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_ENUM_MODES_INTERLACED, &numModes, displayModeList);
+	result = adapterOutput->GetDisplayModeList(DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ENUM_MODES_INTERLACED, &numModes, displayModeList);
 	if(result != S_OK) {
 		Deinitialize();
 		return S_FALSE;
@@ -139,7 +139,7 @@ int D3D11Context::Initialize(int width, int height, bool vsync, HWND hwnd, bool 
 	swapChainDesc.BufferDesc.Height = height;
 
 	// Set regular 32-bit surface for the back buffer.
-	swapChainDesc.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	swapChainDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
 	// Set the refresh rate of the back buffer.
 	if(m_vsync_enabled)
@@ -484,9 +484,9 @@ int D3D11Context::CreateShaders() {
 
   
   D3D11_INPUT_ELEMENT_DESC polygonLayout[3] = {
-    {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT    ,0,D3D11_APPEND_ALIGNED_ELEMENT,D3D11_INPUT_PER_VERTEX_DATA,0},
-    {"COLOR"   ,0,DXGI_FORMAT_R32G32B32A32_FLOAT ,0,D3D11_APPEND_ALIGNED_ELEMENT,D3D11_INPUT_PER_VERTEX_DATA,0},
-    {"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT       ,0,D3D11_APPEND_ALIGNED_ELEMENT,D3D11_INPUT_PER_VERTEX_DATA,0}
+    {"POSITION",0,DXGI_FORMAT_R32G32B32_FLOAT    ,0,0,D3D11_INPUT_PER_VERTEX_DATA,0},
+    {"COLOR"   ,0,DXGI_FORMAT_R32G32B32A32_FLOAT ,0,12,D3D11_INPUT_PER_VERTEX_DATA,0},
+    {"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT       ,0,28,D3D11_INPUT_PER_VERTEX_DATA,0}
   };
   
 

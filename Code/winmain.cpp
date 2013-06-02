@@ -18,6 +18,7 @@
 *****************************************************************************************************************/
 #include "display_window.h"
 #include <float.h>
+#include "cd/cdio.h"
 
 template<typename T,size_t initial_size=10>
 class Array {
@@ -81,6 +82,11 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 
   HeapSetInformation(NULL, HeapEnableTerminationOnCorruption, NULL, 0);
   MSG msg;
+
+  //cdioInit();
+  //cdioTest();
+  //cdioDeinit();
+
   if (SUCCEEDED(CoInitialize(NULL))) {
     my_app::DisplayWindow display_window;
     display_window.Initialize();
