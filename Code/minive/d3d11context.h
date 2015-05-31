@@ -35,8 +35,12 @@ struct Vertex {
 	FLOAT u, v;
 };
 
+__declspec(align(16))
 class D3D11Context : public Context {
  public:
+  void *operator new( size_t stAllocateBlock);
+  void   operator delete (void* p);
+
   D3D11Context();
   ~D3D11Context();
   int Initialize(int width, int height, bool vsync, HWND hwnd, bool fullscreen, float depth, float near);
@@ -44,9 +48,9 @@ class D3D11Context : public Context {
   int Clear();
   int Present();
  private:
-  bool m_vsync_enabled;
-	int m_videoCardMemory;
-	char m_videoCardDescription[128];
+  bool vsync_enabled_;
+	size_t vc_mem_;
+	char vc_desc_[128];
 	IDXGISwapChain* swapchain;
 	ID3D11Device* device;
 	ID3D11DeviceContext* devicecontext;

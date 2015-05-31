@@ -5,7 +5,7 @@ namespace minive {
 class Context {
  public:
   Context() {}
-  ~Context() {}
+  virtual ~Context() {}
   virtual int Initialize(int width, int height, bool vsync, HWND hwnd, bool fullscreen, float depth, float near) = 0;
   virtual int Deinitialize() = 0;
   virtual int Clear() = 0;

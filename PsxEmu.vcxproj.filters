@@ -54,43 +54,40 @@
     <ClCompile Include="Code\emulation\psx\debug_assist.cpp">
       <Filter>Code\emulation\psx</Filter>
     </ClCompile>
-    <ClCompile Include="Code\emulation\psx\cpu\cpu.cpp">
+    <ClCompile Include="Code\cd\cdio.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\kernel.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\cpu.cpp">
       <Filter>Code\emulation\psx</Filter>
     </ClCompile>
-    <ClCompile Include="Code\emulation\psx\bios\kernel.cpp">
+    <ClCompile Include="Code\emulation\psx\gte.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Code\emulation\psx\spu\spu.cpp">
+    <ClCompile Include="Code\emulation\psx\dma.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\io_interface.cpp">
       <Filter>Code\emulation\psx</Filter>
     </ClCompile>
-    <ClCompile Include="Code\emulation\psx\cpu\gte.cpp">
+    <ClCompile Include="Code\emulation\psx\root_counter.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Code\emulation\psx\io\io_interface.cpp">
+    <ClCompile Include="Code\emulation\psx\mc.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Code\emulation\psx\spu.cpp">
       <Filter>Code\emulation\psx</Filter>
     </ClCompile>
-    <ClCompile Include="Code\emulation\psx\io\root_counter.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Code\emulation\psx\gpu\gpu.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Code\emulation\psx\io\dma.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Code\minive\minive.cpp">
+    <ClCompile Include="Code\emulation\psx\gpu_minive.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Code\minive\d3d11context.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Code\emulation\psx\mc\mc.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Code\minive\d2d1context.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Code\cd\cdio.cpp">
+    <ClCompile Include="Code\minive\minive.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -119,49 +116,55 @@
     <ClInclude Include="Resource\ui.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\cpu\cpu.h">
+    <ClInclude Include="Code\cd\cdio.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\kernel.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\cpu.h">
       <Filter>Code\emulation\psx</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\cpu\cpu_context.h">
+    <ClInclude Include="Code\emulation\psx\cpu_context.h">
       <Filter>Code\emulation\psx</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\bios\kernel.h">
+    <ClInclude Include="Code\emulation\psx\gte.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\spu\spu.h">
+    <ClInclude Include="Code\emulation\psx\dma.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\io_interface.h">
       <Filter>Code\emulation\psx</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\cpu\gte.h">
+    <ClInclude Include="Code\emulation\psx\root_counter.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\io\io_interface.h">
+    <ClInclude Include="Code\emulation\psx\mc.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="Code\emulation\psx\spu.h">
       <Filter>Code\emulation\psx</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\io\root_counter.h">
+    <ClInclude Include="Code\emulation\psx\debug.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\gpu\gpu.h">
+    <ClInclude Include="Code\emulation\psx\global.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\io\dma.h">
+    <ClInclude Include="Code\emulation\psx\gpu_core.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Code\minive\minive.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Code\minive\d3d11context.h">
+    <ClInclude Include="Code\emulation\psx\gpu_minive.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Code\minive\context.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Code\emulation\psx\mc\mc.h">
+    <ClInclude Include="Code\minive\d3d11context.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="Code\minive\d2d1context.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="Code\cd\cdio.h">
+    <ClInclude Include="Code\minive\minive.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -174,5 +177,10 @@
     <FxCompile Include="Resource\ps_tex.hlsl" />
     <FxCompile Include="Resource\ps.hlsl" />
     <FxCompile Include="Resource\vs.hlsl" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="Resource\app_icon.png">
+      <Filter>Content</Filter>
+    </Image>
   </ItemGroup>
 </Project>

@@ -5,6 +5,15 @@
 
 namespace minive {
 
+void* D3D11Context::operator new( size_t stAllocateBlock) {
+  return _aligned_malloc(sizeof(D3D11Context),16);
+}
+
+void  D3D11Context::operator delete (void* p)  {
+  return _aligned_free(p);
+}
+
+
 ID3D11Buffer* vsbuf;
 
 D3D11Context::D3D11Context() : vs(nullptr),ps(nullptr),ps_tex(nullptr),ia(nullptr),matrixBuffer(nullptr) {
@@ -21,11 +30,10 @@ int D3D11Context::Initialize(int width, int height, bool vsync, HWND hwnd, bool 
 	IDXGIAdapter* adapter;
 	IDXGIOutput* adapterOutput;
 	unsigned int numModes, i, numerator, denominator, stringLength;
-	DXGI_MODE_DESC* displayModeList;
-	DXGI_ADAPTER_DESC adapterDesc;
+	DXGI_MODE_DESC* dispmode_list;
+	DXGI_ADAPTER_DESC adaptor_desc;
 	int error;
-	DXGI_SWAP_CHAIN_DESC swapChainDesc;
-	D3D_FEATURE_LEVEL featureLevel;
+	DXGI_SWAP_CHAIN_DESC swapchain_desc;
 	ID3D11Texture2D* backBufferPtr;
 	D3D11_TEXTURE2D_DESC depthBufferDesc;
 	D3D11_DEPTH_STENCIL_DESC depthStencilDesc;
@@ -37,25 +45,25 @@ int D3D11Context::Initialize(int width, int height, bool vsync, HWND hwnd, bool 
 
 
 	// Store the vsync setting.
-	m_vsync_enabled = vsync;
+	vsync_enabled_ = vsync;
 
 	// Create a DirectX graphics interface factory.
 	result = CreateDXGIFactory(__uuidof(IDXGIFactory), (void**)&factory);
-	if(result != S_OK) {
+  if (result != S_OK) {
 		Deinitialize();
 		return S_FALSE;
 	}
 
 	// Use the factory to create an adapter for the primary graphics interface (video card).
 	result = factory->EnumAdapters(0, &adapter);
-	if(result != S_OK) {
+	if (result != S_OK) {
 		Deinitialize();
 		return S_FALSE;
 	}
 
 	// Enumerate the primary adapter output (monitor).
 	result = adapter->EnumOutputs(0, &adapterOutput);
-	if(result != S_OK) {
+	if (result != S_OK) {
 		Deinitialize();
 		return S_FALSE;
 	}
@@ -68,14 +76,14 @@ int D3D11Context::Initialize(int width, int height, bool vsync, HWND hwnd, bool 
 	}
 
 	// Create a list to hold all the possible display modes for this monitor/video card combination.
-	displayModeList = new DXGI_MODE_DESC[numModes];
-	if(!displayModeList) {
+	dispmode_list = new DXGI_MODE_DESC[numModes];
+	if(!dispmode_list) {
 		Deinitialize();
 		return S_FALSE;
 	}
 
 	// Now fill the display mode list structures.
-	result = adapterOutput->GetDisplayModeList(DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ENUM_MODES_INTERLACED, &numModes, displayModeList);
+	result = adapterOutput->GetDisplayModeList(DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ENUM_MODES_INTERLACED, &numModes, dispmode_list);
 	if(result != S_OK) {
 		Deinitialize();
 		return S_FALSE;
@@ -85,111 +93,95 @@ int D3D11Context::Initialize(int width, int height, bool vsync, HWND hwnd, bool 
 	// When a match is found store the numerator and denominator of the refresh rate for that monitor.
 	for(i=0; i<numModes; i++)
 	{
-		if(displayModeList[i].Width == (unsigned int)width)
+		if(dispmode_list[i].Width == (unsigned int)width)
 		{
-			if(displayModeList[i].Height == (unsigned int)height)
+			if(dispmode_list[i].Height == (unsigned int)height)
 			{
-				numerator = displayModeList[i].RefreshRate.Numerator;
-				denominator = displayModeList[i].RefreshRate.Denominator;
+				numerator = dispmode_list[i].RefreshRate.Numerator;
+				denominator = dispmode_list[i].RefreshRate.Denominator;
 			}
 		}
 	}
 
 	// Get the adapter (video card) description.
-	result = adapter->GetDesc(&adapterDesc);
+	result = adapter->GetDesc(&adaptor_desc);
 	if(result != S_OK) {
 		Deinitialize();
 		return S_FALSE;
 	}
 
+  vc_mem_ = adaptor_desc.DedicatedVideoMemory;
+  if (vc_mem_ == 0) 
+    vc_mem_ = adaptor_desc.DedicatedSystemMemory;
+  if (vc_mem_ == 0) 
+    vc_mem_ = adaptor_desc.SharedSystemMemory;
+  
 	// Store the dedicated video card memory in megabytes.
-	m_videoCardMemory = (int)(adapterDesc.DedicatedVideoMemory / 1024 / 1024);
+	vc_mem_ = (vc_mem_ >> 20);
 
 	// Convert the name of the video card to a character array and store it.
-	error = wcstombs_s(&stringLength, m_videoCardDescription, 128, adapterDesc.Description, 128);
+	error = wcstombs_s(&stringLength, vc_desc_, 128, adaptor_desc.Description, 128);
 	if(error != 0) {
 		Deinitialize();
 		return S_FALSE;
 	}
 
 	// Release the display mode list.
-	delete [] displayModeList;
-	displayModeList = 0;
+	delete [] dispmode_list;
+	dispmode_list = 0;
 
 	// Release the adapter output.
-	adapterOutput->Release();
-	adapterOutput = 0;
+  SafeRelease(&adapterOutput);
 
 	// Release the adapter.
-	adapter->Release();
-	adapter = 0;
+  SafeRelease(&adapter);
 
 	// Release the factory.
-	factory->Release();
-	factory = 0;
+  SafeRelease(&factory);
 
 	// Initialize the swap chain description.
-	ZeroMemory(&swapChainDesc, sizeof(swapChainDesc));
-
-	// Set to a single back buffer.
-	swapChainDesc.BufferCount = 1;
-
-	// Set the width and height of the back buffer.
-	swapChainDesc.BufferDesc.Width = width;
-	swapChainDesc.BufferDesc.Height = height;
-
-	// Set regular 32-bit surface for the back buffer.
-	swapChainDesc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-
-	// Set the refresh rate of the back buffer.
-	if(m_vsync_enabled)
-	{
-		swapChainDesc.BufferDesc.RefreshRate.Numerator = numerator;
-		swapChainDesc.BufferDesc.RefreshRate.Denominator = denominator;
+	ZeroMemory(&swapchain_desc, sizeof(swapchain_desc));
+	swapchain_desc.BufferCount = 1;
+	swapchain_desc.BufferDesc.Width = width;
+	swapchain_desc.BufferDesc.Height = height;
+	swapchain_desc.BufferDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+	if(vsync_enabled_)	{
+		swapchain_desc.BufferDesc.RefreshRate.Numerator = numerator;
+		swapchain_desc.BufferDesc.RefreshRate.Denominator = denominator;
+	}	else{
+		swapchain_desc.BufferDesc.RefreshRate.Numerator = 0;
+		swapchain_desc.BufferDesc.RefreshRate.Denominator = 1;
 	}
-	else
-	{
-		swapChainDesc.BufferDesc.RefreshRate.Numerator = 0;
-		swapChainDesc.BufferDesc.RefreshRate.Denominator = 1;
+	swapchain_desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; 
+	swapchain_desc.OutputWindow = hwnd;                           
+	swapchain_desc.SampleDesc.Count = 1;                          
+	swapchain_desc.SampleDesc.Quality = 0;
+	if(fullscreen) {	                                            
+		swapchain_desc.Windowed = false;
+	}	else	{
+		swapchain_desc.Windowed = true;
 	}
+	swapchain_desc.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
+	swapchain_desc.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
+	swapchain_desc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+	swapchain_desc.Flags = 0;
 
-	// Set the usage of the back buffer.
-	swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
 
-	// Set the handle for the window to render to.
-	swapChainDesc.OutputWindow = hwnd;
-
-	// Turn multisampling off.
-	swapChainDesc.SampleDesc.Count = 1;
-	swapChainDesc.SampleDesc.Quality = 0;
-
-	// Set to full screen or windowed mode.
-	if(fullscreen)
-	{
-		swapChainDesc.Windowed = false;
-	}
-	else
-	{
-		swapChainDesc.Windowed = true;
-	}
-
-	// Set the scan line ordering and scaling to unspecified.
-	swapChainDesc.BufferDesc.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED;
-	swapChainDesc.BufferDesc.Scaling = DXGI_MODE_SCALING_UNSPECIFIED;
-
-	// Discard the back buffer contents after presenting.
-	swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-	// Don't set the advanced flags.
-	swapChainDesc.Flags = 0;
-
-	// Set the feature level to DirectX 11.
-	featureLevel = D3D_FEATURE_LEVEL_10_0;
-
+  D3D_FEATURE_LEVEL feature_levels[] = {
+    D3D_FEATURE_LEVEL_11_1,
+    D3D_FEATURE_LEVEL_11_0,
+    D3D_FEATURE_LEVEL_10_1,
+    D3D_FEATURE_LEVEL_10_0,
+    D3D_FEATURE_LEVEL_9_3,
+    D3D_FEATURE_LEVEL_9_2,
+    D3D_FEATURE_LEVEL_9_1,
+  };
+       
+  D3D_FEATURE_LEVEL feature_level;
 	// Create the swap chain, Direct3D device, and Direct3D device context.
 	result = D3D11CreateDeviceAndSwapChain(NULL,D3D_DRIVER_TYPE_HARDWARE,NULL,0,
-										   &featureLevel,1,D3D11_SDK_VERSION,&swapChainDesc,
-										   &swapchain,&device, NULL, &devicecontext);
+										   feature_levels,ARRAYSIZE(feature_levels),D3D11_SDK_VERSION,&swapchain_desc,
+										   &swapchain,&device, &feature_level, &devicecontext);
 	if(result != S_OK) {
 		Deinitialize();
 		return S_FALSE;
@@ -212,6 +204,7 @@ int D3D11Context::Initialize(int width, int height, bool vsync, HWND hwnd, bool 
 	// Release pointer to the back buffer as we no longer need it.
 	backBufferPtr->Release();
 	backBufferPtr = 0;
+  SafeRelease(&backBufferPtr);
 
 	// Initialize the description of the depth buffer.
 	ZeroMemory(&depthBufferDesc, sizeof(depthBufferDesc));
@@ -453,7 +446,7 @@ int D3D11Context::Present() {
   devicecontext->Draw(4,0);
 
   // Present the back buffer to the screen since rendering is complete.
-	if(m_vsync_enabled)	{
+	if(vsync_enabled_)	{
 		// Lock to screen refresh rate.
 		swapchain->Present(1, 0);
 	}	else	{
@@ -494,7 +487,7 @@ int D3D11Context::CreateShaders() {
 	auto numElements = sizeof(polygonLayout) / sizeof(polygonLayout[0]);
   
   // Create the vertex input layout.
-	result = device->CreateInputLayout(polygonLayout, numElements, data,length,  &ia);
+	result = device->CreateInputLayout(polygonLayout, ARRAYSIZE(polygonLayout), data,length,  &ia);
 	if(result != S_OK)
 	{
 		return S_FALSE;

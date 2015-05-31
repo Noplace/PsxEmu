@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -17,9 +17,9 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #ifdef _DEBUG
-#include "system.h"
+#include "global.h"
 //#define PROG_ONLY
-#pragma warning(disable : 4996)
+//#pragma warning(disable : 4996)
 
 namespace emulation {
 namespace psx {

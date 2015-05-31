@@ -1,5 +1,5 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
-<Project DefaultTargets="Build" ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
       <Configuration>Debug</Configuration>
@@ -19,14 +19,14 @@
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>NotSet</CharacterSet>
-    <PlatformToolset>v110</PlatformToolset>
+    <PlatformToolset>v120</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>NotSet</CharacterSet>
-    <PlatformToolset>v110</PlatformToolset>
+    <PlatformToolset>v120</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -58,7 +58,7 @@
       <TreatWarningAsError>true</TreatWarningAsError>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);_CRT_SECURE_NO_WARNINGS</PreprocessorDefinitions>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
-      <ExceptionHandling>false</ExceptionHandling>
+      <ExceptionHandling>Sync</ExceptionHandling>
       <AdditionalOptions>-D_HAS_EXCEPTIONS=0 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
@@ -85,18 +85,17 @@
   <ItemGroup>
     <ClCompile Include="Code\cd\cdio.cpp" />
     <ClCompile Include="Code\display_window.cpp" />
-    <ClCompile Include="Code\emulation\psx\cpu\cpu.cpp" />
+    <ClCompile Include="Code\emulation\psx\cpu.cpp" />
     <ClCompile Include="Code\emulation\psx\debug_assist.cpp" />
-    <ClCompile Include="Code\emulation\psx\cpu\gte.cpp" />
-    <ClCompile Include="Code\emulation\psx\gpu\gpu.cpp" />
-    <ClCompile Include="Code\emulation\psx\io\dma.cpp" />
-    <ClCompile Include="Code\emulation\psx\io\io_interface.cpp" />
-    <ClCompile Include="Code\emulation\psx\bios\kernel.cpp" />
-    <ClCompile Include="Code\emulation\psx\io\root_counter.cpp" />
-    <ClCompile Include="Code\emulation\psx\mc\mc.cpp" />
-    <ClCompile Include="Code\emulation\psx\spu\spu.cpp" />
+    <ClCompile Include="Code\emulation\psx\gte.cpp" />
+    <ClCompile Include="Code\emulation\psx\gpu_minive.cpp" />
+    <ClCompile Include="Code\emulation\psx\dma.cpp" />
+    <ClCompile Include="Code\emulation\psx\io_interface.cpp" />
+    <ClCompile Include="Code\emulation\psx\kernel.cpp" />
+    <ClCompile Include="Code\emulation\psx\root_counter.cpp" />
+    <ClCompile Include="Code\emulation\psx\mc.cpp" />
+    <ClCompile Include="Code\emulation\psx\spu.cpp" />
     <ClCompile Include="Code\emulation\psx\system.cpp" />
-    <ClCompile Include="Code\minive\d2d1context.cpp" />
     <ClCompile Include="Code\minive\d3d11context.cpp" />
     <ClCompile Include="Code\minive\minive.cpp" />
     <ClCompile Include="Code\utilities\cdrom\cdrom.cpp" />
@@ -106,21 +105,23 @@
     <ClInclude Include="Code\cd\cdio.h" />
     <ClInclude Include="Code\display_window.h" />
     <ClInclude Include="Code\emulation\psx\component.h" />
-    <ClInclude Include="Code\emulation\psx\cpu\cpu.h" />
-    <ClInclude Include="Code\emulation\psx\cpu\cpu_context.h" />
+    <ClInclude Include="Code\emulation\psx\cpu.h" />
+    <ClInclude Include="Code\emulation\psx\cpu_context.h" />
+    <ClInclude Include="Code\emulation\psx\debug.h" />
     <ClInclude Include="Code\emulation\psx\debug_assist.h" />
-    <ClInclude Include="Code\emulation\psx\cpu\gte.h" />
-    <ClInclude Include="Code\emulation\psx\gpu\gpu.h" />
-    <ClInclude Include="Code\emulation\psx\io\dma.h" />
-    <ClInclude Include="Code\emulation\psx\io\io_interface.h" />
-    <ClInclude Include="Code\emulation\psx\bios\kernel.h" />
-    <ClInclude Include="Code\emulation\psx\io\root_counter.h" />
-    <ClInclude Include="Code\emulation\psx\mc\mc.h" />
-    <ClInclude Include="Code\emulation\psx\spu\spu.h" />
+    <ClInclude Include="Code\emulation\psx\global.h" />
+    <ClInclude Include="Code\emulation\psx\gpu_core.h" />
+    <ClInclude Include="Code\emulation\psx\gte.h" />
+    <ClInclude Include="Code\emulation\psx\gpu_minive.h" />
+    <ClInclude Include="Code\emulation\psx\dma.h" />
+    <ClInclude Include="Code\emulation\psx\io_interface.h" />
+    <ClInclude Include="Code\emulation\psx\kernel.h" />
+    <ClInclude Include="Code\emulation\psx\root_counter.h" />
+    <ClInclude Include="Code\emulation\psx\mc.h" />
+    <ClInclude Include="Code\emulation\psx\spu.h" />
     <ClInclude Include="Code\emulation\psx\system.h" />
     <ClInclude Include="Code\emulation\psx\types.h" />
     <ClInclude Include="Code\minive\context.h" />
-    <ClInclude Include="Code\minive\d2d1context.h" />
     <ClInclude Include="Code\minive\d3d11context.h" />
     <ClInclude Include="Code\minive\minive.h" />
     <ClInclude Include="Code\utilities\cdrom\iso9660.h" />
@@ -150,6 +151,9 @@
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Vertex</ShaderType>
       <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">4.0_level_9_3</ShaderModel>
     </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="Resource\app_icon.png" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

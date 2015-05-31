@@ -95,7 +95,7 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
         TranslateMessage(&msg);
         DispatchMessage(&msg);
       } else {
-        display_window.Step();
+        //display_window.Step();
       }
     } while(msg.message!=WM_QUIT);
      CoUninitialize();

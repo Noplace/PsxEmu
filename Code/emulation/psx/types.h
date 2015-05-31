@@ -16,8 +16,9 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#ifndef EMULATION_PSX_TYPES_H
-#define EMULATION_PSX_TYPES_H
+#pragma once
+
+#define BIT(x,bit) (((unsigned __int64)x&((unsigned __int64)1<<bit))>>bit)
 
 namespace emulation {
 namespace psx {
@@ -32,6 +33,10 @@ class IOInterface;
 class Kernel;
 class System;
 class DebugAssist;
+class Dma;
+class GpuCore;
+
+enum MemorySize { kM8=1, kM16=2, kM32=4 };
 
 enum Exceptions {  kTLBMissException , kOtherException ,  kResetException };
 
@@ -65,6 +70,19 @@ enum InterruptCodes {
   kInterruptPIO   =  0x0400
 };
 
+struct TimingInfo {
+    uint64_t extra_cycles;
+    uint64_t current_cycles;
+    uint64_t prev_cycles;
+    uint64_t total_cycles;
+    uint32_t fps_counter;
+    double fps;
+    double misc_time_span;
+    double fps_time_span;
+    double span_accumulator;
+    double time_span;
+};
+
 struct Buffer {
   uint8_t* u8;
   uint16_t* u16;
@@ -84,4 +102,3 @@ struct Buffer {
 
 }
 }
-#endif

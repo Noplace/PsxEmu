@@ -41,11 +41,12 @@ void DisplayWindow::Initialize() {
   timer.Calibrate();
   timing.prev_cycles = timer.GetCurrentCycles();
   
-  gfx = new minive::D3D11Context();
-  gfx->Initialize(640,480,false,handle(),false,1,0);
 
-  psx_sys.gpu().set_gfx(gfx);
+  gpu = new emulation::psx::GpuMiniVE();
+  gpu->set_handle(handle());
+  psx_sys.set_gpu_core(gpu);
   psx_sys.Initialize();
+  psx_sys.Run();
  // psx_sys.LoadPsExe("D:\\Personal\\Projects\\PsxEmu\\test\\vblank\\VBLANK.EXE");
   Show();
 }
@@ -72,7 +73,7 @@ void DisplayWindow::Step() {
 
   timing.render_time_span += time_span;
   if (timing.render_time_span >= 16.667) {
-    gfx->Clear();
+    //gfx->Clear();
     emulation::psx::GfxVertex v[4] = {
       {0,0,0,0xffffffff,0,0},
       {100,0,0,0xffffffff,0,0},
@@ -86,7 +87,7 @@ void DisplayWindow::Step() {
    /// gfx->End();
    // gfx->Render();
    // gfx->Begin();
-    gfx->Present();
+    //gfx->Present();
     ++timing.fps_counter;
     timing.render_time_span = 0;
   }
@@ -96,15 +97,12 @@ void DisplayWindow::Step() {
     timing.fps = timing.fps_counter;
     timing.fps_counter = 0;
     timing.fps_time_span = 0;
-
     char caption[256];
     //sprintf(caption,"Freq : %0.2f MHz",nes.frequency_mhz());
     //sprintf(caption,"CPS: %llu ",nes.cycles_per_second());
-    
     sprintf_s(caption,"FPS: %02d",timing.fps);
     SetWindowText(handle(),caption);
- 
-  }
+   }
   
 
 }
@@ -114,9 +112,9 @@ int DisplayWindow::OnCreate(WPARAM wParam,LPARAM lParam) {
 }
 
 int DisplayWindow::OnDestroy(WPARAM wParam,LPARAM lParam) {
+  psx_sys.Stop();
   psx_sys.Deinitialize();
-  gfx->Deinitialize();
-  SafeDelete(&gfx);
+  SafeDelete(&gpu);
   PostQuitMessage(0);
   return 0;
 }
