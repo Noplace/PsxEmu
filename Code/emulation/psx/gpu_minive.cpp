@@ -426,10 +426,10 @@ void GpuMiniVE::PrimitivePolyF4() {
  uint32_t color = 0xff000000|poly.color;
 
    emulation::psx::GfxVertex v[4] = {
-     {poly.x0,poly.y0,0,color,0,0},
-      {poly.x1,poly.y1,0,color,0,0},
-      {poly.x2,poly.y2,0,color,0,0},
-      {poly.x3,poly.y3,0,color,0,0}
+      {(float)poly.x0,(float)poly.y0,0,color,0.0f,0.0f},
+      {(float)poly.x1,(float)poly.y1,0,color,0.0f,0.0f},
+      {(float)poly.x2,(float)poly.y2,0,color,0.0f,0.0f},
+      {(float)poly.x3,(float)poly.y3,0,color,0.0f,0.0f}
     };
     
     
@@ -460,10 +460,10 @@ void GpuMiniVE::PrimitivePolyG4() {
 
 
    emulation::psx::GfxVertex v[4] = {
-     {poly.x0,poly.y0,0,0xff000000|poly.color0,0,0},
-      {poly.x1,poly.y1,0,0xff000000|poly.color1,0,0},
-      {poly.x2,poly.y2,0,0xff000000|poly.color2,0,0},
-      {poly.x3,poly.y3,0,0xff000000|poly.color3,0,0}
+      {(float)poly.x0,(float)poly.y0,0,0xff000000|poly.color0,0.0f,0.0f},
+      {(float)poly.x1,(float)poly.y1,0,0xff000000|poly.color1,0.0f,0.0f},
+      {(float)poly.x2,(float)poly.y2,0,0xff000000|poly.color2,0.0f,0.0f},
+      {(float)poly.x3,(float)poly.y3,0,0xff000000|poly.color3,0.0f,0.0f}
     };
     
     
@@ -498,10 +498,10 @@ void GpuMiniVE::PrimitivePolyGT4() {
 
 
    emulation::psx::GfxVertex v[4] = {
-     {poly.x0,poly.y0,0,0xff000000|poly.color0,0,0},
-      {poly.x1,poly.y1,0,0xff000000|poly.color1,0,0},
-      {poly.x2,poly.y2,0,0xff000000|poly.color2,0,0},
-      {poly.x3,poly.y3,0,0xff000000|poly.color3,0,0}
+      {(float)poly.x0,(float)poly.y0,0,0xff000000|poly.color0,0,0},
+      {(float)poly.x1,(float)poly.y1,0,0xff000000|poly.color1,0,0},
+      {(float)poly.x2,(float)poly.y2,0,0xff000000|poly.color2,0,0},
+      {(float)poly.x3,(float)poly.y3,0,0xff000000|poly.color3,0,0}
     };
     
     

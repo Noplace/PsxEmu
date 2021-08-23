@@ -468,7 +468,7 @@ int D3D11Context::CreateShaders() {
   uint8_t* data=nullptr;
   size_t length=0;
 
-  core::io::ReadWholeFileBinary("D:\\Personal\\Projects\\PsxEmu\\Output\\Win32\\Debug\\vs.cso",&data,length);
+  core::io::ReadWholeFileBinary("C:\\Users\\U11111\\Documents\\GitHub\\Output\\Win32\\Debug\\vs.cso",&data,length);
 	result = device->CreateVertexShader(data,length, NULL, &vs);
 	if(result != S_OK)
 	{
@@ -497,7 +497,7 @@ int D3D11Context::CreateShaders() {
 
 
 
-	core::io::ReadWholeFileBinary("D:\\Personal\\Projects\\PsxEmu\\Output\\Win32\\Debug\\ps.cso",&data,length);
+	core::io::ReadWholeFileBinary("C:\\Users\\U11111\\Documents\\GitHub\\Output\\Win32\\Debug\\ps.cso",&data,length);
 	result = device->CreatePixelShader(data,length, NULL, &ps);
 	core::io::DestroyFileBuffer(&data);
   if(result != S_OK)
@@ -505,7 +505,7 @@ int D3D11Context::CreateShaders() {
 		return S_FALSE;
 	}
 
-  core::io::ReadWholeFileBinary("D:\\Personal\\Projects\\PsxEmu\\Output\\Win32\\Debug\\ps_tex.cso",&data,length);
+  core::io::ReadWholeFileBinary("C:\\Users\\U11111\\Documents\\GitHub\\Output\\Win32\\Debug\\ps_tex.cso",&data,length);
   result = device->CreatePixelShader(data,length, NULL, &ps_tex);
 	core::io::DestroyFileBuffer(&data);
   if(result != S_OK)

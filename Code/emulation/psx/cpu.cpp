@@ -193,7 +193,7 @@ void Cpu::ExecuteInstruction() {
 void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes code) {
   #if defined(_DEBUG) && defined(CPU_DEBUG)
     if(system_->csvlog.fp)
-      fprintf(system_->csvlog.fp,"0x%08X,0x%08X,Exception,address,0x%08X,exception,0x%08X,code=0x%08X,SR,0x%08X\n",index,context_->prev_pc,address,exception,code,context_->ctrl.SR);
+      fprintf_s(system_->csvlog.fp,"0x%08X,0x%08X,Exception,address,0x%08X,exception,0x%08X,code=0x%08X,SR,0x%08X\n",index,context_->prev_pc,address,exception,code,context_->ctrl.SR.raw);
   #endif
   //save to epc
   context_->ctrl.EPC = context_->branch_flag == true ? address-4 : address;

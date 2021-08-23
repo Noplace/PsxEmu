@@ -463,7 +463,7 @@ DebugAssist::~DebugAssist(void) {
 
 void DebugAssist::Open(char* filename) {
   char fullpath[256];
-  sprintf(fullpath,"D:\\Personal\\Projects\\PsxEmu\\PsxDebug\\%s",filename);
+  sprintf(fullpath,"PsxDebug\\%s",filename);
   fp = fopen(fullpath,"w");
   char date_str[128];
   char time_str[128];

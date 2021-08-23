@@ -19,14 +19,14 @@
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
     <CharacterSet>NotSet</CharacterSet>
-    <PlatformToolset>v120</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>NotSet</CharacterSet>
-    <PlatformToolset>v120</PlatformToolset>
+    <PlatformToolset>v142</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -132,7 +132,7 @@
     <ResourceCompile Include="Resource\ui.rc" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\..\WinCore\WinCore.vcxproj">
+    <ProjectReference Include="..\WinCore\WinCore.vcxproj">
       <Project>{43ac74e9-a89d-4e31-8c01-fa2cce27f5c2}</Project>
     </ProjectReference>
   </ItemGroup>

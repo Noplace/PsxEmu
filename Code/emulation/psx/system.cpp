@@ -56,7 +56,7 @@ int System::Initialize() {
 
 
   io_.Initialize();
-  LoadBiosFromFile("D:\\Personal\\Projects\\PsxEmu\\Bios\\SCPH1001.BIN");
+  LoadBiosFromFile("bios\\SCPH1001.BIN");
   cpu_.set_context(&cpu_context_);
   cpu_.Initialize();
   cpu_.Reset();
