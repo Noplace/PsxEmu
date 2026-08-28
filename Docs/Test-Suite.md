@@ -88,6 +88,7 @@ Neither says anything except "the game did not boot".
 |  `--trace-irq` | Start tracing when the first hardware interrupt is taken |
 | `--hot <n>` | Print the n most-executed addresses |
 | `--dis <hex>:<n>` | Disassemble n instructions from an address (RAM or BIOS) |
+| `--watch-vram x,y,w,h` | Report which GP0 command wrote each pixel into a VRAM area |
 | `--quiet` | Suppress the per-100-frame progress lines |
 
 Exit code is 0 if anything was drawn, 1 if the final frame was entirely black.
@@ -110,11 +111,24 @@ The register list is the single most useful thing in that output. It answers
 
 The **GPU counters** answer the other question that costs the most time: a
 primitive that was never issued, one that was issued and drew nothing, and one
-that drew the wrong thing all look identical on screen. The command histogram
-says whether it was issued; the rejection counts - clipped, mask-rejected,
-transparent - say why its pixels went nowhere; the texel-depth split says
-whether its texture was read the way it was meant to be. Bug 14 was found from
-two of those numbers sitting next to each other.
+that drew the wrong thing all look identical on screen. Between them they
+separate every case:
+
+- the **command histogram** says whether the primitive was issued at all
+- the **rejection counts** - clipped, mask-rejected, transparent - say why its
+  pixels went nowhere
+- the **texel-depth split** says whether its texture was read at the depth it
+  was meant to be
+- the **textured setup log** prints the raw texpage and CLUT attribute words
+  next to what they decoded to, so a decode bug is visible without a trace
+- the **transfer log** shows every CPU-to-VRAM upload and whether all of its
+  pixels arrived
+- **`--watch-vram`** names the GP0 command behind every write into a chosen
+  VRAM rectangle, which answers "what is this region and who made it"
+
+Bug 14 was found from two of those numbers sitting next to each other:
+textured quads were being issued, and 5.19 million texels were being rejected
+as transparent with nothing clipped and nothing mask-rejected.
 
 ## Baselines
 

@@ -13,6 +13,7 @@
 //     --trace-irq [n]    start tracing at the nth hardware interrupt (default 1)
 //     --hot <n>          print the n most-executed addresses at the end
 //     --dis <hex>:<n>    disassemble n instructions of RAM from an address
+//     --watch-vram x,y,w,h   report which GP0 command wrote into a VRAM area
 //     --quiet            suppress the per-100-frame progress lines
 //
 // Takes no window, no input and no audio device, so it can be run from a shell
@@ -48,6 +49,7 @@ struct Options {
   bool trace_at_set;
   uint64_t trace_irq;   // which interrupt to trace from; 0 means none
   const char* dis;
+  const char* watch;
   int hot;
   bool quiet;
 };
@@ -120,6 +122,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->trace_at_set = false;
   options->trace_irq = 0;
   options->dis = nullptr;
+  options->watch = nullptr;
   options->hot = 0;
   options->quiet = false;
 
@@ -144,6 +147,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->trace_at_set = true;
     } else if (strcmp(arg, "--dis") == 0 && i + 1 < argc) {
       options->dis = argv[++i];
+    } else if (strcmp(arg, "--watch-vram") == 0 && i + 1 < argc) {
+      options->watch = argv[++i];
     } else if (strcmp(arg, "--hot") == 0 && i + 1 < argc) {
       options->hot = atoi(argv[++i]);
     } else if (strcmp(arg, "--trace-irq") == 0) {
@@ -204,6 +209,17 @@ int main(int argc, char** argv) {
       return 1;
     }
     printf("side-loaded %s\n", options.exe);
+  }
+
+  if (options.watch != nullptr) {
+    unsigned x = 0, y = 0, w = 0, h = 0;
+    if (sscanf(options.watch, "%u,%u,%u,%u", &x, &y, &w, &h) == 4) {
+      system->WatchVram(x, y, w, h);
+      printf("watching       VRAM %u,%u %ux%u\n", x, y, w, h);
+    } else {
+      fprintf(stderr, "--watch-vram wants x,y,w,h\n");
+      return 2;
+    }
   }
 
   // Running the core directly rather than through System::Run keeps the
@@ -324,9 +340,10 @@ int main(int argc, char** argv) {
                                       "15-bit (reserved)" };
     for (uint32_t i = 0; i < gpu_stats.setup_count; ++i) {
       const auto& s = gpu_stats.setups[i];
-      printf("  %02X  texpage (%4u,%3u)  %-17s clut (%4u,%3u)  semi %u%s%s\n",
-             s.command, s.texpage_x, s.texpage_y, kDepths[s.colors & 3],
-             s.clut_x, s.clut_y, s.semi_mode,
+      printf("  %02X  page=%04X clut=%04X  texpage (%4u,%3u)  %-14s "
+             "clut (%4u,%3u)  semi %u%s%s\n",
+             s.command, s.raw_page, s.raw_clut, s.texpage_x, s.texpage_y,
+             kDepths[s.colors & 3], s.clut_x, s.clut_y, s.semi_mode,
              (s.flags & 1) ? " raw" : "",
              (s.flags & 2) ? " semi-transparent" : "");
     }
@@ -373,6 +390,27 @@ int main(int argc, char** argv) {
       printf("]");
     }
     printf("\n");
+  }
+
+  if (gpu_stats.watch_writes > 0) {
+    printf("\nwrites into the watched VRAM area (%llu total)\n",
+           static_cast<unsigned long long>(gpu_stats.watch_writes));
+    for (int i = 0; i < 256; ++i) {
+      if (gpu_stats.watch_writers[i] == 0)
+        continue;
+      printf("  %02X  %8u\n", i, gpu_stats.watch_writers[i]);
+    }
+  }
+
+  if (gpu_stats.transfer_log_count > 0) {
+    printf("\ncpu-to-vram transfers\n");
+    for (uint32_t i = 0; i < gpu_stats.transfer_log_count; ++i) {
+      const auto& t = gpu_stats.transfers[i];
+      const uint32_t expected = static_cast<uint32_t>(t.w) * t.h;
+      printf("  to (%4u,%3u)  %3ux%-3u  %6u of %6u pixels%s\n", t.x, t.y,
+             t.w, t.h, t.written, expected,
+             (t.written == expected) ? "" : "   SHORT");
+    }
   }
 
   printf("\ngp1 commands issued\n");

@@ -33,6 +33,6 @@ A PlayStation 1 emulator revived from a 2012-2014 codebase.
 it and "COMPUTER ENTERTAINMENT" below, fading in - and then reaches the shell
 menu, polls the controller port and issues CD-ROM commands.
 
-**What is still wrong:** a rainbow smear behind the two menu entries, and the
-GTE, which is still one command out of about thirty. See "Where it stands" in
-[Roadmap.md](Roadmap.md).
+**What is still wrong:** a rainbow smear behind the two menu entries - narrowed
+to the uploaded texture data rather than the rasteriser - and the GTE, still one
+command out of about thirty. See "Where it stands" in [Roadmap.md](Roadmap.md).

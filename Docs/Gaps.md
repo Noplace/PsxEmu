@@ -104,9 +104,10 @@ Not implemented: texture caching, the GPU's own drawing time (drawing is
 instant), polygon clipping against the drawing area beyond a bounding-box test,
 and the interlace field handling is a first approximation.
 
-One known artifact: the glow the BIOS shell draws behind its menu entries comes
-out as colour noise. See "Where it stands" in [Roadmap.md](Roadmap.md) for what
-has been ruled out.
+One known artifact: a rainbow smear behind the BIOS shell's menu entries. It has
+been traced as far as "the bytes the BIOS uploaded are themselves wrong" - the
+rasteriser never touches that VRAM page. See "Where it stands" in
+[Roadmap.md](Roadmap.md) for everything ruled out and the next probe.
 
 ## Blocking use
 

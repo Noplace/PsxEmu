@@ -51,6 +51,13 @@ class Gpu : public GpuCore {
     return framebuffer_;
   }
 
+  // Watches a VRAM rectangle and records which GP0 command wrote each pixel
+  // into it. "What is this region and who made it" is otherwise a question
+  // only answerable by staring at a dump.
+  void WatchVram(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    watch_x_ = x; watch_y_ = y; watch_w_ = w; watch_h_ = h;
+  }
+
   // Incremented once per completed frame; a cheap way for a harness to wait
   // for a specific frame without knowing anything about timing.
   uint64_t frame_count() const { return frame_count_; }
@@ -68,6 +75,20 @@ class Gpu : public GpuCore {
     // same on screen; this separates them.
     uint32_t gp0_commands[256];
     uint32_t gp1_commands[64];
+    // Which GP0 command wrote pixels into the watched rectangle, and how many.
+    uint32_t watch_writers[256];
+    uint64_t watch_writes;
+
+    // The first few CPU-to-VRAM transfers: where they landed, how big they
+    // were, and how many pixels actually arrived. A transfer that is set up
+    // correctly but runs short leaves holes that look like a drawing bug.
+    struct Transfer {
+      uint16_t x, y, w, h;
+      uint32_t written;
+    };
+    static const int kTransferCapacity = 24;
+    Transfer transfers[kTransferCapacity];
+    uint32_t transfer_log_count;
     // Pixels rejected by each of the reasons PlotPixel can reject one.
     uint64_t clipped;
     uint64_t mask_rejected;
@@ -87,6 +108,8 @@ class Gpu : public GpuCore {
       uint8_t flags;         // bit 0 raw, bit 1 semi-transparent, bit 2 disabled
       uint16_t texpage_x, texpage_y;
       uint16_t clut_x, clut_y;
+      uint16_t raw_page;    // the texpage attribute word, undecoded
+      uint16_t raw_clut;    // the clut attribute word, undecoded
     };
     static const int kSetupCapacity = 32;
     TexturedSetup setups[kSetupCapacity];
@@ -151,6 +174,10 @@ class Gpu : public GpuCore {
   } transfer_;
   uint32_t read_latch_;
 
+  // The command currently executing, so a pixel write can be attributed.
+  uint32_t current_command_;
+  uint32_t watch_x_, watch_y_, watch_w_, watch_h_;
+
   // Drawing state.
   int32_t draw_area_left_, draw_area_top_, draw_area_right_, draw_area_bottom_;
   int32_t draw_offset_x_, draw_offset_y_;
@@ -207,7 +234,8 @@ class Gpu : public GpuCore {
     bool flip_x, flip_y;   // textured rectangles only
   };
 
-  void RecordSetup(uint32_t command, const DrawState& state);
+  void RecordSetup(uint32_t command, const DrawState& state,
+                   uint32_t raw_page, uint32_t raw_clut);
 
   void RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
                       const DrawState& state);
@@ -221,6 +249,16 @@ class Gpu : public GpuCore {
 
   void ResolveFramebuffer();
   void UpdateDisplaySize();
+
+  // Records a write into the watched rectangle against the command doing it.
+  inline void NoteWatchWrite(uint32_t x, uint32_t y) {
+    if (watch_w_ == 0)
+      return;
+    if ((x - watch_x_) < watch_w_ && (y - watch_y_) < watch_h_) {
+      ++stats_.watch_writers[current_command_ & 0xFF];
+      ++stats_.watch_writes;
+    }
+  }
 
   inline uint16_t& VramAt(uint32_t x, uint32_t y) {
     return vram_[((y & (kVramHeight - 1)) * kVramWidth) + (x & (kVramWidth - 1))];

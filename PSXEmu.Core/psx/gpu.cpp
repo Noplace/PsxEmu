@@ -81,6 +81,8 @@ int Gpu::Initialize() {
   transfer_mode_ = kTransferNone;
   memset(&transfer_, 0, sizeof(transfer_));
   read_latch_ = 0;
+  current_command_ = 0;
+  watch_x_ = watch_y_ = watch_w_ = watch_h_ = 0;
 
   draw_area_left_ = 0;
   draw_area_top_ = 0;
@@ -248,6 +250,7 @@ int Gpu::CommandLength(uint32_t command) {
 
 void Gpu::ExecuteCommand() {
   const uint32_t command = fifo_[0] >> 24;
+  current_command_ = command;
   ++stats_.gp0_commands[command & 0xFF];
   if (command >= 0x20 && command < 0x80)
     ++stats_.primitives;
@@ -398,6 +401,10 @@ void Gpu::StepTransfer(uint32_t data) {
   for (int half = 0; half < 2; ++half) {
     const uint16_t pixel = static_cast<uint16_t>(data >> (half * 16));
     VramAt(transfer_.x + transfer_.px, transfer_.y + transfer_.py) = pixel;
+    NoteWatchWrite(transfer_.x + transfer_.px, transfer_.y + transfer_.py);
+    if (stats_.transfer_log_count > 0 &&
+        stats_.transfer_log_count <= Stats::kTransferCapacity)
+      ++stats_.transfers[stats_.transfer_log_count - 1].written;
     if (++transfer_.px >= transfer_.w) {
       transfer_.px = 0;
       if (++transfer_.py >= transfer_.h) {
@@ -409,6 +416,9 @@ void Gpu::StepTransfer(uint32_t data) {
 }
 
 void Gpu::CmdCpuToVram() {
+  // Close off the previous entry before starting a new one, so a transfer that
+  // never finished is visible as a short pixel count.
+
   transfer_.x = fifo_[1] & 0x3FF;
   transfer_.y = (fifo_[1] >> 16) & 0x1FF;
   // A width or height field of zero means the maximum, not nothing.
@@ -417,6 +427,15 @@ void Gpu::CmdCpuToVram() {
   transfer_.px = 0;
   transfer_.py = 0;
   transfer_mode_ = kTransferToVram;
+
+  if (stats_.transfer_log_count < Stats::kTransferCapacity) {
+    Stats::Transfer& entry = stats_.transfers[stats_.transfer_log_count++];
+    entry.x = static_cast<uint16_t>(transfer_.x);
+    entry.y = static_cast<uint16_t>(transfer_.y);
+    entry.w = static_cast<uint16_t>(transfer_.w);
+    entry.h = static_cast<uint16_t>(transfer_.h);
+    entry.written = 0;
+  }
 }
 
 void Gpu::CmdVramToCpu() {
@@ -444,6 +463,7 @@ void Gpu::CmdVramToVramCopy() {
         continue;
       VramAt(dx + col, dy + row) =
           force_set_mask_ ? (pixel | 0x8000) : pixel;
+      NoteWatchWrite(dx + col, dy + row);
     }
   }
 }
@@ -461,9 +481,12 @@ void Gpu::CmdFillRectangle() {
   const uint32_t w = ((fifo_[2] & 0x3FF) + 0x0F) & ~0x0F;
   const uint32_t h = (fifo_[2] >> 16) & 0x1FF;
 
-  for (uint32_t row = 0; row < h; ++row)
-    for (uint32_t col = 0; col < w; ++col)
+  for (uint32_t row = 0; row < h; ++row) {
+    for (uint32_t col = 0; col < w; ++col) {
       VramAt(x + col, y + row) = colour;
+      NoteWatchWrite(x + col, y + row);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -494,6 +517,8 @@ void Gpu::CmdPolygon() {
   state.flip_y = false;
 
   Vertex v[4];
+  uint32_t raw_page = 0;
+  uint32_t raw_clut = 0;
   int word = 0;
   uint32_t colour = fifo_[word++] & 0xFFFFFF;
 
@@ -517,10 +542,12 @@ void Gpu::CmdPolygon() {
       // The CLUT rides on the first vertex, the texpage on the second.
       if (i == 0) {
         const uint32_t clut = (coord >> 16) & 0xFFFF;
+        raw_clut = clut;
         state.clut_x = (clut & 0x3F) * 16;
         state.clut_y = (clut >> 6) & 0x1FF;
       } else if (i == 1) {
         const uint32_t page = (coord >> 16) & 0xFFFF;
+        raw_page = page;
         state.texpage_x = (page & 0x0F) * 64;
         state.texpage_y = ((page >> 4) & 1) * 256;
         state.semi_mode = (page >> 5) & 3;
@@ -544,7 +571,7 @@ void Gpu::CmdPolygon() {
     }
   }
 
-  RecordSetup(command, state);
+  RecordSetup(command, state, raw_page, raw_clut);
 
   RasterTriangle(v[0], v[1], v[2], state);
   if (quad)
@@ -656,7 +683,7 @@ void Gpu::CmdRectangle() {
   const uint8_t g = static_cast<uint8_t>(colour >> 8);
   const uint8_t b = static_cast<uint8_t>(colour >> 16);
 
-  RecordSetup(command, state);
+  RecordSetup(command, state, 0, 0);
 
   for (int32_t row = 0; row < h; ++row) {
     for (int32_t col = 0; col < w; ++col) {
@@ -692,7 +719,8 @@ void Gpu::CmdRectangle() {
 // ---------------------------------------------------------------------------
 
 // Captures the first few textured primitive setups for the harnesses.
-void Gpu::RecordSetup(uint32_t command, const DrawState& state) {
+void Gpu::RecordSetup(uint32_t command, const DrawState& state,
+                      uint32_t raw_page, uint32_t raw_clut) {
   // Only 15-bit direct-colour draws for now: those are the ones under
   // suspicion, and the 4-bit ones flood the log before they appear.
   if (!state.textured || state.texpage_colors != 2 ||
@@ -708,6 +736,8 @@ void Gpu::RecordSetup(uint32_t command, const DrawState& state) {
   setup.texpage_y = static_cast<uint16_t>(state.texpage_y);
   setup.clut_x = static_cast<uint16_t>(state.clut_x);
   setup.clut_y = static_cast<uint16_t>(state.clut_y);
+  setup.raw_page = static_cast<uint16_t>(raw_page);
+  setup.raw_clut = static_cast<uint16_t>(raw_clut);
 }
 
 uint16_t Gpu::SampleTexture(uint32_t u, uint32_t v, const DrawState& state) {
@@ -792,6 +822,8 @@ void Gpu::PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
     target |= 0x8000;
 
   ++stats_.pixels;
+
+  NoteWatchWrite(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
 }
 
 void Gpu::RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,

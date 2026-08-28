@@ -125,15 +125,27 @@ CD-ROM is issued commands.
 
 What is still visibly wrong, in order:
 
-1. **A rainbow smear behind the two menu entries.** The BIOS renders a glow to
-   an off-screen VRAM page and draws it back as a 15-bit texture; ours comes
-   out as saturated colour noise. `boot_runner` shows those draws as command
-   `2D` (flat textured quad, raw) sampling texpage (896,0) and (704,0) at
-   15-bit direct, which is what the BIOS asks for - so the corruption is in how
-   that page is *produced*, not how it is read. It is not the mask bit (zero
-   pixels are mask-rejected) and not texture disable (honouring it changed
-   nothing). The next thing to try is dumping that VRAM page across successive
-   frames to see whether it is accumulating.
+1. **A rainbow smear behind the two menu entries.** Investigated, narrowed,
+   not yet fixed. What is now known, all of it from `boot_runner`:
+
+   - Every pixel of that VRAM page is written by command `A0` - a plain
+     CPU-to-VRAM upload. Nothing renders into it, so the rasteriser is not
+     what produces it. (`--watch-vram 896,0,128,56`)
+   - The upload completes: 3600 of 3600 pixels, and so does its partner at
+     (704,0). Nothing is truncated.
+   - The draws are command `2D` with the raw texpage attribute `010B` and
+     `010E`, which decode to texture page 11 and 14 at 15-bit direct colour
+     with no CLUT - and there is a 60x60 upload at exactly those addresses.
+     So the BIOS really is asking for a 15-bit texture there, and the
+     sampling depth is not wrong.
+   - Not the mask bit: zero pixels are mask-rejected in a whole run.
+   - Not texture disable: honouring it changed nothing.
+
+   So the bytes the BIOS computed and uploaded are themselves wrong, which
+   points back at the CPU or the DMA rather than at the GPU. The next probe is
+   to capture the RAM the (704,0) upload reads from and compare it with the
+   (896,0) one - at frame 340 the first renders as a clean smooth gradient and
+   the second, later, does not.
 2. **The GTE**, still one command out of about thirty. It has not stopped the
    intro, because that geometry is 2D, but nothing with real 3D will work
    until it is done.

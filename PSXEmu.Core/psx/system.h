@@ -55,6 +55,11 @@ class System {
   bool LoadBiosFromFile(const char* filename);
   bool LoadPsExe(const char* filename);
 
+  // Watch a VRAM rectangle, for the harnesses.
+  void WatchVram(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    gpu_.WatchVram(x, y, w, h);
+  }
+
   // Mounting a disc. Accepts a cue sheet, an image file or a drive letter;
   // an empty path ejects.
   bool LoadDisc(const char* path) { return io_.cdrom.OpenDisc(path); }
