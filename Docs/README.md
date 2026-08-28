@@ -24,12 +24,15 @@ A PlayStation 1 emulator revived from a 2012-2014 codebase.
 - `media_test`: 56 checks over disc images and the CD-ROM controller. All
   passing.
 - A software GPU that owns VRAM and produces a framebuffer.
+- DMA, the interrupt path, timers and the controller port.
 - Disc images: `.cue`, `.bin`, `.img`, `.iso`, and a physical drive.
 - A controller port with the digital pad protocol.
 - A Win32 front end presenting the framebuffer through Direct3D 11.
 
-**Not working:** the BIOS boot does not reach a picture. The exception
-machinery works and the first vertical blank is handled cleanly, but the second
-one is entered and never returned from. See "Where it is stuck" in
-[Roadmap.md](Roadmap.md) - `boot_runner` prints the Cop0 status history that
-shows it.
+**The BIOS boots and renders its whole intro** - the Sony diamond, "SONY" above
+it and "COMPUTER ENTERTAINMENT" below, fading in - and then reaches the shell
+menu, polls the controller port and issues CD-ROM commands.
+
+**What is still wrong:** a rainbow smear behind the two menu entries, and the
+GTE, which is still one command out of about thirty. See "Where it stands" in
+[Roadmap.md](Roadmap.md).

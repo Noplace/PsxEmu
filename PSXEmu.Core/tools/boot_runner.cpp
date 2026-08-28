@@ -10,7 +10,7 @@
 //     --trace <n>        print the first n instructions as they execute
 //     --trace-skip <n>   start tracing only after n instructions
 //     --trace-at <hex>   start tracing the first time the pc reaches an address
-//     --trace-irq        start tracing when the first hardware interrupt is taken
+//     --trace-irq [n]    start tracing at the nth hardware interrupt (default 1)
 //     --hot <n>          print the n most-executed addresses at the end
 //     --dis <hex>:<n>    disassemble n instructions of RAM from an address
 //     --quiet            suppress the per-100-frame progress lines
@@ -46,7 +46,7 @@ struct Options {
   uint64_t trace_skip;
   uint32_t trace_at;
   bool trace_at_set;
-  bool trace_irq;
+  uint64_t trace_irq;   // which interrupt to trace from; 0 means none
   const char* dis;
   int hot;
   bool quiet;
@@ -118,7 +118,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->trace_skip = 0;
   options->trace_at = 0;
   options->trace_at_set = false;
-  options->trace_irq = false;
+  options->trace_irq = 0;
   options->dis = nullptr;
   options->hot = 0;
   options->quiet = false;
@@ -147,7 +147,11 @@ bool ParseOptions(int argc, char** argv, Options* options) {
     } else if (strcmp(arg, "--hot") == 0 && i + 1 < argc) {
       options->hot = atoi(argv[++i]);
     } else if (strcmp(arg, "--trace-irq") == 0) {
-      options->trace_irq = true;
+      // Optionally followed by which interrupt to stop at, so a later one can
+      // be reached without wading through the first.
+      options->trace_irq = 1;
+      if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
+        options->trace_irq = strtoull(argv[++i], nullptr, 0);
     } else if (strcmp(arg, "--quiet") == 0) {
       options->quiet = true;
     } else if (arg[0] == '-') {
@@ -162,7 +166,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   }
   // Until the address is reached, nothing should trace, so park the skip
   // count out of reach rather than at zero.
-  if (options->trace_at_set || options->trace_irq)
+  if (options->trace_at_set || options->trace_irq != 0)
     options->trace_skip = ~0ull;
   return options->bios != nullptr;
 }
@@ -216,15 +220,10 @@ int main(int argc, char** argv) {
       ++pc_counts[system->cpu().context()->pc];
     // --trace-irq arms the trace the moment a hardware interrupt is taken,
     // which is the one event a fixed skip count cannot be aimed at.
-    if (options.trace_irq && system->interrupts_taken() > 0) {
+    if (options.trace_irq != 0 &&
+        system->interrupts_taken() >= options.trace_irq) {
       options.trace_skip = instructions;
-      options.trace_irq = false;
-    }
-    // --trace-irq arms the trace the moment a hardware interrupt is taken,
-    // which is the one event a fixed skip count cannot be aimed at.
-    if (options.trace_irq && system->interrupts_taken() > 0) {
-      options.trace_skip = instructions;
-      options.trace_irq = false;
+      options.trace_irq = 0;
     }
     // --trace-at arms the trace the first time the pc reaches an address, by
     // converting it into an ordinary skip count.
@@ -310,6 +309,83 @@ int main(int argc, char** argv) {
   printf("               %llu primitives, %llu pixels plotted\n",
          static_cast<unsigned long long>(gpu_stats.primitives),
          static_cast<unsigned long long>(gpu_stats.pixels));
+  printf("               %llu clipped, %llu mask-rejected, %llu transparent\n",
+         static_cast<unsigned long long>(gpu_stats.clipped),
+         static_cast<unsigned long long>(gpu_stats.mask_rejected),
+         static_cast<unsigned long long>(gpu_stats.transparent_texels));
+  printf("               texels by depth: %llu 4-bit, %llu 8-bit, %llu 15-bit\n",
+         static_cast<unsigned long long>(gpu_stats.texels_by_depth[0]),
+         static_cast<unsigned long long>(gpu_stats.texels_by_depth[1]),
+         static_cast<unsigned long long>(gpu_stats.texels_by_depth[2]));
+
+  if (gpu_stats.setup_count > 0) {
+    printf("\nfirst textured primitives\n");
+    static const char* kDepths[4] = { "4-bit CLUT", "8-bit CLUT", "15-bit direct",
+                                      "15-bit (reserved)" };
+    for (uint32_t i = 0; i < gpu_stats.setup_count; ++i) {
+      const auto& s = gpu_stats.setups[i];
+      printf("  %02X  texpage (%4u,%3u)  %-17s clut (%4u,%3u)  semi %u%s%s\n",
+             s.command, s.texpage_x, s.texpage_y, kDepths[s.colors & 3],
+             s.clut_x, s.clut_y, s.semi_mode,
+             (s.flags & 1) ? " raw" : "",
+             (s.flags & 2) ? " semi-transparent" : "");
+    }
+  }
+
+  printf("\ngp0 commands issued\n");
+  for (int i = 0; i < 256; ++i) {
+    if (gpu_stats.gp0_commands[i] == 0)
+      continue;
+    const char* what = "";
+    if (i == 0x02) what = "fill rectangle";
+    else if (i < 0x20) what = "nop / clear cache";
+    else if (i < 0x40) what = "polygon";
+    else if (i < 0x60) what = "line";
+    else if (i < 0x80) what = "rectangle";
+    else if (i < 0xA0) what = "vram to vram";
+    else if (i < 0xC0) what = "cpu to vram";
+    else if (i < 0xE0) what = "vram to cpu";
+    else if (i == 0xE1) what = "draw mode";
+    else if (i == 0xE2) what = "texture window";
+    else if (i == 0xE3) what = "draw area top-left";
+    else if (i == 0xE4) what = "draw area bottom-right";
+    else if (i == 0xE5) what = "draw offset";
+    else if (i == 0xE6) what = "mask setting";
+    printf("  %02X  %8u  %s", i, gpu_stats.gp0_commands[i], what);
+    if (i >= 0x20 && i < 0x80) {
+      // Spell out the attribute bits, which is where a primitive that draws
+      // nothing usually differs from one that draws.
+      printf(" [");
+      if (i < 0x40) {
+        printf("%s %s", (i & 0x10) ? "gouraud" : "flat",
+               (i & 0x08) ? "quad" : "tri");
+        if (i & 0x04) printf(" textured");
+      } else if (i < 0x60) {
+        printf("%s", (i & 0x10) ? "gouraud" : "flat");
+        if (i & 0x08) printf(" polyline");
+      } else {
+        static const char* kSizes[4] = { "variable", "1x1", "8x8", "16x16" };
+        printf("%s", kSizes[(i >> 3) & 3]);
+        if (i & 0x04) printf(" textured");
+      }
+      if (i & 0x02) printf(" semi-transparent");
+      if ((i & 0x01) && (i >= 0x24)) printf(" raw");
+      printf("]");
+    }
+    printf("\n");
+  }
+
+  printf("\ngp1 commands issued\n");
+  for (int i = 0; i < 64; ++i) {
+    if (gpu_stats.gp1_commands[i] == 0)
+      continue;
+    static const char* kNames[] = {
+      "reset", "reset fifo", "ack irq", "display enable", "dma direction",
+      "display area", "horizontal range", "vertical range", "display mode"
+    };
+    printf("  %02X  %8u  %s\n", i, gpu_stats.gp1_commands[i],
+           (i < 9) ? kNames[i] : (i == 0x10 ? "get gpu info" : ""));
+  }
 
   {
     // The Cop0 status history. With only a handful of exceptions in a whole

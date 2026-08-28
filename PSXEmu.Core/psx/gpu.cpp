@@ -94,6 +94,8 @@ int Gpu::Initialize() {
   texture_window_offset_y_ = 0;
   force_set_mask_ = false;
   check_mask_ = false;
+  rect_flip_x_ = false;
+  rect_flip_y_ = false;
 
   display_vram_x_ = 0;
   display_vram_y_ = 0;
@@ -126,12 +128,19 @@ int Gpu::Deinitialize() {
 
 uint32_t Gpu::ReadStatus() {
   GpuStatus s = status_;
-  // The core is not cycle-accurate enough to model the FIFO filling up, so it
-  // reports permanently ready. Reporting busy would deadlock software that
-  // spins on these bits.
+  // The core is not cycle-accurate enough to model the FIFO filling up, so all
+  // three ready bits report permanently ready. Reporting busy would deadlock
+  // software that spins on them.
+  //
+  // Bit 27 has to be included in that. Reporting it only while a VRAM-to-CPU
+  // transfer is in flight looks more honest, but it is not what the bit means:
+  // it says the GPU is ready to hand VRAM over, not that a transfer is already
+  // running. Software that checks readiness *before* issuing the read command
+  // waits for a bit that this GPU would only set afterwards, and spins for
+  // ever - which is exactly where the BIOS shell was stopping.
   s.ready_cmd = 1;
   s.ready_dma = 1;
-  s.ready_vram_send = (transfer_mode_ == kTransferFromVram) ? 1 : 0;
+  s.ready_vram_send = 1;
 
   switch (s.dma_direction) {
     case 0:  s.dma_request = 0; break;              // off
@@ -239,6 +248,7 @@ int Gpu::CommandLength(uint32_t command) {
 
 void Gpu::ExecuteCommand() {
   const uint32_t command = fifo_[0] >> 24;
+  ++stats_.gp0_commands[command & 0xFF];
   if (command >= 0x20 && command < 0x80)
     ++stats_.primitives;
 
@@ -254,8 +264,12 @@ void Gpu::ExecuteCommand() {
   const uint32_t data = fifo_[0];
   switch (command) {
     case 0xE1:  // draw mode setting
+      // GPUSTAT holds bits 0-10 as written and the texture-disable bit at 15.
       status_.raw = (status_.raw & ~0x87FF) | (data & 0x7FF) |
                     ((data & 0x800) << 4);
+      // Bits 12-13 have nowhere to live in GPUSTAT, so they are kept here.
+      rect_flip_x_ = (data & 0x1000) != 0;
+      rect_flip_y_ = (data & 0x2000) != 0;
       break;
     case 0xE2:  // texture window
       texture_window_mask_x_   = (data >> 0)  & 0x1F;
@@ -288,6 +302,7 @@ void Gpu::ExecuteCommand() {
 
 void Gpu::ExecuteGp1(uint32_t data) {
   const uint32_t command = (data >> 24) & 0x3F;
+  ++stats_.gp1_commands[command];
   const uint32_t params = data & 0xFFFFFF;
 
   switch (command) {
@@ -475,6 +490,8 @@ void Gpu::CmdPolygon() {
   state.texpage_colors = status_.texpage_colors;
   state.semi_mode = status_.semi_mode;
   state.dither = status_.dither != 0;
+  state.flip_x = false;
+  state.flip_y = false;
 
   Vertex v[4];
   int word = 0;
@@ -508,11 +525,26 @@ void Gpu::CmdPolygon() {
         state.texpage_y = ((page >> 4) & 1) * 256;
         state.semi_mode = (page >> 5) & 3;
         state.texpage_colors = (page >> 7) & 3;
-        // A polygon's texpage also updates the persistent draw mode.
-        status_.raw = (status_.raw & ~0x09FF) | (page & 0x09FF);
+
+        // Bit 11 disables texturing for this primitive: it is drawn with its
+        // own colour and the texture page is not read at all. Ignoring it
+        // meant sampling whatever happened to be at the texpage and painting
+        // it on screen.
+        if (page & 0x0800)
+          state.textured = false;
+
+        // A polygon's texpage also updates the persistent draw mode. Only
+        // bits 0-8 map straight across; the texture-disable bit lands at
+        // GPUSTAT bit 15, not bit 11 - bit 11 is the mask-set flag, and
+        // writing texture-disable into it corrupted the mask setting that
+        // software reads back.
+        status_.raw = (status_.raw & ~0x81FF) | (page & 0x01FF) |
+                      ((page & 0x0800) << 4);
       }
     }
   }
+
+  RecordSetup(command, state);
 
   RasterTriangle(v[0], v[1], v[2], state);
   if (quad)
@@ -534,6 +566,8 @@ void Gpu::CmdLine() {
   state.texpage_colors = 0;
   state.semi_mode = status_.semi_mode;
   state.dither = status_.dither != 0;
+  state.flip_x = false;
+  state.flip_y = false;
 
   int word = 0;
   uint32_t colour = fifo_[word++] & 0xFFFFFF;
@@ -582,6 +616,12 @@ void Gpu::CmdRectangle() {
   state.semi_mode = status_.semi_mode;
   // Rectangles are never dithered on hardware.
   state.dither = false;
+  state.flip_x = rect_flip_x_;
+  state.flip_y = rect_flip_y_;
+  // A rectangle has no texpage word of its own, so texture disable comes from
+  // the persistent draw mode.
+  if (status_.texture_disable)
+    state.textured = false;
 
   int word = 0;
   const uint32_t colour = fifo_[word++] & 0xFFFFFF;
@@ -616,17 +656,23 @@ void Gpu::CmdRectangle() {
   const uint8_t g = static_cast<uint8_t>(colour >> 8);
   const uint8_t b = static_cast<uint8_t>(colour >> 16);
 
+  RecordSetup(command, state);
+
   for (int32_t row = 0; row < h; ++row) {
     for (int32_t col = 0; col < w; ++col) {
       if (!textured) {
         PlotPixel(x + col, y + row, r, g, b, state, false, false);
         continue;
       }
+      // A flipped rectangle walks its texture backwards from the base.
+      const int32_t tu = state.flip_x ? (base_u - col) : (base_u + col);
+      const int32_t tv = state.flip_y ? (base_v - row) : (base_v + row);
       const uint16_t texel = SampleTexture(
-          static_cast<uint8_t>(base_u + col), static_cast<uint8_t>(base_v + row),
-          state);
-      if (texel == 0)  // fully transparent texel
+          static_cast<uint8_t>(tu), static_cast<uint8_t>(tv), state);
+      if (texel == 0) {  // fully transparent texel
+        ++stats_.transparent_texels;
         continue;
+      }
       uint8_t tr = From5Bit(texel & 0x1F);
       uint8_t tg = From5Bit((texel >> 5) & 0x1F);
       uint8_t tb = From5Bit((texel >> 10) & 0x1F);
@@ -645,7 +691,28 @@ void Gpu::CmdRectangle() {
 // Rasterisation
 // ---------------------------------------------------------------------------
 
-uint16_t Gpu::SampleTexture(uint32_t u, uint32_t v, const DrawState& state) const {
+// Captures the first few textured primitive setups for the harnesses.
+void Gpu::RecordSetup(uint32_t command, const DrawState& state) {
+  // Only 15-bit direct-colour draws for now: those are the ones under
+  // suspicion, and the 4-bit ones flood the log before they appear.
+  if (!state.textured || state.texpage_colors != 2 ||
+      stats_.setup_count >= Stats::kSetupCapacity)
+    return;
+  Stats::TexturedSetup& setup = stats_.setups[stats_.setup_count++];
+  setup.command = static_cast<uint8_t>(command);
+  setup.colors = static_cast<uint8_t>(state.texpage_colors);
+  setup.semi_mode = static_cast<uint8_t>(state.semi_mode);
+  setup.flags = static_cast<uint8_t>((state.raw_texture ? 1 : 0) |
+                                     (state.semi_transparent ? 2 : 0));
+  setup.texpage_x = static_cast<uint16_t>(state.texpage_x);
+  setup.texpage_y = static_cast<uint16_t>(state.texpage_y);
+  setup.clut_x = static_cast<uint16_t>(state.clut_x);
+  setup.clut_y = static_cast<uint16_t>(state.clut_y);
+}
+
+uint16_t Gpu::SampleTexture(uint32_t u, uint32_t v, const DrawState& state) {
+  ++stats_.texels_by_depth[state.texpage_colors & 3];
+
   // The texture window folds the coordinates before they index the page.
   u = (u & ~(texture_window_mask_x_ * 8)) |
       ((texture_window_offset_x_ & texture_window_mask_x_) * 8);
@@ -699,12 +766,16 @@ void Gpu::PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
                     const DrawState& state, bool from_texture,
                     bool texture_mask) {
   if (x < draw_area_left_ || x > draw_area_right_ ||
-      y < draw_area_top_ || y > draw_area_bottom_)
+      y < draw_area_top_ || y > draw_area_bottom_) {
+    ++stats_.clipped;
     return;
+  }
 
   uint16_t& target = VramAt(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
-  if (check_mask_ && (target & 0x8000))
+  if (check_mask_ && (target & 0x8000)) {
+    ++stats_.mask_rejected;
     return;
+  }
 
   // A textured pixel is only blended when its own mask bit says so; an
   // untextured one follows the primitive's semi-transparency flag.
@@ -785,8 +856,10 @@ void Gpu::RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
       const int32_t v = (w1 * a.v + w2 * b.v + w0 * c.v) / double_area;
       const uint16_t texel = SampleTexture(static_cast<uint32_t>(u),
                                            static_cast<uint32_t>(v), state);
-      if (texel == 0)  // fully transparent texel
+      if (texel == 0) {  // fully transparent texel
+        ++stats_.transparent_texels;
         continue;
+      }
 
       uint8_t tr = From5Bit(texel & 0x1F);
       uint8_t tg = From5Bit((texel >> 5) & 0x1F);

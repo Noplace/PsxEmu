@@ -35,20 +35,44 @@ int Dma::Initialize() {
   memset(channels,0,sizeof(channels));
   dma_enable.raw = 0;
   interrupt_control.raw = 0;
+  master_flag_ = false;
   return 0;
 }
 
+// A channel finished. Its flag latches only if that channel's interrupt is
+// enabled; the master flag then follows from the flags and the master enable.
 void Dma::SetInterrupt(int channel) {
-	if (interrupt_control.raw & (1 << (16 + channel))) {
-		interrupt_control.raw |= (1 << (24 + channel)); 
-    //system_->io().SetInterrupt(kInterruptDMA);
-	}
+  if (interrupt_control.raw & (1u << (16 + channel)))
+    interrupt_control.raw |= (1u << (24 + channel));
+  UpdateMasterFlag();
+}
+
+// Bit 31 is read-only and derived: the bus-error flag, or the master enable
+// together with any latched channel flag that is also enabled.
+void Dma::UpdateMasterFlag() {
+  const uint32_t enabled = (interrupt_control.raw >> 16) & 0x7F;
+  const uint32_t flagged = (interrupt_control.raw >> 24) & 0x7F;
+  const bool master_enable = (interrupt_control.raw & 0x00800000) != 0;
+  const bool bus_error = (interrupt_control.raw & 0x00008000) != 0;
+
+  const bool flag = bus_error || (master_enable && (enabled & flagged) != 0);
+  if (flag)
+    interrupt_control.raw |= 0x80000000u;
+  else
+    interrupt_control.raw &= ~0x80000000u;
+
+  // Only the rising edge reaches the CPU. Raising it on every tick while the
+  // flag stays set meant that once any transfer had completed, I_STAT bit 3
+  // was permanently on. The BIOS has no handler for it, so its handler chain
+  // found nothing that would claim the interrupt, took its unhandled-exception
+  // path, and unwound with a longjmp - leaving the Cop0 status register stuck
+  // "inside an exception" so no interrupt was ever delivered again.
+  if (flag && !master_flag_)
+    system_->io().SetInterrupt(kInterruptDMA);
+  master_flag_ = flag;
 }
 
 void Dma::Tick() {
-  if (interrupt_control.raw&0x7f000000) {
-    system_->io().SetInterrupt(kInterruptDMA);
-  }
 }
 
 uint32_t Dma::Read(uint32_t address) {
@@ -190,10 +214,20 @@ void Dma::Write(uint32_t address,uint32_t data) {
     break;
 
    case 0x1F8010F4: {
-    interrupt_control.raw = data;
-    //unsigned long tmp = (~data) & Parent->MC->HRam->u32[0x10f4>>2];
-    //Parent->MC->HRam->u32[0x10f4>>2] = ((tmp ^ data) & 0xffffff) ^ tmp;
-    //_ULong(REG_ICR) &= (~data)&0xff000000;
+    // The channel flags in bits 24-30 and the bus-error flag in bit 15 are
+    // write-one-to-clear; bit 31 is read-only and derived. Assigning the
+    // written value wholesale meant an acknowledge never actually cleared
+    // anything, so the flags stayed latched for the rest of the run.
+    const uint32_t kWritable = 0x00FF803F;      // bits 0-5, 15, 16-23
+    const uint32_t acknowledged = (data >> 24) & 0x7F;
+
+    interrupt_control.raw =
+        (interrupt_control.raw & ~kWritable) | (data & kWritable);
+    interrupt_control.raw &= ~(acknowledged << 24);
+    if (data & 0x00008000)
+      interrupt_control.raw &= ~0x00008000u;    // bus error, also W1C
+
+    UpdateMasterFlag();
     }
     break;
   }
@@ -213,89 +247,79 @@ bool check_endless_loop(uint32_t address) {
   return false;
 };
 
+// DMA channel 2 - the GPU.
+//
+// Three sync modes, and all three are used during a boot. Linked list walks a
+// chain of display-list packets in RAM; block and burst move a straight run of
+// words either way. Block mode is how image data - textures and colour lookup
+// tables - reaches VRAM, and it used to be a BREAKPOINT stub, so every texture
+// the BIOS uploaded that way simply never arrived. The primitives still drew,
+// sampling an empty texture page, and every texel came back transparent.
 void Dma::Dma2() {
-  if ((channels[2].chcr & 0x01000401) == 0x01000401) { //chain
-    auto gpu = system_->gpu_core();
-    auto& ram = system_->io().ram_buffer;
+  const uint32_t chcr = channels[2].chcr;
+  const uint32_t sync = (chcr >> 9) & 3;
+  const bool from_ram = (chcr & 1) != 0;
+  const int32_t step = (chcr & 2) ? -4 : 4;
 
-    unsigned long addr = channels[2].madr&0x1fffff;
-    unsigned long dmaMem;
-    unsigned char * baseAddrB;
-    short count;unsigned int DMACommandCounter = 0;
+  auto gpu = system_->gpu_core();
+  auto& ram = system_->io().ram_buffer;
 
-    auto baseAddrL = ram.u32;
-    //emu_->gpu.status.busy = 0;
+  if (sync == 2) {
+    uint32_t address = channels[2].madr & 0x1FFFFF;
+    uint32_t guard = 0;
     a1 = a2 = a3 = 0xFFFFFF;
-    baseAddrB = (unsigned char*) baseAddrL;
+
     do {
-       
+      if (guard++ > 2000000)
+        break;
+      if (check_endless_loop(address))
+        break;
 
-      if(DMACommandCounter++ > 2000000) break;
-      if(check_endless_loop(addr)) break;
+      // Each node is a header word: a count in the top byte and the address of
+      // the next node in the low 24 bits.
+      const uint32_t header = ram.u32[(address & 0x1FFFFC) >> 2];
+      const uint32_t count = (header >> 24) & 0xFF;
 
-      count = baseAddrB[addr+3];
-
-      dmaMem=addr+4;
-
-      if(count>0) {
-        for (int i=0;i<count;++i) {
-          gpu->WriteData(baseAddrL[(dmaMem>>2)+i]);
-        }
+      for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t word_address = (address + 4 + i * 4) & 0x1FFFFC;
+        gpu->WriteData(ram.u32[word_address >> 2]);
       }
 
+      address = header & 0xFFFFFF;
+    } while (address != 0xFFFFFF && (address & 0x800000) == 0);
 
-      addr = baseAddrL[addr>>2]&0xffffff;
-    }
-    while (addr != 0xffffff);
-
-    /*gpu->status.busy = 0;
-
-
-    uint32_t packet_count;
-    uint32_t vaddress = channels[2].madr&0x1fffff;
-
-    a1 = a2 = a3 = 0xFFFFFF;
-    do {
-      packet_count = ((ram.u32[vaddress>>2] >> 24) & 0xff);
-      if (packet_count!=0) {
-        #if defined(DMA_DEBUG) && defined(_DEBUG)
-        char str[255];
-        sprintf(str,",,dma gpu param_count,%d\n",packet_count);
-        fprintf(system_->csvlog.fp,str);
-        #endif
-        auto mem = &ram.u32[(vaddress>>2)+1];
-        for (uint32_t i=0;i<packet_count;++i) {
-          gpu->WriteData(*mem++);
-        }
-        //if ((ram.u32[vaddress>>2]&0xffffff)==0xffffff) {
-	      //  break;
-        // }
-        vaddress=ram.u32[vaddress>>2]&0xffffff;
-      }	
-      
-      if (check_endless_loop(vaddress)) {
-        #if defined(DMA_DEBUG) && defined(_DEBUG)
-        char str[255];
-        sprintf(str,",,dma endless loop detected\n");
-        fprintf(system_->csvlog.fp,str);
-        #endif
-        break;
-      } 
-    } while (vaddress != 0xffffff);
-
-    gpu->status.busy = 1;*/
+    channels[2].madr = 0xFFFFFF;
+    return;
   }
-  if ((channels[2].chcr & 0x01000201) == 0x01000201) { 
-    BREAKPOINT
+
+  // Burst and block are the same transfer; only where the length comes from
+  // differs. A field of zero means the maximum, not nothing.
+  uint32_t words;
+  if (sync == 0) {
+    words = channels[2].bcr & 0xFFFF;
+    if (words == 0)
+      words = 0x10000;
+  } else {
+    uint32_t block = channels[2].bcr & 0xFFFF;
+    if (block == 0)
+      block = 0x10000;
+    uint32_t blocks = (channels[2].bcr >> 16) & 0xFFFF;
+    if (blocks == 0)
+      blocks = 1;
+    words = block * blocks;
   }
-  if ((channels[2].chcr & 0x01000200) == 0x01000200) { 
-    BREAKPOINT
+
+  uint32_t address = channels[2].madr & 0x1FFFFC;
+  for (uint32_t i = 0; i < words; ++i) {
+    if (from_ram)
+      gpu->WriteData(ram.u32[address >> 2]);
+    else
+      ram.u32[address >> 2] = gpu->ReadData();
+    address = static_cast<uint32_t>(address + step) & 0x1FFFFC;
   }
+  channels[2].madr = address;
 }
 
-
-// CD-ROM to RAM. The controller hands over one sector at a time, so a block
-// transfer just drains its data FIFO into memory.
 void Dma::Dma3() {
   auto& ram = system_->io().ram_buffer;
   auto& cdrom = system_->io().cdrom;

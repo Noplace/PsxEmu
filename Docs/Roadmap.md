@@ -27,7 +27,7 @@ implemented directly against D3D11.
       directly rather than through the solution.
 - [x] Make unimplemented paths countable rather than silent (`TrapCounter`).
 
-## Phase 1 - Devices the boot needs — MOSTLY DONE
+## Phase 1 - Devices the boot needs — DONE
 
 - [x] **Software GPU**: 1 MB VRAM, GP0/GP1, CPU↔VRAM and VRAM↔VRAM transfers,
       flat/Gouraud/textured triangles, lines, rectangles, semi-transparency,
@@ -41,16 +41,19 @@ implemented directly against D3D11.
       raw, `.iso` cooked, and a physical drive by letter. Sector size is
       detected from the file; sync and header are synthesised for images that
       do not store them.
-- [x] **DMA channel 3** (CD-ROM to RAM).
+- [x] **DMA channels 2, 3 and 6**: linked-list, block and burst for the GPU,
+      CD-ROM to RAM, and the ordering-table clear.
 - [x] **SIO0** controller port with the digital pad protocol, and an empty slot
       that correctly reports itself empty.
-- [x] Eleven correctness bugs in the revived CPU and I/O - see
+- [x] Fifteen correctness bugs in the revived CPU, DMA, GPU and I/O - see
       [Bugs-Found.md](Bugs-Found.md).
 - [x] `cpu_test`: 181 checks over the instruction set, the memory map,
       exceptions and the interrupt path. All passing.
 - [x] `media_test`: 56 protocol-level checks over the disc layer and the
       controller, with no BIOS and no window. All passing.
-- [ ] **The boot still does not reach a picture.** See "Where it is stuck".
+- [x] **The BIOS boots and renders its whole intro** - the Sony diamond, "SONY"
+      above it and "COMPUTER ENTERTAINMENT" below, fading in - and then reaches
+      the shell menu, polls the controller port and issues CD-ROM commands.
 
 ## Phase 2 - The GTE
 
@@ -113,53 +116,63 @@ incomplete. Nothing 3D can work until this is real.
 
 ---
 
-## Where it is stuck
+## Where it stands
 
-`boot_runner` now prints the Cop0 status history, and it names the failure
-exactly. The end of a 60-frame run:
+The BIOS boots and renders its whole intro: the Sony diamond, "SONY" above it
+and "COMPUTER ENTERTAINMENT" below, fading in, and then the shell menu with its
+"MEMORY CARD" and "CD PLAYER" entries. The controller port is polled and the
+CD-ROM is issued commands.
 
-```
-exception pc=8005AA14 cause=00000020 sr 00000000 -> 00000000  code=8   (syscall)
-mtc0 SR   pc=00000F80                 sr 00000000 -> 00000404
-rfe       pc=00001014                 sr 00000404 -> 00000401   interrupts on
-exception pc=8005AA18 cause=00000400 sr 00000401 -> 00000404  code=0   (vblank)
-mtc0 SR   pc=00000F80                 sr 00000404 -> 00000404
-rfe       pc=00001014                 sr 00000404 -> 00000401   returned cleanly
-exception pc=8005A8BC cause=00000400 sr 00000401 -> 00000404  code=0   (vblank)
-                                      ... and nothing after this
-```
+What is still visibly wrong, in order:
 
-So:
+1. **A rainbow smear behind the two menu entries.** The BIOS renders a glow to
+   an off-screen VRAM page and draws it back as a 15-bit texture; ours comes
+   out as saturated colour noise. `boot_runner` shows those draws as command
+   `2D` (flat textured quad, raw) sampling texpage (896,0) and (704,0) at
+   15-bit direct, which is what the BIOS asks for - so the corruption is in how
+   that page is *produced*, not how it is read. It is not the mask bit (zero
+   pixels are mask-rejected) and not texture disable (honouring it changed
+   nothing). The next thing to try is dumping that VRAM page across successive
+   frames to see whether it is accumulating.
+2. **The GTE**, still one command out of about thirty. It has not stopped the
+   intro, because that geometry is 2D, but nothing with real 3D will work
+   until it is done.
 
-- The exception machinery works. `ExitCriticalSection` enables interrupts, the
-  first vertical blank is taken, dispatched and returned from cleanly.
-- **The second vertical blank is entered and never returned from.** No further
-  RFE, no further `mtc0` to the status register.
-- Yet the CPU is not stuck in the handler: `--hot` puts it in shell code at
-  `0x80054164`, running with `SR = 0x404` - still nominally inside an
-  exception, so no interrupt can ever be delivered again.
+Phase 2 is still the next big piece, and it needs amidog's GTE suite alongside
+it from the first commit - thirty commands, and a wrong one shows up as "the
+picture looks a bit off" and nothing more.
 
-That combination is the whole clue: **control left the exception handler
-without an RFE.** Either the handler dispatched to a registered callback that
-never came back, or something in the dispatch jumped rather than returned.
+How the boot was unstuck, for the record: the Cop0 status history in
+`boot_runner` showed the second vertical blank being entered and never returned
+from. Following that back gave bug 12 - a finished DMA transfer leaving its
+interrupt permanently asserted, which the BIOS had no handler for, so it took
+its unhandled-exception path and unwound with a longjmp instead of an `rfe`,
+leaving the status register stuck. Then bug 13, a GPUSTAT ready bit reported
+only mid-transfer, was the last spin loop in the way.
 
-Where to start: `--trace-at 8005A8BC` catches the moment, and the handler chain
-walk from `0x00000DE8` onward is the code to follow. `I_STAT` is written only
-once in the whole run, so the vertical-blank acknowledge never happens either,
-which is consistent with the handler not finishing.
+And the intro text arrived with bug 14: DMA channel 2 block mode had been a
+`BREAKPOINT` stub, so every texture the BIOS uploaded that way never reached
+VRAM. The primitives still drew - sampling an empty page, where every texel
+reads as transparent - which is why a run could report 1923 primitives and 73
+million plotted pixels with no text on screen at all.
 
-## A note on the interrupt fix making things look worse
+## A note on a correct fix making things look worse
 
-Fixing bug 7 moved the numbers the wrong way: before it, the boot reached
-640x478 with 890 GP0 words and 1.5M pixels plotted; after it, 256x240 with 3 GP0
-words and nothing drawn.
+Fixing bug 7 - the interrupt setting EPC to the instruction that had already
+run - moved every visible number the wrong way at the time. Before it: 640x478,
+890 GP0 words, 1.5M pixels. After it: 256x240, 3 GP0 words, a black screen.
 
-The fix is still right - `EPC` must point at the instruction that has not run
-yet, and the old behaviour was re-executing instructions. The boot had been
-getting further *by accident*, on a path where interrupts were silently dead and
-the shell was falling through its timeouts into code that happened to touch the
-GPU.
+The fix was kept anyway, because `EPC` must point at the instruction that has
+not run yet and the old behaviour was re-executing instructions. The boot had
+been getting further *by accident*, on a path where interrupts were silently
+dead and the shell fell through its timeouts into code that happened to touch
+the GPU.
 
-Reverting a correct fix to recover a better-looking number is exactly the
-overfitting section 6 of the standards document warns about. It stays, and the
-baseline in [Test-Suite.md](Test-Suite.md) records both sets of numbers.
+That judgement turned out to be load-bearing. Bugs 12 and 13, found afterwards,
+are what actually made the machine boot - and neither could have been seen at
+all while interrupts were dead. Reverting bug 7 to recover a prettier number
+would have hidden both of them behind a screen that looked better and worked
+less.
+
+This is section 6 of the standards document's point about overfitting, from the
+other direction: the number to trust is the one you can explain.

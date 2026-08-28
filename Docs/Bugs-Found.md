@@ -247,3 +247,132 @@ standards document's argument too. The two that would *not* have been caught -
 bug 2 (the instruction cache corrupting data reads) and bug 5 (the DMA
 linked-list index) - are both cases where the unit under test is correct and
 the wiring around it is not, which is what the harnesses are for.
+
+---
+
+These two are what had been stopping the boot. Both were found from the Cop0
+status history that `boot_runner` now prints.
+
+## 12. A finished DMA transfer left its interrupt asserted for ever
+
+`psx/dma.cpp`, `Dma::Tick` and the write to `DICR` (`0x1F8010F4`)
+
+```cpp
+void Dma::Tick() {
+  if (interrupt_control.raw & 0x7f000000)
+    system_->io().SetInterrupt(kInterruptDMA);   // every tick, for ever
+}
+```
+
+`DICR` bits 24-30 are per-channel interrupt flags, and they are
+**write-one-to-clear**. The write handler assigned the whole register instead,
+so an acknowledge never cleared anything. Bit 31, the master flag, is read-only
+and derived from the flags and the enables; it was not computed at all. And the
+interrupt is an *edge*, not a level - `Tick` re-raised it on every single cycle
+while any flag stood.
+
+So the first DMA transfer of the boot latched a flag, and from that moment
+`I_STAT` bit 3 was permanently set.
+
+The consequence was several steps removed from the cause, which is why it took
+the status history to see. The BIOS has no handler registered for a DMA
+interrupt, so its handler chain walked every slot, found nothing that would
+claim it, and took its **unhandled-exception path** at `0x00000E44` - which
+unwinds with a longjmp to a saved recovery context rather than returning
+through `rfe`. The Cop0 status register was therefore never popped, stayed at
+`0x404` ("inside an exception") for the rest of the run, and no interrupt was
+ever delivered again.
+
+**Symptom:** 2 interrupts and 7 RFEs in a 400-frame run. After the fix, 1009
+interrupts and 1023 RFEs.
+
+## 13. GPUSTAT never reported the GPU ready to hand over VRAM
+
+`psx/gpu.cpp`, `Gpu::ReadStatus`
+
+```cpp
+s.ready_vram_send = (transfer_mode_ == kTransferFromVram) ? 1 : 0;
+```
+
+Bit 27 says the GPU is *ready* to send VRAM to the CPU, not that a transfer is
+already running. Reporting it only mid-transfer looks more honest and is
+exactly wrong: software that checks readiness **before** issuing the read
+command waits for a bit that this GPU would only set afterwards.
+
+The other two ready bits (26 and 28) were already hardcoded to 1, because this
+core does not model the FIFO timing. Bit 27 needed to be treated the same way,
+and the inconsistency was the bug.
+
+**Symptom:** the BIOS shell spinning in a four-instruction loop at
+`0x800509AC`, reading GPUSTAT 33 million times in a 400-frame run and masking
+it with `0x08000000`.
+
+**After both fixes the BIOS boots and draws**: the intro's blue radial gradient
+renders correctly across the full 640x478 frame, from 1923 primitives and 73.8
+million plotted pixels, and the BIOS starts issuing CD-ROM commands. What is
+still wrong on screen is the logo geometry, which is the unimplemented GTE.
+
+---
+
+These came from looking at the GPU after the boot started rendering but the
+intro text was missing and the fade did nothing.
+
+## 14. DMA channel 2 block mode was a stub, so textures never reached VRAM
+
+`psx/dma.cpp`, `Dma::Dma2`
+
+```cpp
+if ((channels[2].chcr & 0x01000201) == 0x01000201) {
+  BREAKPOINT      // block mode, in
+}
+if ((channels[2].chcr & 0x01000200) == 0x01000200) {
+  BREAKPOINT      // block mode, out
+}
+```
+
+Only the linked-list sync mode was implemented. Block mode is how image data -
+textures and colour lookup tables - is moved into VRAM, and burst mode is used
+for smaller runs. Both did nothing at all.
+
+The failure was completely quiet, and worse than "no texture": the primitives
+still drew. They sampled a texture page that had never been written, every
+texel came back as the fully-transparent value zero, and the pixel was skipped.
+So a run reported 1923 primitives and 73 million plotted pixels while the
+screen showed no text whatsoever.
+
+`boot_runner` now prints a per-command GP0 histogram and the reason every
+rejected pixel was rejected. Those two numbers together made it obvious:
+textured quads *were* being issued (412 of command `2C`), and 5.19 million
+texels were being rejected as transparent with nothing clipped and nothing
+mask-rejected. A texture that is not there and a texture that is drawn wrongly
+look identical on screen; they do not look identical in that pair of counters.
+
+**Symptom:** the BIOS intro drew its background and its geometry but none of
+its text, and the fade did nothing. **After the fix the whole intro renders**:
+"SONY" above the diamond, "COMPUTER ENTERTAINMENT" below it, and the fade
+animating through.
+
+## 15. A polygon's texture-disable bit was ignored, and written to the wrong place
+
+`psx/gpu.cpp`, `Gpu::CmdPolygon`
+
+```cpp
+status_.raw = (status_.raw & ~0x09FF) | (page & 0x09FF);
+```
+
+Two things wrong in one line. The texpage attribute's bit 11 is *texture
+disable*; GPUSTAT's bit 11 is *set mask bit when drawing*. Copying one into the
+other corrupted the mask setting that software reads back - texture disable
+belongs at GPUSTAT bit 15.
+
+And `state.textured` never consulted it at all, so a primitive that asked to be
+drawn untextured was textured anyway, from whatever happened to be at the
+texture page.
+
+Also fixed alongside: `GP0(E1)` bits 12 and 13, the textured-rectangle X and Y
+flip, were decoded into nothing and are now honoured.
+
+These three are correct-by-inspection fixes rather than ones with an observed
+symptom - the boot checksum did not move. They are the kind of thing that shows
+up later as one game with mirrored sprites, which is exactly why they are worth
+fixing while the code is open rather than hunting later.

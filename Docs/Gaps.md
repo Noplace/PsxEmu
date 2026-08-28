@@ -7,13 +7,6 @@ Hardware and features still missing, ordered by impact. See
 
 ## Blocking a booting machine
 
-### The boot does not reach a picture
-
-The BIOS runs into the shell and takes a vertical blank, but interrupts then
-stop being delivered and nothing is drawn. This is a live bug, not a missing
-device - see "Where it is stuck" in [Roadmap.md](Roadmap.md) for the two
-measurements that narrow it down.
-
 ### GTE - one command out of about thirty
 
 `psx/gte.cpp` implements `RTPS`, and that implementation computes one of its
@@ -24,7 +17,10 @@ saturation, no `FLAG` register, no divide.
 unconditionally, on every call. `MFC2`/`MTC2`/`CFC2`/`CTC2`/`LWC2`/`SWC2` are
 not implemented at all - `LWC2` and `SWC2` are `UNKNOWN` in the opcode table.
 
-Nothing 3D can work until this is real.
+Nothing 3D can work until this is real. It is now the only thing between the
+BIOS intro and a correct picture: the gradient behind the logo renders fine,
+and the logo itself is mangled because its vertices go through a coprocessor
+that is not there.
 
 ### SPU - registers but no mixer
 
@@ -43,12 +39,14 @@ slot are indistinguishable to software. Nothing is loaded or saved.
 
 ### DMA - partial
 
-Channel 2 (GPU) handles linked-list mode only; block mode falls through to
-`BREAKPOINT`. Channel 3 (CD-ROM) and channel 6 (OTC) work. Channels 0 and 1
-(MDEC), 4 (SPU) and 5 (PIO) are unimplemented.
+Channel 2 (GPU) handles all three sync modes - linked list, block and burst -
+in both directions. Channel 3 (CD-ROM) and channel 6 (OTC) work. Channels 0
+and 1 (MDEC), 4 (SPU) and 5 (PIO) are unimplemented.
 
 Transfers complete instantly rather than over time, and the busy bit is not
-modelled.
+modelled. The interrupt side is now right - `DICR`'s flags are
+write-one-to-clear, the master flag is derived, and the CPU interrupt is an
+edge - which is what unstuck the boot (bug 12).
 
 ### CD-ROM - the common path only
 
@@ -90,7 +88,8 @@ rather than fast-and-wrong.
 `RaiseException` fills `Cause` bits 15:8 by copying `SR`'s interrupt-mask bits
 rather than reflecting `I_STAT`. It happens to set IP2 when IM2 is set, which
 is enough for the BIOS handler to recognise an interrupt, but it is not what
-the hardware does and is a suspect in the boot hang.
+the hardware does. Software that reads Cause to decide which device interrupted
+will get the wrong answer.
 
 ### Cycle timing - approximate
 
@@ -102,8 +101,12 @@ at best.
 ### GPU - complete enough to draw, not to be right
 
 Not implemented: texture caching, the GPU's own drawing time (drawing is
-instant), polygon clipping against the drawing area beyond a bounding-box
-test, and the interlace field handling is a first approximation.
+instant), polygon clipping against the drawing area beyond a bounding-box test,
+and the interlace field handling is a first approximation.
+
+One known artifact: the glow the BIOS shell draws behind its menu entries comes
+out as colour noise. See "Where it stands" in [Roadmap.md](Roadmap.md) for what
+has been ruled out.
 
 ## Blocking use
 

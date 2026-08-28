@@ -75,6 +75,13 @@ class Dma : public Component {
     };
     uint32_t raw;
   } interrupt_control;
+  // Recomputes the master flag in bit 31 and raises the CPU interrupt on its
+  // rising edge only. The interrupt is an edge, not a level: re-raising it
+  // while the flag stays set floods the BIOS with an interrupt no handler
+  // claims, and it gives up and unwinds.
+  void UpdateMasterFlag();
+  bool master_flag_;
+
   void Dma2();
   void Dma3();
   void Dma6();

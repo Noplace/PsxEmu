@@ -95,8 +95,9 @@ A run that draws nothing is a failure, not a pass with a boring picture.
 
 Every run prints, unprompted: a framebuffer checksum, the non-black pixel
 count, the `BREAKPOINT` trap count, how many RFEs executed, interrupt counters,
-CD-ROM tallies, GPU tallies, the Cop0 status history, and every hardware
-register touched with read and write counts.
+CD-ROM tallies, GPU tallies, a GP0 and GP1 command histogram, the setup of the
+first textured primitives, the Cop0 status history, and every hardware register
+touched with read and write counts.
 
 The **Cop0 status history** is a ring of the last 64 exceptions, RFEs and writes
 to the status register, with the pc and the before/after status each time. With
@@ -106,6 +107,14 @@ second vertical blank is entered and never returned from".
 
 The register list is the single most useful thing in that output. It answers
 "has the machine got as far as X yet" without any tracing at all.
+
+The **GPU counters** answer the other question that costs the most time: a
+primitive that was never issued, one that was issued and drew nothing, and one
+that drew the wrong thing all look identical on screen. The command histogram
+says whether it was issued; the rejection counts - clipped, mask-rejected,
+transparent - say why its pixels went nowhere; the texel-depth split says
+whether its texture was read the way it was meant to be. Bug 14 was found from
+two of those numbers sitting next to each other.
 
 ## Baselines
 
@@ -118,41 +127,52 @@ part being worked on.
 
 | Measure | Value |
 |---|---|
-| instructions | 193,621,346 |
-| resolution | 256x240 |
-| framebuffer checksum | `aedac3154f8a0383` |
-| non-black (visible) | 0 of 61,440 |
-| unimplemented paths | 0 |
-| RFEs executed | 7 |
-| interrupts taken | 2 |
-| final I_STAT / I_MASK / SR | `00000009` / `00000009` / `00000404` |
-| GP0 words / GP1 words | 3 / 0 |
-| CD-ROM commands | 0 |
+| instructions | 185,788,198 |
+| resolution | 640x478 |
+| framebuffer checksum | `e9ea0b3d07bd3b89` |
+| non-black (visible) | 305,920 of 305,920 |
+| unimplemented paths | 16 |
+| RFEs executed | 1,023 |
+| interrupts taken | 1,009 |
+| final I_STAT / I_MASK / SR | `00000001` / `0000004D` / `40000401` |
+| GP0 words / GP1 words | 38,320 / 2,694 |
+| primitives / pixels | 2,234 / 106,401,520 |
+| texels 4-bit / 15-bit | 3,945,208 / 2,139,264 |
+| CD-ROM commands | 3 |
 
-**These are baselines, not targets.** They record where the boot currently
-stops, so an unexplained change is visible. A checksum of `aedac3154f8a0383`
-means "black screen".
+**These are baselines, not targets.** The BIOS boots and draws its intro: the
+blue radial gradient fills the frame correctly. The logo geometry on top of it
+is wrong, because the GTE is unimplemented - the 56 unimplemented paths are
+`COP2` being reached and trapping.
 
-**The previous baseline, for comparison**, before the interrupt fix (bug 7):
-640x478, checksum `7f931a8558291383`, 890 GP0 words, 8 primitives, 1,535,514
-pixels plotted, 1 interrupt taken. That run got further *by accident* - see the
-note at the end of [Roadmap.md](Roadmap.md). The numbers are kept here so the
-comparison is not lost.
+The 12 GPU primitives-per-frame and the pixel count are the numbers most
+sensitive to a renderer change; the checksum is sensitive to everything.
+
+**Earlier baselines, kept so the progression is not lost:**
+
+| When | Result |
+|---|---|
+| Before the interrupt fix (bug 7) | 640x478, `7f931a8558291383`, 890 GP0 words, 1 interrupt - got there by accident, on a path where interrupts were dead |
+| After bug 7, before the DMA fix (bug 12) | 256x240, `aedac3154f8a0383`, 3 GP0 words, 2 interrupts, black screen |
+| After bugs 12 and 13 | 640x478, `f0afceabcd797b57`, 18,224 GP0 words, 1,923 primitives - boots and draws, but no intro text |
+| After bug 14 (DMA block mode) | the table above - the full intro renders |
 
 ### Register access, same run
 
 | Register | Meaning | Expected |
 |---|---|---|
 | `1F801000-1020` | memory control | 1 write each |
-| `1F801060` | RAM size | 2 writes |
-| `1F801070/74` | I_STAT / I_MASK | 1 / 2 writes |
-| `1F801D80-DFE` | SPU register file | 1 write each |
+| `1F801040/44/4A` | controller port | polled, ~728 reads |
+| `1F801070` | I_STAT | 39,509 reads, 2,429 acknowledges |
+| `1F801074` | I_MASK | 25,196 reads, 13 writes |
+| `1F801100-1128` | root counters | written |
+| `1F801800-1803` | CD-ROM | 3 commands issued |
+| `1F801810/14` | GP0 / GPUSTAT | 18,224 / 2,694 writes |
+| `1F801D80-DFE` | SPU register file | written |
 | `1F802041` | POST (boot progress) | 15 writes |
 
-Not yet reached in this run, because the boot stops first: the CD-ROM at
-`1F801800-1F801803`, the controller port at `1F801040-1F80104E`, the timers,
-and the GPU. All four devices exist and are wired in; `media_test` exercises
-the CD-ROM directly.
+Every device is now reached. A device dropping off this list is a regression
+even when the checksum has not moved.
 
 ## Traps to remember
 
@@ -171,8 +191,10 @@ wrong way, and it stays anyway.
 
 ## Still to build
 
-- **`gte_test`** - amidog's GTE suite. Needed from the day GTE work starts;
-  thirty commands and no game will tell you which one is wrong.
+- **`gte_test`** - amidog's GTE suite. This is the next thing to write: the GTE
+  is now the only thing between the BIOS intro and a correct picture, and a
+  wrong command out of thirty shows up as "the geometry looks a bit off" and
+  nothing more.
 - **amidog's CPU suite** on top of `cpu_test`, which covers the instruction set
   but not its timing.
 - **Memory card round trips** in `media_test`, once cards exist. Per the

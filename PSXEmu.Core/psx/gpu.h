@@ -63,6 +63,34 @@ class Gpu : public GpuCore {
     uint64_t gp1_words;
     uint64_t primitives;
     uint64_t pixels;
+    // How many times each GP0 and GP1 command byte was executed. A primitive
+    // that is never issued and one that is issued and drawn wrongly look the
+    // same on screen; this separates them.
+    uint32_t gp0_commands[256];
+    uint32_t gp1_commands[64];
+    // Pixels rejected by each of the reasons PlotPixel can reject one.
+    uint64_t clipped;
+    uint64_t mask_rejected;
+    uint64_t transparent_texels;
+    // Texels sampled at each colour depth: 4-bit CLUT, 8-bit CLUT, 15-bit
+    // direct. A texture sampled at the wrong depth is the difference between
+    // a picture and coloured noise.
+    uint64_t texels_by_depth[4];
+
+    // The setup of the first few textured primitives. A primitive that draws
+    // noise and one that draws a picture differ only in these fields, and they
+    // are not visible from anywhere else.
+    struct TexturedSetup {
+      uint8_t command;
+      uint8_t colors;        // 0 = 4-bit CLUT, 1 = 8-bit CLUT, 2 = 15-bit
+      uint8_t semi_mode;
+      uint8_t flags;         // bit 0 raw, bit 1 semi-transparent, bit 2 disabled
+      uint16_t texpage_x, texpage_y;
+      uint16_t clut_x, clut_y;
+    };
+    static const int kSetupCapacity = 32;
+    TexturedSetup setups[kSetupCapacity];
+    uint32_t setup_count;
   };
   const Stats& stats() const { return stats_; }
 
@@ -129,6 +157,8 @@ class Gpu : public GpuCore {
   uint32_t texture_window_mask_x_, texture_window_mask_y_;
   uint32_t texture_window_offset_x_, texture_window_offset_y_;
   bool force_set_mask_, check_mask_;
+  // GP0(E1) bits 12-13: a textured rectangle can be mirrored in either axis.
+  bool rect_flip_x_, rect_flip_y_;
 
   // Display state.
   uint32_t display_vram_x_, display_vram_y_;
@@ -174,7 +204,10 @@ class Gpu : public GpuCore {
     uint32_t texpage_colors;
     uint32_t semi_mode;
     bool dither;
+    bool flip_x, flip_y;   // textured rectangles only
   };
+
+  void RecordSetup(uint32_t command, const DrawState& state);
 
   void RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
                       const DrawState& state);
@@ -182,7 +215,7 @@ class Gpu : public GpuCore {
                        const DrawState& state);
   void PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
                  const DrawState& state, bool from_texture, bool texture_mask);
-  uint16_t SampleTexture(uint32_t u, uint32_t v, const DrawState& state) const;
+  uint16_t SampleTexture(uint32_t u, uint32_t v, const DrawState& state);
   void BlendSemiTransparent(uint16_t* dst, uint8_t r, uint8_t g, uint8_t b,
                             uint32_t mode) const;
 
