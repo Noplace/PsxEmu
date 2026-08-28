@@ -318,6 +318,11 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(cd_stats.interrupts),
          static_cast<unsigned long long>(cd_stats.unknown_commands));
 
+  const emulation::psx::Gte::Stats& gte_stats = system->gte().stats();
+  printf("gte            %llu commands, %llu unrecognised\n",
+         static_cast<unsigned long long>(gte_stats.commands),
+         static_cast<unsigned long long>(gte_stats.unknown_commands));
+
   const emulation::psx::Gpu::Stats& gpu_stats = system->gpu().stats();
   printf("gpu            %llu GP0 words, %llu GP1 words\n",
          static_cast<unsigned long long>(gpu_stats.gp0_words),

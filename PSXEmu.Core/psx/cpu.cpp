@@ -73,8 +73,8 @@ Cpu::Instruction Cpu::machine_instruction_main_[64] = {
   &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN,
   &Cpu::LB     , &Cpu::LH     , &Cpu::LWL    , &Cpu::LW     , &Cpu::LBU    , &Cpu::LHU    , &Cpu::LWR    , &Cpu::UNKNOWN,
   &Cpu::SB     , &Cpu::SH     , &Cpu::SWL    , &Cpu::SW     , &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::SWR    , &Cpu::UNKNOWN,
-  &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN,
-  &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN,
+  &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::LWC2   , &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN,
+  &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::SWC2   , &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN, &Cpu::UNKNOWN,
 };
 
 Cpu::Instruction Cpu::machine_instruction_special_[64] = {
@@ -768,11 +768,54 @@ void Cpu::COP0() {
   Tick();
 }
 
+// Coprocessor 2 is the GTE. Bit 25 of the instruction picks between a command
+// and a register move; the move form is selected by rs, exactly as for Cop0.
+//
+// Only the command form was handled before, and it trapped afterwards anyway,
+// so every MFC2/MTC2/CFC2/CTC2 - which is how software gets its vertices in
+// and its results out - did nothing at all.
 void Cpu::COP2() {
-  if ((context_->code>>25)==0x25) {
-    system_->gte().ExecuteCommand(context_->code);
+  if (context_->code & (1u << 25)) {
+    system_->gte().Execute(context_->code);
+    Tick();
+    return;
   }
-  BREAKPOINT
+
+  switch (context_->rs()) {
+    case 0x00:  // MFC2
+      context_->gp.reg[rt_] = system_->gte().ReadData(rd_);
+      break;
+    case 0x02:  // CFC2
+      context_->gp.reg[rt_] = system_->gte().ReadControl(rd_);
+      break;
+    case 0x04:  // MTC2
+      system_->gte().WriteData(rd_, context_->gp.reg[rt_]);
+      break;
+    case 0x06:  // CTC2
+      system_->gte().WriteControl(rd_, context_->gp.reg[rt_]);
+      break;
+    default:
+      BREAKPOINT
+      break;
+  }
+  Tick();
+}
+
+// LWC2 and SWC2 move a GTE data register straight to or from memory. They were
+// UNKNOWN in the opcode table, so a display list built with them silently
+// transferred nothing.
+void Cpu::LWC2() {
+  const uint32_t address =
+      context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
+  system_->gte().WriteData(rt_, Load(kM32, address));
+  Tick();
+}
+
+void Cpu::SWC2() {
+  const uint32_t address =
+      context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
+  Store(kM32, system_->gte().ReadData(rt_), address);
+  Tick();
 }
 
 void Cpu::LB() {

@@ -21,6 +21,7 @@ A PlayStation 1 emulator revived from a 2012-2014 codebase.
   of Debug/Release x Win32/x64, plus three headless harnesses.
 - `cpu_test`: 181 checks over the instruction set, the memory map, exceptions
   and the interrupt path. All passing.
+- `gte_test`: 99 checks over the geometry coprocessor. All passing.
 - `media_test`: 56 checks over disc images and the CD-ROM controller. All
   passing.
 - A software GPU that owns VRAM and produces a framebuffer.
@@ -33,6 +34,10 @@ A PlayStation 1 emulator revived from a 2012-2014 codebase.
 it and "COMPUTER ENTERTAINMENT" below, fading in - and then reaches the shell
 menu, polls the controller port and issues CD-ROM commands.
 
-**What is still wrong:** a rainbow smear behind the two menu entries - narrowed
-to the uploaded texture data rather than the rasteriser - and the GTE, still one
-command out of about thirty. See "Where it stands" in [Roadmap.md](Roadmap.md).
+**The GTE is implemented** - all 22 commands, the register file, saturation and
+the FLAG register - with `gte_test` covering it in 99 checks. It has not been
+exercised by real software yet: the BIOS shell issues zero GTE commands.
+
+**What is still wrong:** a rainbow smear behind the two menu entries, narrowed
+to the uploaded texture data rather than the rasteriser. See "Where it stands"
+in [Roadmap.md](Roadmap.md).

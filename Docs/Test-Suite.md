@@ -41,6 +41,38 @@ time to find the hard way:
   an `rfe` the status stack is popped twice and interrupts never come back.
   That is bug 7.
 
+## gte_test
+
+    gte_test [group]
+
+Unit tests for the geometry coprocessor. No BIOS, no window. Registers are
+loaded, a command word is executed, and the results are checked - the same path
+a game takes, through the same MFC2/MTC2/CFC2/CTC2 semantics.
+
+**Current: 99 checks, 0 failures.**
+
+| Group | Covers |
+|---|---|
+| `registers` | the 16-bit packing, which registers sign-extend on read, the read-only ones, SXYP pushing the FIFO rather than storing, IRGB/ORGB packing and clamping, LZCS/LZCR |
+| `flags` | FLAG cleared at the start of every command, IR saturation and its flag bit, the lm bit choosing 0 or -8000 as the floor, the derived error bit, MAC0 overflow |
+| `rtps` | the identity transform, the translation vector, the depth FIFO push, the screen offset, the perspective divide and its overflow, IR0 from DQA/DQB, and RTPT doing all three vertices |
+| `nclip` | the signed area, both windings, and a degenerate triangle |
+| `averagez` | AVSZ3 over the newest three depths, AVSZ4 over all four, and OTZ saturating |
+| `arithmetic` | SQR, OP as a cross product, GPF scaling by IR0, GPL adding to the accumulator |
+| `mvmva` | each matrix, each vector including IR, each translation, and the documented broken far-colour case |
+| `colour` | the lighting chain, CODE passing through the colour FIFO untouched, the FIFO shifting, and component saturation |
+| `unknown` | an unrecognised command being counted rather than silently ignored |
+
+Expected values are derived from the hardware description, not from this
+implementation, so a failure means the code is wrong rather than that it
+changed. NCLIP's area, OP's cross product and AVSZ's weighted sum are each
+computed by hand in the test.
+
+**The important caveat:** the BIOS shell issues *zero* GTE commands, so nothing
+here has been checked against real software. These tests say the implementation
+agrees with the description; they do not yet say it agrees with the hardware.
+That is what amidog's suite is for, and it is the next thing to run.
+
 ## media_test
 
     media_test [work-directory]
@@ -96,9 +128,9 @@ A run that draws nothing is a failure, not a pass with a boring picture.
 
 Every run prints, unprompted: a framebuffer checksum, the non-black pixel
 count, the `BREAKPOINT` trap count, how many RFEs executed, interrupt counters,
-CD-ROM tallies, GPU tallies, a GP0 and GP1 command histogram, the setup of the
-first textured primitives, the Cop0 status history, and every hardware register
-touched with read and write counts.
+CD-ROM tallies, GTE and GPU tallies, GP0/GP1 and GTE command histograms, the
+setup of the first textured primitives, every CPU-to-VRAM transfer, the Cop0
+status history, and every hardware register touched with read and write counts.
 
 The **Cop0 status history** is a ring of the last 64 exceptions, RFEs and writes
 to the status register, with the pc and the before/after status each time. With
@@ -141,11 +173,12 @@ part being worked on.
 
 | Measure | Value |
 |---|---|
-| instructions | 185,788,198 |
+| instructions | 185,794,454 |
 | resolution | 640x478 |
-| framebuffer checksum | `e9ea0b3d07bd3b89` |
+| framebuffer checksum | `d357591479cbd199` |
 | non-black (visible) | 305,920 of 305,920 |
-| unimplemented paths | 16 |
+| unimplemented paths | 0 |
+| GTE commands | 0 - the shell menu is entirely 2D |
 | RFEs executed | 1,023 |
 | interrupts taken | 1,009 |
 | final I_STAT / I_MASK / SR | `00000001` / `0000004D` / `40000401` |
@@ -169,7 +202,8 @@ sensitive to a renderer change; the checksum is sensitive to everything.
 | Before the interrupt fix (bug 7) | 640x478, `7f931a8558291383`, 890 GP0 words, 1 interrupt - got there by accident, on a path where interrupts were dead |
 | After bug 7, before the DMA fix (bug 12) | 256x240, `aedac3154f8a0383`, 3 GP0 words, 2 interrupts, black screen |
 | After bugs 12 and 13 | 640x478, `f0afceabcd797b57`, 18,224 GP0 words, 1,923 primitives - boots and draws, but no intro text |
-| After bug 14 (DMA block mode) | the table above - the full intro renders |
+| After bug 14 (DMA block mode) | 640x478, `e9ea0b3d07bd3b89`, 16 unimplemented paths - the full intro renders |
+| After the GTE (Phase 2) | the table above; the 16 unimplemented paths were COP2 register moves, now handled |
 
 ### Register access, same run
 
@@ -205,10 +239,9 @@ wrong way, and it stays anyway.
 
 ## Still to build
 
-- **`gte_test`** - amidog's GTE suite. This is the next thing to write: the GTE
-  is now the only thing between the BIOS intro and a correct picture, and a
-  wrong command out of thirty shows up as "the geometry looks a bit off" and
-  nothing more.
+- **amidog's GTE suite** on top of `gte_test`. The local tests check the
+  implementation against the hardware description; only real test software
+  checks it against the hardware.
 - **amidog's CPU suite** on top of `cpu_test`, which covers the instruction set
   but not its timing.
 - **Memory card round trips** in `media_test`, once cards exist. Per the

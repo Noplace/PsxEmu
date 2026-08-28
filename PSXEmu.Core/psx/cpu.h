@@ -457,6 +457,8 @@ class Cpu : public Component {
   void LUI();
   void COP0();
   void COP2();
+  void LWC2();
+  void SWC2();
 
   void LB();
   void LH();

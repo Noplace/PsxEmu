@@ -7,20 +7,17 @@ Hardware and features still missing, ordered by impact. See
 
 ## Blocking a booting machine
 
-### GTE - one command out of about thirty
+### GTE - implemented, not yet validated against real 3D
 
-`psx/gte.cpp` implements `RTPS`, and that implementation computes one of its
-three components and leaves the other two commented out. There is no
-saturation, no `FLAG` register, no divide.
+All 22 commands, the full register file, saturation, the FLAG register and the
+Newton-Raphson divide are implemented, and `gte_test` covers them with 99
+checks. What is missing is confidence: **the BIOS shell issues zero GTE
+commands**, so no real software has exercised any of it. Until amidog's GTE
+suite or a 3D game runs against it, "passing" means "agrees with the hardware
+description I read", not "agrees with the hardware".
 
-`Cpu::COP2` dispatches the command form and then hits `BREAKPOINT`
-unconditionally, on every call. `MFC2`/`MTC2`/`CFC2`/`CTC2`/`LWC2`/`SWC2` are
-not implemented at all - `LWC2` and `SWC2` are `UNKNOWN` in the opcode table.
-
-Nothing 3D can work until this is real. It is now the only thing between the
-BIOS intro and a correct picture: the gradient behind the logo renders fine,
-and the logo itself is mangled because its vertices go through a coprocessor
-that is not there.
+The MVMVA garbage matrix (matrix select 3) is written from the description
+rather than from measurement.
 
 ### SPU - registers but no mixer
 

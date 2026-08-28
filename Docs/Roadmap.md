@@ -47,6 +47,7 @@ implemented directly against D3D11.
       that correctly reports itself empty.
 - [x] Fifteen correctness bugs in the revived CPU, DMA, GPU and I/O - see
       [Bugs-Found.md](Bugs-Found.md).
+- [x] `gte_test`: 99 checks over the geometry coprocessor. All passing.
 - [x] `cpu_test`: 181 checks over the instruction set, the memory map,
       exceptions and the interrupt path. All passing.
 - [x] `media_test`: 56 protocol-level checks over the disc layer and the
@@ -55,19 +56,29 @@ implemented directly against D3D11.
       above it and "COMPUTER ENTERTAINMENT" below, fading in - and then reaches
       the shell menu, polls the controller port and issues CD-ROM commands.
 
-## Phase 2 - The GTE
+## Phase 2 - The GTE — DONE, pending a real 3D workload
 
-`gte.cpp` implements one command out of about thirty, and that one is
-incomplete. Nothing 3D can work until this is real.
-
-- [ ] All 30-odd commands: RTPS/RTPT, NCLIP, AVSZ3/4, MVMVA, NCDS/NCDT, CC/CDP,
-      DPCS/DPCT, INTPL, SQR, OP, GPF/GPL, NCS/NCT, NCCS/NCCT.
-- [ ] Saturation and the FLAG register, which games read.
-- [ ] The unsigned Newton-Raphson divide, including the overflow case.
-- [ ] `MFC2`/`MTC2`/`CFC2`/`CTC2`/`LWC2`/`SWC2` in the CPU - `COP2` currently
-      dispatches the command form and then unconditionally traps.
-- [ ] **amidog's GTE test suite from day one.** Thirty commands, and no game
-      will tell you which one is wrong.
+- [x] **All 22 commands**: RTPS/RTPT, NCLIP, AVSZ3/4, MVMVA, NCDS/NCDT,
+      CC/CDP, DPCS/DPCT, INTPL, DCPL, SQR, OP, GPF/GPL, NCS/NCT, NCCS/NCCT.
+- [x] **The full register file** - 32 data and 32 control registers, with the
+      screen, depth and colour FIFOs, the IRGB/ORGB packing, LZCS/LZCR, and
+      the read-back quirks (H sign-extends, ORGB and LZCR are read-only, SXYP
+      pushes rather than stores).
+- [x] **Saturation and the FLAG register**, including the derived error bit and
+      the RTPS IR3 quirk where the flag is judged on a differently shifted
+      value from the one stored.
+- [x] **The unsigned Newton-Raphson divide** off its 257-entry table,
+      including the overflow at H >= 2*SZ3.
+- [x] `MFC2`/`MTC2`/`CFC2`/`CTC2` in `COP2`, and `LWC2`/`SWC2`, which were
+      `UNKNOWN` in the opcode table.
+- [x] `gte_test`: 99 checks over the register file, saturation, and every
+      command with an independently derived expected value. All passing.
+- [ ] **Validate against a real 3D workload.** The BIOS shell issues *zero*
+      GTE commands - it is entirely 2D - so nothing here has been exercised by
+      real software yet. amidog's GTE suite, or any 3D game, is the next check.
+- [ ] MVMVA's garbage matrix (matrix select 3) is implemented from the
+      description rather than from measurement; it is not something software
+      uses deliberately.
 
 ## Phase 3 - Making games boot
 
