@@ -1,0 +1,121 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|Win32">
+      <Configuration>Debug</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|Win32">
+      <Configuration>Release</Configuration>
+      <Platform>Win32</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{93C78BE1-472F-495C-9E4F-37CB8DA7E8C9}</ProjectGuid>
+    <RootNamespace>PSXEmuCore</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+    <!-- This project references no vcpkg packages; leaving vcpkg enabled makes
+         it install variants it never uses, some of which do not exist for x86. -->
+    <VcpkgEnabled>false</VcpkgEnabled>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>StaticLibrary</ConfigurationType>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup>
+    <!-- MSBuild puts x64 output under $(SolutionDir)x64\ but Win32 output
+         straight into $(SolutionDir), with no platform folder. Naming the
+         platform explicitly keeps both consistent. -->
+    <OutDir>$(SolutionDir)Build\$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(SolutionDir)Build\$(Platform)\$(Configuration)\obj\$(ProjectName)\</IntDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <ConformanceMode>true</ConformanceMode>
+      <!-- The core folder is the include root: every include, here and in every
+           consumer, is written relative to it. -->
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <MultiProcessorCompilation>true</MultiProcessorCompilation>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <Optimization>Disabled</Optimization>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <Optimization>MaxSpeed</Optimization>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="psx\cdrom.cpp" />
+    <ClCompile Include="psx\cpu.cpp" />
+    <ClCompile Include="psx\debug_assist.cpp" />
+    <ClCompile Include="psx\disc.cpp" />
+    <ClCompile Include="psx\dma.cpp" />
+    <ClCompile Include="psx\gpu.cpp" />
+    <ClCompile Include="psx\gte.cpp" />
+    <ClCompile Include="psx\io_interface.cpp" />
+    <ClCompile Include="psx\kernel.cpp" />
+    <ClCompile Include="psx\mc.cpp" />
+    <ClCompile Include="psx\root_counter.cpp" />
+    <ClCompile Include="psx\sio.cpp" />
+    <ClCompile Include="psx\spu.cpp" />
+    <ClCompile Include="psx\system.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="platform\timer.h" />
+    <ClInclude Include="platform\types.h" />
+    <ClInclude Include="platform\util.h" />
+    <ClInclude Include="psx\component.h" />
+    <ClInclude Include="psx\cpu.h" />
+    <ClInclude Include="psx\cpu_context.h" />
+    <ClInclude Include="psx\debug.h" />
+    <ClInclude Include="psx\debug_assist.h" />
+    <ClInclude Include="psx\dma.h" />
+    <ClInclude Include="psx\gpu.h" />
+    <ClInclude Include="psx\gpu_core.h" />
+    <ClInclude Include="psx\gte.h" />
+    <ClInclude Include="psx\io_interface.h" />
+    <ClInclude Include="psx\kernel.h" />
+    <ClInclude Include="psx\mc.h" />
+    <ClInclude Include="psx\psx.h" />
+    <ClInclude Include="psx\root_counter.h" />
+    <ClInclude Include="psx\spu.h" />
+    <ClInclude Include="psx\system.h" />
+    <ClInclude Include="psx\types.h" />
+    <ClInclude Include="utilities\cdrom\iso9660.h" />
+    <ClInclude Include="utilities\lean\hash_table.h" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

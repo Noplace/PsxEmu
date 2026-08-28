@@ -1,0 +1,138 @@
+# Test suite and regression baselines
+
+Per section 6 of
+[Emulator-Project-Standards.md](Emulator-Project-Standards.md).
+
+Build both harnesses with `PSXEmu.Core\tools\build_tools.bat`; they land in
+`Temp\tools\`.
+
+## media_test
+
+    media_test [work-directory]
+
+Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
+window, no disc of its own - it writes the images it needs into the work
+directory and deletes them afterwards. Exit code 0 if everything passed.
+
+**Current: 56 checks, 0 failures.**
+
+Covers, in the order it runs:
+
+- **MSF/BCD round trips**, including the awkward boundaries (74, 75, 76 frames;
+  4499, 4500, 4501 sectors)
+- **A cooked 2048-byte ISO**: track table, the 150-sector lead-in, the right
+  sector coming back for a given address, a synthesised sync pattern and
+  header, and reads off both ends failing rather than returning stale bytes
+- **A cue sheet with two tracks**: track starts, lengths and types, and a
+  sector inside track 2 resolving through that track's own offset
+- **The controller with an empty tray**: Getstat answers, GetID reports "no
+  disc" as an INT5 rather than silence, and an unknown command still answers
+- **The controller with a disc**: GetID reports a licensed region, GetTN
+  reports the track count, and Setloc + ReadN delivers the sector that was
+  actually asked for
+
+Every one of these is a silent failure otherwise. A sector reader off by the
+150-sector lead-in returns perfectly valid data from the wrong place; a
+controller that ignores a command it does not know hangs whatever sent it.
+Neither says anything except "the game did not boot".
+
+## boot_runner
+
+    boot_runner <bios.bin> [options]
+
+| Option | Effect |
+|---|---|
+| `--disc <path>` | Mount a disc: a `.cue`, an image file, or a drive letter |
+| `--exe <file>` | Side-load a PS-EXE |
+| `--frames <n>` | Run for n frames, then stop (default 300) |
+| `--ppm <file>` | Write the final visible frame as a PPM |
+| `--vram <file>` | Write the whole 1024x512 of VRAM as a PPM |
+| `--trace <n>` | Disassemble n instructions as they execute |
+| `--trace-skip <n>` | Start tracing only after n instructions |
+| `--trace-at <hex>` | Start tracing when the pc first reaches an address |
+| `--trace-irq` | Start tracing when the first hardware interrupt is taken |
+| `--hot <n>` | Print the n most-executed addresses |
+| `--dis <hex>:<n>` | Disassemble n instructions from an address (RAM or BIOS) |
+| `--quiet` | Suppress the per-100-frame progress lines |
+
+Exit code is 0 if anything was drawn, 1 if the final frame was entirely black.
+A run that draws nothing is a failure, not a pass with a boring picture.
+
+Every run prints, unprompted: a framebuffer checksum, the non-black pixel
+count, the `BREAKPOINT` trap count, how many RFEs executed, interrupt counters,
+CD-ROM tallies, GPU tallies, and every hardware register touched with read and
+write counts.
+
+The register list is the single most useful thing in that output. It answers
+"has the machine got as far as X yet" without any tracing at all.
+
+## Baselines
+
+Check these after any change to the CPU, timing, or the renderer - not just the
+part being worked on.
+
+### BIOS boot, SCPH1001
+
+    boot_runner bios/SCPH1001.BIN --frames 400 --quiet
+
+| Measure | Value |
+|---|---|
+| instructions | 193,621,346 |
+| resolution | 256x240 |
+| framebuffer checksum | `aedac3154f8a0383` |
+| non-black (visible) | 0 of 61,440 |
+| unimplemented paths | 0 |
+| RFEs executed | 7 |
+| interrupts taken | 2 |
+| final I_STAT / I_MASK / SR | `00000009` / `00000009` / `00000404` |
+| GP0 words / GP1 words | 3 / 0 |
+| CD-ROM commands | 0 |
+
+**These are baselines, not targets.** They record where the boot currently
+stops, so an unexplained change is visible. A checksum of `aedac3154f8a0383`
+means "black screen".
+
+**The previous baseline, for comparison**, before the interrupt fix (bug 7):
+640x478, checksum `7f931a8558291383`, 890 GP0 words, 8 primitives, 1,535,514
+pixels plotted, 1 interrupt taken. That run got further *by accident* - see the
+note at the end of [Roadmap.md](Roadmap.md). The numbers are kept here so the
+comparison is not lost.
+
+### Register access, same run
+
+| Register | Meaning | Expected |
+|---|---|---|
+| `1F801000-1020` | memory control | 1 write each |
+| `1F801060` | RAM size | 2 writes |
+| `1F801070/74` | I_STAT / I_MASK | 1 / 2 writes |
+| `1F801D80-DFE` | SPU register file | 1 write each |
+| `1F802041` | POST (boot progress) | 15 writes |
+
+Not yet reached in this run, because the boot stops first: the CD-ROM at
+`1F801800-1F801803`, the controller port at `1F801040-1F80104E`, the timers,
+and the GPU. All four devices exist and are wired in; `media_test` exercises
+the CD-ROM directly.
+
+## Traps to remember
+
+**Line counts are not failure counts.** When the amidog suites go in, count the
+actual failure marker, not output lines.
+
+**Clear every save file before checksumming a game.** A game that finds a save
+boots differently and gives a different, perfectly reproducible checksum. When
+memory cards exist, clear them.
+
+**Do not overfit.** Section 6 of the standards document records tuning one GBA
+suite by 577 results while breaking 74 in two others. If a fix cannot be
+justified from documented hardware behaviour, record it as a guess or leave it.
+Bug 7 is the case in point here: the correct fix moved every visible number the
+wrong way, and it stays anyway.
+
+## Still to build
+
+- **`gte_test`** - amidog's GTE suite. Needed from the day GTE work starts;
+  thirty commands and no game will tell you which one is wrong.
+- **`cpu_test`** - amidog's CPU suite, as the regression gate for Phase 5.
+- **Memory card round trips** in `media_test`, once cards exist. Per the
+  standards document, the *wipe* is the point: write, wipe, read back, or a
+  `serialize()` that stores nothing still appears to work.

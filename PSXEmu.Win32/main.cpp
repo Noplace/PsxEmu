@@ -1,0 +1,351 @@
+/*****************************************************************************************************************
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+*                                                                                                                *
+* Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
+* associated documentation files (the "Software"), to deal in the Software without restriction, including        *
+* without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell        *
+* copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the       *
+* following conditions:                                                                                          *
+*                                                                                                                *
+* The above copyright notice and this permission notice shall be included in all copies or substantial           *
+* portions of the Software.                                                                                      *
+*                                                                                                                *
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT          *
+* LIMITED TO THE WARRANTIES OF MERCHANTABILITY, * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.          *
+* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, * DAMAGES OR OTHER LIABILITY,      *
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
+* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
+*****************************************************************************************************************/
+//
+// PSXEmu.Win32 - the Win32 front end.
+//
+// Owns a window, a Direct3D presenter and the message loop. It does not own
+// any emulation: the core in PSXEmu.Core rasterises every pixel on the CPU and
+// this only uploads the finished frame. The one thing that flows the other way
+// is input, through the core's SIO device.
+//
+//   PSXEmu.Win32.exe [bios.bin] [disc]
+//
+
+#include "psx/psx.h"
+
+#include "d3d11_presenter.h"
+
+#include <commdlg.h>
+#include <shellapi.h>   // CommandLineToArgvW
+#include <cstdio>
+#include <string>
+
+#pragma comment(lib, "comdlg32.lib")
+#pragma comment(lib, "shell32.lib")
+
+namespace {
+
+const wchar_t kWindowClass[] = L"PSXEmuWindow";
+const wchar_t kWindowTitle[] = L"PSXEmu";
+
+// Menu command ids.
+enum {
+  kCommandOpenDisc = 1000,
+  kCommandEjectDisc,
+  kCommandReset,
+  kCommandPause,
+  kCommandExit,
+};
+
+struct Application {
+  emulation::psx::System* system;
+  psxemu::D3D11Presenter presenter;
+  std::string bios_path;
+  bool running;
+  bool paused;
+
+  Application() : system(nullptr), running(false), paused(false) {}
+};
+
+Application* g_app = nullptr;
+
+// Keyboard to digital pad. Arbitrary but conventional; a real settings file
+// belongs here once the core has one.
+uint16_t ReadKeyboardPad() {
+  using emulation::psx::Sio;
+  uint16_t buttons = 0;
+  struct Binding { int key; uint16_t button; };
+  static const Binding kBindings[] = {
+    { VK_UP,     Sio::kUp },       { VK_DOWN,  Sio::kDown },
+    { VK_LEFT,   Sio::kLeft },     { VK_RIGHT, Sio::kRight },
+    { 'X',       Sio::kCross },    { 'Z',      Sio::kSquare },
+    { 'S',       Sio::kCircle },   { 'A',      Sio::kTriangle },
+    { 'Q',       Sio::kL1 },       { 'W',      Sio::kR1 },
+    { '1',       Sio::kL2 },       { '2',      Sio::kR2 },
+    { VK_RETURN, Sio::kStart },    { VK_SHIFT, Sio::kSelect },
+  };
+  for (size_t i = 0; i < ARRAYSIZE(kBindings); ++i) {
+    if (GetAsyncKeyState(kBindings[i].key) & 0x8000)
+      buttons |= kBindings[i].button;
+  }
+  return buttons;
+}
+
+std::string OpenDiscDialog(HWND owner) {
+  char file[MAX_PATH] = { 0 };
+  OPENFILENAMEA dialog;
+  memset(&dialog, 0, sizeof(dialog));
+  dialog.lStructSize = sizeof(dialog);
+  dialog.hwndOwner = owner;
+  dialog.lpstrFilter =
+      "Disc images (*.cue;*.bin;*.iso;*.img)\0*.cue;*.bin;*.iso;*.img\0"
+      "Cue sheets (*.cue)\0*.cue\0"
+      "All files (*.*)\0*.*\0";
+  dialog.lpstrFile = file;
+  dialog.nMaxFile = sizeof(file);
+  dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  if (!GetOpenFileNameA(&dialog))
+    return std::string();
+  return std::string(file);
+}
+
+void SetWindowTitleForDisc(HWND window, const std::string& disc) {
+  std::wstring title = kWindowTitle;
+  if (!disc.empty()) {
+    const size_t slash = disc.find_last_of("/\\");
+    const std::string name =
+        (slash == std::string::npos) ? disc : disc.substr(slash + 1);
+    title += L" - ";
+    title += std::wstring(name.begin(), name.end());
+  }
+  SetWindowTextW(window, title.c_str());
+}
+
+HMENU CreateMainMenu() {
+  HMENU file = CreatePopupMenu();
+  AppendMenuW(file, MF_STRING, kCommandOpenDisc, L"&Open disc...\tCtrl+O");
+  AppendMenuW(file, MF_STRING, kCommandEjectDisc, L"&Eject disc");
+  AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(file, MF_STRING, kCommandExit, L"E&xit");
+
+  HMENU emulation = CreatePopupMenu();
+  AppendMenuW(emulation, MF_STRING, kCommandReset, L"&Reset");
+  AppendMenuW(emulation, MF_STRING, kCommandPause, L"&Pause\tSpace");
+
+  HMENU bar = CreateMenu();
+  AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
+  AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(emulation),
+              L"&Emulation");
+  return bar;
+}
+
+LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
+                            LPARAM lparam) {
+  switch (message) {
+    case WM_SIZE:
+      if (g_app != nullptr && wparam != SIZE_MINIMIZED)
+        g_app->presenter.Resize(LOWORD(lparam), HIWORD(lparam));
+      return 0;
+
+    case WM_COMMAND: {
+      if (g_app == nullptr)
+        break;
+      switch (LOWORD(wparam)) {
+        case kCommandOpenDisc: {
+          const std::string path = OpenDiscDialog(window);
+          if (path.empty())
+            break;
+          if (!g_app->system->LoadDisc(path.c_str())) {
+            MessageBoxA(window, "Could not open that disc image.", "PSXEmu",
+                        MB_OK | MB_ICONWARNING);
+            break;
+          }
+          SetWindowTitleForDisc(window, path);
+          break;
+        }
+        case kCommandEjectDisc:
+          g_app->system->EjectDisc();
+          SetWindowTitleForDisc(window, std::string());
+          break;
+        case kCommandReset:
+          g_app->system->Deinitialize();
+          g_app->system->Initialize(g_app->bios_path.c_str());
+          break;
+        case kCommandPause:
+          g_app->paused = !g_app->paused;
+          break;
+        case kCommandExit:
+          PostMessage(window, WM_CLOSE, 0, 0);
+          break;
+        default:
+          break;
+      }
+      return 0;
+    }
+
+    case WM_KEYDOWN:
+      if (wparam == VK_SPACE && g_app != nullptr)
+        g_app->paused = !g_app->paused;
+      if (wparam == VK_ESCAPE)
+        PostMessage(window, WM_CLOSE, 0, 0);
+      return 0;
+
+    case WM_DESTROY:
+      PostQuitMessage(0);
+      return 0;
+
+    default:
+      break;
+  }
+  return DefWindowProcW(window, message, wparam, lparam);
+}
+
+// Works out where the BIOS is. A command line wins; otherwise look beside the
+// executable and in a bios folder under it, which is where the repository
+// keeps it.
+std::string FindBios(const char* from_command_line) {
+  if (from_command_line != nullptr && from_command_line[0] != '\0')
+    return from_command_line;
+
+  char module[MAX_PATH] = { 0 };
+  GetModuleFileNameA(nullptr, module, MAX_PATH);
+  std::string directory = module;
+  const size_t slash = directory.find_last_of("/\\");
+  directory = (slash == std::string::npos) ? std::string()
+                                           : directory.substr(0, slash + 1);
+
+  const char* kCandidates[] = {
+    "bios\\SCPH1001.BIN",
+    "SCPH1001.BIN",
+    "..\\..\\..\\bios\\SCPH1001.BIN",
+  };
+  for (size_t i = 0; i < ARRAYSIZE(kCandidates); ++i) {
+    const std::string candidate = directory + kCandidates[i];
+    FILE* fp = fopen(candidate.c_str(), "rb");
+    if (fp != nullptr) {
+      fclose(fp);
+      return candidate;
+    }
+  }
+  return std::string();
+}
+
+}  // namespace
+
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
+  Application app;
+  g_app = &app;
+
+  // Command line: [bios] [disc]
+  int argc = 0;
+  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  std::string bios_argument;
+  std::string disc_argument;
+  if (argv != nullptr) {
+    if (argc > 1) {
+      const std::wstring wide = argv[1];
+      bios_argument.assign(wide.begin(), wide.end());
+    }
+    if (argc > 2) {
+      const std::wstring wide = argv[2];
+      disc_argument.assign(wide.begin(), wide.end());
+    }
+    LocalFree(argv);
+  }
+
+  app.bios_path = FindBios(bios_argument.c_str());
+  if (app.bios_path.empty()) {
+    MessageBoxW(nullptr,
+                L"No BIOS image found.\n\n"
+                L"A PlayStation BIOS dump is required. Put SCPH1001.BIN in a "
+                L"'bios' folder beside the executable, or pass its path as the "
+                L"first argument.",
+                kWindowTitle, MB_OK | MB_ICONERROR);
+    return 1;
+  }
+
+  WNDCLASSEXW window_class;
+  memset(&window_class, 0, sizeof(window_class));
+  window_class.cbSize = sizeof(window_class);
+  window_class.style = CS_HREDRAW | CS_VREDRAW;
+  window_class.lpfnWndProc = WindowProc;
+  window_class.hInstance = instance;
+  window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  window_class.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+  window_class.lpszClassName = kWindowClass;
+  RegisterClassExW(&window_class);
+
+  RECT bounds = { 0, 0, 640, 480 };
+  AdjustWindowRect(&bounds, WS_OVERLAPPEDWINDOW, TRUE);
+  HWND window = CreateWindowExW(
+      0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
+      CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
+      nullptr, CreateMainMenu(), instance, nullptr);
+  if (window == nullptr)
+    return 1;
+
+  if (!app.presenter.Initialize(window)) {
+    MessageBoxW(window, L"Could not create a Direct3D 11 device.",
+                kWindowTitle, MB_OK | MB_ICONERROR);
+    return 1;
+  }
+
+  app.system = new emulation::psx::System();
+  if (app.system->Initialize(app.bios_path.c_str()) != 0) {
+    MessageBoxW(window, L"The BIOS image could not be loaded. It must be "
+                        L"exactly 512 KB.",
+                kWindowTitle, MB_OK | MB_ICONERROR);
+    return 1;
+  }
+
+  if (!disc_argument.empty() && app.system->LoadDisc(disc_argument.c_str()))
+    SetWindowTitleForDisc(window, disc_argument);
+
+  ShowWindow(window, show);
+  UpdateWindow(window);
+
+  app.running = true;
+  MSG message;
+  memset(&message, 0, sizeof(message));
+
+  while (app.running) {
+    while (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE)) {
+      if (message.message == WM_QUIT) {
+        app.running = false;
+        break;
+      }
+      TranslateMessage(&message);
+      DispatchMessage(&message);
+    }
+    if (!app.running)
+      break;
+
+    if (app.paused) {
+      Sleep(16);
+      continue;
+    }
+
+    // Input is sampled once per frame, on this thread, and handed to the core.
+    const bool focused = (GetForegroundWindow() == window);
+    app.system->sio().set_buttons(0, focused ? ReadKeyboardPad() : 0);
+
+    // Run the machine until the GPU says a frame is finished. That keeps the
+    // pace tied to the emulated display rather than to a timer here, and it is
+    // the same loop the headless harness runs.
+    const uint64_t target_frame = app.system->gpu().frame_count() + 1;
+    uint64_t guard = 0;
+    const uint64_t kMaxInstructionsPerFrame = 8000000;
+    while (app.system->gpu().frame_count() < target_frame &&
+           guard++ < kMaxInstructionsPerFrame) {
+      app.system->StepInstruction();
+    }
+
+    int width = 0;
+    int height = 0;
+    const uint32_t* pixels = app.system->gpu().framebuffer(width, height);
+    app.presenter.Present(pixels, width, height);
+  }
+
+  app.system->Deinitialize();
+  delete app.system;
+  app.system = nullptr;
+  app.presenter.Deinitialize();
+  g_app = nullptr;
+  return static_cast<int>(message.wParam);
+}
