@@ -34,6 +34,37 @@ struct TrapCounter {
   static void Hit() { ++count; }
 };
 
+// A ring of the most recent Cop0 status-register events. With only a handful
+// of exceptions in a whole run, printing the lot is more use than any counter:
+// it shows the order things happened in, which is what a stuck status stack
+// hides.
+struct ExceptionLog {
+  enum Kind { kException, kReturn, kStatusWrite };
+  struct Entry {
+    Kind kind;
+    uint32_t pc;
+    uint32_t epc;
+    uint32_t cause;
+    uint32_t status_before;
+    uint32_t status_after;
+  };
+  static const int kCapacity = 64;
+  static Entry entries[kCapacity];
+  static uint32_t written;   // total, which may exceed kCapacity
+
+  static void Record(Kind kind, uint32_t pc, uint32_t epc, uint32_t cause,
+                     uint32_t before, uint32_t after) {
+    Entry& entry = entries[written % kCapacity];
+    entry.kind = kind;
+    entry.pc = pc;
+    entry.epc = epc;
+    entry.cause = cause;
+    entry.status_before = before;
+    entry.status_after = after;
+    ++written;
+  }
+};
+
 }
 }
 

@@ -31,8 +31,11 @@ int IOInterface::Initialize() {
  // io_buffer.Alloc(0x2000);
   parallel_port_buffer.Alloc(64*1024);
   scratchpad.Alloc(0x400);
-  memset(ram_buffer.u8,0,0x200000);
-  memset(scratchpad.u8,0,0x400);
+  // Every buffer starts zeroed. Reading uninitialised heap is a hazard in its
+  // own right: it makes a run non-reproducible and hides a missing load.
+  memset(bios_buffer.u8, 0, 0x80000);
+  memset(ram_buffer.u8, 0, 0x200000);
+  memset(scratchpad.u8, 0, 0x400);
 
   memset(parallel_port_buffer.u8,0,0xFFFF);
 

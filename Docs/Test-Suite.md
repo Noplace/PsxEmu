@@ -3,8 +3,43 @@
 Per section 6 of
 [Emulator-Project-Standards.md](Emulator-Project-Standards.md).
 
-Build both harnesses with `PSXEmu.Core\tools\build_tools.bat`; they land in
+Build the harnesses with `PSXEmu.Core\tools\build_tools.bat`; they land in
 `Temp\tools\`.
+
+## cpu_test
+
+    cpu_test [group]
+
+Unit tests for the R3000A, the memory map, exceptions and the interrupt path.
+Each test assembles a handful of MIPS instructions into RAM, runs them through
+the real CPU, and checks what came out - the same path a game takes. No BIOS,
+no window. A group name runs only that group.
+
+**Current: 181 checks, 0 failures.**
+
+| Group | Covers |
+|---|---|
+| `arithmetic` | add/sub wraparound, sign vs zero extension of immediates, the logical ops, signed vs unsigned compares |
+| `shifts` | arithmetic vs logical right shifts, variable shifts masking the amount to five bits |
+| `muldiv` | signed and unsigned multiply, HI/LO, division by zero, and the most negative value divided by -1 |
+| `branches` | every conditional, taken and not, at negative/zero/positive and at the extremes; that the delay slot runs either way; that a branch never writes its own operand |
+| `jumps` | j/jal/jr/jalr, where the link register points, and that the linking branches write it even when not taken |
+| `loadstore` | sign vs zero extension on byte and halfword loads, and that partial stores leave their neighbours alone |
+| `unaligned` | lwl/lwr/swl/swr at all four alignments, and the pairs used together to move an unaligned word |
+| `memory` | RAM through KUSEG/KSEG0/KSEG1, RAM mirroring, the scratchpad, hardware registers through all three windows, the BIOS being read-only, and $zero staying zero |
+| `exceptions` | syscall and break vectoring, the Cop0 status stack pushing and popping, mfc0/mtc0 |
+| `interrupts` | I_STAT acknowledge semantics, the three gates that can block an interrupt, and that EPC points at the instruction that has *not* run |
+
+Two of these are worth reading twice, because both encode a bug that cost real
+time to find the hard way:
+
+- **A branch never writes its own operand.** Bug 1 was `blez` written with an
+  assignment where a comparison was meant, so it zeroed the register it was
+  testing. Three lines of test, an afternoon of BIOS disassembly.
+- **EPC points at the instruction that has not run.** Pointing it at the one
+  that just finished makes it run twice on return, and when that instruction is
+  an `rfe` the status stack is popped twice and interrupts never come back.
+  That is bug 7.
 
 ## media_test
 
@@ -50,7 +85,7 @@ Neither says anything except "the game did not boot".
 | `--trace <n>` | Disassemble n instructions as they execute |
 | `--trace-skip <n>` | Start tracing only after n instructions |
 | `--trace-at <hex>` | Start tracing when the pc first reaches an address |
-| `--trace-irq` | Start tracing when the first hardware interrupt is taken |
+|  `--trace-irq` | Start tracing when the first hardware interrupt is taken |
 | `--hot <n>` | Print the n most-executed addresses |
 | `--dis <hex>:<n>` | Disassemble n instructions from an address (RAM or BIOS) |
 | `--quiet` | Suppress the per-100-frame progress lines |
@@ -60,8 +95,14 @@ A run that draws nothing is a failure, not a pass with a boring picture.
 
 Every run prints, unprompted: a framebuffer checksum, the non-black pixel
 count, the `BREAKPOINT` trap count, how many RFEs executed, interrupt counters,
-CD-ROM tallies, GPU tallies, and every hardware register touched with read and
-write counts.
+CD-ROM tallies, GPU tallies, the Cop0 status history, and every hardware
+register touched with read and write counts.
+
+The **Cop0 status history** is a ring of the last 64 exceptions, RFEs and writes
+to the status register, with the pc and the before/after status each time. With
+only a handful of exceptions in a whole run, the order they happened in says far
+more than any counter - it is what turned "the boot hangs somewhere" into "the
+second vertical blank is entered and never returned from".
 
 The register list is the single most useful thing in that output. It answers
 "has the machine got as far as X yet" without any tracing at all.
@@ -132,7 +173,8 @@ wrong way, and it stays anyway.
 
 - **`gte_test`** - amidog's GTE suite. Needed from the day GTE work starts;
   thirty commands and no game will tell you which one is wrong.
-- **`cpu_test`** - amidog's CPU suite, as the regression gate for Phase 5.
+- **amidog's CPU suite** on top of `cpu_test`, which covers the instruction set
+  but not its timing.
 - **Memory card round trips** in `media_test`, once cards exist. Per the
   standards document, the *wipe* is the point: write, wipe, read back, or a
   `serialize()` that stores nothing still appears to work.

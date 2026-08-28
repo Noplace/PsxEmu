@@ -344,34 +344,45 @@ class Cpu : public Component {
 
     return false;
   }
+  // Maps a virtual address to a physical one, and decides whether it exists.
+  //
+  // Both halves work on the *physical* address. Validity used to be a table of
+  // virtual ranges, and that table listed RAM and the BIOS through all three
+  // windows but the hardware registers through only one - so a perfectly
+  // ordinary register access through KSEG1 was reported as a bus error, and
+  // every KUSEG RAM mirror above 2 MB with it. Deciding it after translation
+  // removes the whole class of miss: every window onto a region is valid
+  // exactly when the region is.
   uint32_t AddressTranslation(uint32_t virtual_address) {
-    valid_address_flag_ = false;
-    if (virtual_address >= 0x1F000000 && virtual_address <= 0x1F00FFFF) { valid_address_flag_ = true; cache_flag_ = false; }
-    if (virtual_address >= 0x00000000 && virtual_address <= 0x001FFFFF) { valid_address_flag_ = true; cache_flag_ = true; }
-    if (virtual_address >= 0x1F800000 && virtual_address <= 0x1F8003FF) { valid_address_flag_ = true; cache_flag_ = false; }
-    if (virtual_address >= 0x1F801000 && virtual_address <= 0x1FBFFFFF) { valid_address_flag_ = true; cache_flag_ = false; }
-    if (virtual_address >= 0x1FC00000 && virtual_address <= 0x1FC7FFFF) { valid_address_flag_ = true; cache_flag_ = false; }
-    if (virtual_address >= 0x80000000 && virtual_address <= 0x801FFFFF) { valid_address_flag_ = true; cache_flag_ = true; }
-    if (virtual_address >= 0x9FC00000 && virtual_address <= 0x9FC7FFFF) { valid_address_flag_ = true; cache_flag_ = false; }
-    if (virtual_address >= 0xA0000000 && virtual_address <= 0xA01FFFFF) { valid_address_flag_ = true; cache_flag_ = false; }
-    if (virtual_address >= 0xBFC00000 && virtual_address <= 0xBFC7FFFF) { valid_address_flag_ = true; cache_flag_ = false; }
-
-    if (virtual_address >= 0x00000000 && virtual_address <= 0x7FFFFFFF ) {
-      return virtual_address;// leave it out for now + 0x40000000;
-    }
-    if (virtual_address >= 0x80000000 && virtual_address <= 0x9FFFFFFF ) {
-      return virtual_address & 0x7FFFFFFF;
-    }
-    if (virtual_address >= 0xA0000000 && virtual_address <= 0xBFFFFFFF ) {
-      return virtual_address & 0x1FFFFFFF;
-    }
-    if (virtual_address >= 0xFFFE0000 && virtual_address <= 0xFFFE0134 ) {
-      valid_address_flag_ = true;
+    // KSEG2 is not mapped at all; the cache control register is the only thing
+    // in it, and it is addressed directly.
+    if (virtual_address >= 0xC0000000) {
+      cache_flag_ = false;
+      valid_address_flag_ =
+          (virtual_address >= 0xFFFE0000 && virtual_address <= 0xFFFE0FFF);
       return virtual_address;
     }
-    //error i guess
-    cache_flag_ = false;
-    return 0xFFFFFFFF;
+
+    uint32_t physical;
+    if (virtual_address < 0x80000000) {          // KUSEG
+      physical = virtual_address;
+      cache_flag_ = true;
+    } else if (virtual_address < 0xA0000000) {   // KSEG0, cached
+      physical = virtual_address & 0x1FFFFFFF;
+      cache_flag_ = true;
+    } else {                                     // KSEG1, uncached
+      physical = virtual_address & 0x1FFFFFFF;
+      cache_flag_ = false;
+    }
+
+    valid_address_flag_ =
+        (physical <= 0x007FFFFF) ||                             // RAM, mirrored
+        (physical >= 0x1F000000 && physical <= 0x1F7FFFFF) ||   // expansion 1
+        (physical >= 0x1F800000 && physical <= 0x1F8003FF) ||   // scratchpad
+        (physical >= 0x1F801000 && physical <= 0x1F802FFF) ||   // hardware
+        (physical >= 0x1FA00000 && physical <= 0x1FBFFFFF) ||   // expansion 3
+        (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF);     // BIOS
+    return physical;
   }
 
   /*uint32_t AddressTranslation(uint32_t virtual_address) {

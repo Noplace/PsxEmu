@@ -38,6 +38,7 @@ PsxEmu/
     tools/                     headless harnesses, built by a .bat, not the solution
       build_tools.bat
       boot_runner.cpp
+      cpu_test.cpp
       media_test.cpp
       disasm.h
   PSXEmu.Win32/                front end: a window, D3D11, input

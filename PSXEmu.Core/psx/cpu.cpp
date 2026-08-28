@@ -200,6 +200,7 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
 
   //push the bit stack for kernel,interrupt flags
   uint32_t& sr = context_->ctrl.SR.raw;
+  const uint32_t status_before = sr;
   sr = (sr & ~0x3F) | ((sr & 0xF) << 2);
 
 
@@ -227,6 +228,9 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
     else
       context_->pc = 0xBFC00180;
   }
+
+  ExceptionLog::Record(ExceptionLog::kException, address, context_->ctrl.EPC,
+                       cause, status_before, sr);
 
   if (exception == kResetException) {
     //default state : 0101 0000 0110 0001 0000 0000 0000 0000
@@ -739,13 +743,23 @@ void Cpu::COP0() {
     }
     //MTC
     case 0x04: {
+      const uint32_t before = context_->ctrl.SR.raw;
       context_->ctrl.reg[rd_] = context_->gp.reg[rt_];
+      if (rd_ == 12) {
+        ExceptionLog::Record(ExceptionLog::kStatusWrite, context_->prev_pc,
+                             context_->ctrl.EPC, context_->ctrl.Cause, before,
+                             context_->ctrl.SR.raw);
+      }
       break;
     }
     //RFE
     case 0x10: {
       ++TrapCounter::rfe_count;
-      context_->ctrl.SR.raw = (context_->ctrl.SR.raw & ~0xF) | ((context_->ctrl.SR.raw >> 2) & 0xF);
+      const uint32_t before = context_->ctrl.SR.raw;
+      context_->ctrl.SR.raw = (before & ~0xF) | ((before >> 2) & 0xF);
+      ExceptionLog::Record(ExceptionLog::kReturn, context_->prev_pc,
+                           context_->ctrl.EPC, context_->ctrl.Cause, before,
+                           context_->ctrl.SR.raw);
       break;
     }
     default:
@@ -987,8 +1001,11 @@ void Cpu::SYSCALL() {
   RaiseException(context_->prev_pc,kOtherException,kExceptionCodeSyscall);
 }
 
+// `break` raises an exception like any other; it is how a debugger and the
+// BIOS's own assertions stop the machine. It used to expand to nothing but a
+// host-side debug marker, so the instruction simply fell through.
 void Cpu::BREAK() {
-  BREAKPOINT
+  RaiseException(context_->prev_pc, kOtherException, kExceptionCodeBp);
 }
 
 void Cpu::MFHI() {
@@ -1025,24 +1042,41 @@ void Cpu::MULTU() {
   Tick();
 }
 
+// Division on MIPS never traps. Both degenerate cases have defined answers,
+// and both have to be handled here rather than handed to the host CPU: x86
+// raises a hardware divide-error for each of them, which takes the whole
+// emulator down rather than producing a wrong number.
 void Cpu::DIV() {
-  if (context_->gp.reg[rt_]) {
-    context_->low  = (int32_t)context_->gp.reg[rs_] / (int32_t)context_->gp.reg[rt_];
-    context_->high = (int32_t)context_->gp.reg[rs_] % (int32_t)context_->gp.reg[rt_];
-  }
-  else {
-    context_->low = context_->high = 0;
+  const int32_t dividend = static_cast<int32_t>(context_->gp.reg[rs_]);
+  const int32_t divisor = static_cast<int32_t>(context_->gp.reg[rt_]);
+
+  if (divisor == 0) {
+    // Quotient is all ones or one, depending on the sign of the dividend;
+    // the remainder is the dividend itself.
+    context_->high = static_cast<uint32_t>(dividend);
+    context_->low = (dividend >= 0) ? 0xFFFFFFFFu : 1u;
+  } else if (static_cast<uint32_t>(dividend) == 0x80000000u && divisor == -1) {
+    // The one quotient that does not fit in 32 bits. The result is the
+    // dividend unchanged, with no remainder.
+    context_->high = 0;
+    context_->low = 0x80000000u;
+  } else {
+    context_->low = static_cast<uint32_t>(dividend / divisor);
+    context_->high = static_cast<uint32_t>(dividend % divisor);
   }
   Tick();
 }
 
 void Cpu::DIVU() {
-  if (context_->gp.reg[rt_]) {
-    context_->low  = context_->gp.reg[rs_] / context_->gp.reg[rt_];
-    context_->high = context_->gp.reg[rs_] % context_->gp.reg[rt_];
-  }
-  else {
-    context_->low = context_->high = 0;
+  const uint32_t dividend = context_->gp.reg[rs_];
+  const uint32_t divisor = context_->gp.reg[rt_];
+
+  if (divisor == 0) {
+    context_->high = dividend;
+    context_->low = 0xFFFFFFFFu;
+  } else {
+    context_->low = dividend / divisor;
+    context_->high = dividend % divisor;
   }
   Tick();
 }

@@ -38,6 +38,12 @@ cl %FLAGS% /Fo:Temp\tools\obj_media\ /Fe:Temp\tools\media_test.exe ^
    PSXEmu.Core\tools\media_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_cpu mkdir Temp\tools\obj_cpu
+cl %FLAGS% /Fo:Temp\tools\obj_cpu\ /Fe:Temp\tools\cpu_test.exe ^
+   PSXEmu.Core\tools\cpu_test.cpp %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
 echo.
 echo Built Temp\tools\boot_runner.exe
 echo Built Temp\tools\media_test.exe
+echo Built Temp\tools\cpu_test.exe

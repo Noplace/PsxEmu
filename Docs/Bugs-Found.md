@@ -161,3 +161,89 @@ the BIOS handler chain and delivers the vertical-blank event.
 This fix made the *observable* output worse - the boot had been accidentally
 getting further on the broken path, and now stops earlier with less drawn. That
 is not a reason to revert it. See the note in `Docs/Roadmap.md`.
+
+---
+
+The next four were found by `cpu_test` on its very first run, before it had
+been pointed at anything in particular. None of them had produced a symptom yet.
+
+## 8. Dividing the most negative integer by -1 killed the process
+
+`psx/cpu.cpp`, `Cpu::DIV`
+
+```cpp
+context_->low = (int32_t)reg[rs] / (int32_t)reg[rt];
+```
+
+`0x80000000 / -1` has no 32-bit answer, and x86 raises a hardware divide-error
+for it. Handed straight to the host CPU, that is not a wrong number - it is
+`STATUS_INTEGER_OVERFLOW` and the emulator is gone.
+
+MIPS does not trap. The result is defined: the quotient stays `0x80000000` and
+the remainder is zero. A game doing this by accident would have taken the
+emulator down with it.
+
+**Found by:** the test suite crashing before it printed a single line.
+
+## 9. Division by zero returned zero
+
+`psx/cpu.cpp`, `Cpu::DIV` and `Cpu::DIVU`
+
+Both guarded the divisor and set `HI = LO = 0`, which is not what the hardware
+does and not what software expects:
+
+| | HI | LO |
+|---|---|---|
+| `div` by zero, dividend >= 0 | dividend | `0xFFFFFFFF` |
+| `div` by zero, dividend < 0 | dividend | `1` |
+| `divu` by zero | dividend | `0xFFFFFFFF` |
+
+Compilers emit a divide followed by a check of the result, so returning zero
+turns a caught division by zero into a wrong answer that carries on.
+
+## 10. Bus errors were decided on the virtual address
+
+`psx/cpu.h`, `Cpu::AddressTranslation`
+
+The validity table was a list of *virtual* ranges, and it listed RAM and the
+BIOS through all three windows but the hardware registers through only one. So
+`IsBusError()` returned true for an ordinary register access through KSEG1, and
+for every KUSEG RAM mirror above 2 MB.
+
+This is the same class as bug 6, one level up - and it had been quietly
+defeating that fix. Bug 6 made the *decode* work on the physical address, but
+the bus-error check upstream still ran on the virtual one and rejected the
+access before the decode ever saw it.
+
+**Fixed by deciding validity after translation**, so every window onto a region
+is valid exactly when the region is.
+
+## 11. `break` did nothing
+
+`psx/cpu.cpp`, `Cpu::BREAK`
+
+```cpp
+void Cpu::BREAK() {
+  BREAKPOINT      // a host-side debug marker, and nothing else
+}
+```
+
+The instruction fell through as if it were a `nop`. `break` is how a debugger
+and the BIOS's own assertions stop the machine; software that hits one expects
+an exception with cause code 9, and got execution carrying on into whatever
+followed.
+
+---
+
+## What the two suites would have caught
+
+Of the eleven bugs here, `cpu_test` covers seven directly - 1, 3, 4, 6, 7, 8,
+9, 10 and 11 are each one assertion. Bug 1 (BLEZ assigning to its own operand)
+took an afternoon of BIOS disassembly to find; the test for it is three lines
+and runs in a millisecond.
+
+That is the argument for writing these first, and it is section 6 of the
+standards document's argument too. The two that would *not* have been caught -
+bug 2 (the instruction cache corrupting data reads) and bug 5 (the DMA
+linked-list index) - are both cases where the unit under test is correct and
+the wiring around it is not, which is what the harnesses are for.

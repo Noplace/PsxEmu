@@ -311,6 +311,31 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(gpu_stats.primitives),
          static_cast<unsigned long long>(gpu_stats.pixels));
 
+  {
+    // The Cop0 status history. With only a handful of exceptions in a whole
+    // run, the order they happened in says more than any counter.
+    using emulation::psx::ExceptionLog;
+    const uint32_t total = ExceptionLog::written;
+    const uint32_t shown =
+        (total < ExceptionLog::kCapacity) ? total : ExceptionLog::kCapacity;
+    printf("\ncop0 status history (%u events", total);
+    if (total > shown)
+      printf(", last %u shown", shown);
+    printf(")\n");
+    for (uint32_t i = total - shown; i < total; ++i) {
+      const ExceptionLog::Entry& e =
+          ExceptionLog::entries[i % ExceptionLog::kCapacity];
+      const char* kind = (e.kind == ExceptionLog::kException) ? "exception"
+                       : (e.kind == ExceptionLog::kReturn)    ? "rfe      "
+                                                              : "mtc0 SR  ";
+      printf("  %-9s pc=%08X epc=%08X cause=%08X sr %08X -> %08X",
+             kind, e.pc, e.epc, e.cause, e.status_before, e.status_after);
+      if (e.kind == ExceptionLog::kException)
+        printf("  code=%u", (e.cause >> 2) & 0x1F);
+      printf("\n");
+    }
+  }
+
   if (options.dis != nullptr) {
     const uint32_t start = strtoul(options.dis, nullptr, 16);
     const char* colon = strchr(options.dis, ':');

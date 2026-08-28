@@ -44,8 +44,10 @@ implemented directly against D3D11.
 - [x] **DMA channel 3** (CD-ROM to RAM).
 - [x] **SIO0** controller port with the digital pad protocol, and an empty slot
       that correctly reports itself empty.
-- [x] Seven correctness bugs in the revived CPU and I/O - see
+- [x] Eleven correctness bugs in the revived CPU and I/O - see
       [Bugs-Found.md](Bugs-Found.md).
+- [x] `cpu_test`: 181 checks over the instruction set, the memory map,
+      exceptions and the interrupt path. All passing.
 - [x] `media_test`: 56 protocol-level checks over the disc layer and the
       controller, with no BIOS and no window. All passing.
 - [ ] **The boot still does not reach a picture.** See "Where it is stuck".
@@ -87,6 +89,8 @@ incomplete. Nothing 3D can work until this is real.
 
 ## Phase 5 - Timing and accuracy
 
+- [ ] amidog's CPU suite on top of `cpu_test`, which covers the instruction
+      set but not its timing.
 - [ ] Load delay slots. Currently not modelled: `LB`/`LW` write the register
       immediately, with the delay commented out.
 - [ ] Instruction cache as a real cache, or not at all. The current `ICache2` is
@@ -94,7 +98,6 @@ incomplete. Nothing 3D can work until this is real.
       taken out of that path.
 - [ ] Per-instruction cycle counts, and memory access penalties.
 - [ ] DMA transfer timing rather than instant completion.
-- [ ] amidog's CPU test suite as the regression gate.
 
 ## Phase 6 - Settings, save states, more front ends
 
@@ -112,26 +115,38 @@ incomplete. Nothing 3D can work until this is real.
 
 ## Where it is stuck
 
-After the interrupt fix (bug 7), the BIOS:
+`boot_runner` now prints the Cop0 status history, and it names the failure
+exactly. The end of a 60-frame run:
 
-- runs from reset through kernel init into the shell
-- takes a vertical-blank interrupt, dispatches it through the BIOS handler
-  chain correctly, and delivers the event
-- then stops: `SR = 0x404`, meaning the machine believes it is still inside an
-  exception, and no further interrupt is ever enabled
+```
+exception pc=8005AA14 cause=00000020 sr 00000000 -> 00000000  code=8   (syscall)
+mtc0 SR   pc=00000F80                 sr 00000000 -> 00000404
+rfe       pc=00001014                 sr 00000404 -> 00000401   interrupts on
+exception pc=8005AA18 cause=00000400 sr 00000401 -> 00000404  code=0   (vblank)
+mtc0 SR   pc=00000F80                 sr 00000404 -> 00000404
+rfe       pc=00001014                 sr 00000404 -> 00000401   returned cleanly
+exception pc=8005A8BC cause=00000400 sr 00000401 -> 00000404  code=0   (vblank)
+                                      ... and nothing after this
+```
 
-Two facts to start from next time, both straight out of `boot_runner`:
+So:
 
-- **7 RFEs executed in a 400-frame run.** Exception returns are happening, but
-  only a handful, and the last one never happens.
-- **`I_STAT` is written once.** The BIOS's vertical-blank handler is reached and
-  returns 1 ("mine"), but the acknowledge that should follow never lands, so
-  `I_STAT` stays at 9 forever.
+- The exception machinery works. `ExitCriticalSection` enables interrupts, the
+  first vertical blank is taken, dispatched and returned from cleanly.
+- **The second vertical blank is entered and never returned from.** No further
+  RFE, no further `mtc0` to the status register.
+- Yet the CPU is not stuck in the handler: `--hot` puts it in shell code at
+  `0x80054164`, running with `SR = 0x404` - still nominally inside an
+  exception, so no interrupt can ever be delivered again.
 
-The most likely next culprits, in order: the syscall path (`EnterCriticalSection`
-/ `ExitCriticalSection` are how the BIOS toggles `SR`, and only 7 exception
-returns for the whole run is far too few), and then whether `Cause`'s IP bits
-should reflect `I_STAT` rather than being copied out of `SR.IM` as they are now.
+That combination is the whole clue: **control left the exception handler
+without an RFE.** Either the handler dispatched to a registered callback that
+never came back, or something in the dispatch jumped rather than returned.
+
+Where to start: `--trace-at 8005A8BC` catches the moment, and the handler chain
+walk from `0x00000DE8` onward is the code to follow. `I_STAT` is written only
+once in the whole run, so the vertical-blank acknowledge never happens either,
+which is consistent with the handler not finishing.
 
 ## A note on the interrupt fix making things look worse
 
