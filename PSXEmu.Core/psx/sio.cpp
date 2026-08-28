@@ -97,11 +97,16 @@ uint8_t Sio::Exchange(uint8_t data) {
     target_ = kTargetNone;
     if (data == 0x01 && pad.connected)
       target_ = kTargetPad;
-    // Memory cards are not implemented, so 0x81 finds nothing. See Gaps.md.
+    else if (data == 0x81 && system().mc(slot).connected())
+      target_ = kTargetMemoryCard;
 
     acknowledge_ = (target_ != kTargetNone);
     ++transfer_step_;
     return 0xFF;
+  }
+
+  if (target_ == kTargetMemoryCard) {
+    return ExchangeMemoryCard(data, system().mc(selected_slot()));
   }
 
   if (target_ != kTargetPad) {
@@ -222,6 +227,69 @@ void Sio::Write16(uint32_t address, uint16_t data) {
 
 void Sio::Write32(uint32_t address, uint32_t data) {
   Write16(address, static_cast<uint16_t>(data));
+}
+
+uint8_t Sio::ExchangeMemoryCard(uint8_t data, class MC& mc) {
+  uint8_t result = 0xFF;
+  acknowledge_ = true;
+
+  if (transfer_step_ == 1) {
+    mc_command_ = data;
+    result = mc.flag();
+  } else if (transfer_step_ == 2) {
+    result = 0x5A;
+  } else if (transfer_step_ == 3) {
+    result = 0x5D;
+  } else {
+    // Process command specific states
+    if (mc_command_ == 0x52) { // Read
+      if (transfer_step_ == 4) { mc_sector_ = data << 8; result = 0x00; }
+      else if (transfer_step_ == 5) { mc_sector_ |= data; result = mc_previous_tx_; mc.ReadSector(mc_sector_, mc_buffer_); }
+      else if (transfer_step_ == 6) { result = 0x5C; }
+      else if (transfer_step_ == 7) { result = 0x5D; }
+      else if (transfer_step_ == 8) { result = (mc_sector_ >> 8) & 0xFF; }
+      else if (transfer_step_ == 9) { result = mc_sector_ & 0xFF; mc_checksum_ = (mc_sector_ >> 8) ^ (mc_sector_ & 0xFF); }
+      else if (transfer_step_ >= 10 && transfer_step_ <= 137) {
+        int idx = transfer_step_ - 10;
+        result = mc_buffer_[idx];
+        mc_checksum_ ^= result;
+      }
+      else if (transfer_step_ == 138) { result = mc_checksum_; }
+      else if (transfer_step_ == 139) { result = 0x47; acknowledge_ = false; }
+    } else if (mc_command_ == 0x57) { // Write
+      if (transfer_step_ == 4) { mc_sector_ = data << 8; result = 0x00; }
+      else if (transfer_step_ == 5) { mc_sector_ |= data; result = mc_previous_tx_; mc_checksum_ = (mc_sector_ >> 8) ^ (mc_sector_ & 0xFF); }
+      else if (transfer_step_ >= 6 && transfer_step_ <= 133) {
+        int idx = transfer_step_ - 6;
+        mc_buffer_[idx] = data;
+        mc_checksum_ ^= data;
+        result = mc_previous_tx_;
+      }
+      else if (transfer_step_ == 134) { 
+        result = mc_previous_tx_; 
+        // We write upon receiving checksum
+        if (data == mc_checksum_) {
+          mc.WriteSector(mc_sector_, mc_buffer_);
+        }
+      }
+      else if (transfer_step_ == 135) { result = 0x5C; }
+      else if (transfer_step_ == 136) { result = 0x5D; }
+      else if (transfer_step_ == 137) { result = 0x47; acknowledge_ = false; }
+    } else if (mc_command_ == 0x53) { // Get ID
+      if (transfer_step_ == 4) { result = 0x5C; }
+      else if (transfer_step_ == 5) { result = 0x5D; }
+      else if (transfer_step_ == 6) { result = 0x04; }
+      else if (transfer_step_ == 7) { result = 0x00; }
+      else if (transfer_step_ == 8) { result = 0x00; }
+      else if (transfer_step_ == 9) { result = 0x80; acknowledge_ = false; }
+    } else {
+      acknowledge_ = false;
+    }
+  }
+
+  mc_previous_tx_ = data;
+  ++transfer_step_;
+  return result;
 }
 
 }

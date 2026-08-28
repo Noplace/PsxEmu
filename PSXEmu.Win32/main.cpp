@@ -48,6 +48,10 @@ const wchar_t kWindowTitle[] = L"PSXEmu";
 enum {
   kCommandOpenDisc = 1000,
   kCommandEjectDisc,
+  kCommandOpenMemoryCardSlot1,
+  kCommandOpenMemoryCardSlot2,
+  kCommandCreateMemoryCardSlot1,
+  kCommandCreateMemoryCardSlot2,
   kCommandReset,
   kCommandPause,
   kCommandExit,
@@ -122,6 +126,12 @@ HMENU CreateMainMenu() {
   AppendMenuW(file, MF_STRING, kCommandOpenDisc, L"&Open disc...\tCtrl+O");
   AppendMenuW(file, MF_STRING, kCommandEjectDisc, L"&Eject disc");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot1, L"Open Memory Card (Slot 1)...");
+  AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot2, L"Open Memory Card (Slot 2)...");
+  AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot1, L"Create Memory Card (Slot 1)...");
+  AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot2, L"Create Memory Card (Slot 2)...");
+  AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kCommandExit, L"E&xit");
 
   HMENU emulation = CreatePopupMenu();
@@ -163,6 +173,51 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
           g_app->system->EjectDisc();
           SetWindowTitleForDisc(window, std::string());
           break;
+        case kCommandOpenMemoryCardSlot1:
+        case kCommandOpenMemoryCardSlot2: {
+          const int slot = (LOWORD(wparam) == kCommandOpenMemoryCardSlot1) ? 0 : 1;
+          char file[MAX_PATH] = { 0 };
+          OPENFILENAMEA dialog;
+          memset(&dialog, 0, sizeof(dialog));
+          dialog.lStructSize = sizeof(dialog);
+          dialog.hwndOwner = window;
+          dialog.lpstrFilter =
+              "Memory Card (*.mcr;*.mcd)\0*.mcr;*.mcd\0"
+              "All files (*.*)\0*.*\0";
+          dialog.lpstrFile = file;
+          dialog.nMaxFile = sizeof(file);
+          dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+          if (GetOpenFileNameA(&dialog)) {
+            if (g_app->system->mc(slot).LoadFile(file) != S_OK) {
+              MessageBoxA(window, "Could not open memory card (must be 128KB).", "PSXEmu",
+                          MB_OK | MB_ICONWARNING);
+            }
+          }
+          break;
+        }
+        case kCommandCreateMemoryCardSlot1:
+        case kCommandCreateMemoryCardSlot2: {
+          const int slot = (LOWORD(wparam) == kCommandCreateMemoryCardSlot1) ? 0 : 1;
+          char file[MAX_PATH] = { 0 };
+          OPENFILENAMEA dialog;
+          memset(&dialog, 0, sizeof(dialog));
+          dialog.lStructSize = sizeof(dialog);
+          dialog.hwndOwner = window;
+          dialog.lpstrFilter =
+              "Memory Card (*.mcr;*.mcd)\0*.mcr;*.mcd\0"
+              "All files (*.*)\0*.*\0";
+          dialog.lpstrFile = file;
+          dialog.nMaxFile = sizeof(file);
+          dialog.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+          dialog.lpstrDefExt = "mcr";
+          if (GetSaveFileNameA(&dialog)) {
+            if (g_app->system->mc(slot).CreateFile(file) != S_OK) {
+              MessageBoxA(window, "Could not create memory card file.", "PSXEmu",
+                          MB_OK | MB_ICONWARNING);
+            }
+          }
+          break;
+        }
         case kCommandReset:
           g_app->system->Deinitialize();
           g_app->system->Initialize(g_app->bios_path.c_str());

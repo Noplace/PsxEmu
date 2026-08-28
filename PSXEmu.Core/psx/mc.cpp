@@ -29,6 +29,7 @@ MC::~MC() {
 
 int MC::Initialize() {
   mcfile = nullptr;
+  flag_ = 0x08;
   return S_OK;
 }
 
@@ -37,36 +38,73 @@ int MC::Deinitialize() {
   return S_OK;
 }
 
-int MC::LoadFile(char* filename) {
+int MC::LoadFile(const char* filename) {
   FILE* fp = fopen(filename,"rb");
+  if (!fp) return S_FALSE;
   fseek(fp,0,SEEK_END);
   int size = ftell(fp);
   fseek(fp,0,SEEK_SET);
-  if (size != 0x20000) 
+  if (size != 0x20000) {
+    fclose(fp);
     return S_FALSE;
-  //uint8_t* buffer = new uint8_t[0x20000];
+  }
   mcfile = new MCFile();
   fread(mcfile,sizeof(uint8_t),sizeof(MCFile),fp);
-
-  uint8_t* buf = (uint8_t*)mcfile;
-  for (int i=0;i<20;++i) {
-    if (mcfile->dir.broken_sectors[i].number != 0xffffffff) {
-
-    }
-  }
-
-
   fclose(fp);
 
-
-  ReadMCFile(0);
+  filename_ = filename;
+  flag_ = 0x08; // bit3=1 indicates directory not read yet
   return S_OK;
 }
 
+int MC::CreateFile(const char* filename) {
+  FILE* fp = fopen(filename, "wb");
+  if (!fp) return S_FALSE;
+  
+  if (!mcfile) {
+    mcfile = new MCFile();
+  }
+  
+  // Flash memory defaults to 0xFF, but let's just initialize it blank.
+  // The BIOS / games will format it if it detects it as unformatted.
+  memset(mcfile, 0, sizeof(MCFile));
+  
+  fwrite(mcfile, sizeof(uint8_t), sizeof(MCFile), fp);
+  fclose(fp);
+
+  filename_ = filename;
+  flag_ = 0x08;
+  return S_OK;
+}
+
+bool MC::ReadSector(uint16_t sector, uint8_t* out_buffer) {
+  if (!mcfile || sector >= 1024) return false;
+  uint8_t* buf = (uint8_t*)mcfile;
+  memcpy(out_buffer, &buf[sector * 128], 128);
+  return true;
+}
+
+bool MC::WriteSector(uint16_t sector, const uint8_t* in_buffer) {
+  if (!mcfile || sector >= 1024) return false;
+  uint8_t* buf = (uint8_t*)mcfile;
+  memcpy(&buf[sector * 128], in_buffer, 128);
+
+  // Write through to file
+  if (!filename_.empty()) {
+    FILE* fp = fopen(filename_.c_str(), "r+b");
+    if (fp) {
+      fseek(fp, sector * 128, SEEK_SET);
+      fwrite(in_buffer, 1, 128, fp);
+      fclose(fp);
+    }
+  }
+
+  // Bit3 is reset when writing to the card
+  clear_flag(0x08);
+  return true;
+}
+
 int MC::ReadMCFile(int index) {
-  
-  //if (mcfile->dir.dir[index].block_alloc_state 
-  
   return S_OK;
 }
 

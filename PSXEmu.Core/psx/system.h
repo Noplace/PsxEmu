@@ -69,7 +69,7 @@ class System {
   Cpu& cpu() { return cpu_; };
   Spu& spu() { return spu_; };
   IOInterface& io() { return io_; };
-  MC& mc() { return mc_; };
+  MC& mc(int slot) { return mc_[slot]; }
   Kernel& kernel() { return kernel_; };
   GTE& gte() { return gte_; };
   uint8_t* ram() { return io_.ram_buffer.u8; }
@@ -115,7 +115,7 @@ class System {
   Cpu cpu_;
   Spu spu_;
   IOInterface io_;
-  MC mc_;
+  MC mc_[2];
   Kernel kernel_;
   GTE gte_;
 };

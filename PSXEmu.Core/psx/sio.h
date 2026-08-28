@@ -107,6 +107,13 @@ class Sio : public Component {
   int selected_slot() const { return (control_ & 0x2000) ? 1 : 0; }
 
   uint8_t Exchange(uint8_t data);
+  uint8_t ExchangeMemoryCard(uint8_t data, class MC& mc);
+
+  uint8_t mc_command_;
+  uint16_t mc_sector_;
+  uint8_t mc_checksum_;
+  uint8_t mc_buffer_[128];
+  uint8_t mc_previous_tx_;
 };
 
 }

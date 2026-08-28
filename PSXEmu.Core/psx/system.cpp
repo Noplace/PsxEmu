@@ -64,7 +64,8 @@ int System::InitializeWithoutBios() {
   cpu_.set_system(this);
   gpu_.set_system(this);
   spu_.set_system(this);
-  mc_.set_system(this);
+  mc_[0].set_system(this);
+  mc_[1].set_system(this);
   kernel_.set_system(this);
   gte_.set_system(this);
 
@@ -74,10 +75,11 @@ int System::InitializeWithoutBios() {
   cpu_.Reset();
   gpu_.Initialize();
   spu_.Initialize();
-  mc_.Initialize();
+  mc_[0].Initialize();
+  mc_[1].Initialize();
   kernel_.Initialize();
   gte_.Initialize();
-  //mc_.LoadFile("D:\\Personal\\Projects\\PsxEmu\\test\\ff7.mcr");
+  //mc_[0].LoadFile("D:\\Personal\\Projects\\PsxEmu\\test\\ff7.mcr");
   
   //lets skip this and do proper emulation first
   /*while (cpu_.context()->pc!=0x80030000) {
@@ -92,7 +94,8 @@ int System::InitializeWithoutBios() {
 int System::Deinitialize() {
   gte_.Deinitialize();
   //kernel_.De
-  mc_.Deinitialize();
+  mc_[0].Deinitialize();
+  mc_[1].Deinitialize();
   spu_.Deinitialize();
   gpu_.Deinitialize();
   cpu_.Deinitialize();

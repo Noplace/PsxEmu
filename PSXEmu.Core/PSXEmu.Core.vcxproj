@@ -97,11 +97,13 @@
     <ClInclude Include="platform\timer.h" />
     <ClInclude Include="platform\types.h" />
     <ClInclude Include="platform\util.h" />
+    <ClInclude Include="psx\cdrom.h" />
     <ClInclude Include="psx\component.h" />
     <ClInclude Include="psx\cpu.h" />
     <ClInclude Include="psx\cpu_context.h" />
     <ClInclude Include="psx\debug.h" />
     <ClInclude Include="psx\debug_assist.h" />
+    <ClInclude Include="psx\disc.h" />
     <ClInclude Include="psx\dma.h" />
     <ClInclude Include="psx\gpu.h" />
     <ClInclude Include="psx\gpu_core.h" />

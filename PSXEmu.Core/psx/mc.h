@@ -18,6 +18,8 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <string>
+
 namespace emulation {
 namespace psx {
 
@@ -86,9 +88,21 @@ class MC : public Component {
   ~MC();
   int Initialize();
   int Deinitialize();
-  int LoadFile(char* filename);
+  int LoadFile(const char* filename);
+  int CreateFile(const char* filename);
+  
+  bool connected() const { return mcfile != nullptr; }
+  uint8_t flag() const { return flag_; }
+  void clear_flag(uint8_t mask) { flag_ &= ~mask; }
+  void set_flag(uint8_t mask) { flag_ |= mask; }
+
+  bool ReadSector(uint16_t sector, uint8_t* out_buffer);
+  bool WriteSector(uint16_t sector, const uint8_t* in_buffer);
+
  private:
   MCFile* mcfile;
+  std::string filename_;
+  uint8_t flag_;
   int ReadMCFile(int index);
 
 };
