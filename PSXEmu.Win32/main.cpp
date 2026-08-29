@@ -53,6 +53,7 @@ enum {
   kCommandOpenDisc = 1000,
   kCommandEjectDisc,
   kCommandBootDisc,
+  kCommandBootBios,
   kCommandOpenMemoryCardSlot1,
   kCommandOpenMemoryCardSlot2,
   kCommandCreateMemoryCardSlot1,
@@ -132,6 +133,7 @@ HMENU CreateMainMenu() {
   AppendMenuW(file, MF_STRING, kCommandOpenDisc, L"&Open disc...\tCtrl+O");
   AppendMenuW(file, MF_STRING, kCommandEjectDisc, L"&Eject disc");
   AppendMenuW(file, MF_STRING, kCommandBootDisc, L"&Boot disc");
+  AppendMenuW(file, MF_STRING, kCommandBootBios, L"Boot &BIOS");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot1, L"Open Memory Card (Slot 1)...");
   AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot2, L"Open Memory Card (Slot 2)...");
@@ -168,15 +170,30 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
           const std::string path = OpenDiscDialog(window);
           if (path.empty())
             break;
-          if (!g_app->system->LoadDisc(path.c_str())) {
-            MessageBoxA(window, "Could not open that disc image.", "PSXEmu",
-                        MB_OK | MB_ICONWARNING);
+          g_app->system->Deinitialize();
+          if (g_app->system->Initialize(g_app->bios_path.c_str()) != 0) {
+            MessageBoxA(window, "Failed to initialize the system (BIOS missing?).",
+                        "PSXEmu", MB_OK | MB_ICONERROR);
             break;
           }
+          g_app->system->EjectDisc(); // Start with tray open
+          g_app->system->LoadDisc(path.c_str());
           SetWindowTitleForDisc(window, path);
+         // g_app->system->set_auto_boot(true, path);
+          g_app->system->set_auto_boot(false);
+          g_app->paused = false;
+          break;
+        }
+        case kCommandBootBios: {
           g_app->system->Deinitialize();
-          g_app->system->Initialize(g_app->bios_path.c_str());
-          g_app->system->set_auto_boot(true);
+          if (g_app->system->Initialize(g_app->bios_path.c_str()) != 0) {
+            MessageBoxA(window, "Failed to initialize the system (BIOS missing?).",
+                        "PSXEmu", MB_OK | MB_ICONERROR);
+            break;
+          }
+          g_app->system->EjectDisc(); // Keep tray open to force shell
+          SetWindowTitleForDisc(window, "");
+          g_app->system->set_auto_boot(false);
           g_app->paused = false;
           break;
         }
@@ -279,8 +296,11 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
 // executable and in a bios folder under it, which is where the repository
 // keeps it.
 std::string FindBios(const char* from_command_line) {
-  if (from_command_line != nullptr && from_command_line[0] != '\0')
-    return from_command_line;
+  if (from_command_line != nullptr && from_command_line[0] != '\0') {
+    char full_path[MAX_PATH];
+    GetFullPathNameA(from_command_line, MAX_PATH, full_path, nullptr);
+    return full_path;
+  }
 
   char module[MAX_PATH] = { 0 };
   GetModuleFileNameA(nullptr, module, MAX_PATH);

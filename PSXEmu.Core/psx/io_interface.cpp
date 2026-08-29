@@ -261,6 +261,16 @@ uint32_t IOInterface::Read32(uint32_t address) {
   }
 
   switch (address) {
+    case 0x1F801000: return io.exp1_base_addr;
+    case 0x1F801004: return io.exp2_base_addr;
+    case 0x1F801008: return io.exp1_delay;
+    case 0x1F80100C: return io.exp3_delay;
+    case 0x1F801010: return io.bios_rom;
+    case 0x1F801014: return io.spu_delay;
+    case 0x1F801018: return io.cdrom_delay;
+    case 0x1F80101C: return io.exp2_delay;
+    case 0x1F801020: return io.com_delay;
+    case 0x1F801060: return io.ram_size;
     case 0x1F801070: return io.interrupt_stat;
     case 0x1F801074: return io.interrupt_mask;
     case 0x1F801100: return rootcounter_[0].ReadCounter();

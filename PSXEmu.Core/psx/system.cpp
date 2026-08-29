@@ -142,6 +142,9 @@ void System::StepInstruction() {
 
   if (auto_boot_ && cpu_.context()->pc == 0x80030000) {
     auto_boot_ = false;
+    if (!auto_boot_path_.empty()) {
+      LoadDisc(auto_boot_path_.c_str());
+    }
     BootDisc(nullptr);
   }
 }

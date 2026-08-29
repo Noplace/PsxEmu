@@ -102,8 +102,11 @@ class System {
   GpuCore* gpu_core() { return &gpu_; }
   
   bool auto_boot_ = false;
-  void set_auto_boot(bool v) { auto_boot_ = v; }
-  
+  std::string auto_boot_path_;
+  void set_auto_boot(bool v, const std::string& path = "") {
+    auto_boot_ = v;
+    auto_boot_path_ = path;
+  }
   #ifdef _DEBUG
   DebugAssist csvlog;
   #endif
