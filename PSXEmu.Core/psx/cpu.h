@@ -413,6 +413,16 @@ class Cpu : public Component {
   CpuContext* context() { return context_; }
   void set_context(CpuContext* context) { context_ = context; }  
   ICache2 icache;
+
+  struct TraceEntry {
+    uint32_t pc;
+    uint32_t instruction;
+  };
+  static const int kTraceSize = 10000;
+  TraceEntry trace_buffer_[kTraceSize];
+  int trace_index_ = 0;
+  void DumpTrace(const char* filename, ExceptionCodes code);
+
  private:
   static Instruction machine_instruction_main_[64];
   static Instruction machine_instruction_special_[64];

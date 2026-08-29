@@ -284,7 +284,8 @@ void Cdrom::DeliverPending() {
 void Cdrom::Tick(uint32_t cycles) {
   // Only the response at the head of the queue is counting down; the ones
   // behind it have not been issued yet as far as software is concerned.
-  if (!pending_.empty() && pending_.front().delay > 0)
+  // Furthermore, only count down if the controller is not waiting for an acknowledge.
+  if (!pending_.empty() && interrupt_flag_ == 0 && pending_.front().delay > 0)
     pending_.front().delay -= static_cast<int32_t>(cycles);
 
   StepRead(cycles);

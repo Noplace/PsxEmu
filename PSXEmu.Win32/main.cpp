@@ -170,12 +170,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
           const std::string path = OpenDiscDialog(window);
           if (path.empty())
             break;
-         /* g_app->system->Deinitialize();
+          g_app->system->Deinitialize();
           if (g_app->system->Initialize(g_app->bios_path.c_str()) != 0) {
             MessageBoxA(window, "Failed to initialize the system (BIOS missing?).",
                         "PSXEmu", MB_OK | MB_ICONERROR);
             break;
-          }*/
+          }
           g_app->system->EjectDisc(); // Start with tray open
           g_app->system->LoadDisc(path.c_str());
           SetWindowTitleForDisc(window, path);
@@ -276,6 +276,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
     }
 
     case WM_KEYDOWN:
+      if (wparam == VK_F12 && g_app && g_app->system) {
+       // g_app->system->cpu().DumpTrace("trace.txt");
+        //MessageBoxA(window, "Execution trace dumped to trace.txt!", "PSXEmu", MB_OK | MB_ICONINFORMATION);
+      }
       if (wparam == VK_SPACE && g_app != nullptr)
         g_app->paused = !g_app->paused;
       if (wparam == VK_ESCAPE)
@@ -326,6 +330,8 @@ std::string FindBios(const char* from_command_line) {
 }
 
 }  // namespace
+
+
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
   Application app;

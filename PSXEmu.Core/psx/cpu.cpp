@@ -160,13 +160,62 @@ int Cpu::Deinitialize() {
   return 0;
 }
 
+void Cpu::DumpTrace(const char* filename, ExceptionCodes code) {
+  FILE* fp = fopen(filename, "w");
+  if (!fp) return;
+
+  fprintf(fp, "--- PSX Execution Trace ---\n");
+  for (int i = 0; i < kTraceSize; ++i) {
+    int idx = (trace_index_ + i) % kTraceSize;
+    if (trace_buffer_[idx].pc == 0) continue; // Skip uninitialized entries
+
+    uint32_t pc = trace_buffer_[idx].pc;
+    uint32_t inst = trace_buffer_[idx].instruction;
+    
+    // Simple hex dump for now, decoding requires more setup, 
+    // but the PC and Instruction hex are enough to trace loops.
+    fprintf(fp, "[%05d] PC: 0x%08X  Inst: 0x%08X\n", i, pc, inst);
+  }
+  
+  fprintf(fp, "--- Exception State ---\n");
+  fprintf(fp, "Caught Code: 0x%02X\n", code);
+  fprintf(fp, "EPC: 0x%08X\n", context_->ctrl.EPC);
+  fprintf(fp, "Cause: 0x%08X\n", context_->ctrl.Cause);
+  fprintf(fp, "BadVaddr: 0x%08X\n", context_->ctrl.BadVaddr);
+  fprintf(fp, "a0: 0x%08X\n", context_->gp.reg[4]);
+  fprintf(fp, "a1: 0x%08X\n", context_->gp.reg[5]);
+  fprintf(fp, "a2: 0x%08X\n", context_->gp.reg[6]);
+  fprintf(fp, "a3: 0x%08X\n", context_->gp.reg[7]);
+  fprintf(fp, "v0: 0x%08X\n", context_->gp.reg[2]);
+  fprintf(fp, "v1: 0x%08X\n", context_->gp.reg[3]);
+  fprintf(fp, "ra: 0x%08X\n", context_->gp.reg[31]);
+
+  fprintf(fp, "--- End of Trace ---\n");
+  fclose(fp);
+}
 
 void Cpu::ExecuteInstruction() {
   context_->prev_pc = context_->pc;
   context_->gp.zero = 0; //make sure r0 is always 0.
-  //PC_BREAKPOINT(0xBFC01920);
-  //PC_BREAKPOINT(0xBFC0194C);
+  
+  /*if (context_->pc == 0x000000A0 && context_->gp.t1 == 0x40) {
+    // Automatically dump trace when SystemError A0(0x40) is hit
+    DumpTrace("trace_crash.txt");
+    // To prevent infinite dumping, change t1 so it doesn't match again immediately
+    context_->gp.t1 = 0; 
+  }*/
+
   StageIF();
+  
+  //if trace required, record instruction in ring buffer
+  //if (1 == 0)
+  {
+      // Record instruction in ring buffer
+      trace_buffer_[trace_index_].pc = context_->prev_pc;
+      trace_buffer_[trace_index_].instruction = context_->code;
+      trace_index_ = (trace_index_ + 1) % kTraceSize;
+  }
+
   StageRD();
   current_stage = 3;
   #if defined(_DEBUG) && defined(CPU_DEBUG) && defined(CSVOUT)
@@ -197,6 +246,16 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
   #endif
   //save to epc
   context_->ctrl.EPC = context_->branch_flag == true ? address-4 : address;
+
+  if (code == kExceptionCodeDBE || code == kExceptionCodeIBE || 
+      code == kExceptionCodeAdEL || code == kExceptionCodeAdES || 
+      code == kExceptionCodeRI || code == kExceptionCodeBp || code == kExceptionCodeCpU) {
+    static bool dumped = false;
+    if (!dumped) {
+      DumpTrace("trace_fatal_exception.txt", code);
+      dumped = true;
+    }
+  }
 
   //push the bit stack for kernel,interrupt flags
   uint32_t& sr = context_->ctrl.SR.raw;
@@ -423,6 +482,13 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
 
 uint32_t Cpu::Load(MemorySize size, uint32_t address) {
   if (IsBusError() == true) {
+    if (current_stage != 1) {
+      FILE* f = fopen("dbe_debug.txt", "a");
+      if (f) {
+        fprintf(f, "DBE! address=0x%08X valid=%d pc=0x%08X\n", address, valid_address_flag_, context_->pc);
+        fclose(f);
+      }
+    }
     //context_->ctrl.BadVaddr = context_->prev_pc; //bus errors leave it
     auto code = current_stage == 1 ? kExceptionCodeIBE : kExceptionCodeDBE;
     RaiseException(context_->prev_pc,kOtherException,code);
@@ -633,9 +699,17 @@ void Cpu::StageRD() {
 
 void Cpu::Jump(uint32_t address) {
   __inside_delay_slot = true;
+  context_->branch_flag = true;
+  uint32_t prev_cause = context_->ctrl.Cause;
   ExecuteInstruction();
+  context_->branch_flag = false;
   __inside_delay_slot = false;
-  context_->pc = address;
+  // If an exception (like an interrupt) happened during the delay slot,
+  // ExecuteInstruction would have called RaiseException and set PC to 0x80000080.
+  // We should NOT overwrite PC with the jump target in this case.
+  if (context_->ctrl.Cause == prev_cause) {
+    context_->pc = address;
+  }
   if (output_inst == true && until_address == context_->pc)
     output_inst = false;
 }
