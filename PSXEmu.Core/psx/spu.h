@@ -69,6 +69,8 @@ class Spu : public Component {
   // buffered, so a front end can either pull or be pushed to.
   void set_audio_engine(IAudioEngine* engine) { engine_ = engine; }
 
+  void QueueCdAudio(const uint8_t* raw_sector);
+
   const uint8_t* ram() const { return ram_; }
 
   struct Stats {
@@ -148,6 +150,12 @@ class Spu : public Component {
   int buffer_read_;
   int buffer_write_;
   int buffer_count_;
+
+  // CD Audio (CD-DA) input buffer
+  int16_t cd_audio_buffer_[kSampleRate * 2];
+  int cd_audio_read_;
+  int cd_audio_write_;
+  int cd_audio_count_;
 
   IAudioEngine* engine_;
   Stats stats_;

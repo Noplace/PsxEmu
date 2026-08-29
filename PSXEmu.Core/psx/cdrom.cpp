@@ -297,8 +297,27 @@ void Cdrom::Tick(uint32_t cycles) {
 
 void Cdrom::LoadSector() {
   if (!disc_.ReadSector(read_lba_, sector_)) {
+    QueueError(0x80, 0);
     reading_ = false;
-    QueueError(0x04, kAcknowledgeDelay);
+    playing_ = false;
+    return;
+  }
+
+  if (playing_) {
+    system().spu().QueueCdAudio(sector_);
+    
+    // Check if we've reached the end of the disc or track (simplification: just disc end)
+    if (read_lba_ >= disc_.total_sectors()) {
+      playing_ = false;
+      status_ &= ~kStatusPlaying;
+      QueueStatus(kIntDataEnd, 0); // INT4
+    } else {
+      if (mode_ & 0x20) { // Report mode
+        // For simplicity, we just queue a basic INT1. Full subchannel Q report is 8 bytes.
+        QueueStatus(kIntDataReady, 0);
+      }
+    }
+    ++read_lba_;
     return;
   }
 
@@ -319,7 +338,7 @@ void Cdrom::LoadSector() {
 }
 
 void Cdrom::StepRead(uint32_t cycles) {
-  if (!reading_)
+  if (!reading_ && !playing_)
     return;
 
   read_timer_ -= static_cast<int32_t>(cycles);
@@ -359,10 +378,30 @@ void Cdrom::ExecuteCommand(uint8_t command) {
     }
 
     case 0x03: {  // Play
-      TakeParameter();
+      if (!disc_.loaded()) {
+        QueueError(0x80, kAcknowledgeDelay);
+        break;
+      }
+      if (!parameter_fifo_.empty()) {
+        uint8_t track_bcd = TakeParameter();
+        uint8_t track = ((track_bcd >> 4) * 10) + (track_bcd & 0x0F);
+        if (track >= 1 && track <= disc_.track_count()) {
+          seek_lba_ = disc_.track(track - 1).start_lba;
+        } else {
+          QueueError(0x10, kAcknowledgeDelay);
+          break;
+        }
+      } else if (!seek_pending_) {
+        seek_lba_ = read_lba_;
+      }
+      seek_pending_ = false;
+      read_lba_ = seek_lba_;
+      reading_ = false;
       playing_ = true;
-      status_ |= kStatusPlaying;
+      status_ = (status_ & ~kStatusReading) | kStatusPlaying | kStatusMotorOn;
+      read_timer_ = SectorCycles();
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntComplete, kSecondResponseDelay);
       break;
     }
 

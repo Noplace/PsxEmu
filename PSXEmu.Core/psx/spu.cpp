@@ -152,6 +152,8 @@ int Spu::Initialize() {
   irq_pending_ = false;
 
   buffer_read_ = buffer_write_ = buffer_count_ = 0;
+  cd_audio_read_ = cd_audio_write_ = cd_audio_count_ = 0;
+  memset(cd_audio_buffer_, 0, sizeof(cd_audio_buffer_));
   memset(&stats_, 0, sizeof(stats_));
   return 0;
 }
@@ -481,11 +483,53 @@ void Spu::PushFrame(int16_t left, int16_t right) {
   ++buffer_count_;
 }
 
+void Spu::QueueCdAudio(const uint8_t* raw_sector) {
+  // A raw CD-DA sector is 2352 bytes, which is exactly 588 stereo pairs
+  // (16-bit left, 16-bit right, little-endian).
+  const int kSamples = 588;
+  for (int i = 0; i < kSamples; ++i) {
+    if (cd_audio_count_ >= kSampleRate * 2) {
+      // Buffer full, drop oldest
+      cd_audio_read_ = (cd_audio_read_ + 2) % (kSampleRate * 2);
+      cd_audio_count_ -= 2;
+    }
+    
+    int offset = i * 4;
+    int16_t left = static_cast<int16_t>(raw_sector[offset] | (raw_sector[offset + 1] << 8));
+    int16_t right = static_cast<int16_t>(raw_sector[offset + 2] | (raw_sector[offset + 3] << 8));
+    
+    cd_audio_buffer_[cd_audio_write_] = left;
+    cd_audio_buffer_[cd_audio_write_ + 1] = right;
+    
+    cd_audio_write_ = (cd_audio_write_ + 2) % (kSampleRate * 2);
+    cd_audio_count_ += 2;
+  }
+}
+
 void Spu::GenerateFrame() {
   StepNoise();
 
   int32_t left = 0, right = 0;
   int32_t reverb_in_left = 0, reverb_in_right = 0;
+  
+  if (cd_audio_count_ > 0) {
+    int16_t cd_left = cd_audio_buffer_[cd_audio_read_];
+    int16_t cd_right = cd_audio_buffer_[cd_audio_read_ + 1];
+    cd_audio_read_ = (cd_audio_read_ + 2) % (kSampleRate * 2);
+    cd_audio_count_ -= 2;
+
+    if (control_ & 0x0001) { // CD Audio Enable
+      int32_t l = (cd_left * VolumeOf(cd_volume_left_)) >> 15;
+      int32_t r = (cd_right * VolumeOf(cd_volume_right_)) >> 15;
+      left += l;
+      right += r;
+      if (control_ & 0x0004) { // CD Audio Reverb Enable
+        reverb_in_left += l;
+        reverb_in_right += r;
+      }
+    }
+  }
+
   uint32_t active = 0;
   int16_t previous = 0;
 
