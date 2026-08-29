@@ -63,7 +63,7 @@ enum {
 };
 
 struct Application {
-  emulation::psx::System* system;
+  std::unique_ptr<emulation::psx::System> system;
   psxemu::D3D11Presenter presenter;
   IAudioEngine* audio;
   std::string bios_path;
@@ -71,7 +71,7 @@ struct Application {
   bool paused;
 
   Application()
-      : system(nullptr), audio(nullptr), running(false), paused(false) {}
+      : system(nullptr), audio(nullptr), running(false), paused(true) {}
 };
 
 Application* g_app = nullptr;
@@ -98,15 +98,14 @@ uint16_t ReadKeyboardPad() {
   return buttons;
 }
 
-std::string OpenDiscDialog(HWND owner) {
+std::string OpenDiscDialog(HWND window) {
   char file[MAX_PATH] = { 0 };
   OPENFILENAMEA dialog;
   memset(&dialog, 0, sizeof(dialog));
   dialog.lStructSize = sizeof(dialog);
-  dialog.hwndOwner = owner;
+  dialog.hwndOwner = window;
   dialog.lpstrFilter =
-      "Disc images (*.cue;*.bin;*.iso;*.img)\0*.cue;*.bin;*.iso;*.img\0"
-      "Cue sheets (*.cue)\0*.cue\0"
+      "Disc Images (*.cue;*.bin;*.img;*.iso)\0*.cue;*.bin;*.img;*.iso\0"
       "All files (*.*)\0*.*\0";
   dialog.lpstrFile = file;
   dialog.nMaxFile = sizeof(file);
@@ -116,15 +115,15 @@ std::string OpenDiscDialog(HWND owner) {
   return std::string(file);
 }
 
-void SetWindowTitleForDisc(HWND window, const std::string& disc) {
-  std::wstring title = kWindowTitle;
-  if (!disc.empty()) {
-    const size_t slash = disc.find_last_of("/\\");
-    const std::string name =
-        (slash == std::string::npos) ? disc : disc.substr(slash + 1);
-    title += L" - ";
-    title += std::wstring(name.begin(), name.end());
+void SetWindowTitleForDisc(HWND window, const std::string& path) {
+  if (path.empty()) {
+    SetWindowTextW(window, kWindowTitle);
+    return;
   }
+  const size_t slash = path.find_last_of("\\/");
+  const std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+  const std::wstring wide(name.begin(), name.end());
+  const std::wstring title = std::wstring(kWindowTitle) + L" - " + wide;
   SetWindowTextW(window, title.c_str());
 }
 
@@ -140,11 +139,11 @@ HMENU CreateMainMenu() {
   AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot1, L"Create Memory Card (Slot 1)...");
   AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot2, L"Create Memory Card (Slot 2)...");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(file, MF_STRING, kCommandExit, L"E&xit");
+  AppendMenuW(file, MF_STRING, kCommandExit, L"E&xit\tAlt+F4");
 
   HMENU emulation = CreatePopupMenu();
-  AppendMenuW(emulation, MF_STRING, kCommandReset, L"&Reset");
-  AppendMenuW(emulation, MF_STRING, kCommandPause, L"&Pause\tSpace");
+  AppendMenuW(emulation, MF_STRING, kCommandReset, L"&Reset\tCtrl+R");
+  AppendMenuW(emulation, MF_STRING, kCommandPause, L"&Pause\tPause");
 
   HMENU bar = CreateMenu();
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
@@ -175,6 +174,10 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
             break;
           }
           SetWindowTitleForDisc(window, path);
+          g_app->system->Deinitialize();
+          g_app->system->Initialize(g_app->bios_path.c_str());
+          g_app->system->set_auto_boot(true);
+          g_app->paused = false;
           break;
         }
         case kCommandBootDisc: {
@@ -380,7 +383,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
       app.audio->Play();
   }
 
-  app.system = new emulation::psx::System();
+  app.system = std::make_unique<emulation::psx::System>();
   if (app.system->Initialize(app.bios_path.c_str()) != 0) {
     MessageBoxW(window, L"The BIOS image could not be loaded. It must be "
                         L"exactly 512 KB.",
@@ -454,7 +457,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
   }
 
   app.system->Deinitialize();
-  delete app.system;
+  
   app.system = nullptr;
   app.presenter.Deinitialize();
   g_app = nullptr;

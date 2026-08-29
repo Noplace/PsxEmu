@@ -100,6 +100,10 @@ class System {
   // The core owns the GPU and the framebuffer; a front end only reads them.
   Gpu& gpu() { return gpu_; }
   GpuCore* gpu_core() { return &gpu_; }
+  
+  bool auto_boot_ = false;
+  void set_auto_boot(bool v) { auto_boot_ = v; }
+  
   #ifdef _DEBUG
   DebugAssist csvlog;
   #endif

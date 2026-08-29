@@ -102,7 +102,7 @@ void Kernel::Call() {
       }
       case 0x3D: {
         #if defined(_DEBUG) && defined(PSX_OUTPUT)
-          fputc(context->gp.a0,psxout.fp);
+          //fputc(context->gp.a0,psxout.fp);
         #endif
           //extern bool output_inst;
           //extern uint32_t until_address;
@@ -120,7 +120,7 @@ void Kernel::Call() {
       case 0x18: 
         //putc(context->gp.a0(),context->gp.a1());
         #if defined(_DEBUG) && defined(PSX_OUTPUT)
-          fputc(context->gp.a0,psxout.fp);
+         // fputc(context->gp.a0,psxout.fp);
         #endif
         //context->pc = context->gp.ra();
         break;

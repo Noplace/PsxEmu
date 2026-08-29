@@ -139,6 +139,11 @@ void System::StepInstruction() {
   }
 
   cpu_.ExecuteInstruction();
+
+  if (auto_boot_ && cpu_.context()->pc == 0x80030000) {
+    auto_boot_ = false;
+    BootDisc(nullptr);
+  }
 }
 
 // Paced against the wall clock, for a front end that wants the machine to run

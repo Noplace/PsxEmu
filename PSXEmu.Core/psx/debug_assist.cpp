@@ -462,7 +462,9 @@ DebugAssist::~DebugAssist(void) {
 }
 
 void DebugAssist::Open(const char* filename) {
-  char fullpath[256];
+  
+    return;//dont need it at the moment
+    char fullpath[256];
   sprintf(fullpath,"PsxDebug\\%s",filename);
   fp = fopen(fullpath,"w");
   char date_str[128];
@@ -474,6 +476,7 @@ void DebugAssist::Open(const char* filename) {
 }
 
 void DebugAssist::Close() {
+    return;//dont need it at the moment
   if (fp != NULL) {
     fclose(fp);
     fp = NULL;
@@ -481,6 +484,7 @@ void DebugAssist::Close() {
 }
 
 void DebugAssist::OutputCSVHeader() {
+    return;//dont need it at the moment
     //fprintf(system_->csvlog.fp,"\"Counter\",\"PC\",\"Opcode\",\"Code\",\"RS Index\",\"RS Value\",\"RT Index\",\"RT Value\",\"RD Index\",\"RD Value\",\"imm\",\"jump address\",\"branch address\",\"l/s address\"\n");
     
     if (system_->csvlog.fp) {
@@ -494,6 +498,7 @@ void DebugAssist::OutputCSVHeader() {
 }
 
 void DebugAssist::OutputInstruction() {
+    return;//dont need it at the moment
   Cpu& cpu = system_->cpu_;
   CpuContext* context = system_->cpu_.context_;
   const char* inst_str = DebugAssist::machine_instruction_main_[context->opcode()];
@@ -516,6 +521,7 @@ void DebugAssist::OutputInstruction() {
 }
 
 void DebugAssist::OutputInstruction2() {
+    return;//dont need it at the moment
   Cpu& cpu = system_->cpu_;
   CpuContext* context = cpu.context_;
   #ifdef PROG_ONLY
