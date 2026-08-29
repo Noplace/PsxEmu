@@ -59,6 +59,9 @@ class IOInterface : public Component {
   };
   AccessLog access_log;
   uint32_t pending_cycles_ = 0;
+  uint32_t prev_scanline_ = 0;
+  uint32_t dotclock_accum_ = 0;
+  uint32_t sysclk8_accum_ = 0;
 
   int Initialize();
   int Deinitialize();

@@ -65,6 +65,7 @@ class RootCounter {
 
   void WriteMode(uint32_t mode) {
     this->mode.raw = mode;
+    this->mode.intreq = 1; // 1 = No interrupt requested yet
     this->counter = 0;
   }
 
@@ -73,19 +74,42 @@ class RootCounter {
   }
 
   bool Tick(uint32_t cycles) {
-    if (mode.en == 0) {
-      counter += cycles;
-      auto limit = mode.resetmode == 0? 0xffff:target;
-      if (!mode.reached_0xffff) mode.reached_0xffff = counter == 0xffff;
-      if (!mode.reached_target) mode.reached_target = counter == target;
-      if (counter >= limit) {
-        counter = 0;
-        return true;
+    uint32_t old_counter = counter;
+    counter += cycles;
+
+    bool generate_irq = false;
+
+    // Check target wrap
+    if (target > 0 && old_counter < target && counter >= target) {
+      mode.reached_target = 1;
+      if (mode.irq_target) {
+        generate_irq = true;
       }
-    } else {
-      //int a = 1;
     }
-    return false;
+
+    // Check 0xFFFF wrap
+    if (old_counter < 0x10000 && counter >= 0x10000) {
+      mode.reached_0xffff = 1;
+      if (mode.irq_0xffff) {
+        generate_irq = true;
+      }
+    }
+
+    uint32_t limit = (mode.resetmode == 1) ? target : 0x10000;
+    if (limit == 0) limit = 0x10000;
+    
+    if (counter >= limit) {
+      counter -= limit;
+    }
+
+    if (generate_irq) {
+      if (mode.irqrepeat == 0 && mode.intreq == 0) {
+        generate_irq = false; // Already fired, one-shot mode prevents firing again
+      }
+      mode.intreq = 0; // 0 = Interrupt requested
+    }
+
+    return generate_irq;
   }
 
 };

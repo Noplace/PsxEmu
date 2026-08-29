@@ -96,34 +96,46 @@ void IOInterface::Tick(uint32_t cycles) {
   pending_cycles_ += cycles;
   if (pending_cycles_ < 32)
     return;
-  cycles = pending_cycles_;
+  uint32_t batch = pending_cycles_;
   pending_cycles_ = 0;
 
-  if (rootcounter_[0].Tick(cycles)==true) {
-    if ((rootcounter_[0].mode.reached_0xffff && rootcounter_[0].mode.irq_0xffff)||
-        (rootcounter_[0].mode.reached_target && rootcounter_[0].mode.irq_target)) {
-      SetInterrupt(kInterruptCNT0);
-    }
+  system_->gpu_core()->Tick(batch);
+  uint32_t current_scanline = system_->gpu_core()->scanline();
+  uint32_t hblanks = (current_scanline > prev_scanline_) ? (current_scanline - prev_scanline_) : 0;
+  if (current_scanline < prev_scanline_) { // wrapped
+    hblanks = 1; // Assuming wrapped once
   }
-  if (rootcounter_[1].Tick(cycles)==true) {
-    if ((rootcounter_[1].mode.reached_0xffff && rootcounter_[1].mode.irq_0xffff)||
-        (rootcounter_[1].mode.reached_target && rootcounter_[1].mode.irq_target)) {
-      SetInterrupt(kInterruptCNT1);
-    }
-  }
-  if (rootcounter_[2].Tick(cycles)==true) {
-    if ((rootcounter_[2].mode.reached_0xffff && rootcounter_[2].mode.irq_0xffff)||
-        (rootcounter_[2].mode.reached_target && rootcounter_[2].mode.irq_target)) {
-      SetInterrupt(kInterruptCNT2);
-    }
+  prev_scanline_ = current_scanline;
+
+  dotclock_accum_ += batch;
+  uint32_t dotclocks = dotclock_accum_ / 10;
+  dotclock_accum_ %= 10;
+
+  sysclk8_accum_ += batch;
+  uint32_t sysclk8 = sysclk8_accum_ / 8;
+  sysclk8_accum_ %= 8;
+
+  // Timer 0: 0,2 = Sysclock, 1,3 = Dotclock
+  uint32_t t0_cycles = (rootcounter_[0].mode.clcsrc & 1) ? dotclocks : batch;
+  if (t0_cycles > 0 && rootcounter_[0].Tick(t0_cycles)) {
+    SetInterrupt(kInterruptCNT0);
   }
 
-  // The GPU owns display timing and raises the vertical-blank interrupt itself
-  // when its scanline counter leaves the visible area.
-  system_->gpu_core()->Tick(cycles);
-  cdrom.Tick(cycles);
-  sio.Tick(cycles);
-  system_->spu().Tick(cycles);
+  // Timer 1: 0,2 = Sysclock, 1,3 = Hblank
+  uint32_t t1_cycles = (rootcounter_[1].mode.clcsrc & 1) ? hblanks : batch;
+  if (t1_cycles > 0 && rootcounter_[1].Tick(t1_cycles)) {
+    SetInterrupt(kInterruptCNT1);
+  }
+
+  // Timer 2: 0,1 = Sysclock, 2,3 = Sysclock/8
+  uint32_t t2_cycles = (rootcounter_[2].mode.clcsrc >= 2) ? sysclk8 : batch;
+  if (t2_cycles > 0 && rootcounter_[2].Tick(t2_cycles)) {
+    SetInterrupt(kInterruptCNT2);
+  }
+
+  cdrom.Tick(batch);
+  sio.Tick(batch);
+  system_->spu().Tick(batch);
 
   dma.Tick();
 }

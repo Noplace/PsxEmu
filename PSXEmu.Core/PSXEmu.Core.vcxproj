@@ -120,6 +120,7 @@
     <ClInclude Include="psx\mc.h" />
     <ClInclude Include="psx\psx.h" />
     <ClInclude Include="psx\root_counter.h" />
+    <ClInclude Include="psx\sio.h" />
     <ClInclude Include="psx\spu.h" />
     <ClInclude Include="psx\system.h" />
     <ClInclude Include="psx\types.h" />

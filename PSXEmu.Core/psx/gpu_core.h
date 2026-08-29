@@ -50,7 +50,7 @@ class GpuCore : public Component {
   // Raw VRAM, for a front end that wants to present it or a test that wants to
   // checksum it.
   virtual const uint16_t* vram() const = 0;
-
+  virtual  uint32_t scanline() const = 0;
   // The visible area, resolved out of VRAM into 32-bit XRGB. Size comes back
   // through the out parameters; the pointer stays valid until the next Tick.
   virtual const uint32_t* framebuffer(int& width, int& height) const = 0;

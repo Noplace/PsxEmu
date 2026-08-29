@@ -313,7 +313,11 @@ void Cdrom::GetReport(uint8_t* data) {
   }
 
   uint8_t track_minute, track_second, track_frame;
-  Disc::LbaToMsf(read_lba_ - track_start, &track_minute, &track_second, &track_frame);
+  if (read_lba_ >= track_start) {
+    Disc::LbaToMsf(read_lba_ - track_start, &track_minute, &track_second, &track_frame);
+  } else {
+    track_minute = track_second = track_frame = 0;
+  }
 
   data[0] = status_;
   data[1] = Disc::ToBcd(current_track);
@@ -327,7 +331,7 @@ void Cdrom::GetReport(uint8_t* data) {
 
 void Cdrom::LoadSector() {
   if (!disc_.ReadSector(read_lba_, sector_)) {
-    QueueError(0x80, 0);
+    QueueError(0x04, kAcknowledgeDelay);
     reading_ = false;
     playing_ = false;
     return;
@@ -376,7 +380,7 @@ void Cdrom::StepRead(uint32_t cycles) {
       }
       ++read_lba_;
     } else {
-      QueueError(0x80, 0);
+      QueueError(0x04, kAcknowledgeDelay);
       reading_ = false;
       playing_ = false;
     }
@@ -438,7 +442,6 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       status_ = (status_ & ~kStatusReading) | kStatusPlaying | kStatusMotorOn;
       read_timer_ = SectorCycles();
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      QueueStatus(kIntComplete, kSecondResponseDelay);
       break;
     }
 
