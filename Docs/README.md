@@ -22,8 +22,8 @@ A PlayStation 1 emulator revived from a 2012-2014 codebase.
 - `cpu_test`: 181 checks over the instruction set, the memory map, exceptions
   and the interrupt path. All passing.
 - `gte_test`: 99 checks over the geometry coprocessor. All passing.
-- `media_test`: 56 checks over disc images and the CD-ROM controller. All
-  passing.
+- `media_test`: 103 checks over disc images, the CD-ROM controller, ISO9660,
+  SYSTEM.CNF and the disc boot. All passing.
 - A software GPU that owns VRAM and produces a framebuffer.
 - DMA, the interrupt path, timers and the controller port.
 - Disc images: `.cue`, `.bin`, `.img`, `.iso`, and a physical drive.
@@ -38,6 +38,10 @@ menu, polls the controller port and issues CD-ROM commands.
 the FLAG register - with `gte_test` covering it in 99 checks. It has not been
 exercised by real software yet: the BIOS shell issues zero GTE commands.
 
+**Discs boot.** ISO9660 and SYSTEM.CNF are read, and the executable a disc names
+is loaded and started - `boot_runner --boot-disc`, or File > Boot disc.
+
 **What is still wrong:** a rainbow smear behind the two menu entries, narrowed
-to the uploaded texture data rather than the rasteriser. See "Where it stands"
-in [Roadmap.md](Roadmap.md).
+to the uploaded texture data rather than the rasteriser; and the disc boot goes
+around the BIOS rather than through it. See "Where it stands" in
+[Roadmap.md](Roadmap.md).

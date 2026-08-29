@@ -169,14 +169,14 @@ void Dma::Write(uint32_t address,uint32_t data) {
   
      case 0x1f8010c0:   channels[4].madr=data;  break;
      case 0x1f8010c4:   channels[4].bcr=data;  break;
-     case 0x1f8010c8:   
-	     if (!(channels[4].chcr&0x01000000)) {
-	      channels[4].chcr=data;  
-	   	  //SpuDma4();
-	      channels[4].chcr&=0xfeffffff;
-	 	    SetInterrupt(4);
-	     }
-	     break;
+     case 0x1f8010c8:
+      channels[4].chcr = data;
+      if (data & 0x01000000) {
+        Dma4();
+        channels[4].chcr &= 0xfeffffff;
+        SetInterrupt(4);
+      }
+      break;
 
      case 0x1f8010d0:   channels[5].madr=data;  break;
      case 0x1f8010d4:   channels[5].bcr=data;  break;
@@ -344,6 +344,34 @@ void Dma::Dma3() {
 }
 
 /*Create Empty List*/
+// Sound RAM, in either direction. Sample data is far too big to move a
+// halfword at a time through the data port, so every game uploads it this way -
+// which is why a channel that did nothing meant a machine with no sound.
+void Dma::Dma4() {
+  auto& ram = system_->io().ram_buffer;
+  auto& spu = system_->spu();
+
+  uint32_t words = channels[4].bcr & 0xFFFF;
+  if (words == 0)
+    words = 0x10000;
+  const uint32_t blocks = (channels[4].bcr >> 16) & 0xFFFF;
+  if (blocks > 1)
+    words *= blocks;
+
+  const bool to_spu = (channels[4].chcr & 1) != 0;
+  const int32_t step = (channels[4].chcr & 0x02) ? -4 : 4;
+  uint32_t address = channels[4].madr & 0x1FFFFC;
+
+  for (uint32_t i = 0; i < words; ++i) {
+    if (to_spu)
+      spu.WriteDataWord(ram.u32[address >> 2]);
+    else
+      ram.u32[address >> 2] = spu.ReadDataWord();
+    address = static_cast<uint32_t>(address + step) & 0x1FFFFC;
+  }
+  channels[4].madr = address;
+}
+
 void Dma::Dma6() {
 
 	uint32_t *mem = &system_->io().ram_buffer.u32[(channels[6].madr&0x1fffff)>>2];

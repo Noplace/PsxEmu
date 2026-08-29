@@ -50,8 +50,8 @@ implemented directly against D3D11.
 - [x] `gte_test`: 99 checks over the geometry coprocessor. All passing.
 - [x] `cpu_test`: 181 checks over the instruction set, the memory map,
       exceptions and the interrupt path. All passing.
-- [x] `media_test`: 56 protocol-level checks over the disc layer and the
-      controller, with no BIOS and no window. All passing.
+- [x] `media_test`: 103 protocol-level checks over the disc layer, the
+      controller, ISO9660 and the disc boot. All passing.
 - [x] **The BIOS boots and renders its whole intro** - the Sony diamond, "SONY"
       above it and "COMPUTER ENTERTAINMENT" below, fading in - and then reaches
       the shell menu, polls the controller port and issues CD-ROM commands.
@@ -82,8 +82,21 @@ implemented directly against D3D11.
 
 ## Phase 3 - Making games boot
 
-- [ ] ISO9660 walk to find and parse `SYSTEM.CNF`, and side-load the executable
-      it names.
+- [x] **ISO9660**: the primary volume descriptor, directory walk, and file
+      lookup by path in every form software writes it - bare name, leading
+      slash of either kind, `cdrom:` prefix, `;1` version suffix, any case.
+- [x] **SYSTEM.CNF**: the BOOT line parsed out and the executable it names
+      loaded, with `PSX.EXE` as the fallback for discs that omit the file.
+- [x] `System::BootDisc` reports *which step* failed rather than just failing,
+      through `DiscBootInfo`.
+- [x] `boot_runner --boot-disc` and a **Boot disc** menu item in the front end.
+- [x] 47 more checks in `media_test`, over a synthetic ISO9660 image the test
+      builds itself.
+- [ ] Boot through the BIOS rather than around it. `BootDisc` side-loads the
+      executable directly; the BIOS's own boot path needs more of the CD-ROM
+      drive than is implemented.
+- [ ] Directories are walked but untested beyond the root - no PlayStation
+      disc puts its executable in a subdirectory, but the code path exists.
 - [ ] CD audio (CD-DA and XA-ADPCM) feeding the SPU mixer.
 - [ ] Memory cards: the SIO0 `0x81` device, the file format in `psx/mc.h`, and
       save files on disk.

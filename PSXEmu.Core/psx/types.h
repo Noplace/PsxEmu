@@ -34,6 +34,7 @@ class Kernel;
 class Cdrom;
 class Disc;
 class Sio;
+class Iso9660;
 class System;
 class DebugAssist;
 class Dma;

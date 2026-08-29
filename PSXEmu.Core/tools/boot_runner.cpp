@@ -3,6 +3,7 @@
 //   boot_runner <bios.bin> [options]
 //
 //     --disc <path>      mount a disc: a .cue, an image file, or a drive letter
+//     --boot-disc        read SYSTEM.CNF from the disc and start its executable
 //     --exe <file.exe>   side-load a PS-EXE once the BIOS reaches the shell
 //     --frames <n>       run for n frames and stop      (default 300)
 //     --ppm <file>       write the final frame as a PPM
@@ -51,6 +52,7 @@ struct Options {
   const char* dis;
   const char* watch;
   int hot;
+  bool boot_disc;
   bool quiet;
 };
 
@@ -124,6 +126,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->dis = nullptr;
   options->watch = nullptr;
   options->hot = 0;
+  options->boot_disc = false;
   options->quiet = false;
 
   for (int i = 1; i < argc; ++i) {
@@ -157,6 +160,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->trace_irq = 1;
       if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
         options->trace_irq = strtoull(argv[++i], nullptr, 0);
+    } else if (strcmp(arg, "--boot-disc") == 0) {
+      options->boot_disc = true;
     } else if (strcmp(arg, "--quiet") == 0) {
       options->quiet = true;
     } else if (arg[0] == '-') {
@@ -199,8 +204,25 @@ int main(int argc, char** argv) {
       return 1;
     }
     printf("mounted        %s (%d track(s), %u sectors)\n", options.disc,
-           system->cdrom().disc().track_count(),
+           system->cdrom().disc().track_count(),  // NOLINT
            system->cdrom().disc().total_sectors());
+  }
+
+  if (options.boot_disc) {
+    System::DiscBootInfo info;
+    const bool booted = system->BootDisc(&info);
+    if (!info.volume_id.empty())
+      printf("volume         %s\n", info.volume_id.c_str());
+    if (!info.boot_path.empty())
+      printf("boot line      %s\n", info.boot_path.c_str());
+    if (!booted) {
+      fprintf(stderr, "disc boot failed: %s\n",
+              info.error ? info.error : "unknown reason");
+      return 1;
+    }
+    printf("booted         %s (%u bytes) at pc=%08X\n",
+           info.executable.c_str(), info.executable_size,
+           system->cpu().context()->pc);
   }
 
   if (options.exe != nullptr) {
@@ -317,6 +339,13 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(cd_stats.sectors_read),
          static_cast<unsigned long long>(cd_stats.interrupts),
          static_cast<unsigned long long>(cd_stats.unknown_commands));
+
+  const emulation::psx::Spu::Stats& spu_stats = system->spu().stats();
+  printf("spu            %llu frames, %llu key-ons, %llu blocks, peak %d/%d\n",
+         static_cast<unsigned long long>(spu_stats.frames),
+         static_cast<unsigned long long>(spu_stats.key_ons),
+         static_cast<unsigned long long>(spu_stats.blocks_decoded),
+         spu_stats.peak_left, spu_stats.peak_right);
 
   const emulation::psx::Gte::Stats& gte_stats = system->gte().stats();
   printf("gte            %llu commands, %llu unrecognised\n",

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -78,6 +78,8 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="audio\dsoundaudioengine.cpp" />
+    <ClCompile Include="audio\wasapiaudioengine.cpp" />
     <ClCompile Include="psx\cdrom.cpp" />
     <ClCompile Include="psx\cpu.cpp" />
     <ClCompile Include="psx\debug_assist.cpp" />
@@ -86,6 +88,7 @@
     <ClCompile Include="psx\gpu.cpp" />
     <ClCompile Include="psx\gte.cpp" />
     <ClCompile Include="psx\io_interface.cpp" />
+    <ClCompile Include="psx\iso9660.cpp" />
     <ClCompile Include="psx\kernel.cpp" />
     <ClCompile Include="psx\mc.cpp" />
     <ClCompile Include="psx\root_counter.cpp" />
@@ -94,6 +97,9 @@
     <ClCompile Include="psx\system.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="audio\dsoundaudioengine.h" />
+    <ClInclude Include="audio\iaudioengine.h" />
+    <ClInclude Include="audio\wasapiaudioengine.h" />
     <ClInclude Include="platform\timer.h" />
     <ClInclude Include="platform\types.h" />
     <ClInclude Include="platform\util.h" />
@@ -110,6 +116,7 @@
     <ClInclude Include="psx\gte.h" />
     <ClInclude Include="psx\io_interface.h" />
     <ClInclude Include="psx\kernel.h" />
+    <ClInclude Include="psx\iso9660.h" />
     <ClInclude Include="psx\mc.h" />
     <ClInclude Include="psx\psx.h" />
     <ClInclude Include="psx\root_counter.h" />

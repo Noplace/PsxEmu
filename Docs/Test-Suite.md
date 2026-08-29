@@ -81,7 +81,10 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 56 checks, 0 failures.**
+**Current: 103 checks, 0 failures.**
+
+A second argument of `keep` leaves the generated images behind, which is how
+`boot_runner --boot-disc` gets a disc to point at without a game.
 
 Covers, in the order it runs:
 
@@ -97,6 +100,17 @@ Covers, in the order it runs:
 - **The controller with a disc**: GetID reports a licensed region, GetTN
   reports the track count, and Setloc + ReadN delivers the sector that was
   actually asked for
+- **An ISO9660 filesystem** the test builds itself: the volume descriptor, the
+  root directory, and finding a file by every form software writes - bare
+  name, either slash, a `cdrom:` prefix, a `;1` suffix, the wrong case - plus
+  reading one back at its exact size rather than rounded up to a sector
+- **SYSTEM.CNF parsing**: the ordinary form, the spacing and line endings that
+  vary by publisher, BOOT appearing partway down, and files with no BOOT line
+  failing rather than guessing
+- **Booting a disc end to end**: mount, read SYSTEM.CNF, resolve the
+  executable, load it, and check both that the payload reached its load address
+  and that the pc points at the entry point - then that a disc with no
+  filesystem and an empty drive each fail *with a reason*
 
 Every one of these is a silent failure otherwise. A sector reader off by the
 150-sector lead-in returns perfectly valid data from the wrong place; a
@@ -110,6 +124,7 @@ Neither says anything except "the game did not boot".
 | Option | Effect |
 |---|---|
 | `--disc <path>` | Mount a disc: a `.cue`, an image file, or a drive letter |
+| `--boot-disc` | Read SYSTEM.CNF from the mounted disc and start its executable |
 | `--exe <file>` | Side-load a PS-EXE |
 | `--frames <n>` | Run for n frames, then stop (default 300) |
 | `--ppm <file>` | Write the final visible frame as a PPM |

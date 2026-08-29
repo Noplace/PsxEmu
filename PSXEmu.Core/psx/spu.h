@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -18,119 +18,167 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include "audio/iaudioengine.h"
+
 namespace emulation {
 namespace psx {
 
+/*
+  Sound Processing Unit.
+
+  24 ADPCM voices mixed into a stereo pair at 44100 Hz, plus a reverb unit that
+  works out of the same 512 KB of sound RAM the samples live in.
+
+  The core owns the mixing and hands finished frames to whoever asks. A front
+  end drains them with ReadSamples and pushes them at an IAudioEngine, or a
+  headless harness drains them and checks the numbers - which is the only way
+  any of this is testable, because audio has no equivalent of looking at the
+  screen and seeing that it is wrong.
+*/
 class Spu : public Component {
  public:
+  static const uint32_t kRamSize = 512 * 1024;
+  static const int kSampleRate = 44100;
+  static const int kVoices = 24;
+
+  // The SPU produces one frame every 768 CPU cycles: 33868800 / 44100.
+  static const uint32_t kCyclesPerSample = 768;
+
   Spu();
   ~Spu();
+
   int Initialize();
   int Deinitialize();
-  uint16_t  Read(uint32_t address);
-  void Write(uint32_t address,uint16_t data);
- private:
-  Buffer sound_buffer_;
-  uint16_t effects[32];
-  struct {
-    bool voice_on,fm,noise,reverb;
-    struct {
-      union {
-        struct {
-          uint16_t volume:14;
-          uint16_t phase:1;
-          uint16_t unused:1;
-        }volume;
-        struct {
-          uint16_t volume:7;
-          uint16_t unused1:5;
-          uint16_t phase:1;
-          uint16_t decay:1;
-          uint16_t slope:1;
-          uint16_t unused2:1;
-        }sweep;
-        uint16_t raw;
-      };
-    } vol_left, vol_right; 
-    union {
-      struct {
-        uint16_t shift:14;
-        uint16_t unused:2;
-      };
-      uint16_t raw;
-    } pitch;
-    uint16_t start_address;
-    union {
-      struct {
-        uint16_t sustain:4;
-        uint16_t decay:4;
-        uint16_t attack:7;
-        uint16_t mode:1;
-      };
-      uint16_t raw;
-    } ads_levels;
-    union {
-      struct {
-        uint16_t release_rate:5;
-        uint16_t decrease_mode:1;
-        uint16_t sustain_rate:7;
-        uint16_t unused:1;
-        uint16_t sustain_rate_mode_incdec:1;
-        uint16_t sustain_rate_mode_linexp:1;
-      };
-      uint16_t raw;
-    } sr_rates;
-    uint16_t current_adsr_volume;
-    uint16_t repeat_address;
-  } voices[24];
-  union {
-    struct {
-      uint16_t cd_audio:1;
-      uint16_t external_audio:1;
-      uint16_t cd_reverb:1;
-      uint16_t external_reverb:1;
-      uint16_t dma:2;
-      uint16_t irq:1;
-      uint16_t reverb:1;
-      uint16_t noise_frequency:6;
-      uint16_t spu_unmute:1;
-      uint16_t spu_on:1;
-    };
-    uint16_t raw;
-  }spu_control;
-  union {
-    struct {
-      uint16_t volume:15;
-      uint16_t phase:1;
-    }volume;
-    uint16_t raw;
-  }cd_vol_left, cd_vol_right,external_vol_left,external_vol_right; 
-  union {
-    struct {
-      uint16_t unused1:10;
-      uint16_t spu_not_ready:1;
-      uint16_t decoding:1;
-      uint16_t unused2:4;
-    };
-    uint16_t raw;
-  }spu_status2;
-  uint16_t main_volume_left;
-  uint16_t main_volume_right;
-  uint16_t reverb_depth_left;
-  uint16_t reverb_depth_right;
-  uint16_t reverb_workarea_start;
-  uint16_t soundbuffer_irq_address1;
-  uint16_t soundbuffer_irq_address2;
-  uint16_t spu_data;
-  uint16_t spu_control2;
-  uint16_t voice_on1,voice_on2;
-  uint16_t voice_off1,voice_off2;
-  uint16_t channel_fm_mode1,channel_fm_mode2;
-  uint16_t noise_mode1,noise_mode2;
-  uint16_t reverb_mode1,reverb_mode2;
 
+  // Advances by a number of CPU cycles, generating frames as they fall due.
+  void Tick(uint32_t cycles);
+
+  uint16_t Read(uint32_t address);
+  void Write(uint32_t address, uint16_t data);
+
+  // Sound RAM transfers over DMA channel 4.
+  uint32_t ReadDataWord();
+  void WriteDataWord(uint32_t value);
+
+  // Drains generated stereo frames into `out`, which holds frames*2 samples.
+  // Returns how many frames were actually copied.
+  int ReadSamples(int16_t* out, int frames);
+  int QueuedFrames() const;
+
+  // Optional sink. When set, finished frames are pushed to it as well as
+  // buffered, so a front end can either pull or be pushed to.
+  void set_audio_engine(IAudioEngine* engine) { engine_ = engine; }
+
+  const uint8_t* ram() const { return ram_; }
+
+  struct Stats {
+    uint64_t frames;             // stereo frames generated
+    uint64_t key_ons;
+    uint64_t key_offs;
+    uint64_t blocks_decoded;
+    uint64_t irqs;
+    uint64_t frames_dropped;     // the buffer filled and nobody drained it
+    uint32_t voices_active;      // at the last frame
+    int16_t peak_left, peak_right;
+  };
+  const Stats& stats() const { return stats_; }
+
+ private:
+  enum AdsrPhase { kAttack, kDecay, kSustain, kRelease, kOff };
+
+  struct Voice {
+    // Registers, as software sees them.
+    uint16_t volume_left, volume_right;
+    uint16_t pitch;
+    uint16_t start_address;      // in 8-byte units
+    uint16_t adsr_low, adsr_high;
+    uint16_t adsr_volume;
+    uint16_t repeat_address;     // in 8-byte units
+
+    // Running state.
+    uint32_t current_address;    // byte address into sound RAM
+    uint32_t counter;            // 12-bit fraction plus sample index
+    int16_t history[4];          // the four samples the interpolator needs
+    int16_t decoded[28];
+    int decoded_index;
+    int16_t previous0, previous1;  // ADPCM filter history
+    AdsrPhase phase;
+    int32_t level;               // 0..0x7FFF
+    uint32_t envelope_counter;   // samples since the envelope last moved
+    bool active;
+    bool repeat_set;             // the block flagged itself as the loop point
+    bool ended;                  // reached a block with the end flag
+  };
+
+  Voice voices_[kVoices];
+  uint8_t* ram_;
+
+  // Global registers.
+  uint16_t main_volume_left_, main_volume_right_;
+  uint16_t reverb_volume_left_, reverb_volume_right_;
+  uint32_t key_on_, key_off_, pitch_modulation_, noise_mode_, reverb_mode_;
+  uint32_t endx_;
+  uint16_t control_;
+  uint16_t transfer_control_;
+  uint16_t status_;
+  uint16_t irq_address_;         // in 8-byte units
+  uint16_t transfer_address_;    // in 8-byte units
+  uint32_t transfer_cursor_;     // byte address, advances as data is written
+  uint16_t cd_volume_left_, cd_volume_right_;
+  uint16_t external_volume_left_, external_volume_right_;
+  uint16_t reverb_registers_[32];
+
+  // Noise generator.
+  uint32_t noise_timer_;
+  int16_t noise_level_;
+
+  // Reverb working state.
+  uint32_t reverb_base_;         // byte address of the reverb work area
+  uint32_t reverb_cursor_;       // offset within it
+  bool reverb_left_phase_;
+
+  uint32_t sample_counter_;      // CPU cycles toward the next frame
+  bool irq_pending_;
+
+  // Generated frames, waiting to be drained. A second of audio is far more
+  // than any front end needs; overflowing it means nobody is listening, which
+  // is counted rather than allowed to block the emulation.
+  static const int kBufferFrames = kSampleRate;
+  int16_t* buffer_;
+  int buffer_read_;
+  int buffer_write_;
+  int buffer_count_;
+
+  IAudioEngine* engine_;
+  Stats stats_;
+
+  // ---- helpers -----------------------------------------------------------
+  inline uint16_t RamHalf(uint32_t byte_address) const {
+    const uint32_t a = byte_address & (kRamSize - 1);
+    return static_cast<uint16_t>(ram_[a] | (ram_[a + 1] << 8));
+  }
+  inline void WriteRamHalf(uint32_t byte_address, uint16_t value) {
+    const uint32_t a = byte_address & (kRamSize - 1);
+    ram_[a] = static_cast<uint8_t>(value);
+    ram_[a + 1] = static_cast<uint8_t>(value >> 8);
+  }
+
+  void GenerateFrame();
+  void DecodeBlock(Voice& voice);
+  int16_t StepVoice(Voice& voice, int index, int16_t previous_output);
+  void StepEnvelope(Voice& voice);
+  void KeyOn(int index);
+  void KeyOff(int index);
+  void StepNoise();
+  void ProcessReverb(int32_t input_left, int32_t input_right,
+                     int32_t* output_left, int32_t* output_right);
+  void CheckIrq(uint32_t byte_address);
+  void PushFrame(int16_t left, int16_t right);
+
+  // Volume registers are either a plain level or a sweep; only the level form
+  // is used for mixing here.
+  static int16_t VolumeOf(uint16_t reg);
 };
 
 }
 }
-

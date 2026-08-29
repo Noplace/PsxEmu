@@ -54,6 +54,27 @@ class System {
   void LoadBiosFromMemory(const void* buffer);
   bool LoadBiosFromFile(const char* filename);
   bool LoadPsExe(const char* filename);
+  bool LoadPsExeFromMemory(const void* data, size_t size);
+
+  // What BootDisc found, whether or not it succeeded. A boot that fails says
+  // which step failed rather than just "no".
+  struct DiscBootInfo {
+    std::string volume_id;
+    std::string boot_path;      // the BOOT line, verbatim
+    std::string executable;     // the identifier as stored on the disc
+    uint32_t executable_size;
+    const char* error;
+    DiscBootInfo() : executable_size(0), error(nullptr) {}
+  };
+
+  // Reads SYSTEM.CNF from the mounted disc and starts the executable it names.
+  bool BootDisc(DiscBootInfo* info);
+
+  // The filesystem on the mounted disc, for a harness that wants to look.
+  Iso9660& iso() { return iso_; }
+
+  static bool ParseSystemCnf(const std::vector<uint8_t>& contents,
+                             std::string* boot_path);
 
   // Watch a VRAM rectangle, for the harnesses.
   void WatchVram(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
@@ -118,6 +139,7 @@ class System {
   MC mc_[2];
   Kernel kernel_;
   GTE gte_;
+  Iso9660 iso_;
 };
 
 }

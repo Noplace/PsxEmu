@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 using emulation::psx::Cdrom;
 using emulation::psx::Disc;
@@ -23,12 +24,24 @@ namespace {
 
 int g_checks = 0;
 int g_failures = 0;
+bool g_keep_images = false;
+std::string g_test;
+
+void RemoveImage(const std::string& path) {
+  if (!g_keep_images)
+    remove(path.c_str());
+}
+
+void BeginTest(const std::string& name) { g_test = name; }
 
 void Check(bool condition, const char* what) {
   ++g_checks;
   if (!condition) {
     ++g_failures;
-    printf("  FAIL  %s\n", what);
+    if (g_test.empty())
+      printf("  FAIL  %s\n", what);
+    else
+      printf("  FAIL  %s / %s\n", g_test.c_str(), what);
   }
 }
 
@@ -319,10 +332,315 @@ void TestControllerWithDisc(emulation::psx::System* system,
   remove(path.c_str());
 }
 
+// ---------------------------------------------------------------------------
+// ISO9660, SYSTEM.CNF and the disc boot
+// ---------------------------------------------------------------------------
+
+void PutU32Both(uint8_t* p, uint32_t value) {
+  // ISO9660 stores 32-bit numbers twice: little-endian, then big-endian.
+  p[0] = static_cast<uint8_t>(value);
+  p[1] = static_cast<uint8_t>(value >> 8);
+  p[2] = static_cast<uint8_t>(value >> 16);
+  p[3] = static_cast<uint8_t>(value >> 24);
+  p[4] = static_cast<uint8_t>(value >> 24);
+  p[5] = static_cast<uint8_t>(value >> 16);
+  p[6] = static_cast<uint8_t>(value >> 8);
+  p[7] = static_cast<uint8_t>(value);
+}
+
+// Writes one directory record and returns how many bytes it took.
+uint32_t WriteDirectoryRecord(uint8_t* out, const char* name, uint32_t lba,
+                              uint32_t size, bool directory) {
+  const bool special = (name[0] == '\0' || name[0] == '\1');
+  const uint32_t name_length =
+      special ? 1 : static_cast<uint32_t>(strlen(name));
+  uint32_t length = 33 + name_length;
+  if (length & 1)
+    ++length;                       // records are padded to an even length
+
+  memset(out, 0, length);
+  out[0] = static_cast<uint8_t>(length);
+  PutU32Both(out + 2, lba);
+  PutU32Both(out + 10, size);
+  out[25] = directory ? 0x02 : 0x00;
+  out[32] = static_cast<uint8_t>(name_length);
+  if (special)
+    out[33] = static_cast<uint8_t>(name[0]);
+  else
+    memcpy(out + 33, name, name_length);
+  return length;
+}
+
+struct SyntheticEntry {
+  const char* name;
+  std::string contents;
+  bool directory;
+};
+
+// Builds a minimal but real ISO9660 image: a primary volume descriptor at
+// sector 16, a root directory at 17, and the files from 18 onward.
+//
+// Writing the image rather than shipping one keeps the test self-contained,
+// and makes the expected values obvious - the layout is right here.
+bool WriteIsoImage(const std::string& path,
+                   const std::vector<SyntheticEntry>& entries,
+                   const char* volume_id) {
+  const uint32_t kSector = 2048;
+  const uint32_t kDescriptorSector = 16;
+  const uint32_t kRootSector = 17;
+  const uint32_t kFirstFileSector = 18;
+
+  std::vector<uint32_t> lba(entries.size());
+  uint32_t next = kFirstFileSector;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    lba[i] = next;
+    uint32_t sectors =
+        static_cast<uint32_t>((entries[i].contents.size() + kSector - 1) / kSector);
+    if (sectors == 0)
+      sectors = 1;
+    next += sectors;
+  }
+  const uint32_t total_sectors = next;
+
+  std::vector<uint8_t> image(static_cast<size_t>(total_sectors) * kSector, 0);
+
+  uint8_t* pvd = &image[kDescriptorSector * kSector];
+  pvd[0] = 0x01;
+  memcpy(pvd + 1, "CD001", 5);
+  pvd[6] = 0x01;
+  memset(pvd + 40, ' ', 32);
+  memcpy(pvd + 40, volume_id, strlen(volume_id));
+  PutU32Both(pvd + 80, total_sectors);
+  WriteDirectoryRecord(pvd + 156, "\0", kRootSector, kSector, true);
+
+  uint8_t* root = &image[kRootSector * kSector];
+  uint32_t offset = 0;
+  offset += WriteDirectoryRecord(root + offset, "\0", kRootSector, kSector, true);
+  offset += WriteDirectoryRecord(root + offset, "\1", kRootSector, kSector, true);
+  for (size_t i = 0; i < entries.size(); ++i) {
+    offset += WriteDirectoryRecord(
+        root + offset, entries[i].name, lba[i],
+        static_cast<uint32_t>(entries[i].contents.size()),
+        entries[i].directory);
+  }
+
+  for (size_t i = 0; i < entries.size(); ++i) {
+    if (!entries[i].contents.empty()) {
+      memcpy(&image[lba[i] * kSector], entries[i].contents.data(),
+             entries[i].contents.size());
+    }
+  }
+
+  FILE* fp = fopen(path.c_str(), "wb");
+  if (fp == nullptr)
+    return false;
+  const size_t written = fwrite(&image[0], 1, image.size(), fp);
+  fclose(fp);
+  return written == image.size();
+}
+
+// A PS-EXE that does nothing, carrying a recognisable payload so a test can
+// prove the bytes reached the load address.
+std::string MakePsExe(uint32_t entry_point, uint32_t load_address,
+                      uint32_t text_size) {
+  std::string exe(0x800 + text_size, '\0');
+  memcpy(&exe[0], "PS-X EXE", 8);
+  uint8_t* header = reinterpret_cast<uint8_t*>(&exe[0]);
+  struct Put {
+    uint8_t* base;
+    void operator()(uint32_t at, uint32_t value) const {
+      base[at + 0] = static_cast<uint8_t>(value);
+      base[at + 1] = static_cast<uint8_t>(value >> 8);
+      base[at + 2] = static_cast<uint8_t>(value >> 16);
+      base[at + 3] = static_cast<uint8_t>(value >> 24);
+    }
+  };
+  const Put put = { header };
+  put(0x10, entry_point);       // pc0
+  put(0x14, 0);                 // gp0
+  put(0x18, load_address);      // t_addr
+  put(0x1C, text_size);         // t_size
+  for (uint32_t i = 0; i < text_size; ++i)
+    exe[0x800 + i] = static_cast<char>(0xA0 + (i & 0x0F));
+  return exe;
+}
+
+void TestIso9660(const std::string& directory) {
+  printf("iso9660 filesystem\n");
+
+  const std::string path = directory + "media_test_fs.iso";
+  std::vector<SyntheticEntry> entries;
+  SyntheticEntry cnf = { "SYSTEM.CNF;1",
+                         "BOOT = cdrom:\\SLUS_007.55;1\r\n"
+                         "TCB = 4\r\nEVENT = 10\r\nSTACK = 801FFFF0\r\n",
+                         false };
+  SyntheticEntry exe = { "SLUS_007.55;1",
+                         MakePsExe(0x80010000, 0x80010000, 64), false };
+  SyntheticEntry other = { "README.TXT;1", "hello", false };
+  entries.push_back(cnf);
+  entries.push_back(exe);
+  entries.push_back(other);
+
+  if (!WriteIsoImage(path, entries, "TEST VOLUME")) {
+    printf("  FAIL  could not write %s\n", path.c_str());
+    ++g_failures;
+    return;
+  }
+
+  Disc disc;
+  BeginTest("opening the filesystem");
+  Check(disc.Open(path.c_str()), "mount the image");
+
+  emulation::psx::Iso9660 iso;
+  Check(iso.Open(&disc), "open the filesystem");
+  Check(iso.volume_id() == "TEST VOLUME", "the volume identifier");
+  // "." and ".." plus the three files.
+  CheckEqual(static_cast<uint32_t>(iso.root().size()), 5u, "root entry count");
+
+  emulation::psx::Iso9660::File found;
+
+  BeginTest("finding a file by the forms software actually writes");
+  Check(iso.Find("SYSTEM.CNF", &found), "a bare name");
+  Check(!found.directory, "SYSTEM.CNF is a file");
+  CheckEqual(found.size, static_cast<uint32_t>(cnf.contents.size()),
+             "SYSTEM.CNF size");
+  Check(iso.Find("\\SYSTEM.CNF", &found), "a leading backslash");
+  Check(iso.Find("/SYSTEM.CNF", &found), "a leading slash");
+  Check(iso.Find("SYSTEM.CNF;1", &found), "the version suffix");
+  Check(iso.Find("system.cnf", &found), "the wrong case");
+  Check(iso.Find("cdrom:\\SYSTEM.CNF;1", &found), "a device prefix");
+
+  BeginTest("a name that is not there is not found");
+  Check(!iso.Find("NOTHERE.TXT", &found), "a missing file");
+  Check(!iso.Find("", &found), "an empty path");
+  Check(!iso.Find("SYSTEM.CNF\\CHILD.TXT", &found),
+        "walking into a file rather than a directory");
+
+  BeginTest("reading a file back");
+  Check(iso.Find("README.TXT", &found), "find README.TXT");
+  std::vector<uint8_t> contents;
+  Check(iso.Read(found, &contents), "read it");
+  CheckEqual(static_cast<uint32_t>(contents.size()), 5u,
+             "the size is exact, not rounded up to a sector");
+  Check(contents.size() == 5 && memcmp(&contents[0], "hello", 5) == 0,
+        "the contents match");
+
+  BeginTest("an image with no filesystem is rejected");
+  disc.Close();
+  const std::string audio = directory + "media_test_audio.bin";
+  if (WriteImage(audio, 2352, 40)) {
+    Disc raw;
+    Check(raw.Open(audio.c_str()), "mount a data-less image");
+    emulation::psx::Iso9660 empty;
+    Check(!empty.Open(&raw), "no CD001 signature, so no filesystem");
+    raw.Close();
+    remove(audio.c_str());
+  }
+
+  remove(path.c_str());
+}
+
+void TestSystemCnf() {
+  printf("system.cnf parsing\n");
+
+  std::string boot;
+  struct Parse {
+    static bool Run(const char* text, std::string* out) {
+      std::vector<uint8_t> bytes(text, text + strlen(text));
+      return emulation::psx::System::ParseSystemCnf(bytes, out);
+    }
+  };
+
+  BeginTest("the ordinary form");
+  Check(Parse::Run("BOOT = cdrom:\\SLUS_007.55;1\r\nTCB = 4\r\n", &boot),
+        "parsed");
+  Check(boot == "cdrom:\\SLUS_007.55;1", "the value is taken verbatim");
+
+  BeginTest("spacing and line endings vary by publisher");
+  Check(Parse::Run("TCB=4\nBOOT=cdrom:\\SCUS_944.26;1\n", &boot), "no spaces");
+  Check(boot == "cdrom:\\SCUS_944.26;1", "value");
+  Check(Parse::Run("BOOT   =   cdrom:\\A.EXE;1   \r\n", &boot), "extra spaces");
+  Check(boot == "cdrom:\\A.EXE;1", "the value is trimmed");
+  Check(Parse::Run("boot = cdrom:\\B.EXE;1\n", &boot), "a lower-case key");
+  Check(boot == "cdrom:\\B.EXE;1", "value");
+
+  BeginTest("BOOT need not be the first line");
+  Check(Parse::Run("TCB = 4\r\nEVENT = 10\r\nBOOT = cdrom:\\C.EXE;1\r\n", &boot),
+        "found further down");
+  Check(boot == "cdrom:\\C.EXE;1", "value");
+
+  BeginTest("a file with no BOOT line fails rather than guessing");
+  Check(!Parse::Run("TCB = 4\r\nEVENT = 10\r\n", &boot), "no BOOT line");
+  Check(!Parse::Run("", &boot), "an empty file");
+  Check(!Parse::Run("BOOTSTRAP = 4\r\n", &boot),
+        "a key that merely starts with BOOT");
+}
+
+void TestDiscBoot(emulation::psx::System* system, const std::string& directory) {
+  printf("booting a disc\n");
+
+  const std::string path = directory + "media_test_boot.iso";
+  std::vector<SyntheticEntry> entries;
+  SyntheticEntry cnf = { "SYSTEM.CNF;1", "BOOT = cdrom:\\SLUS_123.45;1\r\n",
+                         false };
+  SyntheticEntry exe = { "SLUS_123.45;1",
+                         MakePsExe(0x80010000, 0x80010000, 64), false };
+  entries.push_back(cnf);
+  entries.push_back(exe);
+
+  if (!WriteIsoImage(path, entries, "BOOT TEST")) {
+    printf("  FAIL  could not write %s\n", path.c_str());
+    ++g_failures;
+    return;
+  }
+
+  BeginTest("the boot succeeds and reports what it found");
+  Check(system->LoadDisc(path.c_str()), "mount the disc");
+  emulation::psx::System::DiscBootInfo info;
+  const bool booted = system->BootDisc(&info);
+  if (!booted && info.error != nullptr)
+    printf("        BootDisc said: %s\n", info.error);
+  Check(booted, "BootDisc returned true");
+  Check(info.error == nullptr, "no error was recorded");
+  Check(info.volume_id == "BOOT TEST", "the volume identifier");
+  Check(info.boot_path == "cdrom:\\SLUS_123.45;1", "the BOOT line");
+  Check(info.executable == "SLUS_123.45;1", "the executable it resolved to");
+
+  BeginTest("the executable is in RAM and the pc points at its entry");
+  CheckEqual(system->cpu().context()->pc, 0x80010000u, "pc is the entry point");
+  const uint8_t* ram = system->ram();
+  Check(ram[0x10000] == 0xA0 && ram[0x10001] == 0xA1 && ram[0x1000F] == 0xAF,
+        "the payload landed at the load address");
+
+  // A failure has to say which step failed, not just "no". That is the whole
+  // difference between a diagnosable boot and "the game did not start".
+  BeginTest("a disc with no filesystem fails with a reason");
+  const std::string audio = directory + "media_test_noiso.bin";
+  if (WriteImage(audio, 2352, 40)) {
+    Check(system->LoadDisc(audio.c_str()), "mount it");
+    emulation::psx::System::DiscBootInfo bad;
+    Check(!system->BootDisc(&bad), "BootDisc returned false");
+    Check(bad.error != nullptr, "and said why");
+    remove(audio.c_str());
+  }
+
+  BeginTest("an empty drive fails with a reason");
+  system->EjectDisc();
+  emulation::psx::System::DiscBootInfo empty;
+  Check(!system->BootDisc(&empty), "BootDisc returned false");
+  Check(empty.error != nullptr, "and said why");
+
+  RemoveImage(path);
+  if (g_keep_images)
+    printf("  kept %s\n", path.c_str());
+}
 }  // namespace
 
 int main(int argc, char** argv) {
+  // A second argument of "keep" leaves the generated images behind, which is
+  // how boot_runner --boot-disc gets something to point at without a game.
   std::string directory = (argc > 1) ? argv[1] : ".";
+  g_keep_images = (argc > 2 && strcmp(argv[2], "keep") == 0);
   if (!directory.empty() && directory[directory.size() - 1] != '\\' &&
       directory[directory.size() - 1] != '/')
     directory += "\\";
@@ -332,6 +650,8 @@ int main(int argc, char** argv) {
   TestBcdAndMsf();
   TestIsoImage(directory);
   TestRawImageAndCue(directory);
+  TestIso9660(directory);
+  TestSystemCnf();
 
   // The controller needs a System around it for its interrupt line, but no
   // BIOS: nothing here executes a single instruction.
@@ -339,6 +659,7 @@ int main(int argc, char** argv) {
   system->InitializeWithoutBios();
   TestControllerWithoutDisc(system);
   TestControllerWithDisc(system, directory);
+  TestDiscBoot(system, directory);
   system->Deinitialize();
   delete system;
 

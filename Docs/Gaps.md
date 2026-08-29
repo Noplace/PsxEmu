@@ -7,6 +7,14 @@ Hardware and features still missing, ordered by impact. See
 
 ## Blocking a booting machine
 
+### Booting through the BIOS rather than around it
+
+`System::BootDisc` reads SYSTEM.CNF and side-loads the executable directly.
+That is not what real hardware does: the BIOS reads the disc itself, checks the
+region string and shows the licence screen first. Doing it properly needs more
+of the CD-ROM drive than is implemented - seek timing, the full response
+sequence, and the shell's own boot path.
+
 ### GTE - implemented, not yet validated against real 3D
 
 All 22 commands, the full register file, saturation, the FLAG register and the

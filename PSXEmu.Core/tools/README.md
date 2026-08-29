@@ -71,8 +71,12 @@ BIOS, no window, and no disc of its own - it writes the images it needs into
 the work directory and removes them afterwards. Exit code 0 if all checks
 passed.
 
-Currently 56 checks. See [Docs/Test-Suite.md](../../Docs/Test-Suite.md) for
-what each group covers and why it is worth testing this way.
+Currently 103 checks, over disc images, the CD-ROM controller, the ISO9660
+filesystem, SYSTEM.CNF and the disc boot. A second argument of `keep` leaves
+the generated images behind for `boot_runner --boot-disc` to use.
+
+See [Docs/Test-Suite.md](../../Docs/Test-Suite.md) for what each group covers
+and why it is worth testing this way.
 
 ## Still to write
 

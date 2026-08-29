@@ -30,6 +30,8 @@
 #include "psx/psx.h"
 
 #include "d3d11_presenter.h"
+#include "audio/wasapiaudioengine.h"
+#include "audio/dsoundaudioengine.h"
 
 #include <commdlg.h>
 #include <shellapi.h>   // CommandLineToArgvW
@@ -38,6 +40,8 @@
 
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
+
+using emulation::psx::Spu;
 
 namespace {
 
@@ -48,6 +52,7 @@ const wchar_t kWindowTitle[] = L"PSXEmu";
 enum {
   kCommandOpenDisc = 1000,
   kCommandEjectDisc,
+  kCommandBootDisc,
   kCommandOpenMemoryCardSlot1,
   kCommandOpenMemoryCardSlot2,
   kCommandCreateMemoryCardSlot1,
@@ -60,11 +65,13 @@ enum {
 struct Application {
   emulation::psx::System* system;
   psxemu::D3D11Presenter presenter;
+  IAudioEngine* audio;
   std::string bios_path;
   bool running;
   bool paused;
 
-  Application() : system(nullptr), running(false), paused(false) {}
+  Application()
+      : system(nullptr), audio(nullptr), running(false), paused(false) {}
 };
 
 Application* g_app = nullptr;
@@ -125,6 +132,7 @@ HMENU CreateMainMenu() {
   HMENU file = CreatePopupMenu();
   AppendMenuW(file, MF_STRING, kCommandOpenDisc, L"&Open disc...\tCtrl+O");
   AppendMenuW(file, MF_STRING, kCommandEjectDisc, L"&Eject disc");
+  AppendMenuW(file, MF_STRING, kCommandBootDisc, L"&Boot disc");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot1, L"Open Memory Card (Slot 1)...");
   AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot2, L"Open Memory Card (Slot 2)...");
@@ -167,6 +175,19 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
             break;
           }
           SetWindowTitleForDisc(window, path);
+          break;
+        }
+        case kCommandBootDisc: {
+          // Reads SYSTEM.CNF and starts the executable it names, skipping the
+          // BIOS shell. A failure says which step failed rather than just
+          // leaving a black screen.
+          emulation::psx::System::DiscBootInfo info;
+          if (!g_app->system->BootDisc(&info)) {
+            MessageBoxA(window,
+                        info.error ? info.error : "The disc could not be booted.",
+                        "PSXEmu", MB_OK | MB_ICONWARNING);
+            break;
+          }
           break;
         }
         case kCommandEjectDisc:
@@ -341,6 +362,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     return 1;
   }
 
+  // Audio is optional: a machine with no working output device should still
+  // run, silently, rather than refusing to start.
+  {
+    WASAPIAudioEngine* wasapi = new WASAPIAudioEngine();
+    if (wasapi->Initialize(Spu::kSampleRate, 2)) {
+      app.audio = wasapi;
+    } else {
+      delete wasapi;
+      DirectSoundAudioEngine* dsound = new DirectSoundAudioEngine();
+      if (dsound->Initialize(Spu::kSampleRate, 2))
+        app.audio = dsound;
+      else
+        delete dsound;
+    }
+    if (app.audio != nullptr)
+      app.audio->Play();
+  }
+
   app.system = new emulation::psx::System();
   if (app.system->Initialize(app.bios_path.c_str()) != 0) {
     MessageBoxW(window, L"The BIOS image could not be loaded. It must be "
@@ -391,10 +430,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
       app.system->StepInstruction();
     }
 
+    // Drain whatever the SPU generated during that frame and hand it to the
+    // audio device. Pulling here rather than pushing from inside the core is
+    // what keeps the core free of any audio API: it just fills a buffer.
+    if (app.audio != nullptr) {
+      static int16_t samples[Spu::kSampleRate / 30 * 2];
+      const int frames = app.system->spu().ReadSamples(
+          samples, static_cast<int>(ARRAYSIZE(samples) / 2));
+      if (frames > 0)
+        app.audio->QueueAudio(samples, frames * 2);
+    }
+
     int width = 0;
     int height = 0;
     const uint32_t* pixels = app.system->gpu().framebuffer(width, height);
     app.presenter.Present(pixels, width, height);
+  }
+
+  if (app.audio != nullptr) {
+    app.audio->Shutdown();
+    delete app.audio;
+    app.audio = nullptr;
   }
 
   app.system->Deinitialize();

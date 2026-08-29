@@ -84,6 +84,7 @@ class Dma : public Component {
 
   void Dma2();
   void Dma3();
+  void Dma4();
   void Dma6();
 };
 

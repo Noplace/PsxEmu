@@ -54,4 +54,5 @@
 #include "psx/io_interface.h"
 #include "psx/kernel.h"
 #include "psx/mc.h"
+#include "psx/iso9660.h"
 #include "psx/system.h"

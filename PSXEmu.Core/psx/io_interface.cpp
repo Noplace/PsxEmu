@@ -113,6 +113,7 @@ void IOInterface::Tick(uint32_t cycles) {
   system_->gpu_core()->Tick(cycles);
   cdrom.Tick(cycles);
   sio.Tick(cycles);
+  system_->spu().Tick(cycles);
 
   dma.Tick();
 }

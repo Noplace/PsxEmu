@@ -23,6 +23,7 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\psx\kernel.cpp ^
  PSXEmu.Core\psx\mc.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
  PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\psx\disc.cpp PSXEmu.Core\psx\sio.cpp ^
+ PSXEmu.Core\psx\iso9660.cpp ^
  PSXEmu.Core\psx\debug_assist.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
@@ -43,6 +44,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_cpu\ /Fe:Temp\tools\cpu_test.exe ^
    PSXEmu.Core\tools\cpu_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_spu mkdir Temp\tools\obj_spu
+cl %FLAGS% /Fo:Temp\tools\obj_spu\ /Fe:Temp\tools\spu_test.exe ^
+   PSXEmu.Core\tools\spu_test.cpp %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
 if not exist Temp\tools\obj_gte mkdir Temp\tools\obj_gte
 cl %FLAGS% /Fo:Temp\tools\obj_gte\ /Fe:Temp\tools\gte_test.exe ^
    PSXEmu.Core\tools\gte_test.cpp %CORE% %LIBS%
@@ -54,3 +60,4 @@ echo Built Temp\tools\media_test.exe
 echo Built Temp\tools\cpu_test.exe
 
 echo Built Temp\tools\gte_test.exe
+echo Built Temp	ools\spu_test.exe

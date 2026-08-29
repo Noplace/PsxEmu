@@ -211,7 +211,10 @@ bool System::LoadBiosFromFile(const char* filename) {
   return ok;
 }
 
-bool System::LoadPsExe(const char* filename) {
+// A PS-EXE, wherever it came from. The disc path and the side-load path go
+// through the same code so that booting a game and booting a test executable
+// cannot drift apart.
+bool System::LoadPsExeFromMemory(const void* data, size_t size) {
   struct PSXEXE {
     char     id[8];
     uint32_t text;
@@ -233,31 +236,27 @@ bool System::LoadPsExe(const char* filename) {
     uint32_t saved_s0;
   };
 
-  FILE* fp = fopen(filename, "rb");
-  if (fp == nullptr)
+  // The header occupies the start of the first 2048 bytes; the image begins
+  // where that region ends. The header is *inside* those 2048 bytes, not after
+  // them, so the minimum size is the header itself - requiring 0x800 plus a
+  // header rejects every executable with a small text section.
+  const size_t kHeaderRegion = 0x800;
+  if (data == nullptr || size < sizeof(PSXEXE))
     return false;
 
   PSXEXE header;
-  if (fread(&header, sizeof(PSXEXE), 1, fp) != 1) {
-    fclose(fp);
+  memcpy(&header, data, sizeof(header));
+  if (memcmp(header.id, "PS-X EXE", 8) != 0)
     return false;
-  }
-  if (memcmp(header.id, "PS-X EXE", 8) != 0) {
-    fclose(fp);
-    return false;
-  }
 
   const uint32_t offset = header.t_addr & 0x1FFFFF;
-  if (offset + header.t_size > kRamSize) {
-    fclose(fp);
+  if (header.t_size == 0 || offset + header.t_size > kRamSize)
     return false;
-  }
+  if (size < kHeaderRegion + header.t_size)
+    return false;
 
-  fseek(fp, 0x800, SEEK_SET);
-  const size_t read = fread(&io_.ram_buffer.u8[offset], 1, header.t_size, fp);
-  fclose(fp);
-  if (read != header.t_size)
-    return false;
+  memcpy(&io_.ram_buffer.u8[offset],
+         static_cast<const uint8_t*>(data) + kHeaderRegion, header.t_size);
 
   cpu_context_.pc = header.pc0;
   cpu_context_.prev_pc = header.pc0;
@@ -267,6 +266,157 @@ bool System::LoadPsExe(const char* filename) {
   cpu_context_.gp.reg[30] = cpu_context_.gp.reg[29];                 // fp
   return true;
 }
+
+bool System::LoadPsExe(const char* filename) {
+  FILE* fp = fopen(filename, "rb");
+  if (fp == nullptr)
+    return false;
+
+  fseek(fp, 0, SEEK_END);
+  const long size = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+  if (size <= 0) {
+    fclose(fp);
+    return false;
+  }
+
+  std::vector<uint8_t> buffer(static_cast<size_t>(size));
+  const size_t read = fread(&buffer[0], 1, buffer.size(), fp);
+  fclose(fp);
+  if (read != buffer.size())
+    return false;
+
+  return LoadPsExeFromMemory(&buffer[0], buffer.size());
+}
+
+// Reads the BOOT line out of SYSTEM.CNF. The file is a handful of KEY = VALUE
+// lines; the one that matters names the executable, usually as
+// "cdrom:\SLUS_007.55;1". Line endings and spacing vary by publisher, so this
+// is deliberately forgiving about both.
+bool System::ParseSystemCnf(const std::vector<uint8_t>& contents,
+                            std::string* boot_path) {
+  if (contents.empty())
+    return false;
+  const std::string text(reinterpret_cast<const char*>(&contents[0]),
+                         contents.size());
+  size_t position = 0;
+  while (position < text.size()) {
+    size_t end = text.find_first_of("\r\n", position);
+    if (end == std::string::npos)
+      end = text.size();
+    const std::string line = text.substr(position, end - position);
+    position = end + 1;
+
+    const size_t equals = line.find('=');
+    if (equals == std::string::npos)
+      continue;
+
+    std::string key = line.substr(0, equals);
+    std::string value = line.substr(equals + 1);
+
+    // Trim both halves, and upper-case the key so "boot" matches too.
+    const char* kSpace = " \t";
+    const size_t key_begin = key.find_first_not_of(kSpace);
+    const size_t key_end = key.find_last_not_of(kSpace);
+    if (key_begin == std::string::npos)
+      continue;
+    key = key.substr(key_begin, key_end - key_begin + 1);
+    for (size_t i = 0; i < key.size(); ++i)
+      key[i] = static_cast<char>(toupper(static_cast<unsigned char>(key[i])));
+
+    if (key != "BOOT")
+      continue;
+
+    const size_t value_begin = value.find_first_not_of(kSpace);
+    const size_t value_end = value.find_last_not_of(kSpace);
+    if (value_begin == std::string::npos)
+      continue;
+    *boot_path = value.substr(value_begin, value_end - value_begin + 1);
+    return true;
+  }
+  return false;
+}
+
+// Boots whatever disc is in the drive: find SYSTEM.CNF, read the executable it
+// names, and start it.
+//
+// This is the shortcut that skips the BIOS shell rather than the way real
+// hardware does it, and it is deliberate for now - the CD-ROM controller can
+// serve sectors but the BIOS's own boot path needs more of the drive than is
+// implemented. `info` records what was found either way, so a failure says
+// which step failed rather than just "did not boot".
+bool System::BootDisc(DiscBootInfo* info) {
+  DiscBootInfo local;
+  if (info == nullptr)
+    info = &local;
+  *info = DiscBootInfo();
+
+  if (!io_.cdrom.disc_loaded()) {
+    info->error = "no disc is mounted";
+    return false;
+  }
+
+  if (!iso_.Open(&io_.cdrom.disc())) {
+    info->error = "the disc has no ISO9660 filesystem";
+    return false;
+  }
+  info->volume_id = iso_.volume_id();
+
+  Iso9660::File config;
+  if (!iso_.Find("SYSTEM.CNF", &config)) {
+    // A few discs omit it and are expected to run PSX.EXE instead.
+    Iso9660::File fallback;
+    if (iso_.Find("PSX.EXE", &fallback)) {
+      info->boot_path = "PSX.EXE";
+      info->executable = fallback.name;
+      std::vector<uint8_t> image;
+      if (!iso_.Read(fallback, &image)) {
+        info->error = "PSX.EXE could not be read";
+        return false;
+      }
+      info->executable_size = static_cast<uint32_t>(image.size());
+      if (!LoadPsExeFromMemory(&image[0], image.size())) {
+        info->error = "PSX.EXE is not a valid executable";
+        return false;
+      }
+      return true;
+    }
+    info->error = "no SYSTEM.CNF and no PSX.EXE on the disc";
+    return false;
+  }
+
+  std::vector<uint8_t> contents;
+  if (!iso_.Read(config, &contents)) {
+    info->error = "SYSTEM.CNF could not be read";
+    return false;
+  }
+
+  if (!ParseSystemCnf(contents, &info->boot_path)) {
+    info->error = "SYSTEM.CNF has no BOOT line";
+    return false;
+  }
+
+  Iso9660::File executable;
+  if (!iso_.Find(info->boot_path.c_str(), &executable)) {
+    info->error = "the executable named by BOOT is not on the disc";
+    return false;
+  }
+  info->executable = executable.name;
+
+  std::vector<uint8_t> image;
+  if (!iso_.Read(executable, &image)) {
+    info->error = "the executable could not be read";
+    return false;
+  }
+  info->executable_size = static_cast<uint32_t>(image.size());
+
+  if (!LoadPsExeFromMemory(&image[0], image.size())) {
+    info->error = "the executable is not a valid PS-EXE";
+    return false;
+  }
+  return true;
+}
+
 void System::thread_func(System* sys) {
   memset(&sys->timing_,0,sizeof(sys->timing_));
   sys->timer.Calibrate();
