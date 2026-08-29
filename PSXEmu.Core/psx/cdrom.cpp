@@ -174,6 +174,12 @@ void Cdrom::Write(uint32_t address, uint8_t data) {
           parameter_fifo_.push_back(data);
       } else if (index_ == 1) {
         interrupt_enable_ = data & 0x1F;
+        if (interrupt_flag_ > 0) {
+          uint8_t flag_bit = 1 << (interrupt_flag_ - 1);
+          if (flag_bit & interrupt_enable_) {
+            system().io().SetInterrupt(kInterruptCDROM);
+          }
+        }
       }
       return;
 
@@ -190,6 +196,8 @@ void Cdrom::Write(uint32_t address, uint8_t data) {
         // Acknowledging an interrupt clears the bits written, and frees the
         // controller to deliver whatever is queued behind it.
         interrupt_flag_ &= ~(data & 0x1F);
+        if (interrupt_flag_ == 0)
+          system().io().ClearInterrupt(kInterruptCDROM);
         if (data & 0x40)
           ClearParameters();
       }
@@ -265,8 +273,12 @@ void Cdrom::DeliverPending() {
   ++stats_.interrupts;
   pending_.pop_front();
 
-  if (interrupt_flag_ & interrupt_enable_)
-    system().io().SetInterrupt(kInterruptCDROM);
+  if (interrupt_flag_ > 0) {
+    uint8_t flag_bit = 1 << (interrupt_flag_ - 1);
+    if (flag_bit & interrupt_enable_) {
+      system().io().SetInterrupt(kInterruptCDROM);
+    }
+  }
 }
 
 void Cdrom::Tick(uint32_t cycles) {
@@ -420,14 +432,22 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       break;
 
-    case 0x0F:    // Getparam
+    case 0x0F: {  // Getparam
+      // Returns current parameters: stat, mode, file, channel, sm
+      // We don't fully track file/channel/sm from Setfilter yet, so return 0s
+      const uint8_t data[5] = { status_, mode_, 0, 0, 0 };
+      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 5);
+      break;
+    }
+
     case 0x10: {  // GetlocL
+      // Returns sector header/subheader: stat, min, sec, frame, mode, file, channel, sm
       const uint8_t data[8] = {
-        status_, mode_, 0, 0,
-        sector_[12], sector_[13], sector_[14], sector_[15]
+        status_,
+        sector_[12], sector_[13], sector_[14], sector_[15],
+        sector_[16], sector_[17], sector_[18]
       };
-      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data,
-                    command == 0x0F ? 5 : 8);
+      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 8);
       break;
     }
 
@@ -437,8 +457,10 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       uint8_t track_minute, track_second, track_frame;
       Disc::LbaToMsf(read_lba_ - Disc::kLeadInSectors, &track_minute,
                      &track_second, &track_frame);
+      // Returns 8 bytes: stat, track, index, tmin, tsec, tframe, amin, asec
+      // Note that absolute frame is dropped to fit in 8 bytes!
       const uint8_t data[8] = {
-        1, 1, track_minute, track_second, track_frame, minute, second, frame
+        status_, 1, 1, track_minute, track_second, track_frame, minute, second
       };
       QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 8);
       break;
@@ -469,8 +491,8 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         lba = disc_.track(requested - 1).start_lba;
       uint8_t minute, second, frame;
       Disc::LbaToMsf(lba, &minute, &second, &frame);
-      const uint8_t data[3] = { status_, minute, second };
-      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 3);
+      const uint8_t data[4] = { status_, minute, second, frame };
+      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 4);
       break;
     }
 

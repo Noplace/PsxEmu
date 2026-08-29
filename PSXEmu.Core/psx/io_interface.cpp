@@ -88,7 +88,17 @@ void IOInterface::SetInterrupt(InterruptCodes interrupt) {
   io.interrupt_stat |= interrupt;
 }
 
+void IOInterface::ClearInterrupt(InterruptCodes interrupt) {
+  io.interrupt_stat &= ~interrupt;
+}
+
 void IOInterface::Tick(uint32_t cycles) {
+  pending_cycles_ += cycles;
+  if (pending_cycles_ < 32)
+    return;
+  cycles = pending_cycles_;
+  pending_cycles_ = 0;
+
   if (rootcounter_[0].Tick(cycles)==true) {
     if ((rootcounter_[0].mode.reached_0xffff && rootcounter_[0].mode.irq_0xffff)||
         (rootcounter_[0].mode.reached_target && rootcounter_[0].mode.irq_target)) {

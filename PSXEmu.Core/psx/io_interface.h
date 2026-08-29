@@ -58,10 +58,12 @@ class IOInterface : public Component {
     uint32_t writes[0x2000];
   };
   AccessLog access_log;
+  uint32_t pending_cycles_ = 0;
 
   int Initialize();
   int Deinitialize();
   void SetInterrupt(InterruptCodes interrupt);
+  void ClearInterrupt(InterruptCodes interrupt);
   void Tick(uint32_t cycles);
   uint8_t Read08(uint32_t address);
   uint16_t Read16(uint32_t address);

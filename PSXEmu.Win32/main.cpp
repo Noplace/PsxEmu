@@ -170,12 +170,12 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
           const std::string path = OpenDiscDialog(window);
           if (path.empty())
             break;
-          g_app->system->Deinitialize();
+         /* g_app->system->Deinitialize();
           if (g_app->system->Initialize(g_app->bios_path.c_str()) != 0) {
             MessageBoxA(window, "Failed to initialize the system (BIOS missing?).",
                         "PSXEmu", MB_OK | MB_ICONERROR);
             break;
-          }
+          }*/
           g_app->system->EjectDisc(); // Start with tray open
           g_app->system->LoadDisc(path.c_str());
           SetWindowTitleForDisc(window, path);
@@ -339,11 +339,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
   if (argv != nullptr) {
     if (argc > 1) {
       const std::wstring wide = argv[1];
-      bios_argument.assign(wide.begin(), wide.end());
+      int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+      bios_argument.resize(size - 1);
+      WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &bios_argument[0], size, nullptr, nullptr);
     }
     if (argc > 2) {
       const std::wstring wide = argv[2];
-      disc_argument.assign(wide.begin(), wide.end());
+      int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
+      disc_argument.resize(size - 1);
+      WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &disc_argument[0], size, nullptr, nullptr);
     }
     LocalFree(argv);
   }
