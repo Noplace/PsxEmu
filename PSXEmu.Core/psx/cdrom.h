@@ -135,6 +135,7 @@ class Cdrom : public Component {
   void DeliverPending();
   void StepRead(uint32_t cycles);
   void LoadSector();
+  void GetReport(uint8_t* data);
 
   uint8_t TakeParameter();
   void ClearParameters();

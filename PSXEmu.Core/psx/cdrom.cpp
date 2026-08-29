@@ -295,29 +295,41 @@ void Cdrom::Tick(uint32_t cycles) {
 // Reading
 // ---------------------------------------------------------------------------
 
+void Cdrom::GetReport(uint8_t* data) {
+  uint8_t minute, second, frame;
+  Disc::LbaToMsf(read_lba_, &minute, &second, &frame);
+
+  uint8_t current_track = 1;
+  uint8_t index = 1;
+  uint32_t track_start = Disc::kLeadInSectors;
+
+  for (int i = 0; i < disc_.track_count(); ++i) {
+    const Disc::Track& t = disc_.track(i);
+    if (read_lba_ >= t.start_lba && read_lba_ < t.start_lba + t.length) {
+      current_track = static_cast<uint8_t>(t.number);
+      track_start = t.start_lba;
+      break;
+    }
+  }
+
+  uint8_t track_minute, track_second, track_frame;
+  Disc::LbaToMsf(read_lba_ - track_start, &track_minute, &track_second, &track_frame);
+
+  data[0] = status_;
+  data[1] = Disc::ToBcd(current_track);
+  data[2] = Disc::ToBcd(index);
+  data[3] = track_minute;
+  data[4] = track_second;
+  data[5] = track_frame;
+  data[6] = minute;
+  data[7] = second;
+}
+
 void Cdrom::LoadSector() {
   if (!disc_.ReadSector(read_lba_, sector_)) {
     QueueError(0x80, 0);
     reading_ = false;
     playing_ = false;
-    return;
-  }
-
-  if (playing_) {
-    system().spu().QueueCdAudio(sector_);
-    
-    // Check if we've reached the end of the disc or track (simplification: just disc end)
-    if (read_lba_ >= disc_.total_sectors()) {
-      playing_ = false;
-      status_ &= ~kStatusPlaying;
-      QueueStatus(kIntDataEnd, 0); // INT4
-    } else {
-      if (mode_ & 0x20) { // Report mode
-        // For simplicity, we just queue a basic INT1. Full subchannel Q report is 8 bytes.
-        QueueStatus(kIntDataReady, 0);
-      }
-    }
-    ++read_lba_;
     return;
   }
 
@@ -345,6 +357,31 @@ void Cdrom::StepRead(uint32_t cycles) {
   if (read_timer_ > 0)
     return;
   read_timer_ += SectorCycles();
+
+  if (playing_) {
+    if (disc_.ReadSector(read_lba_, sector_)) {
+      system().spu().QueueCdAudio(sector_);
+      if (read_lba_ >= disc_.total_sectors()) {
+        playing_ = false;
+        status_ &= ~kStatusPlaying;
+        QueueStatus(kIntDataEnd, 0); // INT4
+      } else {
+        if (mode_ & 0x04) { // Report mode
+          if (pending_.empty()) {
+            uint8_t data[8];
+            GetReport(data);
+            QueueResponse(kIntDataReady, 0, data, 8);
+          }
+        }
+      }
+      ++read_lba_;
+    } else {
+      QueueError(0x80, 0);
+      reading_ = false;
+      playing_ = false;
+    }
+    return;
+  }
 
   // Do not stack sectors up behind an unacknowledged one; the real drive would
   // simply overwrite its buffer, and queuing without bound is worse.
@@ -491,16 +528,8 @@ void Cdrom::ExecuteCommand(uint8_t command) {
     }
 
     case 0x11: {  // GetlocP - where the head is, in track and disc terms
-      uint8_t minute, second, frame;
-      Disc::LbaToMsf(read_lba_, &minute, &second, &frame);
-      uint8_t track_minute, track_second, track_frame;
-      Disc::LbaToMsf(read_lba_ - Disc::kLeadInSectors, &track_minute,
-                     &track_second, &track_frame);
-      // Returns 8 bytes: stat, track, index, tmin, tsec, tframe, amin, asec
-      // Note that absolute frame is dropped to fit in 8 bytes!
-      const uint8_t data[8] = {
-        status_, 1, 1, track_minute, track_second, track_frame, minute, second
-      };
+      uint8_t data[8];
+      GetReport(data);
       QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 8);
       break;
     }
