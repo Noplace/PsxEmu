@@ -126,14 +126,23 @@ implemented directly against D3D11.
 - [ ] Per-instruction cycle counts, and memory access penalties.
 - [ ] DMA transfer timing rather than instant completion.
 
-## Phase 6 - Settings, save states, more front ends
+## Phase 6 - Settings, save states, memory cards, more front ends
 
+Three of these now have plans of their own, written against the tree as it
+actually is rather than from memory:
+
+- [ ] **[MDEC-Plan.md](MDEC-Plan.md)** - the motion decoder. The last large
+      missing component; blocks full-motion video and nothing else. Six steps,
+      each landable on its own.
+- [ ] **[Save-States-Plan.md](Save-States-Plan.md)** - what a state has to
+      hold, what it must not, and the serialiser that has to exist first. The
+      test is a checksum: save at frame 600, run to 900, and compare against
+      loading that state and running 300.
+- [ ] **[Memory-Cards-Plan.md](Memory-Cards-Plan.md)** - swapping first, then
+      the editor. `mc.h` already declares the whole on-card format; nothing
+      yet understands it.
 - [ ] `psx/emuconfig.h` and `psx/settings.h`, copied from GBAEmu more or less
       verbatim. The BIOS path and the disc path become settings.
-- [ ] `psx/serializer.h` and `serialize()` on every device. Per section 5 of the
-      standards document, audit every one for emptiness, and audit every object
-      holding state that is not in the device list: memory cards, CD seek state,
-      SPU voice state, GTE registers.
 - [ ] ImGui in the Win32 front end, for a debugger and settings UI.
 - [ ] `PSXEmu.Interop` and `PSXEmu.WinUI`, if wanted - the design in GBAEmu's
       `Docs/WinUI-Interop.md` transfers whole.

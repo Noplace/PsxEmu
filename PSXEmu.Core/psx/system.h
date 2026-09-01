@@ -120,6 +120,9 @@ class System {
   // How many hardware interrupts were actually taken. An interrupt that is
   // raised but never delivered looks exactly like one that was never raised.
   uint64_t interrupts_taken() const { return interrupts_taken_; }
+  const uint64_t* interrupts_taken_by_source() const {
+    return interrupts_taken_by_source_;
+  }
   // Instructions that ran with an interrupt pending but blocked by Cop0 SR.
   uint64_t interrupts_blocked() const { return interrupts_blocked_; }
   uint64_t interrupts_blocked_im() const { return interrupts_blocked_im_; }
@@ -134,6 +137,10 @@ class System {
   double base_freq_hz_;
   TimingInfo timing_;
   uint64_t interrupts_taken_;
+  // How many interrupts were taken with each I_STAT bit pending, so "the
+  // interrupt fires but the handler does nothing" can be told apart from "the
+  // interrupt never fires".
+  uint64_t interrupts_taken_by_source_[11] = {0};
   uint64_t interrupts_blocked_;
   uint64_t interrupts_blocked_im_;
   uint64_t instructions_with_ie_;

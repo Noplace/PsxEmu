@@ -87,6 +87,27 @@ class Cdrom : public Component {
     uint64_t interrupts;
     uint64_t unknown_commands;
     uint8_t last_command;
+    // Which commands were issued, and which interrupt kinds were delivered.
+    // A drive that answers the wrong way and one that does not answer at all
+    // look identical from the outside.
+    uint32_t issued[256];
+    uint32_t delivered[8];
+
+    // The first few seeks and sector reads, so "what did it ask for and what
+    // did it get" can be answered without a trace.
+    struct Event {
+      uint8_t kind;        // 0 setloc, 1 sector, 2 setmode, 3 command
+      uint8_t mode;
+      uint32_t lba;
+      // For a sector: how much of the *previous* sector software had taken
+      // before this one replaced it. Anything short of the whole sector means
+      // a sector was dropped, which is how a stream loses its place.
+      uint32_t consumed;
+      uint32_t size;
+    };
+    static const int kEventCapacity = 400;
+    Event events[kEventCapacity];
+    uint32_t event_count;
   };
   const Stats& stats() const { return stats_; }
 
@@ -115,10 +136,19 @@ class Cdrom : public Component {
   uint32_t data_offset_;            // where the useful bytes start
   uint32_t data_size_;
   uint32_t data_read_;
+  // Whether the data fifo currently holds a sector. Arming it when it is
+  // already loaded does nothing on hardware; only a fresh sector, or clearing
+  // the request bit, unloads it.
+  bool data_fifo_loaded_;
 
   // Drive state.
   uint32_t seek_lba_;               // set by Setloc, applied by a seek or read
   uint32_t read_lba_;               // where the next sector comes from
+ public:
+  // The sector the last delivered data came from, for checking that what a
+  // game was handed is what is actually on the disc at that address.
+  uint32_t delivered_lba() const { return read_lba_ == 0 ? 0 : read_lba_ - 1; }
+ private:
   bool seek_pending_;
   bool reading_;
   bool playing_;

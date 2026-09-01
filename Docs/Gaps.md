@@ -149,7 +149,30 @@ Things that are actually done, listed so they are not re-investigated.
 - **Exceptions** are raised with the right codes and vectors, and an interrupt
   now sets `EPC` to the instruction that has not yet run.
 - **Root counters 0-2** count, compare against their targets and raise their
-  interrupts.
+  interrupts, and take their clock from the source the mode register selects -
+  dot clock, hblank or sysclock/8 as well as plain sysclock. The hblank rate
+  was measured against the GPU and is exactly 263 per frame, which is right.
+  What is *not* done, in rough order of how likely it is to bite:
+  - **Sync modes are ignored.** `mode.syncmode` is decoded into the struct and
+    never read, so a counter asked to pause during blanking, or to reset at
+    the start of one, free-runs instead.
+  - **A target of zero never fires.** `Tick` guards with `target > 0`, so a
+    counter set to interrupt at 0 - which is how software asks for a wrap-only
+    interrupt - is silent.
+  - **Everything is quantised to 32 CPU cycles.** `IOInterface::Tick`
+    accumulates and only advances the world once 32 cycles have gone by, so no
+    counter can be read with finer resolution than that, and an interrupt can
+    be up to 32 cycles late.
+  - **The dot clock divider is hardcoded to 10.** It should follow the
+    horizontal resolution: 10, 8, 5, 4 and 7 for 256, 320, 512, 640 and 368
+    pixels. A game that switches to 640-wide gets a counter running at half
+    the rate it asked for.
+  - **The frame wrap counts one hblank.** `hblanks = 1; // Assuming wrapped
+    once` is right only because a 32-cycle batch is 50 dots and a scanline is
+    3413, so at most one line can be crossed. It stops being right if the
+    batch size is ever raised.
+  - **`mode.intreq` is only restored on a mode write**, so one-shot mode can
+    stay latched longer than the hardware would.
 - **Vertical blank** comes from the GPU's scanline counter, which is where it
   belongs. An invented fourth root counter used to fake it; that is gone.
 - **Disc images** load from `.cue`, `.bin`, `.img`, `.iso` and a drive letter,

@@ -422,6 +422,16 @@ class Cpu : public Component {
   TraceEntry trace_buffer_[kTraceSize];
   int trace_index_ = 0;
   void DumpTrace(const char* filename, ExceptionCodes code);
+  // A single watched RAM address, for finding the writer of a corrupt value.
+  struct Watch { uint32_t pc, address, value, size; };
+  static const int kWatchCapacity = 400;
+  Watch watch_[kWatchCapacity] = {};
+  uint32_t watch_count_ = 0;
+  uint32_t watch_address_ = 0;
+  void set_watch_address(uint32_t address) { watch_address_ = address; }
+  // Records a write that did not come from the CPU - a DMA channel moving data
+  // into RAM behind its back. `tag` stands in for the pc and names the channel.
+  void NoteExternalWrite(uint32_t tag, uint32_t byte_address, uint32_t value);
 
  private:
   static Instruction machine_instruction_main_[64];

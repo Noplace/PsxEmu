@@ -66,6 +66,7 @@ int Cdrom::Initialize() {
   data_offset_ = 0;
   data_size_ = 0;
   data_read_ = 0;
+  data_fifo_loaded_ = false;
 
   seek_lba_ = Disc::kLeadInSectors;
   read_lba_ = Disc::kLeadInSectors;
@@ -185,11 +186,23 @@ void Cdrom::Write(uint32_t address, uint8_t data) {
 
     default:
       if (index_ == 0) {
-        // Request register. Bit 7 asks for the sector to be handed over;
-        // clearing it throws away what has not been read.
+        // Request register. Bit 7 loads the data fifo with the current
+        // sector; clearing it throws away what has not been read.
+        //
+        // Loading a fifo that is already loaded does nothing - the hardware
+        // only reloads once bit 7 has been taken back to 0. Software reads a
+        // sector in two pieces, the twelve-byte header and subheader first and
+        // the payload after, and arms the fifo before each read. Rewinding on
+        // the second arm handed it the header a second time where it expected
+        // the payload, so every sector of a stream came through twelve bytes
+        // out of step.
         if (data & 0x80) {
-          data_read_ = 0;
+          if (!data_fifo_loaded_) {
+            data_fifo_loaded_ = true;
+            data_read_ = 0;
+          }
         } else {
+          data_fifo_loaded_ = false;
           data_read_ = data_size_;
         }
       } else if (index_ == 1) {
@@ -271,6 +284,7 @@ void Cdrom::DeliverPending() {
 
   interrupt_flag_ = static_cast<uint8_t>(response.interrupt);
   ++stats_.interrupts;
+  ++stats_.delivered[response.interrupt & 7];
   pending_.pop_front();
 
   if (interrupt_flag_ > 0) {
@@ -338,6 +352,12 @@ void Cdrom::LoadSector() {
     return;
   }
 
+  // How much of the sector this one replaces had actually been taken. A short
+  // count means software never read the last sector before the drive handed
+  // over the next, and on a stream that is a lost packet.
+  const uint32_t consumed_previous = data_read_;
+  const uint32_t previous_size = data_size_;
+
   // Whole-sector mode hands over the 0x924 bytes that start at the subheader;
   // otherwise it is the 0x800 bytes of user data in a Mode 2 Form 1 sector.
   if (mode_ & kModeWholeSector) {
@@ -348,7 +368,14 @@ void Cdrom::LoadSector() {
     data_size_ = 0x800;
   }
   data_read_ = 0;
+  // A fresh sector needs arming again before software can read it.
+  data_fifo_loaded_ = false;
   ++stats_.sectors_read;
+  if (stats_.event_count < Stats::kEventCapacity) {
+    Stats::Event& e = stats_.events[stats_.event_count++];
+    e.kind = 1; e.mode = mode_; e.lba = read_lba_;
+    e.consumed = consumed_previous; e.size = previous_size;
+  }
 
   QueueStatus(kIntDataReady, 0);
   ++read_lba_;
@@ -403,6 +430,18 @@ void Cdrom::StepRead(uint32_t cycles) {
 void Cdrom::ExecuteCommand(uint8_t command) {
   ++stats_.commands;
   stats_.last_command = command;
+  ++stats_.issued[command];
+  // The commands that move the head or start and stop a read, in sequence with
+  // the sectors, so a stream can be read as a story rather than a total.
+  if (command == 0x06 || command == 0x09 || command == 0x15 ||
+      command == 0x1B || command == 0x0A || command == 0x08) {
+    if (stats_.event_count < Stats::kEventCapacity) {
+      Stats::Event& e = stats_.events[stats_.event_count++];
+      e.kind = 3; e.mode = command; e.lba = read_lba_;
+      e.consumed = data_read_; e.size = data_size_;
+    }
+  }
+
 
   switch (command) {
     case 0x01:  // Getstat
@@ -415,6 +454,10 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       const uint8_t frame = TakeParameter();
       seek_lba_ = Disc::MsfToLba(minute, second, frame);
       seek_pending_ = true;
+      if (stats_.event_count < Stats::kEventCapacity) {
+        Stats::Event& e = stats_.events[stats_.event_count++];
+        e.kind = 0; e.mode = mode_; e.lba = seek_lba_;
+      }
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       break;
     }
@@ -509,6 +552,11 @@ void Cdrom::ExecuteCommand(uint8_t command) {
 
     case 0x0E:    // Setmode
       mode_ = TakeParameter();
+      if (stats_.event_count < Stats::kEventCapacity) {
+        Stats::Event& e = stats_.events[stats_.event_count++];
+        e.kind = 2; e.mode = mode_; e.lba = 0;
+        e.consumed = 0; e.size = 0;
+      }
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       break;
 

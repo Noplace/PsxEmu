@@ -27,9 +27,29 @@ class Kernel : public Component {
   ~Kernel();
   void Initialize();
   void Call();
-  
+
+  // How often each BIOS entry point was called, indexed by table and function
+  // number. "Which kernel call is it stuck in" is otherwise only answerable by
+  // tracing millions of instructions.
+  struct Stats {
+    uint32_t a0[256];
+    uint32_t b0[256];
+    uint32_t c0[256];
+    uint64_t total;
+    // Everything the BIOS wrote to its serial console. The BIOS narrates its
+    // own boot failures there and nowhere else, so this is usually the fastest
+    // route from "the screen is blank" to the actual reason.
+    static const int kTtyCapacity = 262144;
+    char tty[kTtyCapacity];
+    uint32_t tty_length;
+  };
+  const Stats& stats() const { return stats_; }
+
  private:
+   Stats stats_;
    void putc(char c,int fd);
+   // Appends one character to the captured console output.
+   void RecordTty(char c);
 
 #ifdef _DEBUG
    //DebugAssist debug;

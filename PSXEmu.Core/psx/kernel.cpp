@@ -34,6 +34,7 @@ Kernel::~Kernel() {
 }
 
 void Kernel::Initialize() {
+  memset(&stats_, 0, sizeof(stats_));
   #if defined(_DEBUG) && defined(KERNEL_DEBUG)
     //debug.Open("kernel system calls.txt");
   #endif
@@ -46,6 +47,41 @@ void Kernel::Call() {
   int call_type = system().cpu().context()->pc&0xff;
   int call_index = system().cpu().context()->gp.t1 & 0xFF;
   CpuContext* context = system().cpu().context();
+
+  ++stats_.total;
+  if (call_type == 0xA0)      ++stats_.a0[call_index];
+  else if (call_type == 0xB0) ++stats_.b0[call_index];
+  else if (call_type == 0xC0) ++stats_.c0[call_index];
+
+  // The BIOS calls SystemError when its exception handler cannot attribute an
+  // exception to anything. It never returns anywhere useful, so the first time
+  // it happens is the only interesting one - dump the ring buffer, which holds
+  // the instructions that led into it.
+  if (call_type == 0xA0 && call_index == 0x40) {
+    static bool dumped = false;
+    if (!dumped) {
+      dumped = true;
+      system().cpu().DumpTrace("trace_system_error.txt", kExceptionCodeInt);
+    }
+  }
+
+  // The console writes: A0(3C)/B0(3D) put one character, A0(3E)/B0(3F) put a
+  // whole string. Recording them costs nothing and is the only place the BIOS
+  // explains itself when a boot goes wrong.
+  if ((call_type == 0xA0 && call_index == 0x3C) ||
+      (call_type == 0xB0 && call_index == 0x3D)) {
+    RecordTty(static_cast<char>(context->gp.a0 & 0xFF));
+  } else if ((call_type == 0xA0 && call_index == 0x3E) ||
+             (call_type == 0xB0 && call_index == 0x3F)) {
+    const uint8_t* ram = system().ram();
+    for (uint32_t i = 0; i < 256; ++i) {
+      const uint32_t address = (context->gp.a0 + i) & 0x1FFFFF;
+      const char c = static_cast<char>(ram[address]);
+      if (c == '\0')
+        break;
+      RecordTty(c);
+    }
+  }
 
 
   #if defined(_DEBUG) && defined(KERNEL_DEBUG)
@@ -132,6 +168,11 @@ void Kernel::Call() {
   }
   //system().cpu().context()->pc = system().cpu().context()->gp.ra();
   //throw;
+}
+
+void Kernel::RecordTty(char c) {
+  if (stats_.tty_length + 1 < Stats::kTtyCapacity)
+    stats_.tty[stats_.tty_length++] = c;
 }
 
 void Kernel::putc(char c,int fd) {

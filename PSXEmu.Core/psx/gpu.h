@@ -121,6 +121,11 @@ class Gpu : public GpuCore {
   // root counters need these to stay in step with the display.
   uint32_t scanline() const { return scanline_; }
   bool in_vblank() const { return scanline_ >= vertical_display_end_; }
+  // Where in VRAM the display window sits, and whether it is switched on at
+  // all. A game that draws into VRAM and shows black is usually one of these.
+  uint32_t display_vram_x() const { return display_vram_x_; }
+  uint32_t display_vram_y() const { return display_vram_y_; }
+  bool display_disabled() const { return status_.display_disable != 0; }
 
  private:
   // ---- state -------------------------------------------------------------

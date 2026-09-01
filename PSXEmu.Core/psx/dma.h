@@ -38,8 +38,20 @@ class Dma : public Component {
   uint32_t Read(uint32_t address);
   void Write(uint32_t address,uint32_t data);
   DmaChannel& channel(int i) { return channels[i]; }
+  // The first few transfers on each channel, for working out why one of them
+  // landed somewhere it should not have.
+  struct Transfer { uint32_t chcr, bcr, madr, words, end, lba, first, pc; };
+  static const int kTransferCapacity = 300;
+  struct Stats {
+    Transfer transfers[7][kTransferCapacity];
+    uint32_t counts[7];
+  };
+  const Stats& stats() const { return stats_; }
+  void NoteTransfer(int channel, uint32_t words, uint32_t end,
+                    uint32_t lba = 0, uint32_t first = 0);
  private:
   DmaChannel channels[7];
+  Stats stats_ = {};
   union {
     struct {
       uint32_t unused;

@@ -34,6 +34,7 @@ System::System() {
   base_freq_hz_  = 33868800.0;
   interrupts_taken_ = 0;
   interrupts_blocked_ = 0;
+  memset(interrupts_taken_by_source_, 0, sizeof(interrupts_taken_by_source_));
   interrupts_blocked_im_ = 0;
   instructions_with_ie_ = 0;
 }
@@ -129,6 +130,10 @@ void System::StepInstruction() {
     // of its interrupts to, and IEc is the global enable.
     if ((cpu_.context()->ctrl.SR.raw & 0x400) && (cpu_.context()->ctrl.SR.IEc)) {
       ++interrupts_taken_;
+      const uint32_t pending = io_.io.interrupt_stat & io_.io.interrupt_mask;
+      for (int bit = 0; bit < 11; ++bit)
+        if (pending & (1u << bit))
+          ++interrupts_taken_by_source_[bit];
       cpu_.RaiseException(cpu_.context()->pc, kOtherException,
                           kExceptionCodeInt);
     } else if (!(cpu_.context()->ctrl.SR.raw & 0x400)) {

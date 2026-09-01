@@ -160,6 +160,22 @@ int Cpu::Deinitialize() {
   return 0;
 }
 
+void Cpu::NoteExternalWrite(uint32_t tag, uint32_t byte_address,
+                            uint32_t value) {
+  if (watch_address_ == 0)
+    return;
+  const uint32_t low = byte_address & 0x1FFFFF;
+  const uint32_t target = watch_address_ & 0x1FFFFF;
+  if (low + 4 <= target || low >= target + 4)
+    return;
+  Watch& w = watch_[watch_count_ % kWatchCapacity];
+  w.pc = tag;
+  w.address = byte_address;
+  w.value = value;
+  w.size = 4;
+  ++watch_count_;
+}
+
 void Cpu::DumpTrace(const char* filename, ExceptionCodes code) {
   FILE* fp = fopen(filename, "w");
   if (!fp) return;
@@ -482,10 +498,17 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
 
 uint32_t Cpu::Load(MemorySize size, uint32_t address) {
   if (IsBusError() == true) {
-    if (current_stage != 1) {
-      FILE* f = fopen("dbe_debug.txt", "a");
+    // Only the first one is worth recording. This opened, appended to and
+    // closed the file on every bus error, and a game that faults in a loop
+    // faults millions of times - which turned a diagnostic into the slowest
+    // thing in the run.
+    static bool logged = false;
+    if (current_stage != 1 && !logged) {
+      logged = true;
+      FILE* f = fopen("dbe_debug.txt", "w");
       if (f) {
-        fprintf(f, "DBE! address=0x%08X valid=%d pc=0x%08X\n", address, valid_address_flag_, context_->pc);
+        fprintf(f, "DBE! address=0x%08X valid=%d pc=0x%08X\n", address,
+                valid_address_flag_, context_->pc);
         fclose(f);
       }
     }
@@ -529,6 +552,26 @@ uint32_t Cpu::Load(MemorySize size, uint32_t address) {
   // meant a register read through KSEG1 fell off the end of the decode and
   // returned zero without so much as a trap.
   const uint32_t physical = AddressTranslation(address);
+
+  // Charge what the access actually costs. The R3000A issues a load in one
+  // cycle but then stalls on the bus, and only main RAM and the scratchpad are
+  // anywhere near fast. Without this the CPU runs roughly twice as many
+  // instructions per frame as real hardware, and the BIOS notices: its VSync
+  // gives up waiting for a vertical blank that has not had time to arrive and
+  // prints "VSync: timeout", which is why the intro used to race past.
+  //
+  // Instruction fetches are excluded: those come through the instruction
+  // cache, which is a separate cost and is not modelled here.
+  if (current_stage != 1) {
+    uint32_t stall = 0;
+    if (physical <= 0x007FFFFF)                                   stall = 3;
+    else if (physical >= 0x1F800000 && physical <= 0x1F8003FF)    stall = 0;
+    else if (physical >= 0x1F801000 && physical <= 0x1F802FFF)    stall = 3;
+    else if (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF)    stall = 5;
+    else                                                          stall = 5;
+    for (uint32_t i = 0; i < stall; ++i)
+      Tick();
+  }
 
   Buffer* buffer = nullptr;
   uint32_t offset = 0;
@@ -605,6 +648,23 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
     RaiseException(context_->prev_pc,kOtherException,kExceptionCodeAdES);
     return;
   }
+  // A watched RAM address records who wrote it. "This structure holds garbage"
+  // is otherwise a dead end: the write that put it there happened long before
+  // the read that noticed.
+  if (watch_address_ != 0) {
+    const uint32_t low = address & 0x1FFFFFFF;
+    const uint32_t bytes = (size == kM8) ? 1u : (size == kM16) ? 2u : 4u;
+    if (low + bytes > (watch_address_ & 0x1FFFFFFF) &&
+        low < (watch_address_ & 0x1FFFFFFF) + 4) {
+      Watch& w = watch_[watch_count_ % kWatchCapacity];
+      w.pc = context_->prev_pc;
+      w.address = address;
+      w.value = data;
+      w.size = bytes;
+      ++watch_count_;
+    }
+  }
+
 
    if (context_->ctrl.SR.IsC) { //cache 
     switch (size) {

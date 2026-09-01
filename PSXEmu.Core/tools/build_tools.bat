@@ -44,6 +44,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_cpu\ /Fe:Temp\tools\cpu_test.exe ^
    PSXEmu.Core\tools\cpu_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_disc mkdir Temp\tools\obj_disc
+cl %FLAGS% /Fo:Temp\tools\obj_disc\ /Fe:Temp\tools\make_test_disc.exe ^
+   PSXEmu.Core\tools\make_test_disc.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 if not exist Temp\tools\obj_spu mkdir Temp\tools\obj_spu
 cl %FLAGS% /Fo:Temp\tools\obj_spu\ /Fe:Temp\tools\spu_test.exe ^
    PSXEmu.Core\tools\spu_test.cpp %CORE% %LIBS%

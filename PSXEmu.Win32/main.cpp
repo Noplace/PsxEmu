@@ -128,11 +128,38 @@ void SetWindowTitleForDisc(HWND window, const std::string& path) {
   SetWindowTextW(window, title.c_str());
 }
 
+// Puts a disc in the drive and starts the machine from cold, which is what
+// switching a console on with a game in it does: the BIOS runs its intro,
+// checks the disc, reads SYSTEM.CNF, loads the executable it names and jumps
+// to it. Nothing here understands the disc - the BIOS does all of it.
+bool BootDiscFromFile(HWND window, const std::string& path) {
+  g_app->system->Deinitialize();
+  if (g_app->system->Initialize(g_app->bios_path.c_str()) != 0) {
+    MessageBoxA(window, "Failed to initialize the system (BIOS missing?).",
+                "PSXEmu", MB_OK | MB_ICONERROR);
+    return false;
+  }
+  // The disc has to be in the drive before the BIOS looks, or it finds an open
+  // shell and stops at the menu.
+  g_app->system->EjectDisc();
+  if (!g_app->system->LoadDisc(path.c_str())) {
+    MessageBoxA(window,
+                "Could not read that disc image.\n\n"
+                "Supported: .cue (with its .bin or .img), .bin, .img, .iso.",
+                "PSXEmu", MB_OK | MB_ICONWARNING);
+    return false;
+  }
+  SetWindowTitleForDisc(window, path);
+  g_app->system->set_auto_boot(false);
+  g_app->paused = false;
+  return true;
+}
+
 HMENU CreateMainMenu() {
   HMENU file = CreatePopupMenu();
-  AppendMenuW(file, MF_STRING, kCommandOpenDisc, L"&Open disc...\tCtrl+O");
+  AppendMenuW(file, MF_STRING, kCommandBootDisc, L"&Boot disc...");
+  AppendMenuW(file, MF_STRING, kCommandOpenDisc, L"S&wap disc...");
   AppendMenuW(file, MF_STRING, kCommandEjectDisc, L"&Eject disc");
-  AppendMenuW(file, MF_STRING, kCommandBootDisc, L"&Boot disc");
   AppendMenuW(file, MF_STRING, kCommandBootBios, L"Boot &BIOS");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot1, L"Open Memory Card (Slot 1)...");
@@ -166,22 +193,27 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
       if (g_app == nullptr)
         break;
       switch (LOWORD(wparam)) {
-        case kCommandOpenDisc: {
+        case kCommandBootDisc: {
+          // Switching the console on with a game in the drive. Pick an image,
+          // then the machine starts from cold and the BIOS boots it.
           const std::string path = OpenDiscDialog(window);
           if (path.empty())
             break;
-          g_app->system->Deinitialize();
-          if (g_app->system->Initialize(g_app->bios_path.c_str()) != 0) {
-            MessageBoxA(window, "Failed to initialize the system (BIOS missing?).",
-                        "PSXEmu", MB_OK | MB_ICONERROR);
+          BootDiscFromFile(window, path);
+          break;
+        }
+        case kCommandOpenDisc: {
+          // Changing the disc in a running machine, for a game that asks for
+          // its second one. No reset - that is what Boot disc is for.
+          const std::string path = OpenDiscDialog(window);
+          if (path.empty())
+            break;
+          if (!g_app->system->LoadDisc(path.c_str())) {
+            MessageBoxA(window, "Could not read that disc image.", "PSXEmu",
+                        MB_OK | MB_ICONWARNING);
             break;
           }
-          g_app->system->EjectDisc(); // Start with tray open
-          g_app->system->LoadDisc(path.c_str());
           SetWindowTitleForDisc(window, path);
-         // g_app->system->set_auto_boot(true, path);
-          g_app->system->set_auto_boot(false);
-          g_app->paused = false;
           break;
         }
         case kCommandBootBios: {
@@ -195,19 +227,6 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
           SetWindowTitleForDisc(window, "");
           g_app->system->set_auto_boot(false);
           g_app->paused = false;
-          break;
-        }
-        case kCommandBootDisc: {
-          // Reads SYSTEM.CNF and starts the executable it names, skipping the
-          // BIOS shell. A failure says which step failed rather than just
-          // leaving a black screen.
-          emulation::psx::System::DiscBootInfo info;
-          if (!g_app->system->BootDisc(&info)) {
-            MessageBoxA(window,
-                        info.error ? info.error : "The disc could not be booted.",
-                        "PSXEmu", MB_OK | MB_ICONWARNING);
-            break;
-          }
           break;
         }
         case kCommandEjectDisc:

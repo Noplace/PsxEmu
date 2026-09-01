@@ -4,6 +4,7 @@
 //
 //     --disc <path>      mount a disc: a .cue, an image file, or a drive letter
 //     --boot-disc        read SYSTEM.CNF from the disc and start its executable
+//     --auto-boot        let the BIOS run, then take over at pc=80030000
 //     --exe <file.exe>   side-load a PS-EXE once the BIOS reaches the shell
 //     --frames <n>       run for n frames and stop      (default 300)
 //     --ppm <file>       write the final frame as a PPM
@@ -51,8 +52,10 @@ struct Options {
   uint64_t trace_irq;   // which interrupt to trace from; 0 means none
   const char* dis;
   const char* watch;
+  uint32_t watch_ram;
   int hot;
   bool boot_disc;
+  bool auto_boot;
   bool quiet;
 };
 
@@ -125,8 +128,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->trace_irq = 0;
   options->dis = nullptr;
   options->watch = nullptr;
+  options->watch_ram = 0;
   options->hot = 0;
   options->boot_disc = false;
+  options->auto_boot = false;
   options->quiet = false;
 
   for (int i = 1; i < argc; ++i) {
@@ -152,6 +157,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->dis = argv[++i];
     } else if (strcmp(arg, "--watch-vram") == 0 && i + 1 < argc) {
       options->watch = argv[++i];
+    } else if (strcmp(arg, "--watch-ram") == 0 && i + 1 < argc) {
+      options->watch_ram = strtoul(argv[++i], nullptr, 16);
     } else if (strcmp(arg, "--hot") == 0 && i + 1 < argc) {
       options->hot = atoi(argv[++i]);
     } else if (strcmp(arg, "--trace-irq") == 0) {
@@ -162,6 +169,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
         options->trace_irq = strtoull(argv[++i], nullptr, 0);
     } else if (strcmp(arg, "--boot-disc") == 0) {
       options->boot_disc = true;
+    } else if (strcmp(arg, "--auto-boot") == 0) {
+      options->auto_boot = true;
     } else if (strcmp(arg, "--quiet") == 0) {
       options->quiet = true;
     } else if (arg[0] == '-') {
@@ -206,6 +215,16 @@ int main(int argc, char** argv) {
     printf("mounted        %s (%d track(s), %u sectors)\n", options.disc,
            system->cdrom().disc().track_count(),  // NOLINT
            system->cdrom().disc().total_sectors());
+  }
+
+  if (options.watch_ram != 0)
+    system->cpu().set_watch_address(options.watch_ram);
+
+  if (options.auto_boot) {
+    // Let the BIOS run its intro, then take over when it reaches the address
+    // it would hand a game control at.
+    system->set_auto_boot(true);
+    printf("auto-boot      armed at pc=80030000\n");
   }
 
   if (options.boot_disc) {
@@ -315,6 +334,10 @@ int main(int argc, char** argv) {
   printf("instructions   %llu\n", static_cast<unsigned long long>(instructions));
   printf("frames         %d\n", frames);
   printf("resolution     %dx%d\n", width, height);
+  printf("display        vram (%u,%u) %dx%d, %s\n",
+         system->gpu().display_vram_x(), system->gpu().display_vram_y(),
+         width, height,
+         system->gpu().display_disabled() ? "DISABLED" : "enabled");
   printf("checksum       %016llx\n",
          static_cast<unsigned long long>(Checksum(pixels, width * height)));
   printf("non-black      %d of %d pixels\n", lit, width * height);
@@ -340,6 +363,176 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(cd_stats.interrupts),
          static_cast<unsigned long long>(cd_stats.unknown_commands));
 
+  {
+    static const char* kCdNames[256] = {
+      0,"Getstat","Setloc","Play","Forward","Backward","ReadN","MotorOn",
+      "Stop","Pause","Init","Mute","Demute","Setfilter","Setmode","Getparam",
+      "GetlocL","GetlocP","SetSession","GetTN","GetTD","SeekL","SeekP",0,
+      0,"Test","GetID","ReadS","Reset","GetQ","ReadTOC"
+    };
+    const emulation::psx::Cdrom::Stats& c = system->cdrom().stats();
+    bool any = false;
+    for (int i = 0; i < 256; ++i) {
+      if (c.issued[i] == 0)
+        continue;
+      if (!any) { printf("\ncdrom commands issued\n"); any = true; }
+      printf("  %02X  %8u  %s\n", i, c.issued[i],
+             (i < 31 && kCdNames[i]) ? kCdNames[i] : "");
+    }
+    static const char* kIntNames[8] = {
+      "none", "INT1 data ready", "INT2 complete", "INT3 acknowledge",
+      "INT4 data end", "INT5 error", "", ""
+    };
+    for (int i = 0; i < 8; ++i) {
+      if (c.delivered[i] == 0)
+        continue;
+      printf("      %8u  %s\n", c.delivered[i], kIntNames[i]);
+    }
+    if (any) printf("\n");
+
+    if (c.event_count > 0) {
+      printf("cdrom seeks and sectors (first %u)\n", c.event_count);
+
+      for (uint32_t i = 0; i < c.event_count; ++i) {
+        const auto& e = c.events[i];
+        switch (e.kind) {
+          case 0:
+            printf("  setloc   lba %6u  (sector %6d)\n", e.lba,
+                   static_cast<int>(e.lba) - 150);
+            break;
+          case 2:
+            printf("  setmode  %02X  (%s, %s)\n", e.mode,
+                   (e.mode & 0x80) ? "2x" : "1x",
+                   (e.mode & 0x20) ? "whole sector 0x924" : "data only 0x800");
+            break;
+          case 3: {
+            const char* name =
+                e.mode == 0x06 ? "ReadN" : e.mode == 0x09 ? "Pause" :
+                e.mode == 0x15 ? "SeekL" : e.mode == 0x1B ? "ReadS" :
+                e.mode == 0x0A ? "Init"  : e.mode == 0x08 ? "Stop"  : "?";
+            printf("  %-8s at lba %6u  (previous sector %u/%u taken)\n", name,
+                   e.lba, e.consumed, e.size);
+            break;
+          }
+          default:
+            // A sector whose predecessor was not fully taken is a dropped one.
+            printf("  sector   lba %6u  (sector %6d)  mode %02X"
+                   "  previous %u/%u%s\n",
+                   e.lba, static_cast<int>(e.lba) - 150, e.mode, e.consumed,
+                   e.size,
+                   (e.size != 0 && e.consumed < e.size) ? "  DROPPED" : "");
+            break;
+        }
+      }
+      printf("\n");
+    }
+  }
+
+  {
+    const emulation::psx::Kernel::Stats& k = system->kernel().stats();
+    printf("bios calls     %llu total\n",
+           static_cast<unsigned long long>(k.total));
+    struct Row { const char* table; const uint32_t* counts; };
+    const Row rows[3] = { { "A0", k.a0 }, { "B0", k.b0 }, { "C0", k.c0 } };
+    for (int r = 0; r < 3; ++r) {
+      for (int i = 0; i < 256; ++i) {
+        if (rows[r].counts[i] < 1000)
+          continue;   // only the ones called enough to matter
+        printf("  %s(%02X)  %10u\n", rows[r].table, i, rows[r].counts[i]);
+      }
+    }
+    if (k.tty_length != 0) {
+      // What the BIOS printed to its serial console, verbatim. Control
+      // characters other than newline are shown as dots so the layout of the
+      // real message survives.
+      printf("\nbios console   %u characters\n", k.tty_length);
+      printf("  | ");
+      for (uint32_t i = 0; i < k.tty_length; ++i) {
+        const char c = k.tty[i];
+        if (c == '\n')
+          printf("\n  | ");
+        else if (c >= 0x20 && c < 0x7F)
+          putchar(c);
+        else if (c != '\r')
+          putchar('.');
+      }
+      printf("\n");
+    }
+  }
+
+
+  if (options.watch_ram != 0) {
+    emulation::psx::Cpu& cpu = system->cpu();
+    printf("\nwrites to %08X   %u total%s\n", options.watch_ram,
+           cpu.watch_count_,
+           cpu.watch_count_ > emulation::psx::Cpu::kWatchCapacity
+               ? ", last 400 shown" : "");
+    const uint32_t first =
+        (cpu.watch_count_ > emulation::psx::Cpu::kWatchCapacity)
+            ? cpu.watch_count_ - emulation::psx::Cpu::kWatchCapacity : 0;
+    for (uint32_t i = first; i < cpu.watch_count_; ++i) {
+      const emulation::psx::Cpu::Watch& w =
+          cpu.watch_[i % emulation::psx::Cpu::kWatchCapacity];
+      printf("  pc %08X  %u-byte write of %08X to %08X\n", w.pc, w.size,
+             w.value, w.address);
+    }
+  }
+  {
+    const emulation::psx::Dma::Stats& d = system->io().dma.stats();
+    for (int ch = 0; ch < 7; ++ch) {
+      if (d.counts[ch] == 0)
+        continue;
+      printf("\ndma channel %d   %u transfers%s\n", ch, d.counts[ch],
+             d.counts[ch] > emulation::psx::Dma::kTransferCapacity
+                 ? ", first 300 shown" : "");
+      const uint32_t shown =
+          (d.counts[ch] < emulation::psx::Dma::kTransferCapacity)
+              ? d.counts[ch] : emulation::psx::Dma::kTransferCapacity;
+      for (uint32_t i = 0; i < shown; ++i) {
+        const emulation::psx::Dma::Transfer& t = d.transfers[ch][i];
+        printf("  chcr %08X  bcr %08X  madr %08X  %6u words -> %08X"
+               "  lba %u  first %08X  pc %08X\n",
+               t.chcr, t.bcr, t.madr, t.words, t.end, t.lba, t.first, t.pc);
+      }
+    }
+  }
+
+
+  {
+    static const char* kNames[11] = {
+      "vblank", "gpu", "cdrom", "dma", "timer0", "timer1",
+      "timer2", "pad/card", "sio", "spu", "lightpen",
+    };
+    const uint64_t* by_source = system->interrupts_taken_by_source();
+    printf("vblank irqs    %llu raised by the gpu\n",
+           static_cast<unsigned long long>(system->gpu().frame_count()));
+    printf("interrupts by source\n");
+    for (int i = 0; i < 11; ++i) {
+      if (by_source[i] != 0)
+        printf("  %-9s %10llu\n", kNames[i],
+               static_cast<unsigned long long>(by_source[i]));
+    }
+  }
+  {
+    // Root counter state. VSync measures its own timeout against counter 1, so
+    // a counter running at the wrong rate makes the BIOS give up waiting for a
+    // frame that was going to arrive on time.
+    printf("\nroot counters\n");
+    static const char* kSources[3][4] = {
+      { "sysclock", "dotclock", "sysclock", "dotclock" },
+      { "sysclock", "hblank",   "sysclock", "hblank"   },
+      { "sysclock", "sysclock", "sysclock/8", "sysclock/8" },
+    };
+    for (int i = 0; i < 3; ++i) {
+      emulation::psx::RootCounter& rc = system->io().rootcounter_[i];
+      printf("  %d  mode %04X  count %5u  target %5u  src %-10s %s%s%s\n",
+             i, rc.mode.raw & 0xFFFF, rc.counter, rc.target,
+             kSources[i][rc.mode.clcsrc],
+             rc.mode.en ? "" : "[disabled] ",
+             rc.mode.irq_target ? "irq-on-target " : "",
+             rc.mode.irq_0xffff ? "irq-on-wrap" : "");
+    }
+  }
   const emulation::psx::Spu::Stats& spu_stats = system->spu().stats();
   printf("spu            %llu frames, %llu key-ons, %llu blocks, peak %d/%d\n",
          static_cast<unsigned long long>(spu_stats.frames),
