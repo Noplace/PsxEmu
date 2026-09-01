@@ -140,23 +140,25 @@ void Dma::Write(uint32_t address,uint32_t data) {
 	{
      case 0x1f801080:   channels[0].madr=data;  break;
      case 0x1f801084:   channels[0].bcr=data;  break;
-     case 0x1f801088:  
-	     if (!(channels[0].chcr&0x01000000)) { //&&channels[0].enable)	   {
-		     channels[0].chcr=data;
-	       channels[0].chcr&=0xfeffffff;  
-         SetInterrupt(0);
-	     }
-	     break;
+     case 0x1f801088:
+      channels[0].chcr = data;
+      if (ShouldStart(channels[0].chcr, channels[0].enable)) {
+        Dma0();
+        channels[0].chcr &= 0xfeffffff;
+        SetInterrupt(0);
+      }
+      break;
 
      case 0x1f801090:   channels[1].madr = data;  break;
      case 0x1f801094:   channels[1].bcr = data;  break;
-     case 0x1f801098:  
-	     if (!(channels[1].chcr&0x01000000)) {
-		    channels[1].chcr=data; 
-	      channels[1].chcr&=0xfeffffff; 
+     case 0x1f801098:
+      channels[1].chcr = data;
+      if (ShouldStart(channels[1].chcr, channels[1].enable)) {
+        Dma1();
+        channels[1].chcr &= 0xfeffffff;
         SetInterrupt(1);
-	     }
-     break;
+      }
+      break;
      
      case 0x1f8010a0:   channels[2].madr=data;  break;
      case 0x1f8010a4:   channels[2].bcr=data;  break;
@@ -275,6 +277,67 @@ bool check_endless_loop(uint32_t address) {
 // tables - reaches VRAM, and it used to be a BREAKPOINT stub, so every texture
 // the BIOS uploaded that way simply never arrived. The primitives still drew,
 // sampling an empty texture page, and every texel came back transparent.
+// How many words a transfer moves, from the block control register and the
+// sync mode the channel is running in.
+//
+// The two are not interchangeable. In burst mode the whole length is the low
+// half of BCR and the upper half means nothing - games leave whatever was
+// there last time. Multiplying by it regardless turns a one-sector CD read
+// into a transfer hundreds of times too long, which walks straight over
+// whatever the game had in RAM after the buffer. A zero field means the
+// maximum, not nothing.
+uint32_t TransferWords(uint32_t bcr, uint32_t sync) {
+  uint32_t size = bcr & 0xFFFF;
+  if (size == 0)
+    size = 0x10000;
+  if (sync != 1)
+    return size;
+  uint32_t blocks = (bcr >> 16) & 0xFFFF;
+  if (blocks == 0)
+    blocks = 0x10000;
+  return size * blocks;
+}
+
+// MDEC in: compressed macroblocks out of RAM and into the decoder.
+void Dma::Dma0() {
+  auto& ram = system_->io().ram_buffer;
+  auto& mdec = system_->io().mdec;
+
+  const uint32_t words =
+      TransferWords(channels[0].bcr, (channels[0].chcr >> 9) & 3);
+  const int32_t step = (channels[0].chcr & 0x02) ? -4 : 4;
+  uint32_t address = channels[0].madr & 0x1FFFFC;
+
+  for (uint32_t i = 0; i < words; ++i) {
+    mdec.WriteWord(ram.u32[address >> 2]);
+    address = (address + step) & 0x1FFFFC;
+  }
+  NoteTransfer(0, words, address);
+  channels[0].madr = address;
+}
+
+// MDEC out: decoded pixels back into RAM, for whatever is going to upload them
+// to VRAM. The decoder holds one macroblock at a time, so a transfer longer
+// than that reads zeroes once it runs dry rather than repeating the last one.
+void Dma::Dma1() {
+  auto& ram = system_->io().ram_buffer;
+  auto& mdec = system_->io().mdec;
+
+  const uint32_t words =
+      TransferWords(channels[1].bcr, (channels[1].chcr >> 9) & 3);
+  const int32_t step = (channels[1].chcr & 0x02) ? -4 : 4;
+  uint32_t address = channels[1].madr & 0x1FFFFC;
+
+  for (uint32_t i = 0; i < words; ++i) {
+    const uint32_t word = mdec.ReadWord();
+    system_->cpu().NoteExternalWrite(0xD1, address, word);
+    ram.u32[address >> 2] = word;
+    address = (address + step) & 0x1FFFFC;
+  }
+  NoteTransfer(1, words, address);
+  channels[1].madr = address;
+}
+
 void Dma::Dma2() {
   const uint32_t chcr = channels[2].chcr;
   const uint32_t sync = (chcr >> 9) & 3;
@@ -361,26 +424,6 @@ void Dma::NoteTransfer(int channel, uint32_t words, uint32_t end,
   }
 }
 
-// How many words a transfer moves, from the block control register and the
-// sync mode the channel is running in.
-//
-// The two are not interchangeable. In burst mode the whole length is the low
-// half of BCR and the upper half means nothing - games leave whatever was
-// there last time. Multiplying by it regardless turns a one-sector CD read
-// into a transfer hundreds of times too long, which walks straight over
-// whatever the game had in RAM after the buffer. A zero field means the
-// maximum, not nothing.
-uint32_t TransferWords(uint32_t bcr, uint32_t sync) {
-  uint32_t size = bcr & 0xFFFF;
-  if (size == 0)
-    size = 0x10000;
-  if (sync != 1)
-    return size;
-  uint32_t blocks = (bcr >> 16) & 0xFFFF;
-  if (blocks == 0)
-    blocks = 0x10000;
-  return size * blocks;
-}
 
 
 void Dma::Dma3() {

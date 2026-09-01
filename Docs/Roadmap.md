@@ -131,9 +131,9 @@ implemented directly against D3D11.
 Three of these now have plans of their own, written against the tree as it
 actually is rather than from memory:
 
-- [ ] **[MDEC-Plan.md](MDEC-Plan.md)** - the motion decoder. The last large
-      missing component; blocks full-motion video and nothing else. Six steps,
-      each landable on its own.
+- [x] **[MDEC-Plan.md](MDEC-Plan.md)** - the motion decoder. DONE. See bug 23;
+      the plan step 3 described work the hardware does not do - software does
+      the variable-length decoding, not the MDEC. Covered by mdec_test.
 - [ ] **[Save-States-Plan.md](Save-States-Plan.md)** - what a state has to
       hold, what it must not, and the serialiser that has to exist first. The
       test is a checksum: save at frame 600, run to 900, and compare against

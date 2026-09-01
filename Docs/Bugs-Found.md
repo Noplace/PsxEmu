@@ -702,3 +702,93 @@ other order finds an open shell and stops at the menu.
 
 The menu also claimed Ctrl+O worked. There is no accelerator table in the front
 end, so it never did; the text is gone rather than the lie left standing.
+
+---
+
+## 23. The MDEC, and what the plan for it got wrong
+
+Implemented per [MDEC-Plan.md](MDEC-Plan.md), in `psx/mdec.h` and
+`psx/mdec.cpp`, with DMA channels 0 and 1 and a `mdec_test` harness.
+
+**The plan's step 3 described work that does not exist.** It called for "the
+bitstream decoder - a run-length and variable-length coded stream, MPEG-1
+style", and said it was "the fiddly part and the part most worth testing in
+isolation". That was wrong, and it was the largest and riskiest part of the
+estimate.
+
+The MDEC does no variable-length decoding at all. Software unpacks the Huffman
+stream itself - that is what libpress's `DecDCTvlc` is for - and hands the
+hardware already separated run/level pairs, two 16-bit codes to a 32-bit word:
+
+- the first code of a block is `(quant_scale << 10) | dc`, a 6-bit factor and a
+  10-bit signed DC;
+- every code after it is `(run << 10) | level`, a 6-bit run of zeroes and a
+  10-bit signed value;
+- `FE00h` ends a block, and is also what software pads with.
+
+Half a day was nearly spent transcribing an MPEG-1 VLC table from memory into
+a decoder that would have been fed data it was never going to match. What
+caught it was checking the format against the documentation before writing the
+code rather than after it failed - and it only came up because a mis-typed
+entry in a table like that produces silent garbage, so it seemed worth being
+sure of.
+
+**Everything else the plan said stands**, including the traps: the output
+accumulates across a command, decode is not free, and MDEC output goes to RAM.
+
+### What it does
+
+Dequantise, inverse transform, colour convert, pack. One command carries as
+many macroblocks as software cares to send. Colour blocks arrive as Cr, Cb and
+four luminance blocks and come out as 16x16 pixels at 15 or 24 bits;
+monochrome depths take one luminance block at a time.
+
+### The one thing that had to be got right twice
+
+`EmitMacroblock` originally wrote each macroblock to the start of the output
+buffer. That is wrong in a way that is easy to miss: a game sends one command
+per video frame - measured at 2400 words of compressed data - and drains the
+result afterwards, thirty-two words at a time. Overwriting kept only the last
+macroblock of three hundred, and the screen showed 256 non-black pixels, which
+is exactly one 16x16 block. The output now accumulates for the whole command.
+
+### How it was checked
+
+`mdec_test`, 59 checks: the parameter countdown, the DMA request bits appearing
+only with their enables, table unpacking, a DC-only block coming out flat, an
+empty block coming out mid-grey, macroblock sizes at each depth, the colour
+matrix in both directions, the run and zigzag walk, padding not being mistaken
+for blocks, and the registers being reachable through the memory map.
+
+The tests were then checked themselves, by breaking the code on purpose:
+
+- swapping Cr and Cb: 4 failures, all in the colour checks.
+- removing the zigzag: **0 failures**. The run/level check only used
+  coefficient 1, and `kZigzag[1] == 1`, so it was a fixed point of the very
+  thing it meant to test. A check on coefficient 2 - which belongs at position
+  8, the first vertical basis function, and so must vary down columns and not
+  along rows - was added, and now catches it.
+
+That second one is the reason to do this at all. A suite that passes on broken
+code is worse than no suite.
+
+### End to end
+
+Legend of Mana, 1800 frames: 235 MDEC commands, 69,900 macroblocks, no unknown
+commands, no short blocks, no overflows. 69,900 over 235 commands is exactly
+300 each, which is 20x15 macroblocks - a 320x240 frame. One command per frame
+of video.
+
+The screen went from entirely black to entirely painted. Pixels sample as
+natural gradients with the horizontal pairing that 2x2 chroma subsampling
+implies. Frames half a second apart differ by 53 to 66 of 255 where unrelated
+noise scores 102, and the difference grows with the gap between them: the
+output is temporally coherent, which decoded rubbish is not.
+
+The BIOS shell checksum did not move (`bd888bab645a63a9`) and all 506 harness
+checks pass.
+
+**Not verified:** nothing here is compared against real hardware output. The
+transform is a straightforward matrix multiply rather than the hardware's exact
+sequence, so individual pixels will differ slightly from a console's. That
+shows up as a picture that is very slightly soft, not as a wrong one.

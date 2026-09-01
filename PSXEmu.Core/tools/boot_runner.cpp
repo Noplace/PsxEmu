@@ -540,6 +540,23 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(spu_stats.blocks_decoded),
          spu_stats.peak_left, spu_stats.peak_right);
 
+  {
+    const emulation::psx::Mdec::Stats& m = system->io().mdec.stats();
+    if (m.commands != 0) {
+      printf("mdec           %llu commands, %llu macroblocks, %llu words in, "
+             "%llu out\n",
+             static_cast<unsigned long long>(m.commands),
+             static_cast<unsigned long long>(m.macroblocks),
+             static_cast<unsigned long long>(m.words_in),
+             static_cast<unsigned long long>(m.words_out));
+      if (m.unknown_commands != 0 || m.short_blocks != 0 || m.overflows != 0) {
+        printf("               %llu unknown, %llu short blocks, %llu overflows\n",
+               static_cast<unsigned long long>(m.unknown_commands),
+               static_cast<unsigned long long>(m.short_blocks),
+               static_cast<unsigned long long>(m.overflows));
+      }
+    }
+  }
   const emulation::psx::Gte::Stats& gte_stats = system->gte().stats();
   printf("gte            %llu commands, %llu unrecognised\n",
          static_cast<unsigned long long>(gte_stats.commands),

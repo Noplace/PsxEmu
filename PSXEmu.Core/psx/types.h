@@ -27,6 +27,7 @@ class Component;
 class Cpu;
 class Gpu;
 class Spu;
+class Mdec;
 class Gte;
 class Pio;
 class IOInterface;

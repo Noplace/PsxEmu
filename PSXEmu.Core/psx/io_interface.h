@@ -45,6 +45,7 @@ class IOInterface : public Component {
   Buffer scratchpad;
   RootCounter rootcounter_[4];
   Cdrom cdrom;
+  Mdec mdec;
   Sio sio;
   Dma dma;
 

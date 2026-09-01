@@ -59,6 +59,8 @@ int IOInterface::Initialize() {
 
   cdrom.set_system(system_);
   cdrom.Initialize();
+  mdec.set_system(system_);
+  mdec.Initialize();
 
   sio.set_system(system_);
   sio.Initialize();
@@ -304,6 +306,7 @@ uint32_t IOInterface::Read32(uint32_t address) {
     case 0x1F801120: return rootcounter_[2].ReadCounter();
     case 0x1F801124: return rootcounter_[2].ReadMode(); 
     case 0x1F801128: return rootcounter_[2].ReadTarget(); 
+    case 0x1F801820: case 0x1F801824: return mdec.Read(address);
     case 0x1F801810: return system_->gpu_core()->ReadData();
     case 0x1F801814: return system_->gpu_core()->ReadStatus();
     // The CD-ROM data FIFO, read a word at a time by DMA channel 3.
@@ -494,6 +497,7 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
     case 0x1F801120: rootcounter_[2].WriteCounter(data); return;
     case 0x1F801124: rootcounter_[2].WriteMode(data); return;
     case 0x1F801128: rootcounter_[2].WriteTarget(data); return;
+    case 0x1F801820: case 0x1F801824: mdec.Write(address, data); return;
     case 0x1F801810: system_->gpu_core()->WriteData(data); return;
     case 0x1F801814: system_->gpu_core()->WriteStatus(data); return;
     case 0xFFFE0130: 

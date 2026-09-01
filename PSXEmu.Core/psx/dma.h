@@ -94,6 +94,8 @@ class Dma : public Component {
   void UpdateMasterFlag();
   bool master_flag_;
 
+  void Dma0();
+  void Dma1();
   void Dma2();
   void Dma3();
   void Dma4();

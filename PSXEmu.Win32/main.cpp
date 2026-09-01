@@ -35,24 +35,30 @@
 
 #include <commdlg.h>
 #include <shellapi.h>   // CommandLineToArgvW
+
+#include <array>
 #include <cstdio>
+#include <iterator>
+#include <memory>
 #include <string>
 
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
 
+using emulation::psx::Sio;
 using emulation::psx::Spu;
+using emulation::psx::System;
 
 namespace {
 
-const wchar_t kWindowClass[] = L"PSXEmuWindow";
-const wchar_t kWindowTitle[] = L"PSXEmu";
+constexpr wchar_t kWindowClass[] = L"PSXEmuWindow";
+constexpr wchar_t kWindowTitle[] = L"PSXEmu";
 
 // Menu command ids.
-enum {
-  kCommandOpenDisc = 1000,
+enum MenuCommand {
+  kCommandBootDisc = 1000,
+  kCommandSwapDisc,
   kCommandEjectDisc,
-  kCommandBootDisc,
   kCommandBootBios,
   kCommandOpenMemoryCardSlot1,
   kCommandOpenMemoryCardSlot2,
@@ -63,27 +69,121 @@ enum {
   kCommandExit,
 };
 
-struct Application {
-  std::unique_ptr<emulation::psx::System> system;
-  psxemu::D3D11Presenter presenter;
-  IAudioEngine* audio;
-  std::string bios_path;
-  bool running;
-  bool paused;
+// ---------------------------------------------------------------------------
+// The application
+// ---------------------------------------------------------------------------
 
-  Application()
-      : system(nullptr), audio(nullptr), running(false), paused(true) {}
+// Everything the front end owns, in the order it has to be torn down in:
+// members are destroyed in reverse, so the machine stops before the audio
+// device goes away and both go before the Direct3D device.
+//
+// This being one object with a destructor is what makes the failure paths in
+// wWinMain safe. They used to `return 1` after the presenter and the audio
+// device were already up, leaking both.
+struct Application {
+  psxemu::D3D11Presenter presenter;
+  std::unique_ptr<IAudioEngine> audio;
+  std::unique_ptr<System> system;
+
+  std::string bios_path;
+  bool running = false;
+  bool paused = true;
+
+  // Scratch for one frame of audio, sized for the worst case at 30 fps. A
+  // member rather than a function-local static so there is one per
+  // application rather than one per process.
+  std::array<int16_t, Spu::kSampleRate / 30 * 2> audio_scratch = {};
+
+  ~Application() {
+    if (system != nullptr)
+      system->Deinitialize();
+    if (audio != nullptr)
+      audio->Shutdown();
+  }
 };
 
-Application* g_app = nullptr;
+// The window procedure gets at the application through the window's user data,
+// set from the CREATESTRUCT before any other message arrives. Messages sent
+// during CreateWindowExW itself can still land before that, so every use is
+// guarded.
+Application* AppFrom(HWND window) {
+  return reinterpret_cast<Application*>(
+      GetWindowLongPtrW(window, GWLP_USERDATA));
+}
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+
+// Wide to narrow in the codepage the C runtime's fopen expects, which is what
+// the core opens files with. Deliberately not UTF-8: on Windows fopen reads a
+// char path in the active codepage, so UTF-8 bytes would name the wrong file
+// the moment a path stopped being ASCII.
+std::string Narrow(const std::wstring& wide) {
+  if (wide.empty())
+    return std::string();
+  const int size = WideCharToMultiByte(CP_ACP, 0, wide.c_str(), -1, nullptr, 0,
+                                       nullptr, nullptr);
+  if (size <= 1)
+    return std::string();
+  std::string narrow(static_cast<size_t>(size - 1), '\0');
+  WideCharToMultiByte(CP_ACP, 0, wide.c_str(), -1, &narrow[0], size, nullptr,
+                      nullptr);
+  return narrow;
+}
+
+enum class FileDialog { kOpen, kSave };
+
+// One implementation for all four file pickers. There used to be a copy of
+// this per dialog, differing only in the filter and two flags.
+std::string ChooseFile(HWND window, FileDialog mode, const char* filter,
+                       const char* default_extension) {
+  char file[MAX_PATH] = { 0 };
+  OPENFILENAMEA dialog = {};
+  dialog.lStructSize = sizeof(dialog);
+  dialog.hwndOwner = window;
+  dialog.lpstrFilter = filter;
+  dialog.lpstrFile = file;
+  dialog.nMaxFile = sizeof(file);
+  dialog.lpstrDefExt = default_extension;
+  dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  if (mode == FileDialog::kOpen) {
+    dialog.Flags |= OFN_FILEMUSTEXIST;
+    if (!GetOpenFileNameA(&dialog))
+      return std::string();
+  } else {
+    dialog.Flags |= OFN_OVERWRITEPROMPT;
+    if (!GetSaveFileNameA(&dialog))
+      return std::string();
+  }
+  return std::string(file);
+}
+
+constexpr const char* kDiscFilter =
+    "Disc Images (*.cue;*.bin;*.img;*.iso)\0*.cue;*.bin;*.img;*.iso\0"
+    "All files (*.*)\0*.*\0";
+constexpr const char* kCardFilter =
+    "Memory Card (*.mcr;*.mcd)\0*.mcr;*.mcd\0"
+    "All files (*.*)\0*.*\0";
+
+void SetWindowTitleForDisc(HWND window, const std::string& path) {
+  if (path.empty()) {
+    SetWindowTextW(window, kWindowTitle);
+    return;
+  }
+  const size_t slash = path.find_last_of("/\\");
+  const std::string name =
+      (slash == std::string::npos) ? path : path.substr(slash + 1);
+  const std::wstring title =
+      std::wstring(kWindowTitle) + L" - " + std::wstring(name.begin(), name.end());
+  SetWindowTextW(window, title.c_str());
+}
 
 // Keyboard to digital pad. Arbitrary but conventional; a real settings file
 // belongs here once the core has one.
 uint16_t ReadKeyboardPad() {
-  using emulation::psx::Sio;
-  uint16_t buttons = 0;
   struct Binding { int key; uint16_t button; };
-  static const Binding kBindings[] = {
+  static constexpr Binding kBindings[] = {
     { VK_UP,     Sio::kUp },       { VK_DOWN,  Sio::kDown },
     { VK_LEFT,   Sio::kLeft },     { VK_RIGHT, Sio::kRight },
     { 'X',       Sio::kCross },    { 'Z',      Sio::kSquare },
@@ -92,87 +192,88 @@ uint16_t ReadKeyboardPad() {
     { '1',       Sio::kL2 },       { '2',      Sio::kR2 },
     { VK_RETURN, Sio::kStart },    { VK_SHIFT, Sio::kSelect },
   };
-  for (size_t i = 0; i < ARRAYSIZE(kBindings); ++i) {
-    if (GetAsyncKeyState(kBindings[i].key) & 0x8000)
-      buttons |= kBindings[i].button;
+  uint16_t buttons = 0;
+  for (const Binding& binding : kBindings) {
+    if (GetAsyncKeyState(binding.key) & 0x8000)
+      buttons |= binding.button;
   }
   return buttons;
 }
 
-std::string OpenDiscDialog(HWND window) {
-  char file[MAX_PATH] = { 0 };
-  OPENFILENAMEA dialog;
-  memset(&dialog, 0, sizeof(dialog));
-  dialog.lStructSize = sizeof(dialog);
-  dialog.hwndOwner = window;
-  dialog.lpstrFilter =
-      "Disc Images (*.cue;*.bin;*.img;*.iso)\0*.cue;*.bin;*.img;*.iso\0"
-      "All files (*.*)\0*.*\0";
-  dialog.lpstrFile = file;
-  dialog.nMaxFile = sizeof(file);
-  dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-  if (!GetOpenFileNameA(&dialog))
-    return std::string();
-  return std::string(file);
-}
+// ---------------------------------------------------------------------------
+// Machine control
+// ---------------------------------------------------------------------------
 
-void SetWindowTitleForDisc(HWND window, const std::string& path) {
-  if (path.empty()) {
-    SetWindowTextW(window, kWindowTitle);
-    return;
+// Cold boot: the machine comes back in the state it has at power-on. Three
+// menu commands need this and each used to carry its own copy.
+bool ResetMachine(Application& app, HWND window) {
+  app.system->Deinitialize();
+  if (app.system->Initialize(app.bios_path.c_str()) != 0) {
+    MessageBoxW(window, L"Failed to initialise the system (BIOS missing?).",
+                kWindowTitle, MB_OK | MB_ICONERROR);
+    return false;
   }
-  const size_t slash = path.find_last_of("\\/");
-  const std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
-  const std::wstring wide(name.begin(), name.end());
-  const std::wstring title = std::wstring(kWindowTitle) + L" - " + wide;
-  SetWindowTextW(window, title.c_str());
+  app.system->set_auto_boot(false);
+  return true;
 }
 
 // Puts a disc in the drive and starts the machine from cold, which is what
 // switching a console on with a game in it does: the BIOS runs its intro,
 // checks the disc, reads SYSTEM.CNF, loads the executable it names and jumps
 // to it. Nothing here understands the disc - the BIOS does all of it.
-bool BootDiscFromFile(HWND window, const std::string& path) {
-  g_app->system->Deinitialize();
-  if (g_app->system->Initialize(g_app->bios_path.c_str()) != 0) {
-    MessageBoxA(window, "Failed to initialize the system (BIOS missing?).",
-                "PSXEmu", MB_OK | MB_ICONERROR);
+bool BootDiscFromFile(Application& app, HWND window, const std::string& path) {
+  if (!ResetMachine(app, window))
     return false;
-  }
   // The disc has to be in the drive before the BIOS looks, or it finds an open
   // shell and stops at the menu.
-  g_app->system->EjectDisc();
-  if (!g_app->system->LoadDisc(path.c_str())) {
-    MessageBoxA(window,
-                "Could not read that disc image.\n\n"
-                "Supported: .cue (with its .bin or .img), .bin, .img, .iso.",
-                "PSXEmu", MB_OK | MB_ICONWARNING);
+  app.system->EjectDisc();
+  if (!app.system->LoadDisc(path.c_str())) {
+    MessageBoxW(window,
+                L"Could not read that disc image.\n\n"
+                L"Supported: .cue (with its .bin or .img), .bin, .img, .iso.",
+                kWindowTitle, MB_OK | MB_ICONWARNING);
     return false;
   }
   SetWindowTitleForDisc(window, path);
-  g_app->system->set_auto_boot(false);
-  g_app->paused = false;
+  app.paused = false;
   return true;
 }
+
+// Starts with an empty drive, which lands in the BIOS shell.
+void BootBios(Application& app, HWND window) {
+  if (!ResetMachine(app, window))
+    return;
+  app.system->EjectDisc();
+  SetWindowTitleForDisc(window, std::string());
+  app.paused = false;
+}
+
+// ---------------------------------------------------------------------------
+// Menu
+// ---------------------------------------------------------------------------
 
 HMENU CreateMainMenu() {
   HMENU file = CreatePopupMenu();
   AppendMenuW(file, MF_STRING, kCommandBootDisc, L"&Boot disc...");
-  AppendMenuW(file, MF_STRING, kCommandOpenDisc, L"S&wap disc...");
+  AppendMenuW(file, MF_STRING, kCommandSwapDisc, L"S&wap disc...");
   AppendMenuW(file, MF_STRING, kCommandEjectDisc, L"&Eject disc");
   AppendMenuW(file, MF_STRING, kCommandBootBios, L"Boot &BIOS");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot1, L"Open Memory Card (Slot 1)...");
-  AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot2, L"Open Memory Card (Slot 2)...");
+  AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot1,
+              L"Open Memory Card (Slot 1)...");
+  AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot2,
+              L"Open Memory Card (Slot 2)...");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-  AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot1, L"Create Memory Card (Slot 1)...");
-  AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot2, L"Create Memory Card (Slot 2)...");
+  AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot1,
+              L"Create Memory Card (Slot 1)...");
+  AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot2,
+              L"Create Memory Card (Slot 2)...");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kCommandExit, L"E&xit\tAlt+F4");
 
   HMENU emulation = CreatePopupMenu();
-  AppendMenuW(emulation, MF_STRING, kCommandReset, L"&Reset\tCtrl+R");
-  AppendMenuW(emulation, MF_STRING, kCommandPause, L"&Pause\tPause");
+  AppendMenuW(emulation, MF_STRING, kCommandReset, L"&Reset");
+  AppendMenuW(emulation, MF_STRING, kCommandPause, L"&Pause\tSpace");
 
   HMENU bar = CreateMenu();
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
@@ -181,128 +282,121 @@ HMENU CreateMainMenu() {
   return bar;
 }
 
-LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
-                            LPARAM lparam) {
-  switch (message) {
-    case WM_SIZE:
-      if (g_app != nullptr && wparam != SIZE_MINIMIZED)
-        g_app->presenter.Resize(LOWORD(lparam), HIWORD(lparam));
-      return 0;
-
-    case WM_COMMAND: {
-      if (g_app == nullptr)
-        break;
-      switch (LOWORD(wparam)) {
-        case kCommandBootDisc: {
-          // Switching the console on with a game in the drive. Pick an image,
-          // then the machine starts from cold and the BIOS boots it.
-          const std::string path = OpenDiscDialog(window);
-          if (path.empty())
-            break;
-          BootDiscFromFile(window, path);
-          break;
-        }
-        case kCommandOpenDisc: {
-          // Changing the disc in a running machine, for a game that asks for
-          // its second one. No reset - that is what Boot disc is for.
-          const std::string path = OpenDiscDialog(window);
-          if (path.empty())
-            break;
-          if (!g_app->system->LoadDisc(path.c_str())) {
-            MessageBoxA(window, "Could not read that disc image.", "PSXEmu",
-                        MB_OK | MB_ICONWARNING);
-            break;
-          }
-          SetWindowTitleForDisc(window, path);
-          break;
-        }
-        case kCommandBootBios: {
-          g_app->system->Deinitialize();
-          if (g_app->system->Initialize(g_app->bios_path.c_str()) != 0) {
-            MessageBoxA(window, "Failed to initialize the system (BIOS missing?).",
-                        "PSXEmu", MB_OK | MB_ICONERROR);
-            break;
-          }
-          g_app->system->EjectDisc(); // Keep tray open to force shell
-          SetWindowTitleForDisc(window, "");
-          g_app->system->set_auto_boot(false);
-          g_app->paused = false;
-          break;
-        }
-        case kCommandEjectDisc:
-          g_app->system->EjectDisc();
-          SetWindowTitleForDisc(window, std::string());
-          break;
-        case kCommandOpenMemoryCardSlot1:
-        case kCommandOpenMemoryCardSlot2: {
-          const int slot = (LOWORD(wparam) == kCommandOpenMemoryCardSlot1) ? 0 : 1;
-          char file[MAX_PATH] = { 0 };
-          OPENFILENAMEA dialog;
-          memset(&dialog, 0, sizeof(dialog));
-          dialog.lStructSize = sizeof(dialog);
-          dialog.hwndOwner = window;
-          dialog.lpstrFilter =
-              "Memory Card (*.mcr;*.mcd)\0*.mcr;*.mcd\0"
-              "All files (*.*)\0*.*\0";
-          dialog.lpstrFile = file;
-          dialog.nMaxFile = sizeof(file);
-          dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-          if (GetOpenFileNameA(&dialog)) {
-            if (g_app->system->mc(slot).LoadFile(file) != S_OK) {
-              MessageBoxA(window, "Could not open memory card (must be 128KB).", "PSXEmu",
-                          MB_OK | MB_ICONWARNING);
-            }
-          }
-          break;
-        }
-        case kCommandCreateMemoryCardSlot1:
-        case kCommandCreateMemoryCardSlot2: {
-          const int slot = (LOWORD(wparam) == kCommandCreateMemoryCardSlot1) ? 0 : 1;
-          char file[MAX_PATH] = { 0 };
-          OPENFILENAMEA dialog;
-          memset(&dialog, 0, sizeof(dialog));
-          dialog.lStructSize = sizeof(dialog);
-          dialog.hwndOwner = window;
-          dialog.lpstrFilter =
-              "Memory Card (*.mcr;*.mcd)\0*.mcr;*.mcd\0"
-              "All files (*.*)\0*.*\0";
-          dialog.lpstrFile = file;
-          dialog.nMaxFile = sizeof(file);
-          dialog.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-          dialog.lpstrDefExt = "mcr";
-          if (GetSaveFileNameA(&dialog)) {
-            if (g_app->system->mc(slot).CreateFile(file) != S_OK) {
-              MessageBoxA(window, "Could not create memory card file.", "PSXEmu",
-                          MB_OK | MB_ICONWARNING);
-            }
-          }
-          break;
-        }
-        case kCommandReset:
-          g_app->system->Deinitialize();
-          g_app->system->Initialize(g_app->bios_path.c_str());
-          break;
-        case kCommandPause:
-          g_app->paused = !g_app->paused;
-          break;
-        case kCommandExit:
-          PostMessage(window, WM_CLOSE, 0, 0);
-          break;
-        default:
-          break;
-      }
-      return 0;
+void OnCommand(Application& app, HWND window, int command) {
+  switch (command) {
+    case kCommandBootDisc: {
+      // Switching the console on with a game in the drive. Pick an image,
+      // then the machine starts from cold and the BIOS boots it.
+      const std::string path =
+          ChooseFile(window, FileDialog::kOpen, kDiscFilter, nullptr);
+      if (!path.empty())
+        BootDiscFromFile(app, window, path);
+      break;
     }
 
-    case WM_KEYDOWN:
-      if (wparam == VK_F12 && g_app && g_app->system) {
-       // g_app->system->cpu().DumpTrace("trace.txt");
-        //MessageBoxA(window, "Execution trace dumped to trace.txt!", "PSXEmu", MB_OK | MB_ICONINFORMATION);
+    case kCommandSwapDisc: {
+      // Changing the disc in a running machine, for a game that asks for its
+      // second one. No reset - that is what Boot disc is for.
+      const std::string path =
+          ChooseFile(window, FileDialog::kOpen, kDiscFilter, nullptr);
+      if (path.empty())
+        break;
+      if (!app.system->LoadDisc(path.c_str())) {
+        MessageBoxW(window, L"Could not read that disc image.", kWindowTitle,
+                    MB_OK | MB_ICONWARNING);
+        break;
       }
-      if (wparam == VK_SPACE && g_app != nullptr)
-        g_app->paused = !g_app->paused;
+      SetWindowTitleForDisc(window, path);
+      break;
+    }
+
+    case kCommandEjectDisc:
+      app.system->EjectDisc();
+      SetWindowTitleForDisc(window, std::string());
+      break;
+
+    case kCommandBootBios:
+      BootBios(app, window);
+      break;
+
+    case kCommandOpenMemoryCardSlot1:
+    case kCommandOpenMemoryCardSlot2: {
+      const int slot = (command == kCommandOpenMemoryCardSlot1) ? 0 : 1;
+      const std::string path =
+          ChooseFile(window, FileDialog::kOpen, kCardFilter, "mcr");
+      if (path.empty())
+        break;
+      if (app.system->mc(slot).LoadFile(path.c_str()) != S_OK) {
+        MessageBoxW(window,
+                    L"Could not open that memory card. It must be exactly "
+                    L"128 KB.",
+                    kWindowTitle, MB_OK | MB_ICONWARNING);
+      }
+      break;
+    }
+
+    case kCommandCreateMemoryCardSlot1:
+    case kCommandCreateMemoryCardSlot2: {
+      const int slot = (command == kCommandCreateMemoryCardSlot1) ? 0 : 1;
+      const std::string path =
+          ChooseFile(window, FileDialog::kSave, kCardFilter, "mcr");
+      if (path.empty())
+        break;
+      if (app.system->mc(slot).CreateFile(path.c_str()) != S_OK) {
+        MessageBoxW(window, L"Could not create that memory card file.",
+                    kWindowTitle, MB_OK | MB_ICONWARNING);
+      }
+      break;
+    }
+
+    case kCommandReset:
+      ResetMachine(app, window);
+      break;
+
+    case kCommandPause:
+      app.paused = !app.paused;
+      break;
+
+    case kCommandExit:
+      PostMessageW(window, WM_CLOSE, 0, 0);
+      break;
+
+    default:
+      break;
+  }
+}
+
+LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
+                            LPARAM lparam) {
+  // The application pointer arrives with the window and lives in its user
+  // data, which is what a global used to do less safely.
+  if (message == WM_NCCREATE) {
+    const CREATESTRUCTW* create = reinterpret_cast<CREATESTRUCTW*>(lparam);
+    SetWindowLongPtrW(window, GWLP_USERDATA,
+                      reinterpret_cast<LONG_PTR>(create->lpCreateParams));
+    return DefWindowProcW(window, message, wparam, lparam);
+  }
+
+  Application* app = AppFrom(window);
+
+  switch (message) {
+    case WM_SIZE:
+      if (app != nullptr && wparam != SIZE_MINIMIZED)
+        app->presenter.Resize(LOWORD(lparam), HIWORD(lparam));
+      return 0;
+
+    case WM_COMMAND:
+      // Every command needs the machine, and it does not exist until after the
+      // window does.
+      if (app != nullptr && app->system != nullptr)
+        OnCommand(*app, window, LOWORD(wparam));
+      return 0;
+
+    case WM_KEYDOWN:
+      if (wparam == VK_SPACE && app != nullptr)
+        app->paused = !app->paused;
       if (wparam == VK_ESCAPE)
-        PostMessage(window, WM_CLOSE, 0, 0);
+        PostMessageW(window, WM_CLOSE, 0, 0);
       return 0;
 
     case WM_DESTROY:
@@ -315,13 +409,17 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
   return DefWindowProcW(window, message, wparam, lparam);
 }
 
+// ---------------------------------------------------------------------------
+// Startup
+// ---------------------------------------------------------------------------
+
 // Works out where the BIOS is. A command line wins; otherwise look beside the
 // executable and in a bios folder under it, which is where the repository
 // keeps it.
-std::string FindBios(const char* from_command_line) {
-  if (from_command_line != nullptr && from_command_line[0] != '\0') {
-    char full_path[MAX_PATH];
-    GetFullPathNameA(from_command_line, MAX_PATH, full_path, nullptr);
+std::string FindBios(const std::string& from_command_line) {
+  if (!from_command_line.empty()) {
+    char full_path[MAX_PATH] = { 0 };
+    GetFullPathNameA(from_command_line.c_str(), MAX_PATH, full_path, nullptr);
     return full_path;
   }
 
@@ -332,52 +430,94 @@ std::string FindBios(const char* from_command_line) {
   directory = (slash == std::string::npos) ? std::string()
                                            : directory.substr(0, slash + 1);
 
-  const char* kCandidates[] = {
+  static constexpr const char* kCandidates[] = {
     "bios\\SCPH1001.BIN",
     "SCPH1001.BIN",
     "..\\..\\..\\bios\\SCPH1001.BIN",
   };
-  for (size_t i = 0; i < ARRAYSIZE(kCandidates); ++i) {
-    const std::string candidate = directory + kCandidates[i];
-    FILE* fp = fopen(candidate.c_str(), "rb");
+  for (const char* candidate : kCandidates) {
+    const std::string path = directory + candidate;
+    FILE* fp = fopen(path.c_str(), "rb");
     if (fp != nullptr) {
       fclose(fp);
-      return candidate;
+      return path;
     }
   }
   return std::string();
 }
 
+// Tries the modern output first and falls back. Audio is optional: a machine
+// with no working output device should still run, silently, rather than
+// refusing to start.
+std::unique_ptr<IAudioEngine> CreateAudioEngine() {
+  auto wasapi = std::make_unique<WASAPIAudioEngine>();
+  if (wasapi->Initialize(Spu::kSampleRate, 2))
+    return wasapi;
+
+  auto dsound = std::make_unique<DirectSoundAudioEngine>();
+  if (dsound->Initialize(Spu::kSampleRate, 2))
+    return dsound;
+
+  return nullptr;
+}
+
+struct CommandLine {
+  std::string bios;
+  std::string disc;
+};
+
+CommandLine ParseCommandLine() {
+  CommandLine result;
+  int argc = 0;
+  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+  if (argv == nullptr)
+    return result;
+  if (argc > 1)
+    result.bios = Narrow(argv[1]);
+  if (argc > 2)
+    result.disc = Narrow(argv[2]);
+  LocalFree(argv);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// The frame
+// ---------------------------------------------------------------------------
+
+// Runs the machine until the GPU says a frame is finished. That keeps the pace
+// tied to the emulated display rather than to a timer here, and it is the same
+// loop the headless harness runs. The guard stops a machine that has stopped
+// producing frames from hanging the window.
+void RunOneFrame(Application& app) {
+  constexpr uint64_t kMaxInstructionsPerFrame = 8000000;
+  const uint64_t target_frame = app.system->gpu().frame_count() + 1;
+  uint64_t guard = 0;
+  while (app.system->gpu().frame_count() < target_frame &&
+         guard++ < kMaxInstructionsPerFrame) {
+    app.system->StepInstruction();
+  }
+}
+
+// Drains whatever the SPU generated during that frame and hands it to the
+// audio device. Pulling here rather than pushing from inside the core is what
+// keeps the core free of any audio API: it just fills a buffer.
+void PumpAudio(Application& app) {
+  if (app.audio == nullptr)
+    return;
+  const int frames = app.system->spu().ReadSamples(
+      app.audio_scratch.data(),
+      static_cast<int>(app.audio_scratch.size() / 2));
+  if (frames > 0)
+    app.audio->QueueAudio(app.audio_scratch.data(), frames * 2);
+}
+
 }  // namespace
-
-
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
   Application app;
-  g_app = &app;
 
-  // Command line: [bios] [disc]
-  int argc = 0;
-  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-  std::string bios_argument;
-  std::string disc_argument;
-  if (argv != nullptr) {
-    if (argc > 1) {
-      const std::wstring wide = argv[1];
-      int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
-      bios_argument.resize(size - 1);
-      WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &bios_argument[0], size, nullptr, nullptr);
-    }
-    if (argc > 2) {
-      const std::wstring wide = argv[2];
-      int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
-      disc_argument.resize(size - 1);
-      WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, &disc_argument[0], size, nullptr, nullptr);
-    }
-    LocalFree(argv);
-  }
-
-  app.bios_path = FindBios(bios_argument.c_str());
+  const CommandLine command_line = ParseCommandLine();
+  app.bios_path = FindBios(command_line.bios);
   if (app.bios_path.empty()) {
     MessageBoxW(nullptr,
                 L"No BIOS image found.\n\n"
@@ -388,23 +528,24 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     return 1;
   }
 
-  WNDCLASSEXW window_class;
-  memset(&window_class, 0, sizeof(window_class));
+  WNDCLASSEXW window_class = {};
   window_class.cbSize = sizeof(window_class);
   window_class.style = CS_HREDRAW | CS_VREDRAW;
   window_class.lpfnWndProc = WindowProc;
   window_class.hInstance = instance;
-  window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
-  window_class.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+  window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  window_class.hbrBackground =
+      reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
   window_class.lpszClassName = kWindowClass;
-  RegisterClassExW(&window_class);
+  if (RegisterClassExW(&window_class) == 0)
+    return 1;
 
   RECT bounds = { 0, 0, 640, 480 };
   AdjustWindowRect(&bounds, WS_OVERLAPPEDWINDOW, TRUE);
   HWND window = CreateWindowExW(
       0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
       CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
-      nullptr, CreateMainMenu(), instance, nullptr);
+      nullptr, CreateMainMenu(), instance, &app);
   if (window == nullptr)
     return 1;
 
@@ -414,56 +555,37 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     return 1;
   }
 
-  // Audio is optional: a machine with no working output device should still
-  // run, silently, rather than refusing to start.
-  {
-    WASAPIAudioEngine* wasapi = new WASAPIAudioEngine();
-    if (wasapi->Initialize(Spu::kSampleRate, 2)) {
-      app.audio = wasapi;
-    } else {
-      delete wasapi;
-      DirectSoundAudioEngine* dsound = new DirectSoundAudioEngine();
-      if (dsound->Initialize(Spu::kSampleRate, 2))
-        app.audio = dsound;
-      else
-        delete dsound;
-    }
-    if (app.audio != nullptr)
-      app.audio->Play();
-  }
+  app.audio = CreateAudioEngine();
+  if (app.audio != nullptr)
+    app.audio->Play();
 
-  app.system = std::make_unique<emulation::psx::System>();
+  app.system = std::make_unique<System>();
   if (app.system->Initialize(app.bios_path.c_str()) != 0) {
-    MessageBoxW(window, L"The BIOS image could not be loaded. It must be "
-                        L"exactly 512 KB.",
+    MessageBoxW(window,
+                L"The BIOS image could not be loaded. It must be exactly "
+                L"512 KB.",
                 kWindowTitle, MB_OK | MB_ICONERROR);
     return 1;
   }
 
-  if (!disc_argument.empty() && app.system->LoadDisc(disc_argument.c_str()))
-    SetWindowTitleForDisc(window, disc_argument);
+  if (!command_line.disc.empty() &&
+      app.system->LoadDisc(command_line.disc.c_str())) {
+    SetWindowTitleForDisc(window, command_line.disc);
+  }
 
   ShowWindow(window, show);
   UpdateWindow(window);
 
   app.running = true;
-  MSG message;
-  memset(&message, 0, sizeof(message));
-  
-  const bool kUseSeparateThread = false; // Set to true to use System::Run() in a separate thread
-
-  if (kUseSeparateThread) {
-    app.system->Run();
-  }
-
+  MSG message = {};
   while (app.running) {
-    while (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE)) {
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
       if (message.message == WM_QUIT) {
         app.running = false;
         break;
       }
       TranslateMessage(&message);
-      DispatchMessage(&message);
+      DispatchMessageW(&message);
     }
     if (!app.running)
       break;
@@ -477,39 +599,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     const bool focused = (GetForegroundWindow() == window);
     app.system->sio().set_buttons(0, focused ? ReadKeyboardPad() : 0);
 
-    if (!kUseSeparateThread) {
-      // Run the machine until the GPU says a frame is finished. That keeps the
-      // pace tied to the emulated display rather than to a timer here, and it is
-      // the same loop the headless harness runs.
-      const uint64_t target_frame = app.system->gpu().frame_count() + 1;
-      uint64_t guard = 0;
-      const uint64_t kMaxInstructionsPerFrame = 8000000;
-      while (app.system->gpu().frame_count() < target_frame &&
-             guard++ < kMaxInstructionsPerFrame) {
-        app.system->StepInstruction();
-      }
-    } else {
-      // If we are using a separate thread, the machine is running freely.
-      // We still need to throttle this UI loop, typically by v-sync or a short sleep
-      // to avoid spinning at 100% CPU. Since the thread handles the system execution,
-      // we only wait until a new frame is ready to present.
-      static uint64_t last_presented_frame = 0;
-      while (app.system->gpu().frame_count() == last_presented_frame && app.running) {
-        Sleep(1);
-      }
-      last_presented_frame = app.system->gpu().frame_count();
-    }
-
-    // Drain whatever the SPU generated during that frame and hand it to the
-    // audio device. Pulling here rather than pushing from inside the core is
-    // what keeps the core free of any audio API: it just fills a buffer.
-    if (app.audio != nullptr) {
-      static int16_t samples[Spu::kSampleRate / 30 * 2];
-      const int frames = app.system->spu().ReadSamples(
-          samples, static_cast<int>(ARRAYSIZE(samples) / 2));
-      if (frames > 0)
-        app.audio->QueueAudio(samples, frames * 2);
-    }
+    RunOneFrame(app);
+    PumpAudio(app);
 
     int width = 0;
     int height = 0;
@@ -517,20 +608,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     app.presenter.Present(pixels, width, height);
   }
 
-  if (kUseSeparateThread) {
-    app.system->Stop();
-  }
-
-  if (app.audio != nullptr) {
-    app.audio->Shutdown();
-    delete app.audio;
-    app.audio = nullptr;
-  }
-
-  app.system->Deinitialize();
-  
-  app.system = nullptr;
-  app.presenter.Deinitialize();
-  g_app = nullptr;
+  // Everything Application owns is released by its destructor, in the order it
+  // was declared in.
   return static_cast<int>(message.wParam);
 }
