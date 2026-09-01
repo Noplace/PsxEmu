@@ -130,7 +130,7 @@ class System {
   utilities::Timer timer;
   uint64_t cycles_per_second_;
 
-  std::thread* thread;
+  std::unique_ptr<std::thread> thread;
   double base_freq_hz_;
   TimingInfo timing_;
   uint64_t interrupts_taken_;

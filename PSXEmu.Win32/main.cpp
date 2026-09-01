@@ -430,6 +430,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
   app.running = true;
   MSG message;
   memset(&message, 0, sizeof(message));
+  
+  const bool kUseSeparateThread = false; // Set to true to use System::Run() in a separate thread
+
+  if (kUseSeparateThread) {
+    app.system->Run();
+  }
 
   while (app.running) {
     while (PeekMessage(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -452,15 +458,27 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     const bool focused = (GetForegroundWindow() == window);
     app.system->sio().set_buttons(0, focused ? ReadKeyboardPad() : 0);
 
-    // Run the machine until the GPU says a frame is finished. That keeps the
-    // pace tied to the emulated display rather than to a timer here, and it is
-    // the same loop the headless harness runs.
-    const uint64_t target_frame = app.system->gpu().frame_count() + 1;
-    uint64_t guard = 0;
-    const uint64_t kMaxInstructionsPerFrame = 8000000;
-    while (app.system->gpu().frame_count() < target_frame &&
-           guard++ < kMaxInstructionsPerFrame) {
-      app.system->StepInstruction();
+    if (!kUseSeparateThread) {
+      // Run the machine until the GPU says a frame is finished. That keeps the
+      // pace tied to the emulated display rather than to a timer here, and it is
+      // the same loop the headless harness runs.
+      const uint64_t target_frame = app.system->gpu().frame_count() + 1;
+      uint64_t guard = 0;
+      const uint64_t kMaxInstructionsPerFrame = 8000000;
+      while (app.system->gpu().frame_count() < target_frame &&
+             guard++ < kMaxInstructionsPerFrame) {
+        app.system->StepInstruction();
+      }
+    } else {
+      // If we are using a separate thread, the machine is running freely.
+      // We still need to throttle this UI loop, typically by v-sync or a short sleep
+      // to avoid spinning at 100% CPU. Since the thread handles the system execution,
+      // we only wait until a new frame is ready to present.
+      static uint64_t last_presented_frame = 0;
+      while (app.system->gpu().frame_count() == last_presented_frame && app.running) {
+        Sleep(1);
+      }
+      last_presented_frame = app.system->gpu().frame_count();
     }
 
     // Drain whatever the SPU generated during that frame and hand it to the
@@ -478,6 +496,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     int height = 0;
     const uint32_t* pixels = app.system->gpu().framebuffer(width, height);
     app.presenter.Present(pixels, width, height);
+  }
+
+  if (kUseSeparateThread) {
+    app.system->Stop();
   }
 
   if (app.audio != nullptr) {

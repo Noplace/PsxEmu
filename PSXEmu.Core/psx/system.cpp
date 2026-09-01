@@ -176,7 +176,7 @@ void System::Run() {
   if (thread!=nullptr && state == 1) return;
   state = 1;
   cycles_per_second_ = 0;
-  thread = new std::thread(System::thread_func,this);
+  thread = std::make_unique<std::thread>(System::thread_func, this);
 }
 
 void System::Stop() {
@@ -184,7 +184,7 @@ void System::Stop() {
   state = 0;
   thread->join();
   OutputDebugStringA("killed thread\n");
-  SafeDelete(&thread);
+  thread.reset();
 }
 
 void System::LoadBiosFromMemory(const void* buffer) {
