@@ -70,6 +70,9 @@ class Spu : public Component {
   void set_audio_engine(IAudioEngine* engine) { engine_ = engine; }
 
   void QueueCdAudio(const uint8_t* raw_sector);
+  // Interleaved stereo at some other rate - XA-ADPCM comes out at 37800 or
+  // 18900 Hz and has to be resampled onto the mixer's own 44100.
+  void QueueCdSamples(const int16_t* stereo, int frames, int sample_rate);
 
   const uint8_t* ram() const { return ram_; }
 
@@ -156,6 +159,12 @@ class Spu : public Component {
   int cd_audio_read_;
   int cd_audio_write_;
   int cd_audio_count_;
+  // Resampling state for QueueCdSamples, carried between sectors so the joins
+  // between them are not audible.
+  uint32_t cd_resample_fraction_;
+  int16_t cd_resample_last_[2];
+  int16_t cd_resample_scratch_[2];
+  void PushCdFrame(int16_t left, int16_t right);
 
   IAudioEngine* engine_;
   Stats stats_;

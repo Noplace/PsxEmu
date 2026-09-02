@@ -41,6 +41,12 @@ const int32_t kSectorCyclesSingleSpeed = 451584;
 // Mode register bits.
 const uint8_t kModeDoubleSpeed = 0x80;
 const uint8_t kModeWholeSector = 0x20;   // 0x924 bytes rather than 0x800
+const uint8_t kModeXaAdpcm     = 0x40;   // send XA-ADPCM sectors to the SPU
+const uint8_t kModeXaFilter    = 0x08;   // and only those matching Setfilter
+
+// Subheader submode bits, at sector offset 18.
+const uint8_t kSubmodeAudio    = 0x04;
+const uint8_t kSubmodeForm2    = 0x20;
 
 }  // namespace
 
@@ -67,6 +73,9 @@ int Cdrom::Initialize() {
   data_size_ = 0;
   data_read_ = 0;
   data_fifo_loaded_ = false;
+  filter_file_ = 0;
+  filter_channel_ = 0;
+  xa_.Reset();
 
   seek_lba_ = Disc::kLeadInSectors;
   read_lba_ = Disc::kLeadInSectors;
@@ -343,6 +352,119 @@ void Cdrom::GetReport(uint8_t* data) {
   data[6] = minute;
   data[7] = second;
 }
+// ---------------------------------------------------------------------------
+// XA-ADPCM
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The four filters XA uses. The SPU's own ADPCM has five; this is not that
+// table and the fifth entry does not belong here.
+const int32_t kXaFilterPositive[4] = { 0, 60, 115, 98 };
+const int32_t kXaFilterNegative[4] = { 0, 0, -52, -55 };
+
+int16_t ClampToSample(int32_t value) {
+  if (value < -32768)
+    return -32768;
+  if (value > 32767)
+    return 32767;
+  return static_cast<int16_t>(value);
+}
+
+}  // namespace
+
+// One sector of XA-ADPCM: eighteen sound groups of 128 bytes, each sixteen
+// parameter bytes and 112 bytes of packed samples.
+//
+// The parameter bytes are stored twice over, which is a disc format hedging
+// against a read error: 00h-03h repeats 04h-07h, and 0Ch-0Fh repeats 08h-0Bh.
+// The originals are the second of each pair, so blocks 0 to 7 take their
+// parameters from bytes 04h onwards.
+//
+// In four-bit mode a group holds eight blocks of 28 samples, one nibble of
+// each 32-bit word per block; in eight-bit mode, four blocks, one byte per
+// block. In stereo the blocks alternate left and right, which is why the
+// filter history is a pair.
+int Cdrom::DecodeXaAdpcm(const uint8_t* sound_groups, uint8_t coding,
+                         XaState* state, int16_t* out) {
+  const bool stereo = (coding & 0x01) != 0;
+  const bool eight_bit = (coding & 0x10) != 0;
+  const int blocks_per_group = eight_bit ? 4 : 8;
+
+  int frames = 0;
+
+  for (int group = 0; group < 18; ++group) {
+    const uint8_t* base = sound_groups + group * 128;
+    const uint8_t* data = base + 16;
+
+    for (int block = 0; block < blocks_per_group; ++block) {
+      const uint8_t parameter = base[4 + block];
+      const int32_t shift = parameter & 0x0F;
+      const int32_t filter = (parameter >> 4) & 0x03;
+
+      // A shift above 12 is not a valid encoding. The hardware behaves as if
+      // it were 9; software does not produce them, but a scratched disc can.
+      const int32_t shift_amount = (shift > 12) ? 9 : shift;
+
+      // In stereo the even blocks are the left channel and the odd ones the
+      // right, and each keeps its own history. In mono there is one history
+      // and both output channels get the same sample.
+      const int channel = stereo ? (block & 1) : 0;
+
+      for (int sample = 0; sample < 28; ++sample) {
+        const uint32_t word =
+            static_cast<uint32_t>(data[sample * 4]) |
+            (static_cast<uint32_t>(data[sample * 4 + 1]) << 8) |
+            (static_cast<uint32_t>(data[sample * 4 + 2]) << 16) |
+            (static_cast<uint32_t>(data[sample * 4 + 3]) << 24);
+
+        // Put the sample in the top of a 16-bit value and shift it down, which
+        // is what "shift" means here: zero is loudest.
+        int32_t value;
+        if (eight_bit) {
+          const int8_t byte = static_cast<int8_t>((word >> (block * 8)) & 0xFF);
+          value = static_cast<int32_t>(byte) << 8;
+        } else {
+          const uint32_t nibble = (word >> (block * 4)) & 0x0F;
+          value = static_cast<int32_t>(static_cast<int16_t>(nibble << 12));
+        }
+        value >>= shift_amount;
+
+        // The filter carries the previous two outputs forward.
+        const int32_t old = state->old[channel];
+        const int32_t older = state->older[channel];
+        const int32_t filtered =
+            value + ((old * kXaFilterPositive[filter] +
+                      older * kXaFilterNegative[filter] + 32) / 64);
+        const int16_t result = ClampToSample(filtered);
+
+        state->older[channel] = old;
+        state->old[channel] = result;
+
+        if (stereo) {
+          // A stereo pair is only complete once its right-hand block has been
+          // decoded, so the left channel writes and the right one fills in.
+          if (channel == 0) {
+            out[(frames + sample) * 2] = result;
+          } else {
+            out[(frames + sample) * 2 + 1] = result;
+          }
+        } else {
+          out[(frames + sample) * 2] = result;
+          out[(frames + sample) * 2 + 1] = result;
+        }
+      }
+
+      // A mono block is 28 finished frames. A stereo pair of blocks is 28
+      // frames between them, counted once the right-hand one is done.
+      if (!stereo || (block & 1) == 1)
+        frames += 28;
+    }
+  }
+
+  return frames;
+}
+
 
 void Cdrom::LoadSector() {
   if (!disc_.ReadSector(read_lba_, sector_)) {
@@ -351,6 +473,35 @@ void Cdrom::LoadSector() {
     playing_ = false;
     return;
   }
+  // An audio sector belongs to the ADPCM decoder, not to software.
+  //
+  // On a disc carrying full-motion video the audio is interleaved with the
+  // video in the same track, one sector of sound every so many of picture. The
+  // drive keeps them apart: an audio sector goes to the SPU and raises no
+  // data-ready interrupt at all, so what software reads is an unbroken run of
+  // video. Handing it every sector puts compressed audio in the middle of the
+  // video stream, which looks like a broken video decoder and is not.
+  const uint8_t submode = sector_[18];
+  if ((submode & kSubmodeAudio) != 0 && (mode_ & kModeXaAdpcm) != 0) {
+    const uint8_t file = sector_[16];
+    const uint8_t channel = sector_[17];
+    const bool wanted = (mode_ & kModeXaFilter) == 0 ||
+                        (file == filter_file_ && channel == filter_channel_);
+    if (wanted) {
+      const uint8_t coding = sector_[19];
+      static int16_t decoded[kXaFramesPerSector * 2];
+      const int frames = DecodeXaAdpcm(sector_ + 24, coding, &xa_, decoded);
+      system().spu().QueueCdSamples(decoded, frames, XaSampleRate(coding));
+      ++stats_.xa_sectors;
+    } else {
+      ++stats_.xa_filtered;
+    }
+    // Either way software never sees it, and the next sector is already on its
+    // way, so nothing here touches the data fifo or queues an interrupt.
+    ++read_lba_;
+    return;
+  }
+
 
   // How much of the sector this one replaces had actually been taken. A short
   // count means software never read the last sector before the drive handed
@@ -371,8 +522,8 @@ void Cdrom::LoadSector() {
   // A fresh sector needs arming again before software can read it.
   data_fifo_loaded_ = false;
   ++stats_.sectors_read;
-  if (stats_.event_count < Stats::kEventCapacity) {
-    Stats::Event& e = stats_.events[stats_.event_count++];
+  {
+    Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
     e.kind = 1; e.mode = mode_; e.lba = read_lba_;
     e.consumed = consumed_previous; e.size = previous_size;
   }
@@ -435,8 +586,8 @@ void Cdrom::ExecuteCommand(uint8_t command) {
   // the sectors, so a stream can be read as a story rather than a total.
   if (command == 0x06 || command == 0x09 || command == 0x15 ||
       command == 0x1B || command == 0x0A || command == 0x08) {
-    if (stats_.event_count < Stats::kEventCapacity) {
-      Stats::Event& e = stats_.events[stats_.event_count++];
+    {
+      Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
       e.kind = 3; e.mode = command; e.lba = read_lba_;
       e.consumed = data_read_; e.size = data_size_;
     }
@@ -454,8 +605,8 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       const uint8_t frame = TakeParameter();
       seek_lba_ = Disc::MsfToLba(minute, second, frame);
       seek_pending_ = true;
-      if (stats_.event_count < Stats::kEventCapacity) {
-        Stats::Event& e = stats_.events[stats_.event_count++];
+      {
+        Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
         e.kind = 0; e.mode = mode_; e.lba = seek_lba_;
       }
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
@@ -545,15 +696,18 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       break;
 
     case 0x0D:    // Setfilter
-      TakeParameter();
-      TakeParameter();
+      // Which interleaved stream to listen to. A disc carries several XA
+      // channels in the one track and software picks one; with the filter off
+      // in Setmode, every audio sector is taken regardless.
+      filter_file_ = TakeParameter();
+      filter_channel_ = TakeParameter();
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       break;
 
     case 0x0E:    // Setmode
       mode_ = TakeParameter();
-      if (stats_.event_count < Stats::kEventCapacity) {
-        Stats::Event& e = stats_.events[stats_.event_count++];
+      {
+        Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
         e.kind = 2; e.mode = mode_; e.lba = 0;
         e.consumed = 0; e.size = 0;
       }
@@ -622,6 +776,14 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         QueueError(0x80, kAcknowledgeDelay);
         break;
       }
+      // A seek stops whatever was being read. Leaving the read running let it
+      // deliver one more sector *after* the seek had moved the head, which
+      // advanced the position past the seek target - so the read that followed
+      // began one sector late. A game loading an executable that way gets its
+      // header cut off and every field it reads out of it is one sector of
+      // rubbish.
+      reading_ = false;
+      playing_ = false;
       read_lba_ = seek_lba_;
       seek_pending_ = false;
       status_ = kStatusMotorOn | kStatusSeeking;

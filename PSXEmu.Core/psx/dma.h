@@ -41,7 +41,7 @@ class Dma : public Component {
   // The first few transfers on each channel, for working out why one of them
   // landed somewhere it should not have.
   struct Transfer { uint32_t chcr, bcr, madr, words, end, lba, first, pc; };
-  static const int kTransferCapacity = 300;
+  static const int kTransferCapacity = 3000;
   struct Stats {
     Transfer transfers[7][kTransferCapacity];
     uint32_t counts[7];

@@ -72,6 +72,27 @@ class Cdrom : public Component {
 
   // Sector delivery to DMA channel 3.
   bool data_available() const { return data_read_ < data_size_; }
+
+  // The running state of an XA-ADPCM stream: each block continues from where
+  // the previous one left off, so this cannot be reset per sector.
+  struct XaState {
+    int32_t old[2];
+    int32_t older[2];
+    void Reset() { old[0] = old[1] = older[0] = older[1] = 0; }
+  };
+
+  // Decodes one sector's worth of sound groups - 0x900 bytes, eighteen groups
+  // of 128 - into interleaved stereo at the rate the coding byte names.
+  // Returns the number of stereo frames written, at most kXaFramesPerSector.
+  // Mono is duplicated to both channels so callers need not care.
+  //
+  // Static and free of the rest of the drive so it can be exercised directly.
+  static const int kXaFramesPerSector = 4032;
+  static int DecodeXaAdpcm(const uint8_t* sound_groups, uint8_t coding,
+                           XaState* state, int16_t* out);
+  static int XaSampleRate(uint8_t coding) {
+    return (coding & 0x04) ? 18900 : 37800;
+  }
   uint32_t ReadDataWord();
 
   // Mounting. Passing nullptr or an empty path ejects.
@@ -86,6 +107,10 @@ class Cdrom : public Component {
     uint64_t sectors_read;
     uint64_t interrupts;
     uint64_t unknown_commands;
+    // XA-ADPCM audio sectors taken by the decoder, and those a Setfilter
+    // selection turned away.
+    uint64_t xa_sectors;
+    uint64_t xa_filtered;
     uint8_t last_command;
     // Which commands were issued, and which interrupt kinds were delivered.
     // A drive that answers the wrong way and one that does not answer at all
@@ -105,7 +130,7 @@ class Cdrom : public Component {
       uint32_t consumed;
       uint32_t size;
     };
-    static const int kEventCapacity = 400;
+    static const int kEventCapacity = 4000;
     Event events[kEventCapacity];
     uint32_t event_count;
   };
@@ -140,6 +165,13 @@ class Cdrom : public Component {
   // already loaded does nothing on hardware; only a fresh sector, or clearing
   // the request bit, unloads it.
   bool data_fifo_loaded_;
+
+  // XA-ADPCM. `filter_*` is what Setfilter selected; the two histories are the
+  // decoder state, which has to survive from one sector to the next because a
+  // block continues where the last one stopped.
+  uint8_t filter_file_;
+  uint8_t filter_channel_;
+  XaState xa_;
 
   // Drive state.
   uint32_t seek_lba_;               // set by Setloc, applied by a seek or read

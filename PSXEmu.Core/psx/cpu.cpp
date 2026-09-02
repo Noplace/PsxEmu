@@ -424,7 +424,11 @@ void Cpu::StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physic
     return;
   }
   if ((IsAddressError(virtual_address,size_bytes) == true)) {
-    context_->ctrl.BadVaddr = context_->prev_pc;
+    // BadVaddr is the address that faulted, not the instruction that did it -
+    // the pc is already in EPC. Storing the pc here made every address error
+    // report BadVaddr == EPC, which reads like a jump into nowhere and hides
+    // the pointer that was actually bad.
+    context_->ctrl.BadVaddr = virtual_address;
     RaiseException(context_->prev_pc,kOtherException,kExceptionCodeAdES);
     return;
   }
@@ -644,7 +648,7 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
     return;
   }
   if ((IsAddressError(address,size) == true)) {
-    context_->ctrl.BadVaddr = context_->prev_pc;
+    context_->ctrl.BadVaddr = address;
     RaiseException(context_->prev_pc,kOtherException,kExceptionCodeAdES);
     return;
   }
@@ -897,7 +901,7 @@ void Cpu::COP0() {
       break;
     }
     default:
-      BREAKPOINT;
+      BREAKPOINT_DETAIL(context_->code);
   }
   Tick();
 }
@@ -929,7 +933,7 @@ void Cpu::COP2() {
       system_->gte().WriteControl(rd_, context_->gp.reg[rt_]);
       break;
     default:
-      BREAKPOINT
+      BREAKPOINT_DETAIL(context_->code);
       break;
   }
   Tick();

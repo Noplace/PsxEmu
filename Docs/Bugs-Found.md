@@ -886,3 +886,331 @@ video and relies on the drive to keep them apart will be handed audio sectors
 in its video stream. Neither disc tried so far does that - Wild Arms only ever
 sets mode 80h or A0h, never the XA bit - but a game that does will fail in a
 way that looks like a broken video decoder.
+
+---
+
+## 25. XA-ADPCM: full-motion video has sound
+
+Implemented in `psx/cdrom.cpp` and `psx/spu.cpp`, with five test groups in
+`spu_test` and a `--wav` option in the harness.
+
+### What was needed
+
+Four pieces, all of them named in the note that closed bug 24:
+
+- **Setmode bits 6 and 3** - XA-ADPCM enable and the Setfilter filter - are now
+  read rather than only stored.
+- **Setfilter** keeps the file and channel it is given instead of discarding
+  them. A disc carries several interleaved streams in the one track and
+  software picks one.
+- **The subheader decides where a sector goes.** A sector whose submode says it
+  is audio, on a drive with XA enabled, goes to the decoder and raises *no*
+  data-ready interrupt. Software never sees it, so what it reads is an unbroken
+  run of video.
+- **The decoder.** Eighteen sound groups of 128 bytes, sixteen parameter bytes
+  and 112 of packed samples. Four-bit mode packs eight blocks of 28 samples one
+  nibble per block of each word; eight-bit mode, four blocks a byte each. The
+  parameter byte carries a shift, where zero is loudest, and one of four
+  filters. In stereo the blocks alternate channels and each keeps its own
+  two-sample history.
+
+Output is resampled from 37800 or 18900 Hz onto the mixer's 44100, with the
+fractional position and the last frame carried between sectors so the joins are
+not audible - one sector is about a tenth of a second, and a discontinuity
+every tenth of a second is a rattle.
+
+### The third point is not only about sound
+
+Handing software every sector puts compressed audio in the middle of its video
+stream. Wild Arms went from 36,960 macroblocks decoded to 61,200 and from 1,889
+sectors to 2,581 purely from the drive keeping the two apart - the video got
+better because the audio stopped being in the way. A game that interleaves and
+relies on the drive to separate them would have looked like a broken video
+decoder, which is exactly the trap flagged when this was still an open item.
+
+### How it was checked
+
+Five groups in `spu_test`, 27 new checks: frame counts for all four
+combinations of width and channels, silence staying silent, the shift scaling
+by halves with zero as loudest, a nibble's top bit being a sign, mono filling
+both channels and stereo taking them from alternating blocks, filter 1 decaying
+where filter 0 stops dead, the history surviving a sector boundary, and a loud
+stream saturating rather than wrapping.
+
+Then the tests were checked by breaking the code deliberately:
+
+- zeroing filter 1's coefficient: 3 failures, all in the filter group.
+- removing the nibble's sign extension: 2 failures, both in the shift group.
+
+Two of the checks were wrong on the first run and the decoder was right:
+`out[1]` is the *right channel of frame 0*, not frame 1, and in mono those are
+equal by definition. Fixed to step two at a time.
+
+### End to end
+
+`boot_runner --wav` now drains the mixer once a frame, as the front end does,
+and writes a 16-bit stereo file - audio being the one output that cannot be
+checked by looking at it.
+
+Wild Arms, 2400 frames: **320 XA audio sectors decoded**, none filtered out.
+The recording, in four-second windows of RMS, against the same run with the
+decoder's output not passed to the mixer:
+
+```
+  t         with XA     no XA
+  t=  0s       1093      1093     the BIOS chime, identical
+  t=  8s        427       427
+  t= 16s          0         0
+  t= 20s         33         0     <- the movie starts
+  t= 24s        104         0
+  t= 36s        134         0
+  t= 40s         96         0
+```
+
+Silent in exactly the window the film plays, and unchanged everywhere else.
+
+Legend of Mana decodes no XA sectors at all and is unchanged: its opening
+genuinely carries no XA audio, which is why it never set the mode bit.
+
+The BIOS shell checksum did not move (`bd888bab645a63a9`) and all 533 harness
+checks pass.
+
+**Not verified.** The absolute level is not checked against hardware. Playback
+during the film sits around an RMS of 100 against a full scale of 32767, which
+is plausible for the quiet opening of a movie through whatever CD volume the
+game set, but it is not proof. Resampling is linear rather than the hardware's
+seven-point filter: a slight softening at the top end, not a wrong pitch.
+
+---
+
+## 25. Wild Arms after "press start": found, localised, not yet fixed
+
+Worked through [Wild-Arms-Press-Start-Plan.md](Wild-Arms-Press-Start-Plan.md).
+Steps 1 and 2 are done and the triage has run; the root cause is localised to
+one BIOS call with a bad argument, and finding how that argument got bad is
+where it stands.
+
+### The harness can press buttons now
+
+`--press <button>[+<button>]@<frame>[+<hold>]`, several allowed, default hold
+of six frames because software debounces and a one-frame press is often missed.
+Buttons change on the frame boundary, which is where the front end samples them.
+
+Validated against the BIOS shell before trusting anything downstream, exactly as
+the plan insisted:
+
+```
+no input        checksum 7c73cb5c96330316
+press down@500  checksum 21d074a462629425     the cursor moved
+press right@500 checksum 7c73cb5c96330316     unchanged - the menu is vertical
+```
+
+Down moves the shell cursor and Right does nothing, which is right, and proves
+the whole path from option parsing through `Sio::set_buttons` to the BIOS pad
+driver.
+
+### And log a timeline
+
+`--frame-log <n>` prints the checksum, non-black count, resolution and the
+MDEC, CD and GP0 counters every n frames. One run replaces a bisection.
+
+For Wild Arms it immediately said where the menu is:
+
+```
+frame 9000   35a3e156...   61432 non-black  320x240  mdec 461520  cd 17191
+frame 9500   6d7c94ce...  200710 non-black  512x480  mdec 484560  cd 18104
+frame 10000  2ab4d9a0...  200705 non-black  512x480  mdec 484560  cd 18118
+frame 10500  2ab4d9a0...  200705 non-black  512x480  mdec 484560  cd 18271
+```
+
+The film runs to about frame 9000, the display switches to 512x480, and from
+there the checksum is nearly static while the CD and GP0 counters keep moving:
+a game drawing a still screen and waiting.
+
+### Reproduced
+
+```
+--press start@10500+8
+
+frame 10500  2ab4d9a0...  200705 non-black
+frame 11000  f4931b15...       0 non-black    cd 18688  gp0 94169532
+frame 11500  f4931b15...       0 non-black    cd 18688  gp0 94169532
+```
+
+Blank, and the CD and GP0 counters stop dead where the baseline run keeps
+climbing. The same thing the front end shows, now in the harness.
+
+### It is a crash, not a stall
+
+`A0(40)` - SystemError - 48 million calls. And two unimplemented paths, where
+the baseline run with no button pressed hits **zero**:
+
+```
+PSXEmu.Core\psx\cpu.cpp line 900, 5 hits, first 4320616C
+PSXEmu.Core\psx\cpu.cpp line 932, 1 hits, first 48207265
+```
+
+Those are the unhandled cases of COP0 and COP2 - and the instruction words are
+ASCII. `4320616C` is "la C" and `48207265` is "er H". The CPU is executing text.
+
+### Where it goes wrong
+
+The trace ring shows the control flow, and it is unambiguous:
+
+```
+0x80149C48  li   t2, 0xA0
+0x80149C4C  jr   t2
+0x80149C50  li   t1, 0x43          -> BIOS call A0(43)
+...
+0xBFC03D4C  lw   t3, 0(a0)         pc0 out of the EXEC header
+0xBFC03D50  lw   gp, 4(a0)         gp0
+0xBFC03D58  jalr t3                and jump to it
+0x80011430  "optio"                <- which is not code
+0x80011434  "ons\0"
+0x80011438  0x80011C38
+```
+
+`0xBFC03CF0` is the BIOS's `Exec()`: it saves the callers registers into the
+header, zeroes the bss from `b_addr`/`b_size`, sets `sp` from
+`s_addr`+`s_size`, then loads `pc0` from offset 0 and jumps to it. The game
+called it - from `0x801448EC`, with a header built on its own stack at
+`sp+0xA8` - and the `pc0` in that header was `0x80011430`, which is in the
+middle of the game's own string and pointer data. The next few hundred words it
+executed are Wild Arms item names: "Silver Harp", "Blue Circle", "Clear Chime",
+"Memo...".
+
+So the game asked the BIOS to run an overlay and handed it a header pointing at
+data. The remaining question is how that header came to be filled that way, and
+that is the next session's work: the header is a stack local, so the way in is
+to catch the write rather than the read - either by watching the address once
+the stack pointer at that moment is known, or by tracing the function that
+fills it before `0x801448EC`.
+
+Nothing here suggests the MDEC or the XA decoder. The film plays to the end.
+
+### One real bug fixed on the way
+
+`Cpu::Store` set `BadVaddr` to `prev_pc` rather than to the address that
+faulted, on both of its address-error paths. The pc is already in `EPC`, so
+every address error reported `BadVaddr == EPC` - which reads like a jump into
+nowhere and hides the pointer that was actually bad. The load paths were always
+right; only the stores were wrong. Now both report the faulting address.
+
+That is exactly the field this investigation wanted, and it was lying.
+
+### And the trap counter says what, not just where
+
+`TrapCounter::Hit` takes an optional detail value, and the two coprocessor
+fall-throughs pass the instruction word. Without it, "cpu.cpp line 900, 5 hits"
+was a dead end; with it, the ASCII was immediately obvious and reframed the
+whole investigation - the coprocessor cases are not missing features, they are
+a symptom of executing data.
+
+All 533 harness checks pass, the BIOS shell checksum is unchanged
+(`bd888bab645a63a9`), and Legend of Mana is unaffected.
+
+---
+
+## 26. A seek did not stop the read that was already running
+
+**Symptom.** Wild Arms blanked and hung after "press start". Bug 25 traced it as
+far as the BIOS's `Exec()` being handed a header whose `pc0` was `0x80011430`,
+pointing into the game's own item-name table, and left the question of how the
+header got that way.
+
+**How it was found.** By following the header backwards, one step at a time.
+
+The stack pointer at the `Exec` call came from `--trace-at 8014486C`, because
+`addiu a0, sp, 168` reads `sp` and the tracer prints an instruction's source
+register: `sp = 0x801FD360`, so the header was at `0x801FD408`. Watching that
+address gave the writer:
+
+```
+pc 801447A8  4-byte write of 80011430 to 801FD408
+```
+
+which is a sixteen-byte-at-a-time copy loop ending at `t0 = 0x80011460` - the
+game's `memcpy`, copying `0x80011430..0x80011460` onto the stack. That range is
+exactly `pc0` through `s_size` of a PS-EXE header, and `0x80011430` is
+`0x80011420 + 0x10`, which is where `pc0` sits in one.
+
+So the game reads an executable to `0x80011420` and copies the header fields out
+of it. Watching `0x80011430` showed every write to it coming from CD-ROM DMA -
+the read happened. And the executable is real: at file sector 208, lba 358,
+
+```
+50 53 2d 58 20 45 58 45   "PS-X EXE"
++0x10 pc0     800b065c
++0x18 t_addr  80011420      <- exactly where the game loads it
++0x1C t_size  000c1800
+```
+
+Then the DMA log, once it kept the *last* transfers rather than the first,
+said where the read actually began:
+
+```
+madr 80011420   512 words -> 00011C20  lba 359  first 80011420
+madr 80011420   512 words -> 00011C20  lba 360  first 6E6F6974
+```
+
+The first sector into the buffer was **359**. And the CD-ROM command log, once
+its ring was wide enough to reach back that far, said what the game had asked
+for:
+
+```
+setloc lba 358      <- the game asks for 358, which is right
+SeekL
+setmode 80
+ReadN               <- and the read starts at 359
+setloc lba 359
+SeekL
+ReadN               <- and this one starts at 360
+```
+
+Every read began one sector after the one that was asked for.
+
+**Cause.** `SeekL` and `SeekP` set the head position and left `reading_` alone:
+
+```cpp
+read_lba_ = seek_lba_;
+seek_pending_ = false;
+```
+
+The game had a read still running - a `ReadS` with no `Pause` before the seek -
+so `StepRead` was still being called. Between the seek and the `ReadN` it
+delivered one more sector, from the position the seek had just set, and
+incremented past it. The `ReadN` then started one sector late. On hardware a
+seek aborts whatever the drive was reading.
+
+The effect on a game loading an executable is total: the PS-EXE header is the
+first sector, so losing it shifts everything by 2048 bytes. `pc0` was read from
+what was actually file offset `0x1010`, deep inside the text - and the value
+there, `0x80011430`, is a perfectly plausible-looking RAM address, which is why
+it produced a jump into data rather than an obvious fault.
+
+**Fix.** `reading_ = false; playing_ = false;` in the seek commands.
+
+**Result.** Wild Arms gets past its title screen:
+
+```
+frame 10500  2ab4d9a0...  200705 non-black  512x480   waiting for input
+frame 11000  21a10944...   44266 non-black  320x232   in the game
+frame 11500  21a10944...   44266 non-black  320x232
+frame 12000  f4600283...   44330 non-black  320x232
+```
+
+It changes resolution to 320x232, keeps drawing, keeps reading - CD sectors
+19498 to 22027 across those frames - and `A0(40)` is called zero times where it
+was called 48 million.
+
+Legend of Mana, the synthetic test disc and the BIOS shell are all unchanged
+(`bd888bab645a63a9`), and all 533 harness checks pass.
+
+**Why it took three sessions to find.** The symptom was a wild jump, which
+looks like a CPU or memory bug. Two things made the difference: `BadVaddr` being
+fixed to report the faulting address rather than the pc (bug 25), and the
+diagnostic rings being turned round to keep the *last* events rather than the
+first. A crash investigation always wants the end of the log, and both the CD
+event log and the DMA transfer log were keeping the beginning - so both went
+quiet hundreds of thousands of sectors before the interesting part. That was
+costing time on every investigation, not just this one.

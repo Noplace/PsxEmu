@@ -153,6 +153,9 @@ int Spu::Initialize() {
 
   buffer_read_ = buffer_write_ = buffer_count_ = 0;
   cd_audio_read_ = cd_audio_write_ = cd_audio_count_ = 0;
+  cd_resample_fraction_ = 0;
+  cd_resample_last_[0] = cd_resample_last_[1] = 0;
+  cd_resample_scratch_[0] = cd_resample_scratch_[1] = 0;
   memset(cd_audio_buffer_, 0, sizeof(cd_audio_buffer_));
   memset(&stats_, 0, sizeof(stats_));
   return 0;
@@ -482,6 +485,73 @@ void Spu::PushFrame(int16_t left, int16_t right) {
   buffer_write_ = (buffer_write_ + 1) % kBufferFrames;
   ++buffer_count_;
 }
+void Spu::PushCdFrame(int16_t left, int16_t right) {
+  if (cd_audio_count_ >= kSampleRate * 2) {
+    // Full. Dropping the oldest frame keeps the stream running rather than
+    // stalling it, which matters when a game is streaming faster than the
+    // host is draining.
+    cd_audio_read_ = (cd_audio_read_ + 2) % (kSampleRate * 2);
+    cd_audio_count_ -= 2;
+  }
+  cd_audio_buffer_[cd_audio_write_] = left;
+  cd_audio_buffer_[cd_audio_write_ + 1] = right;
+  cd_audio_write_ = (cd_audio_write_ + 2) % (kSampleRate * 2);
+  cd_audio_count_ += 2;
+}
+
+// Interleaved stereo at some other rate, resampled onto the mixer's own.
+//
+// XA-ADPCM arrives at 37800 or 18900 Hz and one sector of it is about a tenth
+// of a second, so the join between sectors is audible if it is not continuous:
+// the fractional position and the last frame carry over, and the first output
+// frame of a sector interpolates from the end of the one before it.
+//
+// Linear interpolation, not the hardware's seven-point filter. The difference
+// is a slight softening of the top end, not a wrong pitch or a click.
+void Spu::QueueCdSamples(const int16_t* stereo, int frames, int sample_rate) {
+  if (stereo == nullptr || frames <= 0)
+    return;
+
+  if (sample_rate == kSampleRate) {
+    for (int i = 0; i < frames; ++i)
+      PushCdFrame(stereo[i * 2], stereo[i * 2 + 1]);
+    cd_resample_last_[0] = stereo[(frames - 1) * 2];
+    cd_resample_last_[1] = stereo[(frames - 1) * 2 + 1];
+    return;
+  }
+
+  // How far to step through the source for each frame of output, 16.16.
+  const uint32_t step = static_cast<uint32_t>(
+      (static_cast<uint64_t>(sample_rate) << 16) / kSampleRate);
+
+  uint32_t position = cd_resample_fraction_;
+  while ((position >> 16) < static_cast<uint32_t>(frames)) {
+    const uint32_t index = position >> 16;
+    const int32_t weight = static_cast<int32_t>(position & 0xFFFF);
+
+    for (int channel = 0; channel < 2; ++channel) {
+      const int32_t previous =
+          (index == 0) ? cd_resample_last_[channel]
+                       : stereo[(index - 1) * 2 + channel];
+      const int32_t current = stereo[index * 2 + channel];
+      const int32_t value =
+          previous + (((current - previous) * weight) >> 16);
+      if (channel == 0)
+        cd_resample_scratch_[0] = static_cast<int16_t>(value);
+      else
+        cd_resample_scratch_[1] = static_cast<int16_t>(value);
+    }
+    PushCdFrame(cd_resample_scratch_[0], cd_resample_scratch_[1]);
+    position += step;
+  }
+
+  // Whatever is left over starts the next sector, and its frame before the
+  // first is the last one of this.
+  cd_resample_fraction_ = position - (static_cast<uint32_t>(frames) << 16);
+  cd_resample_last_[0] = stereo[(frames - 1) * 2];
+  cd_resample_last_[1] = stereo[(frames - 1) * 2 + 1];
+}
+
 
 void Spu::QueueCdAudio(const uint8_t* raw_sector) {
   // A raw CD-DA sector is 2352 bytes, which is exactly 588 stereo pairs

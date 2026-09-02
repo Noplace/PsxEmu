@@ -16,6 +16,8 @@
 //     --hot <n>          print the n most-executed addresses at the end
 //     --dis <hex>:<n>    disassemble n instructions of RAM from an address
 //     --watch-vram x,y,w,h   report which GP0 command wrote into a VRAM area
+//     --press b@f[+h]    press a button at frame f, holding h frames
+//                        e.g. --press start@1800 --press down+cross@2000+8
 //     --quiet            suppress the per-100-frame progress lines
 //
 // Takes no window, no input and no audio device, so it can be run from a shell
@@ -38,12 +40,102 @@ using emulation::psx::TrapCounter;
 
 namespace {
 
+// A scheduled button press. Everything measured in this project so far has
+// come from a machine whose controller was connected and permanently idle, so
+// nothing past a title screen was reachable at all.
+struct Press {
+  uint16_t buttons;
+  int frame;        // the frame it goes down on
+  int hold;         // how many frames it stays down
+};
+
+struct ButtonName {
+  const char* name;
+  uint16_t mask;
+};
+
+const ButtonName kButtonNames[] = {
+  { "up",       emulation::psx::Sio::kUp },
+  { "down",     emulation::psx::Sio::kDown },
+  { "left",     emulation::psx::Sio::kLeft },
+  { "right",    emulation::psx::Sio::kRight },
+  { "cross",    emulation::psx::Sio::kCross },
+  { "circle",   emulation::psx::Sio::kCircle },
+  { "square",   emulation::psx::Sio::kSquare },
+  { "triangle", emulation::psx::Sio::kTriangle },
+  { "l1",       emulation::psx::Sio::kL1 },
+  { "l2",       emulation::psx::Sio::kL2 },
+  { "r1",       emulation::psx::Sio::kR1 },
+  { "r2",       emulation::psx::Sio::kR2 },
+  { "start",    emulation::psx::Sio::kStart },
+  { "select",   emulation::psx::Sio::kSelect },
+};
+
+uint16_t ButtonMask(const std::string& name) {
+  for (const ButtonName& button : kButtonNames) {
+    if (name == button.name)
+      return button.mask;
+  }
+  return 0;
+}
+
+// Parses "start@1800" or "start@1800+6", or several buttons at once as
+// "start+cross@1800". A press with no hold gets a default long enough that
+// software which debounces its input still sees it - a single frame is very
+// often missed.
+bool ParsePress(const char* text, Press* out) {
+  const std::string input = text;
+  const size_t at = input.find('@');
+  if (at == std::string::npos)
+    return false;
+
+  const std::string when = input.substr(at + 1);
+  const size_t plus = when.find('+');
+  out->frame = atoi(when.substr(0, plus).c_str());
+  out->hold = (plus == std::string::npos)
+                  ? 6
+                  : atoi(when.substr(plus + 1).c_str());
+  if (out->hold < 1)
+    out->hold = 1;
+
+  // The button half may name several, joined by '+'.
+  out->buttons = 0;
+  std::string names = input.substr(0, at);
+  size_t start = 0;
+  while (start <= names.size()) {
+    const size_t sep = names.find('+', start);
+    const std::string one = names.substr(
+        start, (sep == std::string::npos) ? std::string::npos : sep - start);
+    const uint16_t mask = ButtonMask(one);
+    if (mask == 0)
+      return false;
+    out->buttons |= mask;
+    if (sep == std::string::npos)
+      break;
+    start = sep + 1;
+  }
+  return out->buttons != 0 && out->frame >= 0;
+}
+
+// Which buttons are down on a given frame.
+uint16_t ButtonsOnFrame(const std::vector<Press>& presses, int frame) {
+  uint16_t buttons = 0;
+  for (size_t i = 0; i < presses.size(); ++i) {
+    if (frame >= presses[i].frame &&
+        frame < presses[i].frame + presses[i].hold) {
+      buttons |= presses[i].buttons;
+    }
+  }
+  return buttons;
+}
+
 struct Options {
   const char* bios;
   const char* exe;
   const char* disc;
   const char* ppm;
   const char* vram;
+  const char* wav;
   int frames;
   int trace;
   uint64_t trace_skip;
@@ -57,6 +149,8 @@ struct Options {
   bool boot_disc;
   bool auto_boot;
   bool quiet;
+  int frame_log;
+  std::vector<Press> presses;
 };
 
 // FNV-1a over the visible framebuffer. Small, order-sensitive, and good enough
@@ -72,6 +166,41 @@ uint64_t Checksum(const uint32_t* pixels, int count) {
   }
   return hash;
 }
+// Writes a 16-bit stereo WAV at the mixer's own rate. Audio is the one output
+// of this machine that cannot be checked by looking at it, and a file that can
+// be played settles arguments that a peak level does not.
+bool WriteWav(const char* path, const std::vector<int16_t>& samples) {
+  FILE* fp = fopen(path, "wb");
+  if (fp == nullptr)
+    return false;
+  const uint32_t data_bytes = static_cast<uint32_t>(samples.size() * 2);
+  const uint32_t rate = emulation::psx::Spu::kSampleRate;
+  const uint16_t channels = 2;
+  const uint32_t byte_rate = rate * channels * 2;
+  const uint16_t block_align = channels * 2;
+  const uint16_t bits = 16;
+  const uint32_t riff_size = 36 + data_bytes;
+  const uint32_t fmt_size = 16;
+  const uint16_t format = 1;
+
+  fwrite("RIFF", 1, 4, fp);
+  fwrite(&riff_size, 4, 1, fp);
+  fwrite("WAVEfmt ", 1, 8, fp);
+  fwrite(&fmt_size, 4, 1, fp);
+  fwrite(&format, 2, 1, fp);
+  fwrite(&channels, 2, 1, fp);
+  fwrite(&rate, 4, 1, fp);
+  fwrite(&byte_rate, 4, 1, fp);
+  fwrite(&block_align, 2, 1, fp);
+  fwrite(&bits, 2, 1, fp);
+  fwrite("data", 1, 4, fp);
+  fwrite(&data_bytes, 4, 1, fp);
+  if (!samples.empty())
+    fwrite(&samples[0], 2, samples.size(), fp);
+  fclose(fp);
+  return true;
+}
+
 
 bool WritePpm(const char* path, const uint32_t* pixels, int width, int height) {
   FILE* fp = fopen(path, "wb");
@@ -120,6 +249,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->disc = nullptr;
   options->ppm = nullptr;
   options->vram = nullptr;
+  options->wav = nullptr;
   options->frames = 300;
   options->trace = 0;
   options->trace_skip = 0;
@@ -133,6 +263,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->boot_disc = false;
   options->auto_boot = false;
   options->quiet = false;
+  options->frame_log = 0;
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -146,6 +277,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->ppm = argv[++i];
     } else if (strcmp(arg, "--vram") == 0 && i + 1 < argc) {
       options->vram = argv[++i];
+    } else if (strcmp(arg, "--wav") == 0 && i + 1 < argc) {
+      options->wav = argv[++i];
     } else if (strcmp(arg, "--trace") == 0 && i + 1 < argc) {
       options->trace = atoi(argv[++i]);
     } else if (strcmp(arg, "--trace-skip") == 0 && i + 1 < argc) {
@@ -157,6 +290,17 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->dis = argv[++i];
     } else if (strcmp(arg, "--watch-vram") == 0 && i + 1 < argc) {
       options->watch = argv[++i];
+    } else if (strcmp(arg, "--frame-log") == 0 && i + 1 < argc) {
+      options->frame_log = atoi(argv[++i]);
+    } else if (strcmp(arg, "--press") == 0 && i + 1 < argc) {
+      Press press;
+      if (!ParsePress(argv[++i], &press)) {
+        fprintf(stderr, "bad --press: %s\n", argv[i]);
+        fprintf(stderr, "  expected <button>[+<button>]@<frame>[+<hold>], "
+                        "e.g. start@1800 or start@1800+6\n");
+        return false;
+      }
+      options->presses.push_back(press);
     } else if (strcmp(arg, "--watch-ram") == 0 && i + 1 < argc) {
       options->watch_ram = strtoul(argv[++i], nullptr, 16);
     } else if (strcmp(arg, "--hot") == 0 && i + 1 < argc) {
@@ -265,9 +409,11 @@ int main(int argc, char** argv) {
 
   // Running the core directly rather than through System::Run keeps the
   // harness single-threaded and deterministic.
+  std::vector<int16_t> audio;
   uint64_t instructions = 0;
   uint64_t last_frame = system->gpu().frame_count();
   int frames = 0;
+  uint16_t last_buttons = 0;
 
   std::unordered_map<uint32_t, uint64_t> pc_counts;
 
@@ -314,6 +460,46 @@ int main(int argc, char** argv) {
     if (now != last_frame) {
       last_frame = now;
       ++frames;
+      // A timeline of one run, which is far cheaper than bisecting with many.
+      // The checksum going quiet while the counters keep moving is a game
+      // waiting for input; everything going quiet is a hang.
+      if (options.frame_log > 0 && (frames % options.frame_log) == 0) {
+        int w = 0;
+        int h = 0;
+        const uint32_t* px = system->gpu().framebuffer(w, h);
+        printf("frame %-6d %016llx  %6d non-black  %dx%d  "
+               "mdec %llu  cd %llu  gp0 %llu\n",
+               frames,
+               static_cast<unsigned long long>(Checksum(px, w * h)),
+               NonBlackPixels(px, w * h), w, h,
+               static_cast<unsigned long long>(
+                   system->io().mdec.stats().macroblocks),
+               static_cast<unsigned long long>(
+                   system->cdrom().stats().sectors_read),
+               static_cast<unsigned long long>(
+                   system->gpu().stats().gp0_words));
+        fflush(stdout);
+      }
+      // Buttons change on the frame boundary, which is where the front end
+      // samples them too.
+      if (!options.presses.empty()) {
+        const uint16_t buttons = ButtonsOnFrame(options.presses, frames);
+        if (buttons != last_buttons) {
+          system->sio().set_buttons(0, buttons);
+          last_buttons = buttons;
+        }
+      }
+      // Drain the SPU once a frame, exactly as the front end does. Without
+      // this the mixer's buffer simply fills and drops, and nothing about the
+      // audio can be checked at all.
+      if (options.wav != nullptr) {
+        int16_t chunk[2048];
+        int got = 0;
+        while ((got = system->spu().ReadSamples(
+                    chunk, static_cast<int>(sizeof(chunk) / 2 / 2))) > 0) {
+          audio.insert(audio.end(), chunk, chunk + got * 2);
+        }
+      }
       if (!options.quiet && (frames % 100) == 0) {
         int width = 0, height = 0;
         const uint32_t* pixels = system->gpu().framebuffer(width, height);
@@ -351,8 +537,11 @@ int main(int argc, char** argv) {
     for (uint32_t i = 0; i < emulation::psx::TrapCounter::site_count; ++i) {
       const emulation::psx::TrapCounter::Site& site =
           emulation::psx::TrapCounter::sites[i];
-      printf("  %s line %d, %llu hits\n", site.file, site.line,
+      printf("  %s line %d, %llu hits", site.file, site.line,
              static_cast<unsigned long long>(site.hits));
+      if (site.detail != 0)
+        printf(", first %08X", site.detail);
+      printf("\n");
     }
   }
   printf("interrupts     %llu taken, %llu blocked, IE on for %llu insns\n",
@@ -371,6 +560,11 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(cd_stats.sectors_read),
          static_cast<unsigned long long>(cd_stats.interrupts),
          static_cast<unsigned long long>(cd_stats.unknown_commands));
+  if (cd_stats.xa_sectors != 0 || cd_stats.xa_filtered != 0) {
+    printf("               %llu XA audio sectors decoded, %llu filtered out\n",
+           static_cast<unsigned long long>(cd_stats.xa_sectors),
+           static_cast<unsigned long long>(cd_stats.xa_filtered));
+  }
 
   {
     static const char* kCdNames[256] = {
@@ -400,10 +594,15 @@ int main(int argc, char** argv) {
     if (any) printf("\n");
 
     if (c.event_count > 0) {
-      printf("cdrom seeks and sectors (first %u)\n", c.event_count);
+      printf("cdrom seeks and sectors (%u events%s)\n", c.event_count,
+             c.event_count > emulation::psx::Cdrom::Stats::kEventCapacity
+                 ? ", last 4000 shown" : "");
 
-      for (uint32_t i = 0; i < c.event_count; ++i) {
-        const auto& e = c.events[i];
+      const uint32_t cd_first =
+          (c.event_count > emulation::psx::Cdrom::Stats::kEventCapacity)
+              ? c.event_count - emulation::psx::Cdrom::Stats::kEventCapacity : 0;
+      for (uint32_t i = cd_first; i < c.event_count; ++i) {
+        const auto& e = c.events[i % emulation::psx::Cdrom::Stats::kEventCapacity];
         switch (e.kind) {
           case 0:
             printf("  setloc   lba %6u  (sector %6d)\n", e.lba,
@@ -475,7 +674,7 @@ int main(int argc, char** argv) {
     printf("\nwrites to %08X   %u total%s\n", options.watch_ram,
            cpu.watch_count_,
            cpu.watch_count_ > emulation::psx::Cpu::kWatchCapacity
-               ? ", last 400 shown" : "");
+               ? ", last 4000 shown" : "");
     const uint32_t first =
         (cpu.watch_count_ > emulation::psx::Cpu::kWatchCapacity)
             ? cpu.watch_count_ - emulation::psx::Cpu::kWatchCapacity : 0;
@@ -493,12 +692,14 @@ int main(int argc, char** argv) {
         continue;
       printf("\ndma channel %d   %u transfers%s\n", ch, d.counts[ch],
              d.counts[ch] > emulation::psx::Dma::kTransferCapacity
-                 ? ", first 300 shown" : "");
-      const uint32_t shown =
-          (d.counts[ch] < emulation::psx::Dma::kTransferCapacity)
-              ? d.counts[ch] : emulation::psx::Dma::kTransferCapacity;
-      for (uint32_t i = 0; i < shown; ++i) {
-        const emulation::psx::Dma::Transfer& t = d.transfers[ch][i];
+                 ? ", last 3000 shown" : "");
+      // Oldest first within the ring, so the list still reads forwards.
+      const uint32_t first_index =
+          (d.counts[ch] > emulation::psx::Dma::kTransferCapacity)
+              ? d.counts[ch] - emulation::psx::Dma::kTransferCapacity : 0;
+      for (uint32_t i = first_index; i < d.counts[ch]; ++i) {
+        const emulation::psx::Dma::Transfer& t =
+            d.transfers[ch][i % emulation::psx::Dma::kTransferCapacity];
         printf("  chcr %08X  bcr %08X  madr %08X  %6u words -> %08X"
                "  lba %u  first %08X  pc %08X\n",
                t.chcr, t.bcr, t.madr, t.words, t.end, t.lba, t.first, t.pc);
@@ -776,6 +977,21 @@ int main(int argc, char** argv) {
     else
       fprintf(stderr, "failed to write %s\n", options.ppm);
   }
+  if (options.wav != nullptr) {
+    if (WriteWav(options.wav, audio)) {
+      int32_t peak = 0;
+      for (size_t i = 0; i < audio.size(); ++i) {
+        const int32_t magnitude = (audio[i] < 0) ? -audio[i] : audio[i];
+        if (magnitude > peak)
+          peak = magnitude;
+      }
+      printf("wrote          %s (%.2f seconds, peak %d)\n", options.wav,
+             audio.size() / 2.0 / emulation::psx::Spu::kSampleRate, peak);
+    } else {
+      fprintf(stderr, "could not write %s\n", options.wav);
+    }
+  }
+
 
   system->Deinitialize();
   delete system;

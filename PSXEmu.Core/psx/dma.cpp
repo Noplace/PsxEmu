@@ -410,9 +410,12 @@ void Dma::Dma2() {
 
 void Dma::NoteTransfer(int channel, uint32_t words, uint32_t end,
                        uint32_t lba, uint32_t first) {
+  // A ring, so what survives is the last few rather than the first few. When
+  // a run ends in a crash the transfers that matter are the ones just before
+  // it, and keeping the earliest instead means the log stops at the boot.
   const uint32_t n = stats_.counts[channel]++;
-  if (n < kTransferCapacity) {
-    Transfer& t = stats_.transfers[channel][n];
+  {
+    Transfer& t = stats_.transfers[channel][n % kTransferCapacity];
     t.chcr = channels[channel].chcr;
     t.bcr = channels[channel].bcr;
     t.madr = channels[channel].madr;

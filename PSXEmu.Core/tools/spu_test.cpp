@@ -14,10 +14,12 @@
 #include "psx/psx.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
 
+using emulation::psx::Cdrom;
 using emulation::psx::Spu;
 
 namespace {
@@ -499,6 +501,230 @@ struct Group {
   void (*run)(Machine&);
 };
 
+// ---------------------------------------------------------------------------
+// XA-ADPCM
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Builds one 128-byte sound group. `shift` and `filter` go into every block's
+// parameter byte, and `nibbles` supplies the packed sample data.
+void BuildSoundGroup(uint8_t* group, uint8_t shift, uint8_t filter,
+                     const uint8_t* words112) {
+  const uint8_t parameter = static_cast<uint8_t>((filter << 4) | shift);
+  for (int i = 0; i < 4; ++i) {
+    group[4 + i] = parameter;      // blocks 0..3
+    group[8 + i] = parameter;      // blocks 4..7
+    group[0 + i] = group[4 + i];   // the duplicate copies the disc carries
+    group[12 + i] = group[8 + i];
+  }
+  memcpy(group + 16, words112, 112);
+}
+
+// A whole sector of sound groups, every sample the same nibble value.
+void BuildFlatSector(uint8_t* groups, uint8_t shift, uint8_t filter,
+                     uint8_t nibble) {
+  uint8_t data[112];
+  const uint8_t packed = static_cast<uint8_t>((nibble << 4) | nibble);
+  memset(data, packed, sizeof(data));
+  for (int group = 0; group < 18; ++group)
+    BuildSoundGroup(groups + group * 128, shift, filter, data);
+}
+
+}  // namespace
+
+void TestXaFrameCounts(Machine&) {
+  printf("xa frame counts\n");
+
+  std::vector<uint8_t> groups(18 * 128, 0);
+  std::vector<int16_t> out(Cdrom::kXaFramesPerSector * 2, 0);
+  Cdrom::XaState state;
+  state.Reset();
+
+  // Four-bit mono: eighteen groups of eight blocks of 28 samples.
+  int frames = Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  CheckEqual(frames, 18 * 8 * 28, "4-bit mono frames per sector");
+
+  // Four-bit stereo: the same samples, but a pair of blocks makes one frame.
+  state.Reset();
+  frames = Cdrom::DecodeXaAdpcm(&groups[0], 0x01, &state, &out[0]);
+  CheckEqual(frames, 18 * 4 * 28, "4-bit stereo frames per sector");
+
+  // Eight-bit mono: four blocks to a group instead of eight.
+  state.Reset();
+  frames = Cdrom::DecodeXaAdpcm(&groups[0], 0x10, &state, &out[0]);
+  CheckEqual(frames, 18 * 4 * 28, "8-bit mono frames per sector");
+
+  state.Reset();
+  frames = Cdrom::DecodeXaAdpcm(&groups[0], 0x11, &state, &out[0]);
+  CheckEqual(frames, 18 * 2 * 28, "8-bit stereo frames per sector");
+
+  // Nothing may run past what it said it wrote.
+  Check(frames * 2 <= Cdrom::kXaFramesPerSector * 2, "output stays in bounds");
+
+  // The sample rate comes out of the coding byte.
+  CheckEqual(Cdrom::XaSampleRate(0x00), 37800, "default rate is 37800");
+  CheckEqual(Cdrom::XaSampleRate(0x04), 18900, "rate bit selects 18900");
+}
+
+void TestXaSilenceAndShift(Machine&) {
+  printf("xa silence and shift\n");
+
+  std::vector<uint8_t> groups(18 * 128, 0);
+  std::vector<int16_t> out(Cdrom::kXaFramesPerSector * 2, 0);
+  Cdrom::XaState state;
+
+  // All-zero data through filter 0 is silence, and must stay silence: the
+  // filter has no input to carry forward.
+  state.Reset();
+  BuildFlatSector(&groups[0], 0, 0, 0);
+  int frames = Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  bool silent = true;
+  for (int i = 0; i < frames * 2; ++i) {
+    if (out[i] != 0)
+      silent = false;
+  }
+  Check(silent, "zero data with no filter is silence");
+
+  // A constant nibble with filter 0 is a constant sample, and the shift is
+  // what scales it: shift 0 is loudest, and each step halves it.
+  state.Reset();
+  BuildFlatSector(&groups[0], 0, 0, 4);        // +4 in the top of a halfword
+  Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  const int16_t loudest = out[0];
+  CheckEqual(loudest, 4 << 12, "shift 0 puts the nibble at the top");
+
+  state.Reset();
+  BuildFlatSector(&groups[0], 1, 0, 4);
+  Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  CheckEqual(out[0], loudest / 2, "each shift step halves it");
+
+  state.Reset();
+  BuildFlatSector(&groups[0], 4, 0, 4);
+  Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  CheckEqual(out[0], loudest / 16, "shift 4 is a sixteenth");
+
+  // A nibble of 8 or more is negative: this is four-bit two's complement, not
+  // an unsigned value with a bias.
+  state.Reset();
+  BuildFlatSector(&groups[0], 0, 0, 0x0F);     // -1
+  Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  Check(out[0] < 0, "the top bit of a nibble is a sign");
+  CheckEqual(out[0], -4096, "nibble F is -1 at the top of a halfword");
+}
+
+void TestXaMonoAndStereo(Machine&) {
+  printf("xa mono and stereo\n");
+
+  std::vector<uint8_t> groups(18 * 128, 0);
+  std::vector<int16_t> out(Cdrom::kXaFramesPerSector * 2, 0);
+  Cdrom::XaState state;
+
+  // Mono puts the same sample in both channels.
+  state.Reset();
+  BuildFlatSector(&groups[0], 2, 0, 5);
+  const int frames = Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  bool matched = true;
+  for (int i = 0; i < frames; ++i) {
+    if (out[i * 2] != out[i * 2 + 1])
+      matched = false;
+  }
+  Check(matched, "mono fills both channels alike");
+
+  // Stereo takes its two channels from alternating blocks, so a sector whose
+  // even and odd blocks differ must come out with the channels differing.
+  uint8_t data[112];
+  // Even nibbles (blocks 0,2,4,6 - the left channel) are 4; odd ones are 0.
+  memset(data, 0x04, sizeof(data));
+  for (int group = 0; group < 18; ++group)
+    BuildSoundGroup(&groups[group * 128], 0, 0, data);
+
+  state.Reset();
+  const int stereo_frames =
+      Cdrom::DecodeXaAdpcm(&groups[0], 0x01, &state, &out[0]);
+  Check(stereo_frames > 0, "stereo produced frames");
+  Check(out[0] != out[1], "stereo channels come from different blocks");
+  CheckEqual(out[0], 4 << 12, "the left channel took the low nibble");
+  CheckEqual(out[1], 0, "the right channel took the high nibble");
+}
+
+void TestXaFilterCarriesForward(Machine&) {
+  printf("xa filter\n");
+
+  std::vector<uint8_t> groups(18 * 128, 0);
+  std::vector<int16_t> out(Cdrom::kXaFramesPerSector * 2, 0);
+  Cdrom::XaState state;
+
+  // Filter 1 is a pure feedback of the previous output at 60/64. Feeding one
+  // non-zero sample and then zeroes must produce a decay, not a step: this is
+  // what fails if the filter tables are wrong or the history is not kept.
+  uint8_t data[112];
+  memset(data, 0, sizeof(data));
+  data[0] = 0x04;                              // one sample in block 0 only
+  for (int group = 0; group < 18; ++group)
+    BuildSoundGroup(&groups[group * 128], 0, 1, data);
+
+  state.Reset();
+  Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+
+  Check(out[0] != 0, "the impulse arrived");
+  // Successive frames are two apart: out[n*2] is the left of frame n, and
+  // out[n*2+1] its right, which in mono is the same sample again.
+  Check(out[2] != 0, "the filter carried it into the next sample");
+  Check(abs(out[2]) < abs(out[0]), "filter 1 decays");
+  Check(abs(out[4]) < abs(out[2]), "and keeps decaying");
+
+  // Filter 0 has no feedback at all, so the same data must stop dead.
+  for (int group = 0; group < 18; ++group)
+    BuildSoundGroup(&groups[group * 128], 0, 0, data);
+  state.Reset();
+  Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  Check(out[0] != 0, "the impulse arrived without a filter too");
+  CheckEqual(out[2], 0, "filter 0 carries nothing forward");
+
+  // The history must survive a sector boundary: a stream is continuous and
+  // resetting between sectors would click every tenth of a second.
+  memset(data, 0, sizeof(data));
+  for (int group = 0; group < 18; ++group)
+    BuildSoundGroup(&groups[group * 128], 0, 1, data);
+  const int16_t before = state.old[0];
+  state.old[0] = 10000;
+  state.older[0] = 0;
+  Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  Check(out[0] != 0, "an all-zero sector still decays from the last one");
+  (void)before;
+}
+
+void TestXaSaturates(Machine&) {
+  printf("xa saturation\n");
+
+  std::vector<uint8_t> groups(18 * 128, 0);
+  std::vector<int16_t> out(Cdrom::kXaFramesPerSector * 2, 0);
+  Cdrom::XaState state;
+
+  // The loudest possible nibble through the strongest filter, over and over,
+  // must saturate rather than wrap. A wrap here is a loud crack.
+  BuildFlatSector(&groups[0], 0, 2, 0x07);
+  state.Reset();
+  const int frames = Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  bool in_range = true;
+  for (int i = 0; i < frames * 2; ++i) {
+    if (out[i] == -32768 && i > 4)
+      continue;
+    if (out[i] < -32768 || out[i] > 32767)
+      in_range = false;
+  }
+  Check(in_range, "output stays inside a signed sample");
+
+  bool saturated = false;
+  for (int i = 0; i < frames; ++i) {
+    if (out[i * 2] == 32767)
+      saturated = true;
+  }
+  Check(saturated, "a loud stream does reach the top and stop there");
+}
+
+
 const Group kGroups[] = {
   { "registers", TestRegisters },
   { "keyonoff",  TestKeyOnOff },
@@ -507,6 +733,11 @@ const Group kGroups[] = {
   { "mixer",     TestMixer },
   { "timing",    TestTiming },
   { "noiseirq",  TestNoiseAndIrq },
+  { "xacounts",  TestXaFrameCounts },
+  { "xashift",   TestXaSilenceAndShift },
+  { "xastereo",  TestXaMonoAndStereo },
+  { "xafilter",  TestXaFilterCarriesForward },
+  { "xasat",     TestXaSaturates },
 };
 
 }  // namespace

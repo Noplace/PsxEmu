@@ -141,6 +141,14 @@ actually is rather than from memory:
 - [ ] **[Memory-Cards-Plan.md](Memory-Cards-Plan.md)** - swapping first, then
       the editor. `mc.h` already declares the whole on-card format; nothing
       yet understands it.
+- [x] **[Wild-Arms-Press-Start-Plan.md](Wild-Arms-Press-Start-Plan.md)** - DONE.
+      Bugs 25 and 26: a seek did not stop the running read, so every read began
+      one sector late. Harness input (`--press`) and `--frame-log` came out of it.
+- [ ] **[Disc-Formats-Plan.md](Disc-Formats-Plan.md)** - track layouts for bare
+      images, and compressed containers. Starts by correcting the premise: a
+      bare `.img` does load.
+- [ ] **[Recompiler-Plan.md](Recompiler-Plan.md)** - dynamic recompilation,
+      and the measurement that should come before any of it.
 - [ ] `psx/emuconfig.h` and `psx/settings.h`, copied from GBAEmu more or less
       verbatim. The BIOS path and the disc path become settings.
 - [ ] ImGui in the Win32 front end, for a debugger and settings UI.
