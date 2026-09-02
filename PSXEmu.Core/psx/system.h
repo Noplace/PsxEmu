@@ -93,6 +93,10 @@ class System {
   MC& mc(int slot) { return mc_[slot]; }
   Kernel& kernel() { return kernel_; };
   GTE& gte() { return gte_; };
+  // The user-facing settings. Read rather than cached, so a change takes
+  // effect without anything needing to be told about it.
+  EmuConfig& config() { return config_; }
+  const EmuConfig& config() const { return config_; }
   uint8_t* ram() { return io_.ram_buffer.u8; }
   uint8_t* bios() { return io_.bios_buffer.u8; }
   double base_freq_hz() { return base_freq_hz_; }
@@ -154,6 +158,7 @@ class System {
   Kernel kernel_;
   GTE gte_;
   Iso9660 iso_;
+  EmuConfig config_;
 };
 
 }

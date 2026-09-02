@@ -118,6 +118,8 @@
     <ClInclude Include="psx\io_interface.h" />
     <ClInclude Include="psx\kernel.h" />
     <ClInclude Include="psx\iso9660.h" />
+    <ClInclude Include="psx\emuconfig.h" />
+    <ClInclude Include="psx\settings.h" />
     <ClInclude Include="psx\mdec.h" />
     <ClInclude Include="psx\mc.h" />
     <ClInclude Include="psx\psx.h" />

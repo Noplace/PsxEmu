@@ -38,6 +38,7 @@
 #include "platform/timer.h"
 
 #include "psx/types.h"
+#include "psx/emuconfig.h"
 #include "psx/debug.h"
 #include "psx/component.h"
 #include "psx/cpu_context.h"
@@ -57,3 +58,4 @@
 #include "psx/mc.h"
 #include "psx/iso9660.h"
 #include "psx/system.h"
+#include "psx/settings.h"

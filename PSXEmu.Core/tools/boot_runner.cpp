@@ -150,6 +150,7 @@ struct Options {
   bool auto_boot;
   bool quiet;
   int frame_log;
+  float volume;
   std::vector<Press> presses;
 };
 
@@ -264,6 +265,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->auto_boot = false;
   options->quiet = false;
   options->frame_log = 0;
+  options->volume = -1.0f;
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -290,6 +292,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->dis = argv[++i];
     } else if (strcmp(arg, "--watch-vram") == 0 && i + 1 < argc) {
       options->watch = argv[++i];
+    } else if (strcmp(arg, "--volume") == 0 && i + 1 < argc) {
+      options->volume = static_cast<float>(atof(argv[++i]));
     } else if (strcmp(arg, "--frame-log") == 0 && i + 1 < argc) {
       options->frame_log = atoi(argv[++i]);
     } else if (strcmp(arg, "--press") == 0 && i + 1 < argc) {
@@ -363,6 +367,9 @@ int main(int argc, char** argv) {
 
   if (options.watch_ram != 0)
     system->cpu().set_watch_address(options.watch_ram);
+
+  if (options.volume >= 0.0f)
+    system->config().audio_volume = options.volume;
 
   if (options.auto_boot) {
     // Let the BIOS run its intro, then take over when it reaches the address

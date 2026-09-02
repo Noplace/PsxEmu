@@ -1,5 +1,5 @@
 /*****************************************************************************************************************
-* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+* Copyright (c) 2014 Khalid Ali Al-Kooheji                                                                       *
 *                                                                                                                *
 * Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
 * associated documentation files (the "Software"), to deal in the Software without restriction, including        *
@@ -16,63 +16,46 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#ifndef MINIVE_D3D11CONTEXT_H
-#define MINIVE_D3D11CONTEXT_H
+#pragma once
 
-#include <d3d11.h>
-#include <DirectXMath.h>
-#include <DirectXPackedVector.h>
-using namespace DirectX;
-using namespace DirectX::PackedVector;
-#include <WinCore/types.h>
+// The knobs that change how the machine behaves for the person using it, as
+// opposed to emulated hardware state.
+//
+// Nothing outside this file should declare its own copy of a setting. A
+// component that needs one reads it from the config rather than caching it -
+// `system().config()` from anything deriving from Component.
+//
+// Measured hardware characteristics do not belong here. The CD-ROM's sector
+// timing, the GPU's dot clock and the load stalls in `Cpu::Load` are all
+// constants describing a PlayStation, not choices, and they stay next to the
+// code that uses them.
 
-namespace minive {
+namespace emulation {
+namespace psx {
 
+struct EmuConfig {
+  // --- Audio ----------------------------------------------------------
+  // A gain applied after the SPU's own main volume, so it covers the voices,
+  // the reverb and CD audio alike.
+  //
+  // A PlayStation is quiet by modern standards: games set the main volume
+  // conservatively and the mix peaks well below full scale - measured at about
+  // a fifth of it on the discs tested here. That is faithful, and it is also
+  // not what anyone wants out of their speakers, so this exists to make up the
+  // difference without pretending the hardware did it.
+  //
+  // 1.0 is the hardware level. The mix is clamped afterwards, so a high value
+  // distorts loud passages rather than wrapping them.
+  float audio_volume = 2.0f;
 
-struct Vertex {
-  FLOAT x, y, z;
-	XMVECTOR color;
-	FLOAT u, v;
+  static const float kMinAudioVolume;
+  static const float kMaxAudioVolume;
 };
 
-__declspec(align(16))
-class D3D11Context : public Context {
- public:
-  void *operator new( size_t stAllocateBlock);
-  void   operator delete (void* p);
-
-  D3D11Context();
-  ~D3D11Context();
-  int Initialize(int width, int height, bool vsync, HWND hwnd, bool fullscreen, float depth, float near);
-  int Deinitialize();
-  int Clear();
-  int Present();
- private:
-  bool vsync_enabled_;
-	size_t vc_mem_;
-	char vc_desc_[128];
-	IDXGISwapChain* swapchain;
-	ID3D11Device* device;
-	ID3D11DeviceContext* devicecontext;
-	ID3D11RenderTargetView* rendertargetview;
-	ID3D11Texture2D* depthstencilbuffer;
-	ID3D11DepthStencilState* depthstencilstate;
-	ID3D11DepthStencilView* depthstencilview;
-	ID3D11RasterizerState* rasterstate;
-  ID3D11PixelShader* ps;
-  ID3D11PixelShader* ps_tex;
-  ID3D11VertexShader* vs;
-  ID3D11InputLayout* ia;
-  struct {
-	  XMMATRIX world;
-	  XMMATRIX view;
-	  XMMATRIX projection;
-  } matrixBufferData;
-  ID3D11Buffer* matrixBuffer;
-	ID3D11DepthStencilState* depthdisabledstencilstate;
-  int CreateShaders();
-};
+// Out of line so there is one definition; these are bounds a UI can offer
+// rather than anything the emulation depends on.
+inline const float EmuConfig::kMinAudioVolume = 0.0f;
+inline const float EmuConfig::kMaxAudioVolume = 8.0f;
 
 }
-
-#endif
+}

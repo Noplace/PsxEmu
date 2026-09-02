@@ -629,6 +629,17 @@ void Spu::GenerateFrame() {
   left = (Clamp16(left) * VolumeOf(main_volume_left_)) >> 15;
   right = (Clamp16(right) * VolumeOf(main_volume_right_)) >> 15;
 
+  // The user's gain, on top of the hardware's own main volume so it lifts the
+  // voices, the reverb and CD audio together. Fixed point rather than float so
+  // the mix stays integer, and clamped after, so turning it up distorts the
+  // loud parts instead of wrapping them round.
+  const int32_t gain = static_cast<int32_t>(system().config().audio_volume *
+                                            256.0f + 0.5f);
+  if (gain != 256) {
+    left = (left * gain) >> 8;
+    right = (right * gain) >> 8;
+  }
+
   // The mute bit silences the output without stopping the voices.
   if ((control_ & 0x4000) == 0) {
     left = 0;

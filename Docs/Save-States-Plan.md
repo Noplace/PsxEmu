@@ -97,8 +97,15 @@ file.
 ### 4. Front end
 
 `File > Save state` and `Load state`, plus numbered slots on F1-F8 with F5/F9
-for quick save and load, which is what people expect. States next to the disc
-image as `<image>.st<n>`.
+for quick save and load, which is what people expect.
+
+The location is already decided and the directory already exists:
+`app.savestates_root` in `main.cpp` resolves to
+`Documents\My Games\PSXEmu\savestates`, created at startup alongside
+`memcards`, and is unused until this lands. States go in there as
+`<disc identifier>.st<n>` - the same identifier `DiscIdentifier()` already
+derives for a disc's memory card folder (the image's filename, directory and
+extension stripped), so a state and a save are found under the same name.
 
 The front end runs the machine on its own thread; a state must be taken between
 frames, not part-way through one. Set a flag and act on it at the top of the

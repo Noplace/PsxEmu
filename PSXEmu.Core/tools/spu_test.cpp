@@ -533,6 +533,59 @@ void BuildFlatSector(uint8_t* groups, uint8_t shift, uint8_t filter,
 
 }  // namespace
 
+// A group whose first four blocks and last four blocks carry different
+// parameters, laid out the way a disc does: bytes 4..7 hold the parameters for
+// blocks 0..3 and bytes 8..11 those for blocks 4..7, with 0..3 and 12..15
+// holding the duplicate copies the format carries for redundancy.
+void BuildSplitSoundGroup(uint8_t* group, uint8_t shift_low, uint8_t shift_high,
+                          uint8_t filter, const uint8_t* words112) {
+  const uint8_t low = static_cast<uint8_t>((filter << 4) | shift_low);
+  const uint8_t high = static_cast<uint8_t>((filter << 4) | shift_high);
+  for (int i = 0; i < 4; ++i) {
+    group[4 + i] = low;            // blocks 0..3
+    group[8 + i] = high;           // blocks 4..7
+    group[0 + i] = group[4 + i];   // the copies
+    group[12 + i] = group[8 + i];
+  }
+  memcpy(group + 16, words112, 112);
+}
+
+void TestXaParameterOffsets(Machine&) {
+  printf("xa parameter offsets\n");
+
+  // The eight parameters of a group live at bytes 4..11, and bytes 0..3 and
+  // 12..15 are copies. Reading them from the wrong place is invisible when
+  // every block shares a parameter - which is what the other tests here build -
+  // because the copy holds the same value. It stops being invisible the moment
+  // the two halves of the group differ, which is what this builds.
+  //
+  // Reading from byte 0 rather than byte 4 would give blocks 4..7 the
+  // parameters belonging to blocks 0..3, so the quiet half would come out loud.
+  std::vector<uint8_t> groups(18 * 128, 0);
+  std::vector<int16_t> out(Cdrom::kXaFramesPerSector * 2, 0);
+  Cdrom::XaState state;
+
+  uint8_t data[112];
+  memset(data, 0x44, sizeof(data));            // every nibble is 4
+  for (int group = 0; group < 18; ++group)
+    BuildSplitSoundGroup(&groups[group * 128], 0, 4, 0, data);
+
+  state.Reset();
+  const int frames = Cdrom::DecodeXaAdpcm(&groups[0], 0x00, &state, &out[0]);
+  Check(frames == 4032, "mono 4-bit is 4032 frames");
+
+  // Mono block b fills frames b*28 onwards. Blocks 0..3 use shift 0 and
+  // blocks 4..7 shift 4, so the second half of every group is sixteen times
+  // quieter than the first.
+  const int16_t loud = out[0];
+  const int16_t quiet = out[112 * 2];
+  CheckEqual(static_cast<uint16_t>(loud), static_cast<uint16_t>(4 << 12),
+             "blocks 0..3 used the parameters at byte 4");
+  CheckEqual(static_cast<uint16_t>(quiet), static_cast<uint16_t>((4 << 12) >> 4),
+             "blocks 4..7 used the parameters at byte 8");
+  Check(abs(quiet) < abs(loud), "the two halves of a group differ");
+}
+
 void TestXaFrameCounts(Machine&) {
   printf("xa frame counts\n");
 
@@ -733,6 +786,7 @@ const Group kGroups[] = {
   { "mixer",     TestMixer },
   { "timing",    TestTiming },
   { "noiseirq",  TestNoiseAndIrq },
+  { "xaparams",  TestXaParameterOffsets },
   { "xacounts",  TestXaFrameCounts },
   { "xashift",   TestXaSilenceAndShift },
   { "xastereo",  TestXaMonoAndStereo },
@@ -752,6 +806,10 @@ int main(int argc, char** argv) {
   for (size_t i = 0; i < sizeof(kGroups) / sizeof(kGroups[0]); ++i) {
     if (only != nullptr && strcmp(only, kGroups[i].name) != 0)
       continue;
+    // A default label, so a group that never calls BeginTest reports its own
+    // name rather than inheriting whatever the previous group set last. A
+    // failure attributed to the wrong test is worse than one with no name.
+    BeginTest(kGroups[i].name);
     const int before = g_failures;
     kGroups[i].run(machine);
     if (g_failures == before)

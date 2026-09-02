@@ -539,6 +539,105 @@ void TestIso9660(const std::string& directory) {
 
   remove(path.c_str());
 }
+// The settings file. It lives here rather than with the SPU because what is
+// being checked is the file, not the volume: that a value survives a round
+// trip, that an unknown key written by a newer build is not thrown away by an
+// older one, and that a nonsense value is clamped rather than passed through
+// to the mixer.
+void TestSettingsFile(const std::string& directory) {
+  printf("settings file\n");
+
+  using emulation::psx::EmuConfig;
+  using emulation::psx::SettingsFile;
+
+  const std::string path = directory + "/settings_test.ini";
+  remove(path.c_str());
+
+  // A missing file is not a failure, and leaves the defaults alone.
+  {
+    SettingsFile file;
+    Check(!file.Load(path), "a missing settings file reports not-loaded");
+    EmuConfig config;
+    const float before = config.audio_volume;
+    emulation::psx::LoadConfig(file, config);
+    CheckEqual(static_cast<int>(config.audio_volume * 100),
+               static_cast<int>(before * 100),
+               "a missing file leaves the default in place");
+  }
+
+  // A value round-trips through the file.
+  {
+    EmuConfig config;
+    config.audio_volume = 3.5f;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    Check(out.Save(path), "settings were written");
+
+    SettingsFile in;
+    Check(in.Load(path), "settings were read back");
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(in, loaded);
+    CheckEqual(static_cast<int>(loaded.audio_volume * 100), 350,
+               "the volume survived the round trip");
+  }
+
+  // A key this build does not know about is preserved rather than dropped, so
+  // a file written by a newer build survives being loaded and saved by an
+  // older one.
+  {
+    FILE* fp = fopen(path.c_str(), "w");
+    Check(fp != nullptr, "a settings file could be written by hand");
+    if (fp != nullptr) {
+      fprintf(fp, "# a comment\naudio_volume = 1.5\nsomething_new = 42\n");
+      fclose(fp);
+    }
+    SettingsFile file;
+    Check(file.Load(path), "a hand-written file loads");
+    CheckEqual(file.GetInt("something_new", 0), 42, "an unknown key is read");
+    EmuConfig config;
+    emulation::psx::LoadConfig(file, config);
+    CheckEqual(static_cast<int>(config.audio_volume * 100), 150,
+               "and the known key still applies");
+
+    SettingsFile out = file;
+    emulation::psx::StoreConfig(out, config);
+    Check(out.Serialise().find("something_new") != std::string::npos,
+          "the unknown key is written back out");
+  }
+
+  // A value outside the range a menu offers is clamped on the way in, so a
+  // hand-edited file cannot hand the mixer a gain that wraps.
+  {
+    FILE* fp = fopen(path.c_str(), "w");
+    if (fp != nullptr) {
+      fprintf(fp, "audio_volume = 1000\n");
+      fclose(fp);
+    }
+    SettingsFile file;
+    file.Load(path);
+    EmuConfig config;
+    emulation::psx::LoadConfig(file, config);
+    CheckEqual(static_cast<int>(config.audio_volume),
+               static_cast<int>(EmuConfig::kMaxAudioVolume),
+               "an absurd volume is clamped to the maximum");
+
+    fp = fopen(path.c_str(), "w");
+    if (fp != nullptr) {
+      fprintf(fp, "audio_volume = -5\n");
+      fclose(fp);
+    }
+    SettingsFile negative;
+    negative.Load(path);
+    EmuConfig low;
+    emulation::psx::LoadConfig(negative, low);
+    CheckEqual(static_cast<int>(low.audio_volume),
+               static_cast<int>(EmuConfig::kMinAudioVolume),
+               "a negative volume is clamped to the minimum");
+  }
+
+  remove(path.c_str());
+}
+
 
 void TestSystemCnf() {
   printf("system.cnf parsing\n");
@@ -652,6 +751,7 @@ int main(int argc, char** argv) {
   TestRawImageAndCue(directory);
   TestIso9660(directory);
   TestSystemCnf();
+  TestSettingsFile(directory);
 
   // The controller needs a System around it for its interrupt line, but no
   // BIOS: nothing here executes a single instruction.

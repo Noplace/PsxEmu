@@ -35,26 +35,38 @@ Three things to fix while in here regardless of which feature comes first:
   right, but the front end reports it as "must be 128KB" for a missing file too.
   Separate the two.
 
-## Part one: swapping cards
+## Part one: swapping cards - default cards done, manual swapping still open
 
-The mechanism is already there and only needs exposing. `flag_` bit 3 means
-"directory not read yet", `LoadFile` sets it, and a game that sees it re-reads
-the card - which is exactly what a swap should look like to software.
+`main.cpp` now loads or creates a disc's cards automatically on every cold
+boot - `LoadOrCreateMemoryCardsForDisc()`, called from `BootDiscFromFile` and
+from the command-line disc argument, never from `Swap disc`. Point 4 below is
+therefore done, and done slightly differently from how it reads: per-disc
+rather than one shared pair, under `Documents\My Games\PSXEmu\memcards\` -
+GBAEmu's own save-directory convention - rather than beside the executable.
+`DiscIdentifier()` derives the folder name from the disc image's filename, not
+from anything on the disc, so it works uniformly whether or not the disc
+carries a SYSTEM.CNF.
 
-What is missing:
+That the mechanism is already there is still true for the rest of this
+section - `flag_` bit 3 does exactly what a swap needs - and everything below
+is still open:
 
-1. **Eject.** There is no way to disconnect a card. Add `MC::Eject()` that
-   flushes, frees `mcfile` and leaves `connected()` false, so the SIO layer
-   reports no card in that slot. Games handle an empty slot; they do not handle
-   a card that changes underneath them without the flag.
+1. **Eject.** There is no way to disconnect a card while the machine is
+   running. Add `MC::Eject()` that flushes, frees `mcfile` and leaves
+   `connected()` false, so the SIO layer reports no card in that slot. Games
+   handle an empty slot; they do not handle a card that changes underneath
+   them without the flag. `System::Deinitialize()` already does the
+   equivalent on a cold boot - which is what makes the auto-load safe to call
+   unconditionally today - but nothing does it for a card the player wants to
+   change mid-session.
 2. **Per-slot menu.** A `Memory Cards` submenu, per slot: Insert, Eject,
-   Create, and a Recent list. Slot 1 and slot 2 independently.
+   Create, and a Recent list. Slot 1 and slot 2 independently. `Open Memory
+   Card...` and `Create Memory Card...` already exist for a manual override of
+   the automatic per-disc card; this is about exposing eject and a browsable
+   history of the per-disc folders alongside them.
 3. **Insert while running must go through eject.** Swapping in place without
    clearing `connected()` first leaves a game holding a directory that no
    longer describes the card. Eject, then insert, then set the flag.
-4. **Default cards.** Create `card1.mcr` and `card2.mcr` beside the executable
-   on first run and insert them, so a game can save without the player having
-   to do anything first.
 
 Small, self-contained, and worth doing before the editor.
 

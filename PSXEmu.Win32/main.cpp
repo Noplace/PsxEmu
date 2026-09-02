@@ -34,6 +34,7 @@
 #include "audio/dsoundaudioengine.h"
 
 #include <commdlg.h>
+#include <shlobj.h>   // SHGetFolderPathA
 #include <shellapi.h>   // CommandLineToArgvW
 
 #include <array>
@@ -66,6 +67,8 @@ enum MenuCommand {
   kCommandCreateMemoryCardSlot2,
   kCommandReset,
   kCommandPause,
+  kCommandVolumeFirst,
+  kCommandVolumeLast = kCommandVolumeFirst + 7,
   kCommandExit,
 };
 
@@ -86,6 +89,21 @@ struct Application {
   std::unique_ptr<System> system;
 
   std::string bios_path;
+
+  // User settings, and where they are kept. Written as they are changed
+  // rather than only at exit, so a crash or a kill does not lose them.
+  emulation::psx::SettingsFile settings;
+
+  // Per-user data, under Documents\My Games\PSXEmu - the same convention
+  // GBAEmu uses, so both live in the one place a person would look for either.
+  // Empty if Documents could not be resolved, which callers treat as "skip
+  // this rather than fail the boot".
+  std::string data_root;
+  std::string memcards_root;      // data_root\memcards
+  std::string savestates_root;    // data_root\savestates - unused until
+                                   // save states themselves exist; see
+                                   // Docs/Save-States-Plan.md
+  std::string settings_path;
   bool running = false;
   bool paused = true;
 
@@ -109,6 +127,70 @@ struct Application {
 Application* AppFrom(HWND window) {
   return reinterpret_cast<Application*>(
       GetWindowLongPtrW(window, GWLP_USERDATA));
+}
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+// The volume steps the menu offers, as multiples of the hardware's own level.
+// A PlayStation mixes quietly - the discs tested here peak at about a fifth of
+// full scale - so the default lifts it rather than being faithful and inaudible.
+struct VolumeStep { float value; const wchar_t* label; };
+
+const VolumeStep kVolumeSteps[] = {
+  { 0.0f, L"&Mute" },
+  { 0.5f, L"&50%%" },
+  { 1.0f, L"&100%% (hardware)" },
+  { 2.0f, L"&200%%" },
+  { 3.0f, L"3&00%%" },
+  { 4.0f, L"4&00%%" },
+  { 6.0f, L"&600%%" },
+  { 8.0f, L"&800%%" },
+};
+
+std::wstring SettingsPathBesideExecutable() {
+  wchar_t module[MAX_PATH] = { 0 };
+  GetModuleFileNameW(nullptr, module, MAX_PATH);
+  std::wstring path = module;
+  const size_t slash = path.find_last_of(L"/\\");
+  if (slash != std::wstring::npos)
+    path.erase(slash + 1);
+  return path + L"psxemu.ini";
+}
+
+// Writes only when something actually changed, which is what makes it safe to
+// call on every edit.
+void SaveSettingsIfChanged(Application& app) {
+  if (app.system == nullptr || app.settings_path.empty())
+    return;
+  emulation::psx::SettingsFile updated = app.settings;
+  emulation::psx::StoreConfig(updated, app.system->config());
+  if (updated.Serialise() == app.settings.Serialise())
+    return;
+  app.settings = updated;
+  app.settings.Save(app.settings_path);
+}
+
+// Ticks the step matching the current volume, so the menu shows what is set.
+void UpdateVolumeMenu(HWND window, const Application& app) {
+  HMENU bar = GetMenu(window);
+  if (bar == nullptr || app.system == nullptr)
+    return;
+  const float current = app.system->config().audio_volume;
+  for (size_t i = 0; i < std::size(kVolumeSteps); ++i) {
+    const bool on = (current == kVolumeSteps[i].value);
+    CheckMenuItem(bar, static_cast<UINT>(kCommandVolumeFirst + i),
+                  MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+  }
+}
+
+void SetVolume(Application& app, HWND window, float value) {
+  if (app.system == nullptr)
+    return;
+  app.system->config().audio_volume = value;
+  UpdateVolumeMenu(window, app);
+  SaveSettingsIfChanged(app);
 }
 
 // ---------------------------------------------------------------------------
@@ -200,6 +282,38 @@ uint16_t ReadKeyboardPad() {
   return buttons;
 }
 
+// Creates one directory level, treating "it is already there" as success
+// rather than an error - the common case on every run after the first.
+bool EnsureDirectory(const std::string& path) {
+  if (CreateDirectoryA(path.c_str(), nullptr))
+    return true;
+  return GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+// Documents\My Games\PSXEmu, following the convention GBAEmu already uses, so
+// a person who has one emulator's save data knows where to find the other's.
+// CreateDirectoryA only creates one level at a time, so "My Games" is made
+// before "PSXEmu" under it.
+//
+// Empty on failure - which is Documents itself not resolving, not a
+// permissions problem on a folder this process just created - and every
+// caller treats that as "there is nowhere to keep this" rather than a reason
+// to refuse to boot.
+std::string ResolveDataRoot() {
+  char documents[MAX_PATH] = { 0 };
+  if (!SUCCEEDED(SHGetFolderPathA(nullptr, CSIDL_MYDOCUMENTS, nullptr, 0,
+                                  documents))) {
+    return std::string();
+  }
+  const std::string my_games = std::string(documents) + "\\My Games";
+  if (!EnsureDirectory(my_games))
+    return std::string();
+  const std::string root = my_games + "\\PSXEmu";
+  if (!EnsureDirectory(root))
+    return std::string();
+  return root;
+}
+
 // ---------------------------------------------------------------------------
 // Machine control
 // ---------------------------------------------------------------------------
@@ -215,6 +329,71 @@ bool ResetMachine(Application& app, HWND window) {
   }
   app.system->set_auto_boot(false);
   return true;
+}
+
+// The per-disc identifier used to name its memory card folder: the image's
+// own filename, directory and extension stripped. Two copies of the same game
+// under different filenames get different cards, which is the same trade-off
+// GBAEmu's save files already make for ROMs, and it needs no ISO9660 parsing
+// to work on every disc, including ones with no SYSTEM.CNF at all.
+std::string DiscIdentifier(const std::string& disc_path) {
+  std::string name = disc_path;
+  const size_t slash = name.find_last_of("/\\");
+  if (slash != std::string::npos)
+    name = name.substr(slash + 1);
+  const size_t dot = name.find_last_of('.');
+  if (dot != std::string::npos)
+    name = name.substr(0, dot);
+  return name;
+}
+
+// Gives the disc just mounted its own pair of memory cards, in
+// memcards_root\<disc>\card1.mcr and card2.mcr - created the first time a
+// disc is played and loaded on every boot after that.
+//
+// Called only from a cold boot. Swapping a disc mid-session leaves the cards
+// alone, which is what real hardware does: the memory card slots have nothing
+// to do with the disc drive, and disconnecting one under a running game
+// mid-swap would be a save silently vanishing from under a game that thinks
+// its card is still there.
+void LoadOrCreateMemoryCardsForDisc(Application& app, HWND window,
+                                    const std::string& disc_path) {
+  if (app.memcards_root.empty() || app.system == nullptr)
+    return;
+
+  const std::string dir = app.memcards_root + "\\" + DiscIdentifier(disc_path);
+  EnsureDirectory(dir);
+
+  for (int slot = 0; slot < 2; ++slot) {
+    const std::string path =
+        dir + "\\card" + std::to_string(slot + 1) + ".mcr";
+    if (app.system->mc(slot).LoadFile(path.c_str()) == S_OK)
+      continue;
+
+    // LoadFile fails for two different reasons and only one is worth saying
+    // anything about: no card there yet, which is the ordinary case for a
+    // game played for the first time, or a file that exists but is not a
+    // valid 128 KB card, which CreateFile is about to overwrite.
+    FILE* existing = fopen(path.c_str(), "rb");
+    const bool had_file = existing != nullptr;
+    if (existing != nullptr)
+      fclose(existing);
+
+    if (app.system->mc(slot).CreateFile(path.c_str()) != S_OK) {
+      const std::wstring message =
+          L"Could not create a memory card for slot " +
+          std::to_wstring(slot + 1) + L".";
+      MessageBoxW(window, message.c_str(), kWindowTitle,
+                  MB_OK | MB_ICONWARNING);
+    } else if (had_file) {
+      const std::wstring message =
+          L"The memory card file for slot " + std::to_wstring(slot + 1) +
+          L" was not a valid 128 KB card and has been reset:\n\n" +
+          std::wstring(path.begin(), path.end());
+      MessageBoxW(window, message.c_str(), kWindowTitle,
+                  MB_OK | MB_ICONWARNING);
+    }
+  }
 }
 
 // Puts a disc in the drive and starts the machine from cold, which is what
@@ -234,6 +413,11 @@ bool BootDiscFromFile(Application& app, HWND window, const std::string& path) {
                 kWindowTitle, MB_OK | MB_ICONWARNING);
     return false;
   }
+  // Each disc gets its own pair of memory cards - a real console has none of
+  // this, of course, but "which card was in when I saved" is otherwise a
+  // question the player has to answer by hand.
+  LoadOrCreateMemoryCardsForDisc(app, window, path);
+
   SetWindowTitleForDisc(window, path);
   app.paused = false;
   return true;
@@ -275,10 +459,25 @@ HMENU CreateMainMenu() {
   AppendMenuW(emulation, MF_STRING, kCommandReset, L"&Reset");
   AppendMenuW(emulation, MF_STRING, kCommandPause, L"&Pause\tSpace");
 
+  // Volume. The labels carry a literal percent sign, so they are built with
+  // the doubled form the table stores rather than passed through a formatter.
+  HMENU volume = CreatePopupMenu();
+  for (size_t i = 0; i < std::size(kVolumeSteps); ++i) {
+    std::wstring label = kVolumeSteps[i].label;
+    size_t percent = label.find(L"%%");
+    while (percent != std::wstring::npos) {
+      label.erase(percent, 1);
+      percent = label.find(L"%%", percent + 1);
+    }
+    AppendMenuW(volume, MF_STRING,
+                static_cast<UINT_PTR>(kCommandVolumeFirst + i), label.c_str());
+  }
+
   HMENU bar = CreateMenu();
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(emulation),
               L"&Emulation");
+  AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(volume), L"&Audio");
   return bar;
 }
 
@@ -362,6 +561,13 @@ void OnCommand(Application& app, HWND window, int command) {
       break;
 
     default:
+      // The volume steps are one contiguous run of command ids.
+      if (command >= kCommandVolumeFirst &&
+          command < kCommandVolumeFirst +
+                        static_cast<int>(std::size(kVolumeSteps))) {
+        SetVolume(app, window,
+                  kVolumeSteps[command - kCommandVolumeFirst].value);
+      }
       break;
   }
 }
@@ -412,6 +618,20 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
 // ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
+
+// Resolves and creates the per-user directories, once, at startup. A failure
+// here is silent - the settings file still lives beside the executable and
+// keeps working - because refusing to run the emulator over a save-data
+// folder is a worse failure than the one it would be protecting against.
+void SetUpDataDirectories(Application& app) {
+  app.data_root = ResolveDataRoot();
+  if (app.data_root.empty())
+    return;
+  app.memcards_root = app.data_root + "\\memcards";
+  app.savestates_root = app.data_root + "\\savestates";
+  EnsureDirectory(app.memcards_root);
+  EnsureDirectory(app.savestates_root);
+}
 
 // Works out where the BIOS is. A command line wins; otherwise look beside the
 // executable and in a bios folder under it, which is where the repository
@@ -568,9 +788,20 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     return 1;
   }
 
+  // Settings, once the machine exists to hold them. A missing file is normal
+  // on a first run and leaves the defaults in place.
+  app.settings_path = Narrow(SettingsPathBesideExecutable());
+  app.settings.Load(app.settings_path);
+  emulation::psx::LoadConfig(app.settings, app.system->config());
+  UpdateVolumeMenu(window, app);
+
+  // Per-disc data, under Documents\My Games\PSXEmu.
+  SetUpDataDirectories(app);
+
   if (!command_line.disc.empty() &&
       app.system->LoadDisc(command_line.disc.c_str())) {
     SetWindowTitleForDisc(window, command_line.disc);
+    LoadOrCreateMemoryCardsForDisc(app, window, command_line.disc);
   }
 
   ShowWindow(window, show);
@@ -607,6 +838,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     const uint32_t* pixels = app.system->gpu().framebuffer(width, height);
     app.presenter.Present(pixels, width, height);
   }
+
+  // Written on every change already; this catches anything the last edit
+  // missed and costs nothing when there is nothing to write.
+  SaveSettingsIfChanged(app);
 
   // Everything Application owns is released by its destructor, in the order it
   // was declared in.

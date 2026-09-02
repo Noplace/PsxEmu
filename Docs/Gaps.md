@@ -1,189 +1,232 @@
 # Gaps
 
-Hardware and features still missing, ordered by impact. See
-[Roadmap.md](Roadmap.md) for the phase each belongs to.
+Hardware and features still missing, ordered by how likely each is to stop a
+game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
+[Bugs-Found.md](Bugs-Found.md) for what has already been fixed.
+
+Last audited against the tree after bug 26.
 
 ---
 
-## Blocking a booting machine
+## Blocking a game right now
 
-### Booting through the BIOS rather than around it
+Nothing known. The last entry here was XA-ADPCM, and it is implemented - see
+below.
 
-`System::BootDisc` reads SYSTEM.CNF and side-loads the executable directly.
-That is not what real hardware does: the BIOS reads the disc itself, checks the
-region string and shows the licence screen first. Doing it properly needs more
-of the CD-ROM drive than is implemented - seek timing, the full response
-sequence, and the shell's own boot path.
+## Silently wrong rather than absent
 
-### GTE - implemented, not yet validated against real 3D
+These do not stop anything, which is what makes them worth listing: a game
+runs at the wrong speed or draws slightly wrong and nothing reports an error.
 
-All 22 commands, the full register file, saturation, the FLAG register and the
-Newton-Raphson divide are implemented, and `gte_test` covers them with 99
-checks. What is missing is confidence: **the BIOS shell issues zero GTE
-commands**, so no real software has exercised any of it. Until amidog's GTE
-suite or a 3D game runs against it, "passing" means "agrees with the hardware
-description I read", not "agrees with the hardware".
+### Root counters - clock sources right, everything else approximate
 
-The MVMVA garbage matrix (matrix select 3) is written from the description
-rather than from measurement.
+Counters 0-2 count, compare against their targets, raise their interrupts, and
+take their clock from the source the mode register selects. The hblank rate was
+measured against the GPU and is exactly 263 per frame, which is right.
 
-### SPU - registers but no mixer
+What is not done, in rough order of how likely it is to bite:
 
-`psx/spu.cpp` has the full register file and decodes reads and writes
-correctly. It produces no audio: no ADPCM decode, no ADSR, no reverb, no SPU
-RAM, no voice mixing. There is also no audio interface for a front end to
-implement.
-
-### Memory cards
-
-`psx/mc.h` describes the memory card *file format*, and `Sio` has the slot
-plumbing, but the `0x81` device is not implemented: a memory card and an empty
-slot are indistinguishable to software. Nothing is loaded or saved.
-
-## Blocking correctness
-
-### DMA - partial
-
-Channel 2 (GPU) handles all three sync modes - linked list, block and burst -
-in both directions. Channel 3 (CD-ROM) and channel 6 (OTC) work. Channels 0
-and 1 (MDEC), 4 (SPU) and 5 (PIO) are unimplemented.
-
-Transfers complete instantly rather than over time, and the busy bit is not
-modelled. The interrupt side is now right - `DICR`'s flags are
-write-one-to-clear, the master flag is derived, and the CPU interrupt is an
-edge - which is what unstuck the boot (bug 12).
-
-### CD-ROM - the common path only
-
-Implemented: the register file and both FIFOs, the interrupt-and-acknowledge
-scheme with delayed responses, and Getstat, Setloc, Play, ReadN/ReadS,
-MotorOn, Stop, Pause, Init, Mute/Demute, Setfilter, Setmode, Getparam,
-GetlocL/GetlocP, GetTN, GetTD, SeekL/SeekP, Test, GetID and GetTOC.
-
-Not implemented: XA-ADPCM and CD-DA audio, the sector filter actually
-filtering, the lid-open interrupt, and realistic seek timing (seeks currently
-take a fixed number of cycles regardless of distance).
-
-### Physical drives - data tracks only
-
-`Disc::OpenDevice` reads a mounted drive through the filesystem layer, which
-gives cooked 2048-byte sectors and one implied data track. A real TOC and
-audio tracks need `IOCTL_CDROM_RAW_READ` and the drive's own track map.
-
-### MDEC - absent
-
-No motion decoder at all, so no FMV.
-
-### Load delay slots - not modelled
-
-`LB`, `LH`, `LW`, `LBU`, `LHU`, `LWL`, `LWR` write their destination register
-immediately; the delay is commented out in each. Well-written code is
-unaffected, because the assembler inserts the `nop`. Code that relies on
-reading the *old* value in the delay slot will differ.
-
-### Instruction cache - removed from the data path, not modelled
-
-See bug 2 in [Bugs-Found.md](Bugs-Found.md). `ICache2` was corrupting every
-data read and has been taken out of that path. `ICache` and `WBuffer` in
-`cpu.h` are unused. Nothing models the cache now, which is correct-but-slow
-rather than fast-and-wrong.
-
-### Cause's interrupt-pending bits are faked
-
-`RaiseException` fills `Cause` bits 15:8 by copying `SR`'s interrupt-mask bits
-rather than reflecting `I_STAT`. It happens to set IP2 when IM2 is set, which
-is enough for the BIOS handler to recognise an interrupt, but it is not what
-the hardware does. Software that reads Cause to decide which device interrupted
-will get the wrong answer.
+- **Sync modes are ignored.** `mode.syncmode` is decoded into the struct and
+  never read, so a counter asked to pause during blanking, or to reset at the
+  start of one, free-runs instead.
+- **A target of zero never fires.** `Tick` guards with `target > 0`, so a
+  counter set to interrupt at 0 - which is how software asks for a wrap-only
+  interrupt - is silent.
+- **Everything is quantised to 32 CPU cycles.** `IOInterface::Tick`
+  accumulates and only advances the world once 32 cycles have gone by, so no
+  counter can be read with finer resolution than that, and an interrupt can be
+  up to 32 cycles late.
+- **The dot clock divider is hardcoded to 10.** It should follow the horizontal
+  resolution: 10, 8, 5, 4 and 7 for 256, 320, 512, 640 and 368 pixels. A game
+  that switches to 640-wide gets a counter running at half the rate it asked
+  for.
+- **`mode.intreq` is only restored on a mode write**, so one-shot mode can stay
+  latched longer than the hardware would.
 
 ### Cycle timing - approximate
 
-`Cpu::Tick` is called once or twice per instruction with no regard to the
-actual cost of the instruction or the memory it touched. GPU and CD-ROM timing
-are derived from that, so anything depending on precise timing is approximate
-at best.
+`Cpu::Load` charges a region-dependent stall (3 cycles for RAM, 0 for the
+scratchpad, 3 for a hardware register, 5 for the BIOS ROM) on top of the
+per-instruction cost. That was enough to stop the BIOS giving up on VSync - see
+bug 16 - but it is a model, not a measurement.
 
-### GPU - complete enough to draw, not to be right
+DMA transfers complete instantaneously. A game that expects a transfer to take
+time, or that races a transfer against an interrupt, will see a machine that is
+faster than the hardware.
 
-Not implemented: texture caching, the GPU's own drawing time (drawing is
-instant), polygon clipping against the drawing area beyond a bounding-box test,
-and the interlace field handling is a first approximation.
+### CD audio is resampled linearly
 
-One known artifact: a rainbow smear behind the BIOS shell's menu entries. It has
-been traced as far as "the bytes the BIOS uploaded are themselves wrong" - the
-rasteriser never touches that VRAM page. See "Where it stands" in
-[Roadmap.md](Roadmap.md) for everything ruled out and the next probe.
+The SPU's *voice* path uses the hardware's Gaussian table (`kGauss`). The
+CD-audio path, which resamples a 44100 Hz track to the output rate, uses linear
+interpolation rather than the hardware's seven-point filter. The code says so
+where it does it. The difference is a slight softening of the top end, not a
+wrong pitch or a click.
 
-## Blocking use
+### The instruction and data caches are not modelled
 
-### No settings, no save states
+`ICache`/`ICache2` exist in `cpu.h` and every call site is commented out,
+deliberately: routing data loads through an *instruction* cache corrupted every
+read once the BIOS enabled it, and a cache modelled wrongly is worse than no
+cache at all.
 
-No `emuconfig.h`, no `settings.h`, no `serializer.h`. The BIOS path is a
-parameter to `System::Initialize` rather than a setting. Nothing serializes.
+The cost is timing fidelity. It would also matter to a recompiler, which wants
+the cache-control write at `0xFFFE0130` as its signal that code has changed -
+see [Recompiler-Plan.md](Recompiler-Plan.md).
 
-When save states go in, section 5 of the standards document applies directly:
-audit every `serialize` for emptiness, and audit every object that holds state
-but is not in the device list - memory cards, the CD drive's seek state, SPU
-voice state, GTE registers.
+### Load delay slots are not modelled
+
+A load's result is written to the register immediately rather than one
+instruction later. Real code almost never depends on reading the old value, and
+compilers fill the slot, so this is forgiving in practice - but it is more
+permissive than the hardware, so software that would fault on a console will
+run here.
+
+### Cause's interrupt-pending bits are faked
+
+`RaiseException` sets `Cause` bits 8-15 from `SR`'s interrupt mask rather than
+from the actual pending lines. The BIOS's handler computes `cause & sr & 0xFF00`
+and gets a non-zero answer, which is why it works - but software that reads
+`Cause` to find out *which* line is pending gets the mask instead.
+
+## Present but incomplete
+
+### Memory cards - the format is declared, nothing understands it
+
+`MC` loads and creates 128 KB files, reads and writes 128-byte sectors, and
+carries the `flag_` byte the SIO layer reports. Games save and load.
+
+The front end now gives each disc its own pair, automatically: booting a disc
+loads or creates `card1.mcr` and `card2.mcr` in
+`Documents\My Games\PSXEmu\memcards\<disc filename>\`, named after the disc
+image rather than anything read off it, so it works for discs with no
+SYSTEM.CNF too. Swapping a disc mid-session leaves the cards alone, which
+matches hardware - the memory card slots have nothing to do with the drive.
+
+What is still missing is any comprehension of what is *on* a card: nothing
+walks the directory, follows a block chain, decodes a Shift-JIS title or an
+icon, or computes a frame checksum. There is still no in-emulator eject for a
+running machine - only a cold boot disconnects a card, which is what makes the
+auto-load above safe to do unconditionally. And `WriteSector` opens, seeks,
+writes and closes the file for every 128 bytes - a game saving one block does
+that 64 times, and a crash part-way through leaves a half-written card.
+
+Planned in [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
+
+### Controllers - the digital pad and nothing else
+
+`Sio` answers `0x5A41` and two button halfwords. There is no analog or
+DualShock (no stick axes, no rumble, no mode switching), no multitap, and no
+lightgun - the last of which also needs the GPU's scanline position latched on
+trigger.
+
+Some games require an analog pad; most do not.
+
+### CD-ROM - 23 commands of 28
+
+Missing: `04` Forward and `05` Backward (CD-audio scan), `12` SetSession
+(multi-session discs), `1C` Reset, `1D` GetQ (subchannel Q).
+
+None of these has been asked for by anything tested so far.
+
+### Disc images - a bare image has no track layout
+
+`OpenImage` assumes one data track covering the whole file. That is right for a
+single-track game and wrong for any disc with CD-DA: the audio tracks are read
+as data, `GetTN`/`GetTD` report one track where there are twelve, and a game
+that plays a music track gets nothing. A cue sheet supplies the layout, which
+is why `.cue` works and a bare image of the same disc does not. `.ccd` is not
+read at all, and no compressed container is supported.
+
+Planned in [Disc-Formats-Plan.md](Disc-Formats-Plan.md).
+
+### Physical drives - data tracks only
+
+A mounted drive letter reads data sectors. Audio tracks are not read through
+the drive, and no subchannel data is available, so a physical disc cannot play
+its music.
+
+### GTE - exercised now, still not validated
+
+All 22 commands, the register file, saturation, the FLAG register and the
+Newton-Raphson divide are implemented, and `gte_test` covers them with 99
+checks. Real software now uses it heavily - a game run issues about 60,000
+commands with none unrecognised - which is a great deal more confidence than
+this entry used to carry.
+
+What is still missing is a *comparison*: nothing has been checked against
+hardware output. Until amidog's GTE suite runs, "passing" means "agrees with
+the description I read". The MVMVA garbage matrix (matrix select 3) is written
+from the description rather than from measurement.
+
+## Barely started
+
+### Serial port (SIO1)
+
+`0x1F801050`-`0x1F80105F` is not decoded at all. Link-cable only; nothing has
+ever touched it.
+
+### Parallel / expansion port
+
+A buffer exists and is readable. Nothing is behind it.
+
+### DMA channel 5 (PIO)
+
+Accepts register writes and raises its interrupt. Transfers nothing.
+
+## Blocking use rather than correctness
+
+### Settings exist but cover almost nothing
+
+`psx/emuconfig.h` holds the runtime settings and `psx/settings.h` reads and
+writes them as a plain `key = value` file, following GBAEmu's design: unknown
+keys are preserved, and every getter takes the current value as its default.
+`System::config()` is how a component reaches them, and the front end keeps
+`psxemu.ini` beside the executable, written as settings change rather than only
+at exit.
+
+There is exactly one setting in it: `audio_volume`. The BIOS path, the disc
+path, the key bindings and everything else are still command-line arguments,
+menu choices or hardcoded, and are not remembered between runs.
+
+### No save states
+
+There is no serialiser: `psx/state.h` does not exist and no component has a
+`Serialise`. Planned in [Save-States-Plan.md](Save-States-Plan.md).
 
 ### The front end is minimal
 
-`PSXEmu.Win32` presents the framebuffer, mounts discs, maps the keyboard to a
-digital pad, and resets. There is no settings UI, no debugger, no save-state
-UI, no audio, and no gamepad support.
-
----
+A window, a menu with disc, reset and volume commands, a D3D11 presenter and
+keyboard input. No configurable bindings, no debugger, no settings UI beyond
+the volume menu, no pause indicator, no speed display -
+and that last one matters more than it sounds, because nothing in this project
+has ever measured wall-clock speed. See
+[Recompiler-Plan.md](Recompiler-Plan.md), which argues that measurement should
+come before any optimisation work.
 
 ## Not gaps
 
-Things that are actually done, listed so they are not re-investigated.
+Things that look missing and are not, so they are not re-investigated:
 
-- **The MIPS R3000A instruction set** is complete for the base integer set:
-  every arithmetic, logical, shift, branch, jump, load and store opcode,
-  including the unaligned `LWL`/`LWR`/`SWL`/`SWR` group and the `HI`/`LO`
-  multiply and divide pair. `COP0` handles `MFC0`/`MTC0`/`RFE`.
-- **The memory map** is complete and decoded on physical addresses, so KUSEG,
-  KSEG0 and KSEG1 all reach the same registers. RAM mirroring, the scratchpad,
-  the expansion region and the cache-control register at `0xFFFE0130` are all
-  handled, in all three access widths.
-- **Exceptions** are raised with the right codes and vectors, and an interrupt
-  now sets `EPC` to the instruction that has not yet run.
-- **Root counters 0-2** count, compare against their targets and raise their
-  interrupts, and take their clock from the source the mode register selects -
-  dot clock, hblank or sysclock/8 as well as plain sysclock. The hblank rate
-  was measured against the GPU and is exactly 263 per frame, which is right.
-  What is *not* done, in rough order of how likely it is to bite:
-  - **Sync modes are ignored.** `mode.syncmode` is decoded into the struct and
-    never read, so a counter asked to pause during blanking, or to reset at
-    the start of one, free-runs instead.
-  - **A target of zero never fires.** `Tick` guards with `target > 0`, so a
-    counter set to interrupt at 0 - which is how software asks for a wrap-only
-    interrupt - is silent.
-  - **Everything is quantised to 32 CPU cycles.** `IOInterface::Tick`
-    accumulates and only advances the world once 32 cycles have gone by, so no
-    counter can be read with finer resolution than that, and an interrupt can
-    be up to 32 cycles late.
-  - **The dot clock divider is hardcoded to 10.** It should follow the
-    horizontal resolution: 10, 8, 5, 4 and 7 for 256, 320, 512, 640 and 368
-    pixels. A game that switches to 640-wide gets a counter running at half
-    the rate it asked for.
-  - **The frame wrap counts one hblank.** `hblanks = 1; // Assuming wrapped
-    once` is right only because a 32-cycle batch is 50 dots and a scanline is
-    3413, so at most one line can be crossed. It stops being right if the
-    batch size is ever raised.
-  - **`mode.intreq` is only restored on a mode write**, so one-shot mode can
-    stay latched longer than the hardware would.
-- **Vertical blank** comes from the GPU's scanline counter, which is where it
-  belongs. An invented fourth root counter used to fake it; that is gone.
-- **Disc images** load from `.cue`, `.bin`, `.img`, `.iso` and a drive letter,
-  with the sector layout detected rather than assumed, and the 150-sector
-  lead-in accounted for. Covered by `media_test`.
-- **The BIOS loader** rejects a missing or wrong-sized dump instead of carrying
-  on with a buffer full of zeroes.
-- **The PS-EXE loader** validates the `PS-X EXE` magic and bounds-checks the
-  load address before writing into RAM.
+- **`System::BootDisc` and auto-boot.** The BIOS boots discs itself, correctly,
+  and that is what the front end does. `BootDisc` remains for the harness's
+  `--boot-disc`, and auto-boot for `--auto-boot`, but bug 19 measured the HLE
+  shortcut as much worse than letting the BIOS do it and the front end no
+  longer uses it.
+- **A bare `.img` not loading.** It loads and boots. The gap is the track
+  layout above, not the file.
+- **XA-ADPCM.** Implemented: `Cdrom::DecodeXaAdpcm` handles 4- and 8-bit, mono
+  and stereo, at 37800 or 18900 Hz, with the filter history carried across
+  sectors. `LoadSector` routes an audio sector to it and raises no data-ready
+  interrupt, so software never sees it in its data stream, and `Setfilter`'s
+  file and channel are honoured when the filter bit is set. Covered by
+  `spu_test`; verified against Wild Arms, whose opening film decodes to 50
+  seconds of audio with a lag-1 autocorrelation of 0.997 and no clipping.
+- **The MDEC.** Implemented, with `mdec_test` covering it in 59 checks. Video
+  and its audio both work.
+- **The SPU.** 24 ADPCM voices, ADSR, the hardware Gaussian table, noise, pitch
+  modulation, reverb and CD-audio input, with `spu_test` covering it.
 - **`psx/emu.h` and `psx/emu.cpp`** are an earlier iteration superseded by
   `system.*`. They are kept in the tree but built by neither the solution nor
   the harnesses.
 - **`utilities/cdrom/cdrom.cpp`** is the old host-CD read, superseded by
-  `Disc::OpenDevice`. Kept, not built.
+  `psx/disc.cpp`.

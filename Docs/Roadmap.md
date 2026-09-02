@@ -138,9 +138,10 @@ actually is rather than from memory:
       hold, what it must not, and the serialiser that has to exist first. The
       test is a checksum: save at frame 600, run to 900, and compare against
       loading that state and running 300.
-- [ ] **[Memory-Cards-Plan.md](Memory-Cards-Plan.md)** - swapping first, then
-      the editor. `mc.h` already declares the whole on-card format; nothing
-      yet understands it.
+- [~] **[Memory-Cards-Plan.md](Memory-Cards-Plan.md)** - default cards are in:
+      each disc gets its own pair, auto-created under
+      `Documents\My Games\PSXEmu\memcards\<disc>\`. Eject, the per-slot menu
+      and the editor itself are still open.
 - [x] **[Wild-Arms-Press-Start-Plan.md](Wild-Arms-Press-Start-Plan.md)** - DONE.
       Bugs 25 and 26: a seek did not stop the running read, so every read began
       one sector late. Harness input (`--press`) and `--frame-log` came out of it.
@@ -149,8 +150,10 @@ actually is rather than from memory:
       bare `.img` does load.
 - [ ] **[Recompiler-Plan.md](Recompiler-Plan.md)** - dynamic recompilation,
       and the measurement that should come before any of it.
-- [ ] `psx/emuconfig.h` and `psx/settings.h`, copied from GBAEmu more or less
-      verbatim. The BIOS path and the disc path become settings.
+- [~] `psx/emuconfig.h` and `psx/settings.h` exist, following GBAEmu design.
+      One setting so far - `audio_volume`, with an Audio menu and `psxemu.ini`
+      beside the executable. The BIOS path and the disc path are still not
+      settings.
 - [ ] ImGui in the Win32 front end, for a debugger and settings UI.
 - [ ] `PSXEmu.Interop` and `PSXEmu.WinUI`, if wanted - the design in GBAEmu's
       `Docs/WinUI-Interop.md` transfers whole.
