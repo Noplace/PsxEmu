@@ -26,6 +26,8 @@ namespace psx {
 
 uint64_t TrapCounter::count = 0;
 uint64_t TrapCounter::rfe_count = 0;
+TrapCounter::Site TrapCounter::sites[TrapCounter::kSiteCapacity] = {};
+uint32_t TrapCounter::site_count = 0;
 ExceptionLog::Entry ExceptionLog::entries[ExceptionLog::kCapacity] = {};
 uint32_t ExceptionLog::written = 0;
 

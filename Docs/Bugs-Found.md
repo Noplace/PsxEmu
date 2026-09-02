@@ -792,3 +792,97 @@ checks pass.
 transform is a straightforward matrix multiply rather than the hardware's exact
 sequence, so individual pixels will differ slightly from a console's. That
 shows up as a picture that is very slightly soft, not as a wrong one.
+
+---
+
+## 24. Byte and halfword writes to the DMA registers were dropped
+
+**Symptom.** Wild Arms loaded, played its opening, and then went black and
+stayed there. Not a slow decode - dead: between frames 1800 and 3000 the
+interrupts taken, the CD-ROM command count and the MDEC command count were all
+frozen while BIOS calls climbed from 33 million to 124 million. `A0(40)`,
+SystemError, was called 22.9 million times.
+
+**How it was found.** The `TrapCounter` said "32 paths hit" and nothing else -
+it counted unimplemented paths without recording which. Making it record the
+file and line of each site turned that into:
+
+```
+unimplemented paths
+  PSXEmu.Core\psx\io_interface.cpp line 176, 16 hits
+  PSXEmu.Core\psx\io_interface.cpp line 391, 16 hits
+```
+
+which are the fall-through cases of `Read08` and `Write08`. The hardware
+register access log had exactly one register with sixteen of each:
+
+```
+  1F8010F6        16 reads        16 writes
+```
+
+`1F8010F6h` is the upper half of `DICR`, the DMA interrupt control register:
+the per-channel interrupt enables, the master enable, and the write-one-to-clear
+flags.
+
+**Cause.** `Read08`, `Read16`, `Write08` and `Write16` handled the CD-ROM, the
+SIO and the SPU by range and fell through everything else into `BREAKPOINT`,
+which counts and returns. The DMA block is 32-bit registers and software
+reaches into it a halfword at a time - the enables live in the upper half and
+get written on their own. Those writes were silently discarded, so DMA
+interrupts were never enabled and the completion the game waited for never
+came. It carried on with a buffer that was not ready, its software Huffman
+decoder ran off the end of its output, and what it wrote over was a table index
+it later used - `lw a0, -0x2960(at)` with an index of `0x14001` produced
+`a0 = 0x00008021` and an address error.
+
+Legend of Mana never touched those registers as halfwords, which is why it was
+unaffected and why this looked like an MDEC problem rather than a DMA one.
+
+**Fix.** `ReadSubWord` and `WriteSubWord` synthesise byte and halfword access
+from the 32-bit accessors for the whole DMA block. The one subtlety is DICR's
+write-one-to-clear flags: a read-modify-write of the half software did not
+touch would acknowledge whatever was pending in it, so those bits are dropped
+from what gets carried back rather than written out set.
+
+**Result.** Wild Arms boots, runs and plays its opening: 156 MDEC commands,
+36,960 macroblocks, no SystemError, BIOS calls down from 22.9 million to 2.3
+million, CD sectors up from 365 to 1,889, and 56,292 of 76,800 pixels painted.
+Zero unimplemented paths hit, where there were 32.
+
+Legend of Mana is unchanged, the BIOS shell checksum did not move
+(`bd888bab645a63a9`), and all 506 harness checks pass.
+
+**The lesson worth keeping.** A counter that says "something is missing" and
+not what is nearly useless. `TrapCounter` had been reporting a non-zero number
+for the whole project and it was never actionable. Recording the site cost
+about twenty lines and turned a black screen into a named register in one run.
+
+---
+
+## Open: FMV audio (XA-ADPCM) does not exist
+
+The MDEC gives full-motion video its picture. Its sound is a separate thing
+entirely and none of it is implemented.
+
+What exists is CD-DA - a redbook audio track, 2352 bytes of 16-bit stereo PCM
+straight into `Spu::QueueCdAudio`. That is what a game playing a music track
+uses, and it works.
+
+What FMV audio actually uses is XA-ADPCM: compressed audio interleaved with the
+video in the same track, sector by sector. None of the pieces are there:
+
+- **Setmode bits 6 and 3** - XA-ADPCM enable and the filter - are stored and
+  never read.
+- **Setfilter (0x0D)** is acknowledged and its file and channel discarded.
+- **The subheader is not looked at.** A sector whose submode bit 2 says it is
+  audio should go to the ADPCM decoder and *not* raise INT1, so software never
+  sees it in the data stream. Every sector currently goes to the data FIFO.
+- **There is no ADPCM decoder.** An XA sector is 18 sound groups of 128 bytes,
+  each holding eight blocks of 28 samples, at 37800 or 18900 Hz, mono or
+  stereo, with the filter and shift in the group header.
+
+That third point is not only about sound: a game that interleaves audio and
+video and relies on the drive to keep them apart will be handed audio sectors
+in its video stream. Neither disc tried so far does that - Wild Arms only ever
+sets mode 80h or A0h, never the XA bit - but a game that does will fail in a
+way that looks like a broken video decoder.

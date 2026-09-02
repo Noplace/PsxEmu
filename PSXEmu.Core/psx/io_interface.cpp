@@ -141,6 +141,36 @@ void IOInterface::Tick(uint32_t cycles) {
 
   dma.Tick();
 }
+// A byte or halfword out of a 32-bit register.
+uint32_t IOInterface::ReadSubWord(uint32_t address, uint32_t bytes) {
+  const uint32_t shift = (address & 3) * 8;
+  const uint32_t mask = (bytes == 1) ? 0xFFu : 0xFFFFu;
+  return (Read32(address & ~3u) >> shift) & mask;
+}
+
+// A byte or halfword into a 32-bit register, keeping the rest of it.
+//
+// Software reaches into the DMA block this way all the time - the interrupt
+// control register's channel enables live in its upper half and get written on
+// their own. Dropping those writes leaves DMA interrupts disabled for good,
+// and software that waits for one waits forever.
+void IOInterface::WriteSubWord(uint32_t address, uint32_t data,
+                               uint32_t bytes) {
+  const uint32_t aligned = address & ~3u;
+  const uint32_t shift = (address & 3) * 8;
+  const uint32_t mask = ((bytes == 1) ? 0xFFu : 0xFFFFu) << shift;
+
+  uint32_t preserved = Read32(aligned) & ~mask;
+
+  // DICR's channel flags are write-one-to-clear. Carrying the untouched half
+  // back in unchanged would acknowledge whatever was pending there, so those
+  // bits are dropped from what is preserved rather than written back set.
+  if (aligned == 0x1F8010F4)
+    preserved &= ~0x7F000000u;
+
+  Write32(aligned, preserved | ((data << shift) & mask));
+}
+
 
 /******************************************************************************
 * Name        : Read08
@@ -153,6 +183,8 @@ void IOInterface::Tick(uint32_t cycles) {
 *******************************************************************************/
 uint8_t IOInterface::Read08(uint32_t address) {
   ++access_log.reads[(address - 0x1F801000) & 0x1FFF];
+  if (IsDmaRegister(address))
+    return static_cast<uint8_t>(ReadSubWord(address, 1));
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
       fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Read 8,0x%08X\n",system().cpu().index,system().cpu().context()->prev_pc,address);
@@ -212,6 +244,8 @@ uint8_t IOInterface::Read08(uint32_t address) {
 *******************************************************************************/
 uint16_t IOInterface::Read16(uint32_t address) {
   ++access_log.reads[(address - 0x1F801000) & 0x1FFF];
+  if (IsDmaRegister(address))
+    return static_cast<uint16_t>(ReadSubWord(address, 2));
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
       fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Read 16,0x%08X\n",system().cpu().index,system().cpu().context()->prev_pc,address);
@@ -345,6 +379,10 @@ uint32_t IOInterface::Read32(uint32_t address) {
 *******************************************************************************/
 void IOInterface::Write08(uint32_t address,uint8_t data) {
   ++access_log.writes[(address - 0x1F801000) & 0x1FFF];
+  if (IsDmaRegister(address)) {
+    WriteSubWord(address, data, 1);
+    return;
+  }
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
       fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Write 8,0x%08X,Data,0x%02X\n",system().cpu().index,system().cpu().context()->prev_pc,address,data);
@@ -406,6 +444,10 @@ void IOInterface::Write08(uint32_t address,uint8_t data) {
 *******************************************************************************/
 void IOInterface::Write16(uint32_t address,uint16_t data) {
   ++access_log.writes[(address - 0x1F801000) & 0x1FFF];
+  if (IsDmaRegister(address)) {
+    WriteSubWord(address, data, 2);
+    return;
+  }
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
       fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Write 16,0x%08X,Data,0x%04X\n",system().cpu().index,system().cpu().context()->prev_pc,address,data);

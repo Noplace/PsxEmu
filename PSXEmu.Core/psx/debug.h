@@ -31,7 +31,29 @@ namespace psx {
 struct TrapCounter {
   static uint64_t count;
   static uint64_t rfe_count;
-  static void Hit() { ++count; }
+
+  // Which unimplemented paths were hit, not just how many times. A count on
+  // its own says something is missing; the site says what.
+  struct Site { const char* file; int line; uint64_t hits; };
+  static const int kSiteCapacity = 24;
+  static Site sites[kSiteCapacity];
+  static uint32_t site_count;
+
+  static void Hit(const char* file, int line) {
+    ++count;
+    for (uint32_t i = 0; i < site_count; ++i) {
+      if (sites[i].line == line && sites[i].file == file) {
+        ++sites[i].hits;
+        return;
+      }
+    }
+    if (site_count < kSiteCapacity) {
+      sites[site_count].file = file;
+      sites[site_count].line = line;
+      sites[site_count].hits = 1;
+      ++site_count;
+    }
+  }
 };
 
 // A ring of the most recent Cop0 status-register events. With only a handful
@@ -69,7 +91,7 @@ struct ExceptionLog {
 }
 
 #ifdef _DEBUG
-#define BREAKPOINT { ::emulation::psx::TrapCounter::Hit(); DebugBreak(); }
+#define BREAKPOINT { ::emulation::psx::TrapCounter::Hit(__FILE__, __LINE__); DebugBreak(); }
 #define PC_BREAKPOINT(x) if (context_->pc==x) { DebugBreak(); }
 #include <Windows.h>
 #include <assert.h>
@@ -78,6 +100,6 @@ struct ExceptionLog {
 #include <time.h>
 #include "psx/debug_assist.h"
 #else
-#define BREAKPOINT { ::emulation::psx::TrapCounter::Hit(); }
+#define BREAKPOINT { ::emulation::psx::TrapCounter::Hit(__FILE__, __LINE__); }
 #define PC_BREAKPOINT(x)
 #endif

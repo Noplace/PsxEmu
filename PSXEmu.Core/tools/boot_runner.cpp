@@ -346,6 +346,15 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(TrapCounter::rfe_count));
 
   const auto* ctx = system->cpu().context();
+  if (emulation::psx::TrapCounter::site_count != 0) {
+    printf("unimplemented paths\n");
+    for (uint32_t i = 0; i < emulation::psx::TrapCounter::site_count; ++i) {
+      const emulation::psx::TrapCounter::Site& site =
+          emulation::psx::TrapCounter::sites[i];
+      printf("  %s line %d, %llu hits\n", site.file, site.line,
+             static_cast<unsigned long long>(site.hits));
+    }
+  }
   printf("interrupts     %llu taken, %llu blocked, IE on for %llu insns\n",
          static_cast<unsigned long long>(system->interrupts_taken()),
          static_cast<unsigned long long>(system->interrupts_blocked()),

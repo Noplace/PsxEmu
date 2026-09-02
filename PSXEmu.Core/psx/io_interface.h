@@ -76,6 +76,14 @@ class IOInterface : public Component {
   void Write16(uint32_t address,uint16_t data);
   void Write32(uint32_t address,uint32_t data);
 
+  // The DMA block is 32-bit registers that software reaches into a halfword or
+  // a byte at a time. These synthesise that from the word accessors.
+  static bool IsDmaRegister(uint32_t address) {
+    return address >= 0x1F801080 && address <= 0x1F8010FF;
+  }
+  uint32_t ReadSubWord(uint32_t address, uint32_t bytes);
+  void WriteSubWord(uint32_t address, uint32_t data, uint32_t bytes);
+
 };
 
 }
