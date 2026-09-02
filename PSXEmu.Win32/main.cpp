@@ -30,6 +30,7 @@
 #include "psx/psx.h"
 
 #include "d3d11_presenter.h"
+#include "gamepad.h"
 #include "audio/wasapiaudioengine.h"
 #include "audio/dsoundaudioengine.h"
 
@@ -111,6 +112,14 @@ struct Application {
   // member rather than a function-local static so there is one per
   // application rather than one per process.
   std::array<int16_t, Spu::kSampleRate / 30 * 2> audio_scratch = {};
+
+  // One XInput pad per PSX controller port. gamepads[0] backs up the
+  // keyboard on port 1; gamepads[1] is port 2, which has no keyboard fallback
+  // - two controllers need two physical pads, same as the console.
+  // gamepad_claimed tracks which XInput user indices are already latched, so
+  // the two never end up reading the one physical pad.
+  std::array<psxemu::Gamepad, 2> gamepads;
+  uint32_t gamepad_claimed = 0;
 
   ~Application() {
     if (system != nullptr)
@@ -827,8 +836,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     }
 
     // Input is sampled once per frame, on this thread, and handed to the core.
+    // The pads are polled unconditionally, focused or not, so a controller
+    // being unplugged mid-game is noticed straight away rather than only
+    // after the window is clicked back into; only the *buttons* are withheld
+    // while unfocused, matching what the keyboard already does.
+    const uint16_t pad1 = app.gamepads[0].Poll(app.gamepad_claimed);
+    const uint16_t pad2 = app.gamepads[1].Poll(app.gamepad_claimed);
+    app.system->sio().set_connected(1, app.gamepads[1].connected());
+
     const bool focused = (GetForegroundWindow() == window);
-    app.system->sio().set_buttons(0, focused ? ReadKeyboardPad() : 0);
+    app.system->sio().set_buttons(
+        0, focused ? static_cast<uint16_t>(ReadKeyboardPad() | pad1) : 0);
+    app.system->sio().set_buttons(1, focused ? pad2 : 0);
 
     RunOneFrame(app);
     PumpAudio(app);

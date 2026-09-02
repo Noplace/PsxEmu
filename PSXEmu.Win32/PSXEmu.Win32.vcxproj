@@ -85,6 +85,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="d3d11_presenter.h" />
+    <ClInclude Include="gamepad.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\PSXEmu.Core\PSXEmu.Core.vcxproj">

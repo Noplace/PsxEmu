@@ -112,12 +112,23 @@ that 64 times, and a crash part-way through leaves a half-written card.
 
 Planned in [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
 
-### Controllers - the digital pad and nothing else
+### Controllers - the digital pad and nothing else, now fed from an XInput pad too
 
-`Sio` answers `0x5A41` and two button halfwords. There is no analog or
-DualShock (no stick axes, no rumble, no mode switching), no multitap, and no
-lightgun - the last of which also needs the GPU's scanline position latched on
-trigger.
+`Sio` answers `0x5A41` and two button halfwords - still only the digital pad's
+protocol, not DualShock's. There is no analog mode, no stick axes reported to
+software, no rumble, no mode switching, no multitap, and no lightgun - the
+last of which also needs the GPU's scanline position latched on trigger.
+
+What changed is where the button state comes from. `PSXEmu.Win32/gamepad.h`
+polls XInput - the same slot search-and-latch and deadzone mechanism GBAEmu's
+`GamepadInputDevice` already used, generic Windows plumbing with nothing
+GBA-specific about it - and maps the four face buttons by position (Xbox A at
+the bottom to Cross, and round from there), the shoulders to L1/R1, and the
+analog triggers to L2/R2 past XInput's own held threshold, since the emulated
+pad has no analog value for them to become. Port 1 takes the keyboard or a
+pad, whichever is pressed; port 2 takes a second pad if one is present, with
+no keyboard fallback - two controllers need two physical pads, matching the
+console.
 
 Some games require an analog pad; most do not.
 
