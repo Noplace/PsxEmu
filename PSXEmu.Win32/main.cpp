@@ -838,18 +838,40 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     // Input is sampled once per frame, on this thread, and handed to the core.
     // The pads are polled unconditionally, focused or not, so a controller
     // being unplugged mid-game is noticed straight away rather than only
-    // after the window is clicked back into; only the *buttons* are withheld
-    // while unfocused, matching what the keyboard already does.
-    const uint16_t pad1 = app.gamepads[0].Poll(app.gamepad_claimed);
-    const uint16_t pad2 = app.gamepads[1].Poll(app.gamepad_claimed);
+    // after the window is clicked back into; only the *buttons and axes* are
+    // withheld while unfocused, matching what the keyboard already does.
+    const psxemu::Gamepad::State pad1 = app.gamepads[0].Poll(app.gamepad_claimed);
+    const psxemu::Gamepad::State pad2 = app.gamepads[1].Poll(app.gamepad_claimed);
     app.system->sio().set_connected(1, app.gamepads[1].connected());
 
     const bool focused = (GetForegroundWindow() == window);
     app.system->sio().set_buttons(
-        0, focused ? static_cast<uint16_t>(ReadKeyboardPad() | pad1) : 0);
-    app.system->sio().set_buttons(1, focused ? pad2 : 0);
+        0, focused ? static_cast<uint16_t>(ReadKeyboardPad() | pad1.buttons)
+                   : 0);
+    app.system->sio().set_buttons(1, focused ? pad2.buttons : 0);
+    if (focused) {
+      app.system->sio().set_axes(0, pad1.left_x, pad1.left_y, pad1.right_x,
+                                 pad1.right_y);
+      app.system->sio().set_axes(1, pad2.left_x, pad2.left_y, pad2.right_x,
+                                 pad2.right_y);
+    } else {
+      app.system->sio().set_axes(0, 0x80, 0x80, 0x80, 0x80);
+      app.system->sio().set_axes(1, 0x80, 0x80, 0x80, 0x80);
+    }
+
+    // Rumble is an output, not an input, so it is not gated on focus - the
+    // emulated machine keeps running in the background (only Pause actually
+    // stops it), and a real console would not silence a controller's motor
+    // just because another window has focus.
+    uint8_t small0 = 0, large0 = 0, small1 = 0, large1 = 0;
+    app.system->sio().motor_state(0, &small0, &large0);
+    app.system->sio().motor_state(1, &small1, &large1);
+    app.gamepads[0].SetRumble(small0, large0);
+    app.gamepads[1].SetRumble(small1, large1);
 
     RunOneFrame(app);
+    PumpAudio(app);
+
     PumpAudio(app);
 
     int width = 0;

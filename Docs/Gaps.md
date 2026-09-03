@@ -111,26 +111,48 @@ writes and closes the file for every 128 bytes - a game saving one block does
 that 64 times, and a crash part-way through leaves a half-written card.
 
 Planned in [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
+### Controllers - DualShock now, no multitap or lightgun
 
-### Controllers - the digital pad and nothing else, now fed from an XInput pad too
+`Sio` speaks the real DualShock handshake: a pad boots as a plain digital one
+(`5A41h`) and only becomes analog (`5A73h`) if a game actually asks for
+it, through the same commands a real one answers to - `0x43` to enter
+configuration mode, `0x44` to switch modes and optionally lock the switch,
+`0x45` to report which mode it is in, `0x4D` to say which bytes of a poll
+reply the two vibration motors listen on. A game that never negotiates any of
+this never sees anything different from the plain pad this always was, which
+is why every game tested so far - none of which ask for analog input -
+produced an identical result before and after this was added.
 
-`Sio` answers `0x5A41` and two button halfwords - still only the digital pad's
-protocol, not DualShock's. There is no analog mode, no stick axes reported to
-software, no rumble, no mode switching, no multitap, and no lightgun - the
-last of which also needs the GPU's scanline position latched on trigger.
+Two things are approximated rather than measured: commands `0x46` and `0x47`
+(capability queries almost nothing exercises) are acknowledged with the right
+shape and zero-filled content, and `0x4C` reports a DualShock rather than a
+DualShock 2 - pressure-sensitive face buttons are not implemented, so nothing
+would read the extra data anyway. Still entirely absent: multitap, and the
+lightgun, which also needs the GPU's scanline position latched on trigger.
 
-What changed is where the button state comes from. `PSXEmu.Win32/gamepad.h`
-polls XInput - the same slot search-and-latch and deadzone mechanism GBAEmu's
-`GamepadInputDevice` already used, generic Windows plumbing with nothing
-GBA-specific about it - and maps the four face buttons by position (Xbox A at
-the bottom to Cross, and round from there), the shoulders to L1/R1, and the
-analog triggers to L2/R2 past XInput's own held threshold, since the emulated
-pad has no analog value for them to become. Port 1 takes the keyboard or a
-pad, whichever is pressed; port 2 takes a second pad if one is present, with
-no keyboard fallback - two controllers need two physical pads, matching the
-console.
+`PSXEmu.Win32/gamepad.h` is where an XInput pad actually reaches this. The
+polling, slot search-and-latch and deadzone handling are the same generic
+mechanism GBAEmu's `GamepadInputDevice` already used for Windows/XInput,
+nothing GBA-specific about it; the mapping differs because PSX has four face
+buttons to GBA's two, so Xbox's four map across by position (A at the bottom
+to Cross, and round from there) rather than GBA's compromise of doubling two
+Xbox buttons onto one. The triggers become L2/R2, both sticks feed the analog
+axes once a game asks for them, and the stick clicks become L3/R3. Port 1
+takes the keyboard or a pad, whichever is pressed; port 2 takes a second pad
+if one is present, with no keyboard fallback - two controllers need two
+physical pads, matching the console. Rumble is read back from `Sio`'s
+per-port motor state once a frame and fed to `XInputSetState`.
 
-Some games require an analog pad; most do not.
+Mode switching is entirely the game's doing, not the player's - there is no
+emulated ANALOG button, and no keyboard or pad shortcut standing in for one.
+A real DualShock lets the player force the switch when a game does not ask
+for it; this does not. Every real game that wants analog input negotiates it
+itself at startup, so this has not yet mattered, but a homebrew disc or a
+utility that expects the player to press the button would find nothing does.
+
+Covered by `sio_test` - the handshake, the axis byte order, the pre-DualShock
+legacy rumble pattern and the `0x4D`-configured one, and that the two ports do
+not leak state into each other.
 
 ### CD-ROM - 23 commands of 28
 

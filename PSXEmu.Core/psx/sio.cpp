@@ -44,11 +44,15 @@ Sio::~Sio() {
 }
 
 int Sio::Initialize() {
-  memset(pad_, 0, sizeof(pad_));
+  // Pad() gives every field its at-rest default - centred sticks, digital
+  // mode, an unmapped rumble table - which a plain memset would not, since
+  // "every byte zero" is the wrong default for a byte convention where 0x80
+  // means centred and 0xFF means unmapped.
+  pad_[0] = Pad();
+  pad_[1] = Pad();
   // Slot 1 has a digital pad in it, slot 2 is empty. A front end overrides
   // this as soon as it knows better.
   pad_[0].connected = true;
-  pad_[0].buttons = 0;
   pad_[1].connected = false;
 
   control_ = 0;
@@ -63,11 +67,29 @@ int Sio::Initialize() {
   acknowledge_ = false;
   interrupt_timer_ = 0;
   interrupt_pending_ = false;
+  pad_command_ = 0;
+  legacy_rumble_byte2_ = 0;
   return S_OK;
 }
 
 int Sio::Deinitialize() {
   return S_OK;
+}
+
+void Sio::set_connected(int slot, bool connected) {
+  if (slot < 0 || slot >= 2)
+    return;
+  if (connected && !pad_[slot].connected) {
+    // A freshly connected pad has negotiated nothing yet - a real DualShock
+    // that has just been plugged in does not remember being in analog mode
+    // on some other console, and neither should this one. What it was doing
+    // before this moment (buttons, axes) does not matter and is overwritten
+    // by the next poll regardless.
+    Pad fresh;
+    fresh.connected = true;
+    pad_[slot] = fresh;
+  }
+  pad_[slot].connected = connected;
 }
 
 void Sio::Tick(uint32_t cycles) {
@@ -114,22 +136,211 @@ uint8_t Sio::Exchange(uint8_t data) {
     return 0xFF;
   }
 
-  // Digital pad: id 0x5A41, then two button bytes, active low.
+  return ExchangeController(data, slot);
+}
+
+// The ID a pad's reply starts with. It depends only on what the pad
+// currently is, never on what is being asked of it - on real hardware the
+// pad has already committed to this byte before it has seen enough of the
+// command to know what it is.
+//
+// The high nibble says which of the three shapes a reply is: 4 for a plain
+// digital pad, 7 for one in analog mode, F for one that is inside
+// configuration mode (which stays true regardless of analog/digital, since
+// entering configuration mode is itself a DualShock-only thing to be able to
+// do at all). The low nibble is fixed at 1 or 3 by the same analog/digital
+// split, and doubles as how long the reply is: one halfword of data beyond
+// the ID and status for a digital pad, three for an analog one.
+uint8_t Sio::PadIdByte(const Pad& pad) const {
+  const uint8_t high = pad.config_mode ? 0xF : (pad.analog_mode ? 0x7 : 0x4);
+  const uint8_t low = pad.analog_mode ? 0x3 : 0x1;
+  return static_cast<uint8_t>((high << 4) | low);
+}
+
+// One byte of a command-0x42 poll reply, at `payload_index` counting from
+// the first byte after the ID and status - 0 and 1 are the button bytes,
+// which exist regardless of mode, and 2 through 5 are the four analog axes,
+// which only exist - and are only ever asked for - once the pad is in
+// analog mode.
+//
+// The same bytes are simultaneously carrying whatever the host is asking the
+// motors to do, exactly as every other exchange on this bus is full duplex:
+// once a game has mapped them with command 0x4D, `incoming` at a mapped
+// position becomes that motor's new speed. Before any game has ever done
+// that, the pad falls back to the pattern every original one answered to -
+// a fixed two-byte code that only ever turns the small motor fully on or
+// fully off.
+uint8_t Sio::PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming) {
+  uint8_t out = 0x00;
   const uint16_t buttons = static_cast<uint16_t>(~pad.buttons);
-  uint8_t result = 0xFF;
-  switch (transfer_step_) {
-    case 1: result = 0x41; acknowledge_ = true;  break;   // id low
-    case 2: result = 0x5A; acknowledge_ = true;  break;   // id high
-    case 3: result = static_cast<uint8_t>(buttons);       // buttons low
-            acknowledge_ = true;  break;
-    case 4: result = static_cast<uint8_t>(buttons >> 8);  // buttons high
-            acknowledge_ = false; break;                  // last byte
-    default:
-      acknowledge_ = false;
-      break;
+  switch (payload_index) {
+    case 0: out = static_cast<uint8_t>(buttons); break;
+    case 1: out = static_cast<uint8_t>(buttons >> 8); break;
+    case 2: out = pad.right_x; break;
+    case 3: out = pad.right_y; break;
+    case 4: out = pad.left_x; break;
+    case 5: out = pad.left_y; break;
+    default: break;
   }
+
+  if (pad.dualshock_enabled) {
+    if (payload_index >= 0 && payload_index < 5) {
+      const uint8_t motor = pad.rumble_map[payload_index];
+      if (motor == kSmallMotor)
+        pad.motor_small = incoming;
+      else if (motor == kLargeMotor)
+        pad.motor_large = incoming;
+    }
+  } else if (payload_index == 0) {
+    legacy_rumble_byte2_ = incoming;
+  } else if (payload_index == 1) {
+    const bool on =
+        (legacy_rumble_byte2_ & 0xC0) == 0x40 && (incoming & 0x01) != 0;
+    pad.motor_small = on ? 255 : 0;
+  }
+  return out;
+}
+
+// The controller side of an exchange, from the second byte on - the first
+// was already consumed by Exchange() to pick the device.
+uint8_t Sio::ExchangeController(uint8_t data, int slot) {
+  Pad& pad = pad_[slot];
+  const int step = transfer_step_;
+
+  // Step 1 is the command byte itself (0x42 to poll, 0x43 to enter or leave
+  // configuration mode, and so on) - remembered for the rest of the
+  // exchange, and answered with the pad's current ID regardless of what it
+  // turns out to be, because the pad does not know that yet either.
+  if (step == 1) {
+    pad_command_ = data;
+    acknowledge_ = true;
+    ++transfer_step_;
+    return PadIdByte(pad);
+  }
+
+  // Step 2 is the status byte, which is always this one value everywhere
+  // else on this bus already uses for the same purpose.
+  if (step == 2) {
+    acknowledge_ = true;
+    ++transfer_step_;
+    return 0x5A;
+  }
+
+  // The configuration-mode-only commands do nothing at all - not even 0x44 -
+  // unless the pad has actually been put into configuration mode first with
+  // 0x43. A game that never negotiates DualShock can never end up with one
+  // switching itself into analog mode by accident.
+  const bool config_command =
+      pad_command_ == 0x44 || pad_command_ == 0x45 || pad_command_ == 0x46 ||
+      pad_command_ == 0x47 || pad_command_ == 0x4C || pad_command_ == 0x4D;
+  const bool recognised = pad_command_ == 0x42 || pad_command_ == 0x43 ||
+                          (config_command && pad.config_mode);
+
+  // A poll's length follows the pad's mode, since that is genuinely how much
+  // there is to say. Every other recognised command is a fixed eight bytes,
+  // deliberately not recomputed from the mode again after this point - 0x44
+  // can change analog_mode partway through its own exchange, and a length
+  // that could change under it mid-transaction is not a length a real host
+  // could keep up with. An unrecognised command is given the shape of an
+  // ordinary poll in whatever mode the pad is already in, which is only ever
+  // reached on a mode this exchange cannot itself have just changed.
+  const int total_length =
+      (pad_command_ == 0x42 || !recognised) ? (pad.analog_mode ? 8 : 4) : 8;
+
+  if (step > total_length) {
+    acknowledge_ = false;
+    return 0xFF;
+  }
+
+  const int payload_index = step - 3;
+  uint8_t out = 0x00;
+
+  if (recognised) {
+    switch (pad_command_) {
+      case 0x42:
+        out = PollPayloadByte(pad, payload_index, data);
+        break;
+
+      case 0x43:
+        // The only byte that matters is the first: 1 to enter, anything else
+        // to leave. Entering marks the pad as a DualShock for good - real
+        // hardware does not forget that just because the game later takes it
+        // back out of configuration mode.
+        if (payload_index == 0) {
+          pad.config_mode = (data == 1);
+          if (pad.config_mode)
+            pad.dualshock_enabled = true;
+        }
+        break;
+
+      case 0x44:
+        // Byte 0 is the mode to switch to, byte 1 whether to lock it there.
+        // Values outside the two each byte actually uses are left alone
+        // rather than guessed at.
+        if (payload_index == 0 && (data == 0x00 || data == 0x01))
+          pad.analog_mode = (data == 0x01);
+        else if (payload_index == 1 && (data == 0x02 || data == 0x03))
+          pad.analog_locked = (data == 0x03);
+        break;
+
+      case 0x45:
+        // A fixed status block bar one byte: whether the pad is currently in
+        // analog mode.
+        if (payload_index == 0) out = 0x01;
+        else if (payload_index == 1) out = 0x02;
+        else if (payload_index == 2) out = pad.analog_mode ? 0x01 : 0x00;
+        else if (payload_index == 3) out = 0x02;
+        else if (payload_index == 4) out = 0x01;
+        break;
+
+      case 0x46:
+      case 0x47:
+        // Capability queries close to nothing exercises. Acknowledged with
+        // the right shape so a game that tries them does not stall waiting
+        // for a reply that never comes; the exact bytes have not been
+        // checked against real hardware and default to zero rather than a
+        // guess.
+        out = 0x00;
+        break;
+
+      case 0x4C:
+        // Which kind of DualShock this is - 0x04 here, since pressure-
+        // sensitive buttons (which would make it 0x07, a DualShock 2) are
+        // not implemented.
+        out = (payload_index == 3) ? 0x04 : 0x00;
+        break;
+
+      case 0x4D:
+        // Read-modify-write: the reply carries the mapping this byte held
+        // before, and what the host sends becomes the new one, in the same
+        // exchange - the same as every other byte on this bus. The last
+        // byte is not part of the mapping; it is where a motor nothing maps
+        // to any more gets switched off rather than left running.
+        if (payload_index < 5) {
+          out = pad.rumble_map[payload_index];
+          pad.rumble_map[payload_index] = data;
+        } else if (payload_index == 5) {
+          bool has_small = false;
+          bool has_large = false;
+          for (uint8_t motor : pad.rumble_map) {
+            has_small = has_small || (motor == kSmallMotor);
+            has_large = has_large || (motor == kLargeMotor);
+          }
+          if (!has_small)
+            pad.motor_small = 0;
+          if (!has_large)
+            pad.motor_large = 0;
+        }
+        break;
+
+      default:
+        break;
+    }
+  }
+
   ++transfer_step_;
-  return result;
+  acknowledge_ = (transfer_step_ <= total_length);
+  return out;
 }
 
 uint8_t Sio::Read08(uint32_t address) {
@@ -198,6 +409,10 @@ void Sio::Write16(uint32_t address, uint16_t data) {
     case 0xA:
       control_ = data;
       if (data & 0x0040) {          // reset
+        // This resets the SIO peripheral interface, not the controllers on
+        // the other end of it - a real DualShock does not forget it is in
+        // analog mode just because the console reset the port, and neither
+        // should this one. Pad state is untouched here.
         status_ = kStatusTxReady | kStatusTxDone;
         control_ = 0;
         mode_ = 0;
@@ -265,8 +480,8 @@ uint8_t Sio::ExchangeMemoryCard(uint8_t data, class MC& mc) {
         mc_checksum_ ^= data;
         result = mc_previous_tx_;
       }
-      else if (transfer_step_ == 134) { 
-        result = mc_previous_tx_; 
+      else if (transfer_step_ == 134) {
+        result = mc_previous_tx_;
         // We write upon receiving checksum
         if (data == mc_checksum_) {
           mc.WriteSector(mc_sector_, mc_buffer_);
