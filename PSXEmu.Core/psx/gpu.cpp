@@ -25,12 +25,14 @@ namespace psx {
 
 namespace {
 
-// The GPU runs at 53.222400 MHz against the CPU's 33.868800 MHz, so a GPU dot
-// clock is 11/7 of a CPU cycle. Tick() is handed CPU cycles and scales them.
-const uint32_t kGpuClockNumerator   = 11;
-const uint32_t kGpuClockDenominator = 7;
-
-const uint32_t kDotsPerScanline   = 3413;   // NTSC
+// The GPU runs at 53.222400 MHz against the CPU's 33.868800 MHz, so a GPU
+// dot clock is 11/7 of a CPU cycle. Tick() is handed CPU cycles and scales
+// them. The ratio and the scanline width live in the header now - the
+// display timing accessors the root counters use are inline and need them.
+using emulation::psx::Gpu;
+const uint32_t kGpuClockNumerator   = Gpu::kGpuClockNumerator;
+const uint32_t kGpuClockDenominator = Gpu::kGpuClockDenominator;
+const uint32_t kDotsPerScanline      = Gpu::kDotsPerScanline;
 const uint32_t kScanlinesNtsc     = 263;
 const uint32_t kScanlinesPal      = 314;
 
@@ -107,6 +109,10 @@ int Gpu::Initialize() {
   vertical_display_end_ = 0x100;
 
   dot_accumulator_ = 0;
+  dot_clock_remainder_ = 0;
+  dot_clock_accum_ = 0;
+  pending_dot_clocks_ = 0;
+  pending_hblanks_ = 0;
   scanline_ = 0;
   was_in_vblank_ = false;
   frame_count_ = 0;
@@ -1012,6 +1018,24 @@ bool Gpu::Tick(uint32_t cycles) {
   const uint32_t dots = dot_accumulator_ / kGpuClockDenominator;
   dot_accumulator_ -= dots * kGpuClockDenominator;
 
+  // Counter 0 counts dot clocks, which are GPU clocks divided down by the
+  // horizontal resolution - narrower modes spend more GPU clocks per pixel.
+  // The remainder is carried, so a resolution change mid-line loses nothing.
+  //
+  // `dots` cannot be used for this. What the loop below leaves in
+  // dot_accumulator_ is the beam position within the scanline, not a
+  // fractional remainder, so `dots` is the position plus this call's elapsed
+  // clocks - counting it as a delta counts most of the line again on every
+  // single call. Hence a remainder of its own.
+  dot_clock_remainder_ += cycles * kGpuClockNumerator;
+  const uint32_t gpu_clocks = dot_clock_remainder_ / kGpuClockDenominator;
+  dot_clock_remainder_ %= kGpuClockDenominator;
+
+  dot_clock_accum_ += gpu_clocks;
+  const uint32_t divider = dot_clock_divider();
+  pending_dot_clocks_ += dot_clock_accum_ / divider;
+  dot_clock_accum_ %= divider;
+
   const uint32_t total_lines =
       status_.video_mode ? kScanlinesPal : kScanlinesNtsc;
 
@@ -1020,6 +1044,11 @@ bool Gpu::Tick(uint32_t cycles) {
   while (remaining >= kDotsPerScanline) {
     remaining -= kDotsPerScanline;
     ++scanline_;
+    // Exactly one hblank per scanline. Counting them off completed lines
+    // rather than off the gate below means the count is exact even when a
+    // batch spans several lines; only the instant within the line they are
+    // attributed to is approximate, and no counter can observe that.
+    ++pending_hblanks_;
 
     if (scanline_ >= total_lines) {
       scanline_ = 0;

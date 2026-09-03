@@ -127,6 +127,53 @@ class Gpu : public GpuCore {
   uint32_t display_vram_y() const { return display_vram_y_; }
   bool display_disabled() const { return status_.display_disable != 0; }
 
+  // The GPU runs at 11/7 of the CPU clock, and a scanline is this many GPU
+  // clocks wide. Declared here rather than in the .cpp because the display
+  // timing accessors below are inline and need the ratio to place the beam
+  // within a line.
+  static const uint32_t kGpuClockNumerator   = 11;
+  static const uint32_t kGpuClockDenominator = 7;
+  static const uint32_t kDotsPerScanline     = 3413;
+
+  // ---- display timing, for the root counters -----------------------------
+  //
+  // Counter 0 counts dot clocks and is gated by hblank; counter 1 counts
+  // hblanks and is gated by vblank. All of that is display timing, so it is
+  // measured here rather than guessed at from CPU cycles by whoever asks.
+
+  // Where the beam is horizontally, in GPU clocks into the current scanline.
+  uint32_t dot_in_scanline() const {
+    return dot_accumulator_ / kGpuClockDenominator;
+  }
+  // Outside the horizontal display window is hblank. Both ends come from
+  // GP1(06), so a game that narrows its display widens its own hblank.
+  bool in_hblank() const {
+    const uint32_t dot = dot_in_scanline();
+    return dot < horizontal_display_start_ || dot >= horizontal_display_end_;
+  }
+  // How many GPU clocks make one dot clock at the current resolution. The
+  // visible pixel count times this is roughly one scanline either way, which
+  // is the check that these are the right numbers.
+  uint32_t dot_clock_divider() const {
+    if (status_.hres2)
+      return 7;                                  // 368 wide
+    static const uint32_t kDividers[4] = { 10, 8, 5, 4 };   // 256/320/512/640
+    return kDividers[status_.hres1 & 3];
+  }
+  // Dot clocks and hblanks that have gone by since the last call, and are
+  // handed over rather than reported - each one must be counted exactly once
+  // by the counter that consumes it.
+  uint32_t TakeDotClocks() {
+    const uint32_t taken = pending_dot_clocks_;
+    pending_dot_clocks_ = 0;
+    return taken;
+  }
+  uint32_t TakeHblanks() {
+    const uint32_t taken = pending_hblanks_;
+    pending_hblanks_ = 0;
+    return taken;
+  }
+
  private:
   // ---- state -------------------------------------------------------------
   uint16_t* vram_;
@@ -200,6 +247,12 @@ class Gpu : public GpuCore {
 
   // Timing.
   uint32_t dot_accumulator_;
+  // Display timing handed to the root counters. Accumulated during Tick and
+  // taken away by whoever consumes them, so nothing is counted twice.
+  uint32_t dot_clock_remainder_;
+  uint32_t dot_clock_accum_;
+  uint32_t pending_dot_clocks_;
+  uint32_t pending_hblanks_;
   uint32_t scanline_;
   bool was_in_vblank_;
   uint64_t frame_count_;

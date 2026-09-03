@@ -4,7 +4,7 @@ Hardware and features still missing, ordered by how likely each is to stop a
 game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 [Bugs-Found.md](Bugs-Found.md) for what has already been fixed.
 
-Last audited against the tree after bug 26.
+Last audited against the tree after the DualShock/gamepad work.
 
 ---
 
@@ -18,30 +18,30 @@ below.
 These do not stop anything, which is what makes them worth listing: a game
 runs at the wrong speed or draws slightly wrong and nothing reports an error.
 
-### Root counters - clock sources right, everything else approximate
+### Root counters - implemented properly, timing still quantised
 
-Counters 0-2 count, compare against their targets, raise their interrupts, and
-take their clock from the source the mode register selects. The hblank rate was
-measured against the GPU and is exactly 263 per frame, which is right.
+The three counters count their real clock sources, honour their sync modes,
+and match their targets the way the hardware does. `timer_test` covers this in
+70 checks. What used to be here - sync modes decoded and ignored, a target of
+zero silently never matching, the dot clock divided out of CPU cycles by a
+hardcoded 10, a counter that could only wrap once however long the step - is
+all gone. See bugs 27-31.
 
-What is not done, in rough order of how likely it is to bite:
+Three things about the counters are still approximate rather than wrong:
 
-- **Sync modes are ignored.** `mode.syncmode` is decoded into the struct and
-  never read, so a counter asked to pause during blanking, or to reset at the
-  start of one, free-runs instead.
-- **A target of zero never fires.** `Tick` guards with `target > 0`, so a
-  counter set to interrupt at 0 - which is how software asks for a wrap-only
-  interrupt - is silent.
-- **Everything is quantised to 32 CPU cycles.** `IOInterface::Tick`
-  accumulates and only advances the world once 32 cycles have gone by, so no
-  counter can be read with finer resolution than that, and an interrupt can be
-  up to 32 cycles late.
-- **The dot clock divider is hardcoded to 10.** It should follow the horizontal
-  resolution: 10, 8, 5, 4 and 7 for 256, 320, 512, 640 and 368 pixels. A game
-  that switches to 640-wide gets a counter running at half the rate it asked
-  for.
-- **`mode.intreq` is only restored on a mode write**, so one-shot mode can stay
-  latched longer than the hardware would.
+- **Interrupts can be up to 32 CPU cycles late.** `IOInterface::Tick` is
+  called once per cycle and batches to 32 before advancing the world, so an
+  interrupt lands at the end of the batch it happened in. Counter *reads* are
+  exact - `RunPending()` runs the batch early whenever software reads or
+  writes a counter register - so a game timing something short measures it
+  correctly; only the interrupt edge is coarse.
+- **Hblanks are counted per completed scanline**, which is the right number
+  but attributes them to the end of the line rather than to the moment the
+  beam leaves the display window. The gate counter 0 pauses on uses the real
+  within-line position, so only the count is phase-approximate.
+- **`Gpu::Tick` still advances a whole scanline at a time.** Nothing between
+  scanlines can be observed, which is why the hblank gate can only change at
+  batch granularity.
 
 ### Cycle timing - approximate
 
@@ -111,6 +111,7 @@ writes and closes the file for every 128 bytes - a game saving one block does
 that 64 times, and a crash part-way through leaves a half-written card.
 
 Planned in [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
+
 ### Controllers - DualShock now, no multitap or lightgun
 
 `Sio` speaks the real DualShock handshake: a pad boots as a plain digital one

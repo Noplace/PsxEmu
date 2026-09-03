@@ -68,10 +68,11 @@ int IOInterface::Initialize() {
   dma.set_system(system_);
   dma.Initialize();
 
-  memset(rootcounter_,0,sizeof(rootcounter_));
-  rootcounter_[0].mode.en = rootcounter_[1].mode.en = rootcounter_[2].mode.en = 1;
-  rootcounter_[3].target = ((uint32_t)system_->base_freq_hz() / 60) * 64;
-  rootcounter_[3].WriteMode(0x58);
+  // Sync disabled, which is free-run - the reset state, and the only safe
+  // one. Setting the sync-enable bit here instead would have counter 2 (which
+  // has no gate to wait for) stopped dead until software wrote its mode.
+  for (int i = 0; i < 4; ++i)
+    rootcounter_[i].Initialize(i);
 
 
   return 0;
@@ -94,46 +95,63 @@ void IOInterface::ClearInterrupt(InterruptCodes interrupt) {
   io.interrupt_stat &= ~interrupt;
 }
 
+// Everything the machine does between instructions, batched.
+//
+// Cpu::Tick calls this once per cycle, so doing the work every time would
+// cost more than the work itself. Batching quantises when things happen, but
+// not what software can see: RunPending() below runs the batch early
+// whenever software reads a counter, so a read is always of a current value.
 void IOInterface::Tick(uint32_t cycles) {
   pending_cycles_ += cycles;
   if (pending_cycles_ < 32)
     return;
+  RunPending();
+}
+
+// Runs whatever has accumulated, however little that is.
+void IOInterface::RunPending() {
   uint32_t batch = pending_cycles_;
   pending_cycles_ = 0;
+  if (batch == 0)
+    return;
 
-  system_->gpu_core()->Tick(batch);
-  uint32_t current_scanline = system_->gpu_core()->scanline();
-  uint32_t hblanks = (current_scanline > prev_scanline_) ? (current_scanline - prev_scanline_) : 0;
-  if (current_scanline < prev_scanline_) { // wrapped
-    hblanks = 1; // Assuming wrapped once
-  }
-  prev_scanline_ = current_scanline;
+  GpuCore* gpu = system_->gpu_core();
+  gpu->Tick(batch);
 
-  dotclock_accum_ += batch;
-  uint32_t dotclocks = dotclock_accum_ / 10;
-  dotclock_accum_ %= 10;
+  // The display drives two of the three counters, so ask it rather than
+  // deriving any of this from CPU cycles - the GPU runs at 11/7 of the CPU
+  // clock and the dot clock is divided down from that by the horizontal
+  // resolution, so a guess in CPU cycles is wrong twice over.
+  const uint32_t dotclocks = gpu->TakeDotClocks();
+  const uint32_t hblanks = gpu->TakeHblanks();
+
+  // Counter 0 pauses on hblank, counter 1 on vblank. The gates have to be set
+  // before ticking, or a counter told to pause during the blank it is
+  // currently in would count through it anyway.
+  rootcounter_[0].SetGate(gpu->in_hblank());
+  rootcounter_[1].SetGate(gpu->in_vblank());
 
   sysclk8_accum_ += batch;
-  uint32_t sysclk8 = sysclk8_accum_ / 8;
+  const uint32_t sysclk8 = sysclk8_accum_ / 8;
   sysclk8_accum_ %= 8;
 
-  // Timer 0: 0,2 = Sysclock, 1,3 = Dotclock
-  uint32_t t0_cycles = (rootcounter_[0].mode.clcsrc & 1) ? dotclocks : batch;
-  if (t0_cycles > 0 && rootcounter_[0].Tick(t0_cycles)) {
+  // Counter 0: clock source 0 or 2 = system clock, 1 or 3 = dot clock.
+  const uint32_t t0_cycles =
+      (rootcounter_[0].mode.clcsrc & 1) ? dotclocks : batch;
+  if (rootcounter_[0].Tick(t0_cycles))
     SetInterrupt(kInterruptCNT0);
-  }
 
-  // Timer 1: 0,2 = Sysclock, 1,3 = Hblank
-  uint32_t t1_cycles = (rootcounter_[1].mode.clcsrc & 1) ? hblanks : batch;
-  if (t1_cycles > 0 && rootcounter_[1].Tick(t1_cycles)) {
+  // Counter 1: clock source 0 or 2 = system clock, 1 or 3 = hblank.
+  const uint32_t t1_cycles =
+      (rootcounter_[1].mode.clcsrc & 1) ? hblanks : batch;
+  if (rootcounter_[1].Tick(t1_cycles))
     SetInterrupt(kInterruptCNT1);
-  }
 
-  // Timer 2: 0,1 = Sysclock, 2,3 = Sysclock/8
-  uint32_t t2_cycles = (rootcounter_[2].mode.clcsrc >= 2) ? sysclk8 : batch;
-  if (t2_cycles > 0 && rootcounter_[2].Tick(t2_cycles)) {
+  // Counter 2: clock source 0 or 1 = system clock, 2 or 3 = system clock / 8.
+  const uint32_t t2_cycles =
+      (rootcounter_[2].mode.clcsrc >= 2) ? sysclk8 : batch;
+  if (rootcounter_[2].Tick(t2_cycles))
     SetInterrupt(kInterruptCNT2);
-  }
 
   cdrom.Tick(batch);
   sio.Tick(batch);
@@ -141,6 +159,7 @@ void IOInterface::Tick(uint32_t cycles) {
 
   dma.Tick();
 }
+
 // A byte or halfword out of a 32-bit register.
 uint32_t IOInterface::ReadSubWord(uint32_t address, uint32_t bytes) {
   const uint32_t shift = (address & 3) * 8;
@@ -260,18 +279,18 @@ uint16_t IOInterface::Read16(uint32_t address) {
   switch (address) {
     case 0x1F801070: return io.interrupt_stat&0xFFFF;
     case 0x1F801074: return io.interrupt_mask&0xFFFF;
-    case 0x1F801100: return rootcounter_[0].ReadCounter();
-    case 0x1F801104: return rootcounter_[0].ReadMode(); 
+    case 0x1F801100: RunPending(); return rootcounter_[0].ReadCounter();
+    case 0x1F801104: RunPending(); return rootcounter_[0].ReadMode(); 
     case 0x1F801108: return rootcounter_[0].ReadTarget(); 
-    case 0x1F801110: return rootcounter_[1].ReadCounter();        
-    case 0x1F801114: return rootcounter_[1].ReadMode(); 
+    case 0x1F801110: RunPending(); return rootcounter_[1].ReadCounter();        
+    case 0x1F801114: RunPending(); return rootcounter_[1].ReadMode(); 
     case 0x1F801118: return rootcounter_[1].ReadTarget(); 
-    case 0x1F801120: return rootcounter_[2].ReadCounter();
-    case 0x1F801124: return rootcounter_[2].ReadMode(); 
+    case 0x1F801120: RunPending(); return rootcounter_[2].ReadCounter();
+    case 0x1F801124: RunPending(); return rootcounter_[2].ReadMode(); 
     case 0x1F801128: return rootcounter_[2].ReadTarget(); 
     /*case 0x1F801130: return;
-    case 0x1F801134: rootcounter_[3].WriteMode(data); return;
-    case 0x1F801138: rootcounter_[3].WriteTarget(data); return;*/
+    case 0x1F801134: RunPending(); rootcounter_[3].WriteMode(data); return;
+    case 0x1F801138: RunPending(); rootcounter_[3].WriteTarget(data); return;*/
   }
 
   if (address >= 0x1F801040 && address <= 0x1F80104F)
@@ -331,14 +350,14 @@ uint32_t IOInterface::Read32(uint32_t address) {
     case 0x1F801060: return io.ram_size;
     case 0x1F801070: return io.interrupt_stat;
     case 0x1F801074: return io.interrupt_mask;
-    case 0x1F801100: return rootcounter_[0].ReadCounter();
-    case 0x1F801104: return rootcounter_[0].ReadMode(); 
+    case 0x1F801100: RunPending(); return rootcounter_[0].ReadCounter();
+    case 0x1F801104: RunPending(); return rootcounter_[0].ReadMode(); 
     case 0x1F801108: return rootcounter_[0].ReadTarget(); 
-    case 0x1F801110: return rootcounter_[1].ReadCounter();        
-    case 0x1F801114: return rootcounter_[1].ReadMode(); 
+    case 0x1F801110: RunPending(); return rootcounter_[1].ReadCounter();        
+    case 0x1F801114: RunPending(); return rootcounter_[1].ReadMode(); 
     case 0x1F801118: return rootcounter_[1].ReadTarget(); 
-    case 0x1F801120: return rootcounter_[2].ReadCounter();
-    case 0x1F801124: return rootcounter_[2].ReadMode(); 
+    case 0x1F801120: RunPending(); return rootcounter_[2].ReadCounter();
+    case 0x1F801124: RunPending(); return rootcounter_[2].ReadMode(); 
     case 0x1F801128: return rootcounter_[2].ReadTarget(); 
     case 0x1F801820: case 0x1F801824: return mdec.Read(address);
     case 0x1F801810: return system_->gpu_core()->ReadData();
@@ -469,18 +488,18 @@ void IOInterface::Write16(uint32_t address,uint16_t data) {
     // bit on every acknowledge, so the handler never stopped being re-entered.
     case 0x1F801070: io.interrupt_stat &= 0xFFFF0000 | data; return;
     case 0x1F801074: io.interrupt_mask = (io.interrupt_mask&0xFFFF0000)|(data & 0xFFFF);  return;
-    case 0x1F801100: rootcounter_[0].WriteCounter(data); return;
-    case 0x1F801104: rootcounter_[0].WriteMode(data); return;
-    case 0x1F801108: rootcounter_[0].WriteTarget(data); return;
-    case 0x1F801110: rootcounter_[1].WriteCounter(data); return;
-    case 0x1F801114: rootcounter_[1].WriteMode(data); return;
-    case 0x1F801118: rootcounter_[1].WriteTarget(data); return;
-    case 0x1F801120: rootcounter_[2].WriteCounter(data); return;
-    case 0x1F801124: rootcounter_[2].WriteMode(data); return;
-    case 0x1F801128: rootcounter_[2].WriteTarget(data); return;
+    case 0x1F801100: RunPending(); rootcounter_[0].WriteCounter(data); return;
+    case 0x1F801104: RunPending(); rootcounter_[0].WriteMode(data); return;
+    case 0x1F801108: RunPending(); rootcounter_[0].WriteTarget(data); return;
+    case 0x1F801110: RunPending(); rootcounter_[1].WriteCounter(data); return;
+    case 0x1F801114: RunPending(); rootcounter_[1].WriteMode(data); return;
+    case 0x1F801118: RunPending(); rootcounter_[1].WriteTarget(data); return;
+    case 0x1F801120: RunPending(); rootcounter_[2].WriteCounter(data); return;
+    case 0x1F801124: RunPending(); rootcounter_[2].WriteMode(data); return;
+    case 0x1F801128: RunPending(); rootcounter_[2].WriteTarget(data); return;
     /*case 0x1F801130: return;
-    case 0x1F801134: rootcounter_[3].WriteMode(data); return;
-    case 0x1F801138: rootcounter_[3].WriteTarget(data); return;*/
+    case 0x1F801134: RunPending(); rootcounter_[3].WriteMode(data); return;
+    case 0x1F801138: RunPending(); rootcounter_[3].WriteTarget(data); return;*/
   }
 
   if (address >= 0x1F801C00 && address <= 0x1F801DFF) {
@@ -530,15 +549,15 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
     case 0x1F801060: io.ram_size = data; return;
     case 0x1F801070: io.interrupt_stat &= data; return;
     case 0x1F801074: io.interrupt_mask = data;  return;
-    case 0x1F801100: rootcounter_[0].WriteCounter(data); return;
-    case 0x1F801104: rootcounter_[0].WriteMode(data); return;
-    case 0x1F801108: rootcounter_[0].WriteTarget(data); return;
-    case 0x1F801110: rootcounter_[1].WriteCounter(data); return;
-    case 0x1F801114: rootcounter_[1].WriteMode(data); return;
-    case 0x1F801118: rootcounter_[1].WriteTarget(data); return;
-    case 0x1F801120: rootcounter_[2].WriteCounter(data); return;
-    case 0x1F801124: rootcounter_[2].WriteMode(data); return;
-    case 0x1F801128: rootcounter_[2].WriteTarget(data); return;
+    case 0x1F801100: RunPending(); rootcounter_[0].WriteCounter(data); return;
+    case 0x1F801104: RunPending(); rootcounter_[0].WriteMode(data); return;
+    case 0x1F801108: RunPending(); rootcounter_[0].WriteTarget(data); return;
+    case 0x1F801110: RunPending(); rootcounter_[1].WriteCounter(data); return;
+    case 0x1F801114: RunPending(); rootcounter_[1].WriteMode(data); return;
+    case 0x1F801118: RunPending(); rootcounter_[1].WriteTarget(data); return;
+    case 0x1F801120: RunPending(); rootcounter_[2].WriteCounter(data); return;
+    case 0x1F801124: RunPending(); rootcounter_[2].WriteMode(data); return;
+    case 0x1F801128: RunPending(); rootcounter_[2].WriteTarget(data); return;
     case 0x1F801820: case 0x1F801824: mdec.Write(address, data); return;
     case 0x1F801810: system_->gpu_core()->WriteData(data); return;
     case 0x1F801814: system_->gpu_core()->WriteStatus(data); return;

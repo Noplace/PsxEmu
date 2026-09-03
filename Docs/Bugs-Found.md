@@ -1214,3 +1214,85 @@ first. A crash investigation always wants the end of the log, and both the CD
 event log and the DMA transfer log were keeping the beginning - so both went
 quiet hundreds of thousands of sectors before the interesting part. That was
 costing time on every investigation, not just this one.
+
+## 27-31. The root counters were a sketch
+
+Five separate defects, all in the timers, all of the same kind: nothing
+crashes, nothing logs, a game just runs at the wrong speed or waits for an
+interrupt that never comes. They are grouped because they were found and fixed
+together, against a reference read from documentation and DuckStation's
+`timers.cpp` rather than from memory.
+
+**27. Sync modes were decoded and thrown away.** `mode.syncmode` was parsed
+into the bitfield and never read by anything. A counter told to pause during
+hblank, restart at vblank, or wait for the first blank and then free-run did
+none of those - it free-ran from the start, always. Fixed by giving each
+counter a gate (hblank for counter 0, vblank for counter 1) and implementing
+all four sync modes, plus counter 2's own rule: it has no gate at all, so the
+two sync modes that would wait for one simply stop it.
+
+There was a trap attached to this one. `IOInterface::Initialize` used to set
+`mode.en = 1` on all three counters. That bit is *sync enable*, not counter
+enable, and with sync mode 0 it means "pause while gated" - harmless while
+sync modes were ignored, but the moment they worked it would have stopped
+counter 2 dead until software wrote its mode register. Implementing the
+feature and leaving that line alone would have broken the machine in a way
+that looked like the new code was wrong. The counters now initialise with sync
+disabled, which is free-run.
+
+**28. A target of zero never matched.** `Tick` guarded the target comparison
+with `target > 0`. But zero is a legitimate target and a useful one: it
+matches on every count, which is how software asks for an interrupt on every
+tick of the source. A game doing that got silence. The guard is gone and the
+comparison now reads `counter >= target && (old_counter < target || target ==
+0)`, which is the hardware's own condition.
+
+**29. The counter could only wrap once per step.** The wrap was a single
+`counter -= limit`. Hand it a step longer than the wrap interval - a counter
+with a small target on the dot clock, easily - and the counter was left far
+above its own limit and the intervening matches were lost. `Tick` now walks to
+each wrap point in turn, which also makes toggle mode toggle bit 10 once per
+match rather than once per call.
+
+**30. The dot clock was wrong twice over.** Counter 0's dot clock was CPU
+cycles divided by a hardcoded 10. Both halves are wrong: the dot clock derives
+from the *GPU* clock, which is 11/7 of the CPU clock, and the divider follows
+the horizontal resolution - 10, 8, 5, 4 and 7 for 256, 320, 512, 640 and 368
+pixels. The old code therefore ran counter 0 at 7/11 of the right rate at
+256 wide, and at up to a quarter of it at 640. Both are now taken from the
+GPU, which is the only thing that knows either number.
+
+**31. Bit 10 was not modelled at all.** The interrupt-request bit was cleared
+on the first interrupt and only restored by a mode write, so pulse and toggle
+mode were indistinguishable and one-shot mode stayed latched far longer than
+the hardware would. Now: pulse mode dips the bit and returns it, with a
+one-shot flag re-armed by a mode write; toggle mode flips it on every match
+and asserts the line only on the flips that take it low.
+
+**A sixth, found by the test rather than by reading.** Once counter 0 was
+taking its dot clocks from the GPU, `timer_test` said it counted 36,546 dot
+clocks in 7,000 cycles - about 33x too many, and not even linear. The cause
+was in the new code: `Gpu::Tick` computes `dots` and then, after subtracting
+whole scanlines, carries the leftover *back into* `dot_accumulator_`. So that
+member holds the beam's position within the scanline, not a fractional
+remainder, and `dots` on any given call is that position plus the clocks
+actually elapsed. Reading it as a delta re-counted most of a scanline on every
+single call. The irregular increments were the giveaway - they tracked the
+beam's position within the line. Fixed with a remainder of its own; the
+measurement is now exactly 1,100 dot clocks per 7,000 cycles, as arithmetic
+says it should be.
+
+**What software can now see that it could not.** `IOInterface::Tick` is called
+once per CPU cycle and batches to 32 before doing any work, so a counter read
+used to return a value up to 32 cycles stale - a game timing a short interval
+got a quantised answer. Reads and writes of any counter register now call
+`RunPending()` first, which runs the partial batch immediately. Interrupts are
+still up to 32 cycles late; reads are exact.
+
+**Verification.** `timer_test` is 70 checks. Every one of the five original
+defects was reintroduced deliberately afterwards to confirm the tests catch
+them: the `target > 0` guard (3 failures), the single-subtraction wrap (5),
+counter 2 treated like counters 0 and 1 (3), the CPU-cycles-over-10 dot clock
+(1, reporting 700 against 1,100), and removing the read flush (4). The BIOS
+shell checksum is unchanged at `bd888bab645a63a9` with 0 unimplemented paths,
+and Legend of Mana and Wild Arms both render exactly as before.

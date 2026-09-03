@@ -51,6 +51,15 @@ class GpuCore : public Component {
   // checksum it.
   virtual const uint16_t* vram() const = 0;
   virtual  uint32_t scanline() const = 0;
+
+  // Display timing the root counters run from: counter 0 counts dot clocks
+  // and pauses on hblank, counter 1 counts hblanks and pauses on vblank.
+  // Take* hands over what has accumulated and clears it, so a caller that
+  // asks twice does not count the same dot clock twice.
+  virtual uint32_t TakeDotClocks() = 0;
+  virtual uint32_t TakeHblanks() = 0;
+  virtual bool in_hblank() const = 0;
+  virtual bool in_vblank() const = 0;
   // The visible area, resolved out of VRAM into 32-bit XRGB. Size comes back
   // through the out parameters; the pointer stays valid until the next Tick.
   virtual const uint32_t* framebuffer(int& width, int& height) const = 0;

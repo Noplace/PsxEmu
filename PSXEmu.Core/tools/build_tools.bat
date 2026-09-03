@@ -54,6 +54,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_spu\ /Fe:Temp\tools\spu_test.exe ^
    PSXEmu.Core\tools\spu_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_timer mkdir Temp\tools\obj_timer
+cl %FLAGS% /Fo:Temp\tools\obj_timer\ /Fe:Temp\tools\timer_test.exe ^
+   PSXEmu.Core\tools\timer_test.cpp %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
 if not exist Temp\tools\obj_sio mkdir Temp\tools\obj_sio
 cl %FLAGS% /Fo:Temp\tools\obj_sio\ /Fe:Temp\tools\sio_test.exe ^
    PSXEmu.Core\tools\sio_test.cpp %CORE% %LIBS%

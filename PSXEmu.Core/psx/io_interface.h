@@ -60,8 +60,6 @@ class IOInterface : public Component {
   };
   AccessLog access_log;
   uint32_t pending_cycles_ = 0;
-  uint32_t prev_scanline_ = 0;
-  uint32_t dotclock_accum_ = 0;
   uint32_t sysclk8_accum_ = 0;
 
   int Initialize();
@@ -69,6 +67,11 @@ class IOInterface : public Component {
   void SetInterrupt(InterruptCodes interrupt);
   void ClearInterrupt(InterruptCodes interrupt);
   void Tick(uint32_t cycles);
+  // Runs whatever cycles have piled up, rather than waiting for the batch to
+  // fill. Reading a root counter does this first, so software never sees a
+  // counter value that is up to a batch stale - which it otherwise would,
+  // and which is exactly what a game timing something short would notice.
+  void RunPending();
   uint8_t Read08(uint32_t address);
   uint16_t Read16(uint32_t address);
   uint32_t Read32(uint32_t address);
