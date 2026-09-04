@@ -37,6 +37,11 @@ const int32_t kGetIdDelay = 33868;
 
 // One sector at single speed, in CPU cycles: 33868800 / 75.
 const int32_t kSectorCyclesSingleSpeed = 451584;
+// Fast-forward/rewind scan geometry. A scan level advances this many sectors
+// per sector time instead of one, so level 1 is roughly eight times play
+// speed, and the level climbs each time Forward or Backward is sent again.
+const int kScanSectorsPerStep = 8;
+const int kMaxScanRate = 4;
 
 // Mode register bits.
 const uint8_t kModeDoubleSpeed = 0x80;
@@ -85,6 +90,7 @@ int Cdrom::Initialize() {
   playing_ = false;
   mode_ = 0;
   read_timer_ = 0;
+  scan_rate_ = 0;
 
   memset(&stats_, 0, sizeof(stats_));
 
@@ -612,36 +618,65 @@ void Cdrom::StepRead(uint32_t cycles) {
   read_timer_ += SectorCycles();
 
   if (playing_) {
-    if (disc_.ReadSector(read_lba_, sector_)) {
-      ++stats_.cdda_sectors;
-      system().spu().QueueCdAudio(sector_);
-      if (read_lba_ >= disc_.total_sectors()) {
-        playing_ = false;
-        status_ &= ~kStatusPlaying;
-        QueueStatus(kIntDataEnd, 0); // INT4
-      } else {
-        // Report mode. The drive does not report on every sector - that would
-        // be seventy-five interrupts a second - but on eight of the seventy-
-        // five, alternating between the time from the start of the disc and
-        // the time within the track. Which eight is not arbitrary: software
-        // reads the pattern off the absolute frame number, so the phase
-        // matters as much as the rate.
-        if ((mode_ & 0x04) && pending_.empty()) {
-          const uint8_t absolute_frame =
-              Disc::ToBcd(static_cast<uint8_t>(read_lba_ % 75));
-          if ((absolute_frame & 0x0F) == 0) {
-            uint8_t data[8];
-            GetReport(data, (absolute_frame & 0x10) != 0);
-            QueueResponse(kIntDataReady, 0, data, 8);
-          }
-        }
-      }
-      ++read_lba_;
-    } else {
+    if (!disc_.ReadSector(read_lba_, sector_)) {
       ++stats_.cdda_failures;
       QueueError(0x04, kAcknowledgeDelay);
       reading_ = false;
       playing_ = false;
+      scan_rate_ = 0;
+      return;
+    }
+    ++stats_.cdda_sectors;
+    system().spu().QueueCdAudio(sector_);
+
+    // Report mode. The drive does not report on every sector - that would be
+    // seventy-five interrupts a second - but on eight of the seventy-five,
+    // alternating between the time from the start of the disc and the time
+    // within the track. Which eight is not arbitrary: software reads the
+    // pattern off the absolute frame number, so the phase matters as much as
+    // the rate.
+    if ((mode_ & 0x04) && pending_.empty()) {
+      const uint8_t absolute_frame =
+          Disc::ToBcd(static_cast<uint8_t>(read_lba_ % 75));
+      if ((absolute_frame & 0x0F) == 0) {
+        uint8_t data[8];
+        GetReport(data, (absolute_frame & 0x10) != 0);
+        QueueResponse(kIntDataReady, 0, data, 8);
+      }
+    }
+
+    // Advance. Ordinary play steps one sector; a scan skips a block, and the
+    // two ends of the disc are where scanning ends: forward off the last track
+    // stops the motor, backward to the first track drops into ordinary play,
+    // which is what a real drive does with a held scan button.
+    if (scan_rate_ == 0) {
+      ++read_lba_;
+      if (read_lba_ >= disc_.total_sectors()) {
+        playing_ = false;
+        status_ &= ~kStatusPlaying;
+        QueueStatus(kIntDataEnd, 0);  // INT4
+      }
+    } else if (scan_rate_ > 0) {
+      read_lba_ += static_cast<uint32_t>(scan_rate_ * kScanSectorsPerStep);
+      if (read_lba_ >= disc_.total_sectors()) {
+        read_lba_ = disc_.total_sectors();
+        playing_ = false;
+        scan_rate_ = 0;
+        status_ = disc_.loaded() ? kStatusMotorOn : 0;
+        QueueStatus(kIntDataEnd, 0);  // INT4
+      }
+    } else {
+      const uint32_t back =
+          static_cast<uint32_t>(-scan_rate_ * kScanSectorsPerStep);
+      const uint32_t track1_start =
+          disc_.track_count() > 0 ? disc_.track(0).start_lba
+                                  : Disc::kLeadInSectors;
+      if (read_lba_ <= track1_start + back) {
+        read_lba_ = track1_start;
+        scan_rate_ = 0;             // reached the start; ordinary play resumes
+      } else {
+        read_lba_ -= back;
+      }
     }
     return;
   }
@@ -665,7 +700,8 @@ void Cdrom::ExecuteCommand(uint8_t command) {
   // The commands that move the head or start and stop a read, in sequence with
   // the sectors, so a stream can be read as a story rather than a total.
   if (command == 0x06 || command == 0x09 || command == 0x15 || command == 0x03 ||
-      command == 0x16 ||
+      command == 0x16 || command == 0x04 || command == 0x05 || command == 0x12 ||
+      command == 0x1C ||
       command == 0x1B || command == 0x0A || command == 0x08) {
     {
       Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
@@ -723,8 +759,30 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       read_lba_ = seek_lba_;
       reading_ = false;
       playing_ = true;
+      scan_rate_ = 0;   // a Play ends any fast-forward or rewind in progress
       status_ = (status_ & ~kStatusReading) | kStatusPlaying | kStatusMotorOn;
       read_timer_ = SectorCycles();
+      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      break;
+    }
+
+    case 0x04:    // Forward - fast-forward scan, only while a track is playing
+    case 0x05: {  // Backward - fast rewind
+      if (playing_) {
+        // Each press bumps the scan one level in its direction, starting from
+        // a standstill if the last scan was the other way. A held button
+        // sends the command over and over, so the drive scans ever faster -
+        // and a Play, which the UI sends on release, drops it back to normal.
+        const int direction = (command == 0x04) ? +1 : -1;
+        if ((direction > 0 && scan_rate_ < 0) ||
+            (direction < 0 && scan_rate_ > 0))
+          scan_rate_ = 0;
+        scan_rate_ += direction;
+        if (scan_rate_ > kMaxScanRate) scan_rate_ = kMaxScanRate;
+        if (scan_rate_ < -kMaxScanRate) scan_rate_ = -kMaxScanRate;
+      }
+      // The drive answers with its status whether or not it was playing;
+      // sending Forward to a stopped drive is simply a no-op that still acks.
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       break;
     }
@@ -756,6 +814,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
     case 0x08:    // Stop
       reading_ = false;
       playing_ = false;
+      scan_rate_ = 0;
       status_ = 0;
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       QueueStatus(kIntComplete, kInitDelay);
@@ -764,6 +823,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
     case 0x09:    // Pause
       reading_ = false;
       playing_ = false;
+      scan_rate_ = 0;
       status_ &= ~(kStatusReading | kStatusPlaying | kStatusSeeking);
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       QueueStatus(kIntComplete, kSecondResponseDelay);
@@ -773,6 +833,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       mode_ = 0;
       reading_ = false;
       playing_ = false;
+      scan_rate_ = 0;
       status_ = disc_.loaded() ? kStatusMotorOn : 0;
       parameter_fifo_.clear();
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
@@ -873,12 +934,45 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       // rubbish.
       reading_ = false;
       playing_ = false;
+      scan_rate_ = 0;
       read_lba_ = seek_lba_;
       seek_pending_ = false;
       status_ = kStatusMotorOn | kStatusSeeking;
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       status_ = kStatusMotorOn;
       QueueStatus(kIntComplete, kSeekDelay);
+      break;
+    }
+
+    case 0x12: {  // SetSession - move to a session on a multi-session disc
+      if (!disc_.loaded()) {
+        QueueError(0x80, kAcknowledgeDelay);
+        break;
+      }
+      const uint8_t session = TakeParameter();
+      reading_ = false;
+      playing_ = false;
+      scan_rate_ = 0;
+      if (session == 1) {
+        // The one session every game disc has. Move to its start and answer
+        // like a seek: acknowledge, then complete once the head is there.
+        seek_lba_ = Disc::kLeadInSectors;
+        read_lba_ = seek_lba_;
+        status_ = kStatusMotorOn | kStatusSeeking;
+        QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+        status_ = kStatusMotorOn;
+        QueueStatus(kIntComplete, kSeekDelay);
+      } else {
+        // These images are single-session, so any other session number is a
+        // seek to somewhere that is not there. Acknowledge, then fail.
+        status_ = kStatusMotorOn;
+        QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+        const uint8_t data[2] = {
+          static_cast<uint8_t>(StatusByte() | kStatusError | kStatusSeekError),
+          0x40   // seek failed
+        };
+        QueueResponse(kIntError, kSeekDelay, data, 2);
+      }
       break;
     }
 
@@ -908,6 +1002,57 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         const uint8_t data[8] = { 0x02, 0x00, 0x20, 0x00, 'S', 'C', 'E', 'A' };
         QueueResponse(kIntComplete, kGetIdDelay, data, 8);
       }
+      break;
+    }
+
+    case 0x1C:    // Reset - reboot the drive controller
+      // A power-on in a command: the mode goes back to zero, anything in
+      // flight is abandoned, and the head returns to the start with the motor
+      // spun up if a disc is in. The controller is briefly unresponsive on
+      // hardware; here it simply comes back reset. Answered like Init so
+      // software waiting on the completion is not left hanging.
+      mode_ = 0;
+      reading_ = false;
+      playing_ = false;
+      scan_rate_ = 0;
+      seek_pending_ = false;
+      seek_lba_ = Disc::kLeadInSectors;
+      read_lba_ = Disc::kLeadInSectors;
+      status_ = disc_.loaded() ? kStatusMotorOn : 0;
+      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntComplete, kInitDelay);
+      break;
+
+    case 0x1D: {  // GetQ - read one subchannel Q entry from the table of
+                  // contents. Almost nothing uses it, but a full answer is
+                  // cheaper than a plausible-looking wrong one: the TOC is the
+                  // track table, and that is exactly what this returns.
+      if (!disc_.loaded()) {
+        QueueError(0x80, kAcknowledgeDelay);
+        break;
+      }
+      const uint8_t adr = TakeParameter();     // subchannel adr, normally 1
+      const uint8_t point = TakeParameter();   // which track, in BCD
+      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+
+      // Ten bytes of subchannel Q: the control/adr byte, the track and index,
+      // a zeroed track-relative time this synthesises no better than zero, and
+      // the track's absolute start in minutes, seconds and frames.
+      uint8_t q[10];
+      memset(q, 0, sizeof(q));
+      q[0] = (adr & 0x0F) ? adr : 0x01;
+      q[1] = point;
+      q[2] = Disc::ToBcd(1);
+      const uint8_t track = Disc::FromBcd(point);
+      if (track >= 1 && track <= disc_.track_count()) {
+        uint8_t amin, asec, aframe;
+        Disc::LbaToMsf(disc_.track(track - 1).start_lba, &amin, &asec,
+                       &aframe);
+        q[7] = amin;
+        q[8] = asec;
+        q[9] = aframe;
+      }
+      QueueResponse(kIntComplete, kSeekDelay, q, 10);
       break;
     }
 

@@ -471,6 +471,136 @@ void TestCdAudioControl(emulation::psx::System* system,
   remove(cue.c_str());
   remove(bin.c_str());
 }
+// The five commands that used to fall through to the "unknown command" error:
+// Forward and Backward (fast scan during CD-DA play), SetSession (the session
+// switch on a multi-session disc), Reset (a controller reboot), and GetQ (one
+// subchannel Q entry from the table of contents). A game reading data never
+// sends any of them; the BIOS CD player's scan buttons and a handful of music
+// utilities do.
+void TestCdExtraCommands(emulation::psx::System* system,
+                         const std::string& directory) {
+  BeginTest("cd extra commands");
+
+  const std::string bin = directory + "media_extra.bin";
+  const std::string cue = directory + "media_extra.cue";
+  // A long audio track, so a fast scan has room to run without falling off the
+  // end.
+  if (!WriteMixedImage(bin, 30, 4000) ||
+      !WriteText(cue,
+                 "FILE \"media_extra.bin\" BINARY\r\n"
+                 "  TRACK 01 MODE2/2352\r\n"
+                 "    INDEX 01 00:00:00\r\n"
+                 "  TRACK 02 AUDIO\r\n"
+                 "    INDEX 01 00:00:30\r\n")) {
+    printf("  FAIL  could not write the pair\n");
+    ++g_failures;
+    return;
+  }
+
+  ControllerHarness cd(system);
+  uint8_t response[16];
+  int length = 0;
+  Cdrom& drive = system->cdrom();
+
+  system->EjectDisc();
+  Check(system->LoadDisc(cue.c_str()), "put the disc in");
+
+  // Advances time by whole sector times, so playback moves. One sector is
+  // 451584 cycles at single speed; a comfortable slice per step reaches the
+  // next one without overshooting the interrupt logic.
+  auto RunSectors = [&](int sectors) {
+    for (int i = 0; i < sectors * 20; ++i)
+      drive.Tick(25000);
+  };
+
+  // Start the audio track playing from its beginning.
+  const uint8_t track2_msf[3] = { 0x00, 0x02, 0x30 };
+  cd.Command(0x02, track2_msf, 3);                 // Setloc
+  cd.WaitForInterrupt(response, &length, 16);
+  cd.Command(0x16, nullptr, 0);                    // SeekP
+  cd.WaitForInterrupt(response, &length, 16);
+  cd.WaitForInterrupt(response, &length, 16);
+  const uint8_t play_here[1] = { 0x00 };
+  cd.Command(0x03, play_here, 1);                  // Play from here
+  cd.WaitForInterrupt(response, &length, 16);
+
+  // Ordinary play advances one sector per sector time.
+  const uint32_t before_play = drive.delivered_lba();
+  RunSectors(20);
+  const uint32_t play_advance = drive.delivered_lba() - before_play;
+  Check(play_advance >= 15 && play_advance <= 25,
+        "ordinary play moves about one sector per sector time");
+
+  // Forward makes it skip far faster - the whole point of the command.
+  BeginTest("Forward scans faster than play");
+  cd.Command(0x04, nullptr, 0);                    // Forward
+  Check(cd.WaitForInterrupt(response, &length, 16) != 0, "Forward answered");
+  const uint32_t before_scan = drive.delivered_lba();
+  RunSectors(20);
+  const uint32_t scan_advance = drive.delivered_lba() - before_scan;
+  Check(scan_advance > play_advance * 3,
+        "a forward scan covers far more ground than play");
+
+  // A Play with no parameter drops it back to ordinary speed at the scanned
+  // position - which is how the CD player stops fast-forwarding on release.
+  cd.Command(0x03, play_here, 1);
+  cd.WaitForInterrupt(response, &length, 16);
+  const uint32_t after_resume = drive.delivered_lba();
+  RunSectors(20);
+  const uint32_t resumed_advance = drive.delivered_lba() - after_resume;
+  Check(resumed_advance >= 15 && resumed_advance <= 25,
+        "Play after a scan returns to ordinary speed");
+
+  // SetSession(1) is the session every disc has: acknowledge, then complete,
+  // no error.
+  BeginTest("SetSession");
+  const uint8_t session1[1] = { 0x01 };
+  cd.Command(0x12, session1, 1);
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 3,
+             "SetSession 1 acknowledges");
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 2,
+             "and completes");
+
+  // SetSession to a session that is not on the disc fails at the seek.
+  const uint8_t session2[1] = { 0x02 };
+  cd.Command(0x12, session2, 1);
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 3,
+             "SetSession 2 acknowledges");
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 5,
+             "then errors - there is no session 2");
+
+  // Reset reboots the controller: it acknowledges, completes, and puts the
+  // mode back to zero.
+  BeginTest("Reset");
+  const uint8_t double_speed[1] = { 0x80 };        // set mode to something
+  cd.Command(0x0E, double_speed, 1);               // Setmode
+  cd.WaitForInterrupt(response, &length, 16);
+  cd.Command(0x1C, nullptr, 0);                    // Reset
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 3, "Reset acknowledges");
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 2, "and completes");
+  cd.Command(0x0F, nullptr, 0);                    // Getparam
+  cd.WaitForInterrupt(response, &length, 16);
+  CheckEqual(response[1], 0x00, "Reset put the mode back to zero");
+
+  // GetQ returns one TOC entry: ten bytes whose absolute time is the track's
+  // start on the disc.
+  BeginTest("GetQ");
+  const uint8_t getq_track2[2] = { 0x01, 0x02 };   // adr=1, track 2 (BCD)
+  cd.Command(0x1D, getq_track2, 2);
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 3, "GetQ acknowledges");
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 2, "and completes");
+  CheckEqual(length, 10, "GetQ returns ten bytes of subchannel Q");
+  CheckEqual(response[1], 0x02, "for the track that was asked");
+  // Track 2 starts at file sector 30, absolute 00:02:30 counting the lead-in.
+  CheckEqual(response[7], 0x00, "absolute minute of the track start");
+  CheckEqual(response[8], 0x02, "absolute second");
+  CheckEqual(response[9], 0x30, "absolute frame");
+
+  system->EjectDisc();
+  remove(cue.c_str());
+  remove(bin.c_str());
+}
+
 void TestControllerWithoutDisc(emulation::psx::System* system) {
   printf("cd-rom controller, empty tray\n");
 
@@ -982,6 +1112,7 @@ int main(int argc, char** argv) {
   TestControllerWithoutDisc(system);
   TestControllerWithDisc(system, directory);
   TestCdAudioControl(system, directory);
+  TestCdExtraCommands(system, directory);
   TestDiscBoot(system, directory);
   system->Deinitialize();
   delete system;

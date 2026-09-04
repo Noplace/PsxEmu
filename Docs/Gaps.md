@@ -4,7 +4,7 @@ Hardware and features still missing, ordered by how likely each is to stop a
 game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 [Bugs-Found.md](Bugs-Found.md) for what has already been fixed.
 
-Last audited against the tree after the DualShock/gamepad work.
+Last audited after the CD-ROM command set was completed (bug 37).
 
 ---
 
@@ -191,13 +191,22 @@ Covered by `sio_test` - the handshake, the axis byte order, the pre-DualShock
 legacy rumble pattern and the `0x4D`-configured one, and that the two ports do
 not leak state into each other.
 
-### CD-ROM - 23 commands of 28
+### CD-ROM - all 28 commands answer
 
-Missing: `04` Forward and `05` Backward (CD-audio scan), `12` SetSession
-(multi-session discs), `1C` Reset, `1D` GetQ (subchannel Q).
+Every command the drive controller accepts is now handled. The last five went
+in together (bug 37): `04` Forward and `05` Backward scan the disc during
+CD-DA play, skipping a block of sectors per sector time and scanning faster
+the more often the command is repeated, ending in ordinary play on a new
+`03` Play; `12` SetSession seeks to a session, succeeding for session 1 and
+failing for any other on these single-session images; `1C` Reset reboots the
+controller to its power-on state; and `1D` GetQ returns one subchannel-Q entry
+from the track table. Covered by `media_test`.
 
-None of these has been asked for by anything tested so far.
-
+What is approximate rather than absent: the scan geometry (how many sectors a
+level skips) is a plausible rate, not a measured one; SetSession assumes one
+session because the disc formats read here carry only one; and GetQ synthesises
+its Q bytes from the track table rather than from a real subchannel, which is
+all the track layout it has to work with. Nothing tested needs more than that.
 ### Disc images - a bare image can only work out so much
 
 A cue sheet gives the full track layout and everything works from it, CD music

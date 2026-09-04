@@ -195,6 +195,13 @@ class Cdrom : public Component {
   uint8_t mode_;
   int32_t read_timer_;
 
+  // Fast-forward and rewind during CD-DA play, set by the Forward and Backward
+  // commands. Zero is ordinary play; positive skips forward, negative back,
+  // and the magnitude grows each time the same command is sent again - which
+  // is how the drive scans faster the longer a button is held. A Play command
+  // clears it.
+  int scan_rate_;
+
   Stats stats_;
 
   void ExecuteCommand(uint8_t command);

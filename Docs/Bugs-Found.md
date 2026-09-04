@@ -1596,3 +1596,60 @@ the hardware would give. That is a real discrepancy - it is part of why audio
 has always been quiet enough to want the 2x master gain - but it touches every
 game's balance and the gain default at once, so it is a measured change for its
 own pass, not a rider on this one. Noted in [Gaps.md](Gaps.md).
+
+## 37. The last five CD-ROM commands
+
+The drive answered 23 of the controller's 28 commands; the other five fell
+through to the "unknown command" error. None had been asked for by anything
+that boots, because they are the commands a *player* drives, not a game: the
+CD player's scan buttons, a session switch, a controller reset, and a raw TOC
+read. Implemented together, against psx-spx and DuckStation's `cdrom.cpp` for
+the exact responses.
+
+**04h Forward / 05h Backward** — fast scan during CD-DA play. Each sets a scan
+level in its direction; while it is non-zero the playing loop skips a block of
+sectors per sector time instead of one, so the disc runs fast. Repeating the
+command bumps the level, which is how a real drive scans faster the longer the
+button is held; a `03` Play with no parameter drops back to ordinary speed at
+the scanned position, which is what the CD player sends on release. Forward off
+the end of the last track stops the motor with INT4; Backward into the first
+track resumes ordinary play. Sending either to a stopped drive is a no-op that
+still returns status.
+
+**12h SetSession** — seeks to a session. Session 1, the one every game disc
+has, acknowledges then completes like a seek; any other session on these
+single-session images acknowledges then fails with a seek error, because there
+is nothing there to seek to.
+
+**1Ch Reset** — reboots the controller: mode back to zero, anything in flight
+abandoned, head to the start, motor spun up if a disc is in. Answered like
+Init (acknowledge then complete) so software waiting on it is not left hanging.
+
+**1Dh GetQ** — returns one subchannel-Q entry from the table of contents. The
+TOC is the track table, so that is what it reports: control/adr, the track and
+index asked for, and the track's absolute start in minutes, seconds and
+frames. DuckStation stubs this as an error; a real ten-byte answer built from
+the track table is no more code and is not a lie about what the drive can do.
+
+**Scanning needed the playing loop restructured.** It used to read a sector and
+unconditionally `++read_lba_`. Now the advance is a branch: normal play steps
+one and ends the track at the last sector; a forward scan jumps a block and
+stops the motor at the end; a backward scan jumps back and turns into play at
+the start. The scan level is cleared by Play, Stop, Pause, Init, a seek and
+Reset - every command that establishes a fresh idea of where the head is.
+
+**Verification.** A new `media_test` group, 19 checks: that ordinary play moves
+about one sector per sector time, that Forward moves far faster, that Play
+after a scan returns to normal speed, that SetSession 1 completes and 2 errors,
+that Reset clears the mode, and that GetQ returns ten bytes whose absolute time
+is the track's start. Each behaviour was then broken deliberately to confirm
+the tests catch it: Forward not scanning (1 failure), SetSession accepting any
+session (1), Reset not clearing the mode (1), GetQ reporting the wrong time (2).
+All 167 media_test checks pass, the BIOS shell checksum is unchanged, and every
+regression game - including Ridge Racer's CD music and Wild Arms' FMV audio -
+is byte-for-byte as before.
+
+What is approximate is stated in [Gaps.md](Gaps.md): the scan rate is a
+plausible number rather than a measured one, SetSession assumes the single
+session these disc formats carry, and GetQ has only the track table to build
+its Q bytes from. Nothing tested needs more.
