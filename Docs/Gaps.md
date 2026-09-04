@@ -76,6 +76,24 @@ interpolation rather than the hardware's seven-point filter. The code says so
 where it does it. The difference is a slight softening of the top end, not a
 wrong pitch or a click.
 
+
+### Voice and main volumes come out at half
+
+`Spu::VolumeOf` decodes the sweep-capable volume registers. In fixed-level
+mode the stored level is meant to be doubled into the full signed range, and
+the code's `(int16_t)(reg << 1) >> 1` does the doubling and then shifts it
+straight back out - so a voice or main volume of 3FFFh, which should be about
+unity, mixes at about half. It is consistent across every voice and the main
+output, so nothing sounds wrong relative to anything else; it is just quiet,
+which is part of why the front end defaults its master gain to 2x.
+
+The CD and external *input* volumes were on the wrong side of this entirely -
+run through `VolumeOf` when they are a different, plain-signed format - which
+silenced CD-DA and XA outright until bug 36. Those now use `InputVolumeOf`.
+Fixing the voice/main halving is a separate pass: it doubles every game's
+audio and would want the master-gain default dropped to match, so it needs
+measuring on its own rather than riding along here.
+
 ### The instruction and data caches are not modelled
 
 `ICache`/`ICache2` exist in `cpu.h` and every call site is commented out,
@@ -273,8 +291,11 @@ Things that look missing and are not, so they are not re-investigated:
   while it plays - which needs three things games never touch: the shell-open
   latch that says a disc was swapped, GetlocP's exact eight-byte subchannel
   reply, and `Play` treating a track number of zero as "carry on from here".
-  See bugs 34 and 35. When CD music appears not to work the cause is usually
-  the track layout - see disc images above.
+  It also needs the CD input volume applied as a plain signed level rather than
+  through the voice/main sweep decode, which was silencing it at the mixer -
+  see bug 36. The audio reaches the output, verified at the *mixed* peak and
+  not just the sector count. See bugs 34, 35 and 36. When CD music appears not
+  to work the cause is usually the track layout - see disc images above.
 - **Load delay slots.** Modelled. A load reaches its register one instruction
   later than the instruction that issued it, a register write in that slot
   beats the load rather than being overwritten by it, and lwl/lwr forward to
@@ -297,7 +318,10 @@ Things that look missing and are not, so they are not re-investigated:
 - **The MDEC.** Implemented, with `mdec_test` covering it in 59 checks. Video
   and its audio both work.
 - **The SPU.** 24 ADPCM voices, ADSR, the hardware Gaussian table, noise, pitch
-  modulation, reverb and CD-audio input, with `spu_test` covering it.
+  modulation, reverb and CD-audio input, with `spu_test` covering it. The CD
+  input volume is a plain signed level, distinct from the voice/main sweep
+  format (bug 36). One known quirk remains: the voice and main volumes come out
+  at half - see the gap above.
 - **`psx/emu.h` and `psx/emu.cpp`** are an earlier iteration superseded by
   `system.*`. They are kept in the tree but built by neither the solution nor
   the harnesses.

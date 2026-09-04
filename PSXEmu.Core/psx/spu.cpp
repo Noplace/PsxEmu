@@ -179,6 +179,17 @@ int16_t Spu::VolumeOf(uint16_t reg) {
   return static_cast<int16_t>(static_cast<int16_t>(reg << 1) >> 1);
 }
 
+// The CD and external input volumes are not sweep registers - they are plain
+// signed 16-bit levels, -8000h..+7FFFh, and go straight into the multiply.
+// Running them through VolumeOf, which is for the sweep-capable voice and
+// main volumes, turned the maximum the BIOS CD player writes (7FFFh) into -1:
+// bit 15 read as the sweep flag, and the doubling trick underneath it wraps
+// the top half of the range negative. That silenced every CD-DA and XA track
+// while the counters still said audio was flowing.
+int16_t Spu::InputVolumeOf(uint16_t reg) {
+  return static_cast<int16_t>(reg);
+}
+
 // ---------------------------------------------------------------------------
 // ADPCM
 // ---------------------------------------------------------------------------
@@ -591,10 +602,15 @@ void Spu::GenerateFrame() {
 
     if (control_ & 0x0001) { // CD Audio Enable
       ++stats_.cd_samples_out;
-      int32_t l = (cd_left * VolumeOf(cd_volume_left_)) >> 15;
-      int32_t r = (cd_right * VolumeOf(cd_volume_right_)) >> 15;
+      int32_t l = (cd_left * InputVolumeOf(cd_volume_left_)) >> 15;
+      int32_t r = (cd_right * InputVolumeOf(cd_volume_right_)) >> 15;
       left += l;
       right += r;
+      const int32_t cl = l < 0 ? -l : l;
+      const int32_t cr = r < 0 ? -r : r;
+      const int32_t cpeak = cl > cr ? cl : cr;
+      if (cpeak > stats_.cd_out_peak)
+        stats_.cd_out_peak = static_cast<int16_t>(cpeak > 32767 ? 32767 : cpeak);
       if (control_ & 0x0004) { // CD Audio Reverb Enable
         reverb_in_left += l;
         reverb_in_right += r;

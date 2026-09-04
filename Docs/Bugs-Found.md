@@ -1546,3 +1546,53 @@ buttons, the CD player's EXIT. The shapes and text are right and the noise sits
 where a flat or gently shaded fill belongs, so it looks like a texture or CLUT
 being read from somewhere nothing was written. It has been there all along and
 nothing measured it, because nothing had looked at these screens until now.
+
+## 36. CD and XA audio were mixed at minus one
+
+The BIOS CD player from bug 35 could list a disc's tracks, seek to one and run
+its time counter, and still play nothing. The sectors were reaching the SPU -
+`cd audio 1076628 pairs in, 1076361 mixed` said so - but nothing came out of
+the speakers.
+
+The counter that said "mixed" was measuring the wrong side. It ticked when the
+CD-audio-enable bit was set, *before* the volume multiply. Adding a second
+counter for the peak of the CD contribution *after* its volume answered it in
+one line: `cd-out-peak 1`, from an input whose peak was 32767 and a CD volume
+register reading 7FFFh - full.
+
+**The volume register was run through the wrong conversion.** The CD and
+external input volumes (1F801DB0h..) are plain signed 16-bit levels,
+-8000h..+7FFFh. The voice and main volumes (1F801C00h+N*10h, 1F801D80h) are a
+different format: bit 15 selects a volume sweep, and the level underneath is
+doubled. `VolumeOf`, which decodes the second kind, was being applied to the
+first. On the maximum the BIOS writes, 7FFFh, it read bit 15 as the sweep flag
+and the doubling trick underneath wrapped the top half of the range negative -
+7FFFh came out as -1. Every CD-DA and XA track was multiplied by roughly minus
+one and vanished.
+
+The fix is a second one-line helper, `InputVolumeOf`, that takes the register
+as the plain signed value it is, and the CD mix uses it. `cd-out-peak` went
+from 1 to 32767 and the output WAV's peak from 16906 - which was the menu blips
+alone - to 32766.
+
+**This is the same bug behind "Wild Arms FMV has no audio", from the very
+first commit of this effort.** XA-ADPCM shares the one CD input the hardware
+has, so it was silenced by the same multiply. Bug 25 had verified the XA
+*decoder* - the PCM it produced had the right shape - but never the mix that
+carried it to the output, and the mix was throwing it away. Wild Arms sets its
+CD volume to 6EDCh, which `VolumeOf` turned to about -4388; with the fix its
+FMV audio mixes at a peak of 10619.
+
+**Verification.** A new `cdvolume` group in `spu_test`, 4 checks: a full CD
+volume of 7FFFh is audible rather than silent, zero is silent, half is quieter
+than full, and the enable bit still gates the whole thing. The bug was then
+reintroduced - `VolumeOf` back on the CD path - and the tests caught it (2
+failures, the full and half cases). All 99 spu_test checks pass, the BIOS shell
+checksum is unchanged, and both regression games render identically.
+
+Left alone deliberately: `VolumeOf`'s own doubling has an extra shift that
+cancels it, so the voice and main volumes it decodes come out at half the level
+the hardware would give. That is a real discrepancy - it is part of why audio
+has always been quiet enough to want the 2x master gain - but it touches every
+game's balance and the gain default at once, so it is a measured change for its
+own pass, not a rider on this one. Noted in [Gaps.md](Gaps.md).

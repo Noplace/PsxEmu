@@ -978,11 +978,12 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(spu_stats.blocks_decoded),
          spu_stats.peak_left, spu_stats.peak_right);
   if (spu_stats.cd_samples_in != 0 || spu_stats.cd_samples_out != 0) {
-    printf("cd audio       %llu CD-DA pairs in (peak %d), %llu mixed from the"
-           " CD input, %llu dropped, %llu muted\n",
+    printf("cd audio       %llu CD-DA pairs in (peak %d), %llu mixed"
+           " (peak %d after volume), %llu dropped, %llu muted\n",
            static_cast<unsigned long long>(spu_stats.cd_samples_in),
            spu_stats.cd_peak,
            static_cast<unsigned long long>(spu_stats.cd_samples_out),
+           spu_stats.cd_out_peak,
            static_cast<unsigned long long>(spu_stats.cd_samples_dropped),
            static_cast<unsigned long long>(spu_stats.cd_frames_muted));
   }

@@ -96,6 +96,10 @@ class Spu : public Component {
     uint64_t cd_samples_dropped; // pairs overwritten before anyone read them
     uint64_t cd_frames_muted;    // pairs thrown away with the enable bit clear
     int16_t cd_peak;             // loudest CD sample seen, before volume
+    // The loudest CD contribution after its own volume, which is what tells a
+    // silenced track (this near zero) from one that never started (in near
+    // zero too) - the two look identical on the input side.
+    int16_t cd_out_peak;
   };
   const Stats& stats() const { return stats_; }
 
@@ -206,6 +210,9 @@ class Spu : public Component {
   // Volume registers are either a plain level or a sweep; only the level form
   // is used for mixing here.
   static int16_t VolumeOf(uint16_t reg);
+  // The CD and external input volumes, which are plain signed 16-bit levels
+  // and not sweep registers - a different format from the ones VolumeOf reads.
+  static int16_t InputVolumeOf(uint16_t reg);
 };
 
 }

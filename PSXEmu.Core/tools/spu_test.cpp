@@ -550,6 +550,90 @@ void BuildSplitSoundGroup(uint8_t* group, uint8_t shift_low, uint8_t shift_high,
   memcpy(group + 16, words112, 112);
 }
 
+// The CD input volume register is a plain signed 16-bit level, not a sweep
+// register, and this is where the BIOS CD player's music - and every game's
+// XA-ADPCM FMV audio - is actually let through or silenced. Running it through
+// the voice/main volume conversion turned the maximum (7FFFh, which the BIOS
+// writes) into -1 and muted the lot while the sector counter still ticked up.
+void TestCdInputVolume(Machine& m) {
+  const uint32_t kCdVolL = 0x1F801DB0;
+  const uint32_t kCdVolR = 0x1F801DB2;
+
+  // A CD-DA sector of one constant value, so what comes out the other side is
+  // easy to read: 588 stereo pairs of +8000, left and right.
+  auto QueueTone = [&](int16_t level) {
+    std::vector<uint8_t> sector(2352, 0);
+    for (int i = 0; i < 588; ++i) {
+      const int off = i * 4;
+      sector[off + 0] = static_cast<uint8_t>(level & 0xFF);
+      sector[off + 1] = static_cast<uint8_t>((level >> 8) & 0xFF);
+      sector[off + 2] = static_cast<uint8_t>(level & 0xFF);
+      sector[off + 3] = static_cast<uint8_t>((level >> 8) & 0xFF);
+    }
+    m.spu().QueueCdAudio(sector.data());
+  };
+
+  // Loudest output sample over a run, taking the sign into account.
+  auto PeakOf = [&](const std::vector<int16_t>& out) {
+    int32_t peak = 0;
+    for (int16_t s : out) {
+      const int32_t a = s < 0 ? -s : s;
+      if (a > peak) peak = a;
+    }
+    return peak;
+  };
+
+  BeginTest("cd input volume");
+
+  // Enable bit (control bit 0) has to be set or the CD input is not mixed at
+  // all - a separate gate from the volume.
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute | 0x0001);
+  m.Write(kMainVolL, 0x3FFF);           // ~unity after the >>15
+  m.Write(kMainVolR, 0x3FFF);
+
+  // Maximum CD volume. This is the exact value the BIOS writes and the exact
+  // one the old code silenced.
+  m.Write(kCdVolL, 0x7FFF);
+  m.Write(kCdVolR, 0x7FFF);
+  QueueTone(8000);
+  const int32_t loud = PeakOf(m.Run(300));
+  Check(loud > 3000, "a full CD volume of 7FFFh is audible, not silent");
+
+  // Zero volume really is silence.
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute | 0x0001);
+  m.Write(kMainVolL, 0x3FFF);
+  m.Write(kMainVolR, 0x3FFF);
+  m.Write(kCdVolL, 0x0000);
+  m.Write(kCdVolR, 0x0000);
+  QueueTone(8000);
+  CheckEqual(PeakOf(m.Run(300)), 0, "a CD volume of zero is silent");
+
+  // Half volume is quieter than full - the level scales rather than being all
+  // or nothing.
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute | 0x0001);
+  m.Write(kMainVolL, 0x3FFF);
+  m.Write(kMainVolR, 0x3FFF);
+  m.Write(kCdVolL, 0x4000);
+  m.Write(kCdVolR, 0x4000);
+  QueueTone(8000);
+  const int32_t half = PeakOf(m.Run(300));
+  Check(half > 0 && half < loud, "half CD volume is quieter than full");
+
+  // The enable bit gates it: same volume, bit 0 clear, no output.
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute);   // bit 0 clear
+  m.Write(kMainVolL, 0x3FFF);
+  m.Write(kMainVolR, 0x3FFF);
+  m.Write(kCdVolL, 0x7FFF);
+  m.Write(kCdVolR, 0x7FFF);
+  QueueTone(8000);
+  CheckEqual(PeakOf(m.Run(300)), 0,
+             "CD audio is silent while the enable bit is clear");
+}
+
 void TestXaParameterOffsets(Machine&) {
   printf("xa parameter offsets\n");
 
@@ -786,6 +870,7 @@ const Group kGroups[] = {
   { "mixer",     TestMixer },
   { "timing",    TestTiming },
   { "noiseirq",  TestNoiseAndIrq },
+  { "cdvolume",  TestCdInputVolume },
   { "xaparams",  TestXaParameterOffsets },
   { "xacounts",  TestXaFrameCounts },
   { "xashift",   TestXaSilenceAndShift },
