@@ -111,6 +111,10 @@ class Cdrom : public Component {
     // selection turned away.
     uint64_t xa_sectors;
     uint64_t xa_filtered;
+    // CD-DA playback: sectors handed to the SPU, and sectors the drive was
+    // asked for and could not get. Silence from the two looks identical.
+    uint64_t cdda_sectors;
+    uint64_t cdda_failures;
     uint8_t last_command;
     // Which commands were issued, and which interrupt kinds were delivered.
     // A drive that answers the wrong way and one that does not answer at all
@@ -148,7 +152,11 @@ class Cdrom : public Component {
   Disc disc_;
 
   uint8_t index_;                   // low two bits of 0x1F801800
-  uint8_t status_;                  // the byte Getstat returns
+  uint8_t status_;
+  // The lid "is or was" open. Latched on a swap and cleared by the first
+  // status read once a disc is present again.
+  bool shell_open_ = true;
+  uint8_t StatusByte();                  // the byte Getstat returns
   uint8_t interrupt_enable_;
   uint8_t interrupt_flag_;
 
@@ -197,7 +205,10 @@ class Cdrom : public Component {
   void DeliverPending();
   void StepRead(uint32_t cycles);
   void LoadSector();
-  void GetReport(uint8_t* data);
+  void GetPosition(uint8_t* data);   // 8 subchannel bytes, no status
+  // The INT1 packet: status first, and one of the two times depending on
+  // `relative` - the drive alternates between them.
+  void GetReport(uint8_t* data, bool relative);
 
   uint8_t TakeParameter();
   void ClearParameters();

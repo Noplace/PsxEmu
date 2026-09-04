@@ -122,6 +122,40 @@ void Disc::Close() {
   path_.clear();
 }
 
+// A bare image carries no track layout, and there is nowhere in the file it
+// could: the table of contents lives in the disc's lead-in, which a dump of
+// the data area does not include. So a `.bin` of a disc with CD music mounts
+// as one data track, the game asks how many tracks there are, is told one, and
+// never plays a note - not because playback is broken but because it never
+// starts.
+//
+// The layout is almost always sitting right next to the image in a cue sheet
+// of the same name, which is how the image was written out in the first place.
+// Picking it up is the difference between music and silence, and picking the
+// `.bin` rather than the `.cue` is an easy thing for someone to do.
+//
+// Returns the sheet's path if one is there and names this image, empty
+// otherwise. Anything that does not open, or names some other file, is left
+// alone - a wrong layout would be worse than none.
+std::string Disc::FindSiblingCue(const std::string& image_path) {
+  const size_t dot = image_path.find_last_of('.');
+  const size_t slash = image_path.find_last_of("/\\");
+  if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+    return std::string();
+
+  const std::string stem = image_path.substr(0, dot);
+  static const char* kExtensions[] = { ".cue", ".CUE", ".Cue" };
+  for (size_t i = 0; i < sizeof(kExtensions) / sizeof(kExtensions[0]); ++i) {
+    const std::string candidate = stem + kExtensions[i];
+    FILE* fp = fopen(candidate.c_str(), "rb");
+    if (fp == nullptr)
+      continue;
+    fclose(fp);
+    return candidate;
+  }
+  return std::string();
+}
+
 bool Disc::Open(const char* path) {
   Close();
   if (path == nullptr || path[0] == '\0')
@@ -137,8 +171,18 @@ bool Disc::Open(const char* path) {
     ok = OpenDevice(path);            // "D:" or "D:\"
   else if (text.compare(0, 4, "\\\\.\\") == 0)
     ok = OpenDevice(path);            // "\\.\D:"
-  else
-    ok = OpenImage(path);
+  else {
+    // Prefer a cue sheet sitting beside the image: it is the only place the
+    // track layout exists, and without it a disc with CD music mounts as one
+    // data track and no game will ever ask for a note of it.
+    const std::string sibling = FindSiblingCue(text);
+    if (!sibling.empty())
+      ok = OpenCue(sibling.c_str());
+    if (!ok) {
+      Close();
+      ok = OpenImage(path);
+    }
+  }
 
   if (!ok) {
     Close();
@@ -187,24 +231,102 @@ bool Disc::AddFileSource(const std::string& path, Source* out) const {
   return true;
 }
 
+// Where the data track ends in a raw image, found by looking at the sectors
+// themselves.
+//
+// With no cue sheet there is no table of contents, but a data sector is
+// recognisable on sight: it opens with a twelve byte sync pattern that audio,
+// being arbitrary PCM, does not carry. A PSX disc with music is laid out data
+// first and audio after, so the boundary is a single step from one to the
+// other and a binary search finds it in about twenty reads of a file that may
+// be half a gigabyte.
+//
+// This recovers where the audio starts. It cannot recover where one audio
+// track ends and the next begins - nothing in the data area records that, it
+// lived in the lead-in - so a disc with several music tracks still needs its
+// cue sheet. Reporting one data track and one audio track is still better
+// than calling the whole disc data: a game reading past the data track was
+// otherwise handed music and told it was a filesystem.
+//
+// Returns the number of sectors in the data track, which is the whole file
+// when there is no audio at all - the ordinary case.
+uint32_t Disc::FindDataTrackLength(const Source& source) const {
+  if (source.file == nullptr || source.sector_size < kRawSectorSize ||
+      source.sector_count == 0)
+    return source.sector_count;   // cooked images carry no sync to look for
+
+  // If the last sector is data there is no audio, which is most discs, and
+  // this costs one read.
+  if (IsDataSector(source, source.sector_count - 1))
+    return source.sector_count;
+  // If the first is not data, this is not a layout worth guessing at.
+  if (!IsDataSector(source, 0))
+    return source.sector_count;
+
+  uint32_t data = 0;                       // known data
+  uint32_t audio = source.sector_count - 1;  // known not data
+  while (audio - data > 1) {
+    const uint32_t middle = data + (audio - data) / 2;
+    if (IsDataSector(source, middle))
+      data = middle;
+    else
+      audio = middle;
+  }
+  return data + 1;
+}
+
+bool Disc::IsDataSector(const Source& source, uint32_t file_sector) const {
+  static const uint8_t kSync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+  const long long offset =
+      static_cast<long long>(file_sector) * source.sector_size;
+  if (_fseeki64(source.file, offset, SEEK_SET) != 0)
+    return false;
+  uint8_t head[12];
+  if (fread(head, 1, sizeof(head), source.file) != sizeof(head))
+    return false;
+  return memcmp(head, kSync, sizeof(kSync)) == 0;
+}
+
 bool Disc::OpenImage(const char* path) {
   Source source;
   if (!AddFileSource(path, &source))
     return false;
   sources_.push_back(source);
 
-  // A bare image is one data track covering the whole file.
+  // With no cue sheet the layout has to come from the sectors. Usually that
+  // is one data track covering everything; a disc with music splits in two.
+  const uint32_t data_length = FindDataTrackLength(source);
+
   Track track;
   track.number = 1;
   track.type = kTrackData;
   track.start_lba = kLeadInSectors;
-  track.length = source.sector_count;
+  track.length = data_length;
   tracks_.push_back(track);
 
   TrackSource track_source;
   track_source.source = 0;
   track_source.file_lba = 0;
   track_sources_.push_back(track_source);
+
+  if (data_length < source.sector_count) {
+    // Everything after the data is audio. Where one music track ends and the
+    // next begins is not recorded anywhere in the data area, so this is one
+    // track however many the disc really had - a game that asks for track 5
+    // by number still needs the cue sheet.
+    Track audio;
+    audio.number = 2;
+    audio.type = kTrackAudio;
+    audio.start_lba = kLeadInSectors + data_length;
+    audio.length = source.sector_count - data_length;
+    tracks_.push_back(audio);
+
+    TrackSource audio_source;
+    audio_source.source = 0;
+    audio_source.file_lba = data_length;
+    track_sources_.push_back(audio_source);
+  }
 
   total_sectors_ = kLeadInSectors + source.sector_count;
   return true;

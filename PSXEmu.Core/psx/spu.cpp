@@ -492,6 +492,7 @@ void Spu::PushCdFrame(int16_t left, int16_t right) {
     // host is draining.
     cd_audio_read_ = (cd_audio_read_ + 2) % (kSampleRate * 2);
     cd_audio_count_ -= 2;
+    ++stats_.cd_samples_dropped;
   }
   cd_audio_buffer_[cd_audio_write_] = left;
   cd_audio_buffer_[cd_audio_write_ + 1] = right;
@@ -555,24 +556,24 @@ void Spu::QueueCdSamples(const int16_t* stereo, int frames, int sample_rate) {
 
 void Spu::QueueCdAudio(const uint8_t* raw_sector) {
   // A raw CD-DA sector is 2352 bytes, which is exactly 588 stereo pairs
-  // (16-bit left, 16-bit right, little-endian).
+  // (16-bit left, 16-bit right, little-endian). It goes into the same queue
+  // XA-ADPCM uses - the hardware has one CD input and mixes whichever of the
+  // two the drive is producing.
   const int kSamples = 588;
   for (int i = 0; i < kSamples; ++i) {
-    if (cd_audio_count_ >= kSampleRate * 2) {
-      // Buffer full, drop oldest
-      cd_audio_read_ = (cd_audio_read_ + 2) % (kSampleRate * 2);
-      cd_audio_count_ -= 2;
-    }
-    
-    int offset = i * 4;
-    int16_t left = static_cast<int16_t>(raw_sector[offset] | (raw_sector[offset + 1] << 8));
-    int16_t right = static_cast<int16_t>(raw_sector[offset + 2] | (raw_sector[offset + 3] << 8));
-    
-    cd_audio_buffer_[cd_audio_write_] = left;
-    cd_audio_buffer_[cd_audio_write_ + 1] = right;
-    
-    cd_audio_write_ = (cd_audio_write_ + 2) % (kSampleRate * 2);
-    cd_audio_count_ += 2;
+    const int offset = i * 4;
+    const int16_t left = static_cast<int16_t>(
+        raw_sector[offset] | (raw_sector[offset + 1] << 8));
+    const int16_t right = static_cast<int16_t>(
+        raw_sector[offset + 2] | (raw_sector[offset + 3] << 8));
+    PushCdFrame(left, right);
+
+    ++stats_.cd_samples_in;
+    const int16_t loud_left = static_cast<int16_t>(left < 0 ? -left : left);
+    const int16_t loud_right = static_cast<int16_t>(right < 0 ? -right : right);
+    const int16_t loudest = loud_left > loud_right ? loud_left : loud_right;
+    if (loudest > stats_.cd_peak)
+      stats_.cd_peak = loudest;
   }
 }
 
@@ -589,6 +590,7 @@ void Spu::GenerateFrame() {
     cd_audio_count_ -= 2;
 
     if (control_ & 0x0001) { // CD Audio Enable
+      ++stats_.cd_samples_out;
       int32_t l = (cd_left * VolumeOf(cd_volume_left_)) >> 15;
       int32_t r = (cd_right * VolumeOf(cd_volume_right_)) >> 15;
       left += l;
@@ -597,6 +599,8 @@ void Spu::GenerateFrame() {
         reverb_in_left += l;
         reverb_in_right += r;
       }
+    } else {
+      ++stats_.cd_frames_muted;
     }
   }
 

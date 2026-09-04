@@ -206,6 +206,127 @@ void TestRawImageAndCue(const std::string& directory) {
   remove(bin.c_str());
 }
 
+// Writes a raw image whose first `data_sectors` carry the data sync pattern
+// and whose remainder does not, which is what a mixed-mode disc - a game with
+// CD music - looks like on disc.
+bool WriteMixedImage(const std::string& path, uint32_t data_sectors,
+                     uint32_t audio_sectors) {
+  static const uint8_t kSync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+  FILE* fp = fopen(path.c_str(), "wb");
+  if (fp == nullptr)
+    return false;
+  std::string sector(2352, '\0');
+  for (uint32_t i = 0; i < data_sectors + audio_sectors; ++i) {
+    memset(&sector[0], static_cast<int>(i & 0x3F), 2352);
+    if (i < data_sectors)
+      memcpy(&sector[0], kSync, sizeof(kSync));
+    memcpy(&sector[24], &i, sizeof(i));
+    if (fwrite(sector.data(), 1, 2352, fp) != 2352) {
+      fclose(fp);
+      return false;
+    }
+  }
+  fclose(fp);
+  return true;
+}
+
+// What a bare image can and cannot work out about itself.
+//
+// A disc with music has no table of contents in the file - that lived in the
+// lead-in, which a dump of the data area does not include - so an image on its
+// own used to mount as one data track covering everything, and a game asking
+// how many tracks there were was told one and never played a note. Neither
+// half of that is a playback bug, and neither says anything when it happens.
+void TestBareImageTrackLayout(const std::string& directory) {
+  printf("a bare image works out what it can about its own layout\n");
+
+  const std::string bin = directory + "media_mixed.bin";
+
+  // Data followed by audio: the boundary is found by looking for the sector
+  // where the data sync pattern stops.
+  if (!WriteMixedImage(bin, 60, 40)) {
+    printf("  FAIL  could not write %s\n", bin.c_str());
+    ++g_failures;
+    return;
+  }
+  {
+    Disc disc;
+    Check(disc.Open(bin.c_str()), "open an image with no cue beside it");
+    CheckEqual(disc.track_count(), 2, "data and audio are told apart");
+    CheckEqual(disc.track(0).length, 60, "the data track ends where it ends");
+    Check(disc.track(0).type == Disc::kTrackData, "track 1 is data");
+    CheckEqual(disc.track(1).start_lba, Disc::kLeadInSectors + 60,
+               "the audio starts right after it");
+    CheckEqual(disc.track(1).length, 40, "and runs to the end of the file");
+    Check(disc.track(1).type == Disc::kTrackAudio, "track 2 is audio");
+
+    // The split must not disturb where a sector actually comes from.
+    uint8_t sector[Disc::kRawSectorSize];
+    Check(disc.ReadSector(Disc::kLeadInSectors + 75, sector),
+          "read a sector in the audio track");
+    CheckEqual(UserWordOf(sector), 75, "it resolves to the right sector");
+    disc.Close();
+  }
+
+  // A disc that is all data - which is most of them - stays one track, and
+  // costs one read to find that out.
+  if (!WriteMixedImage(bin, 100, 0)) {
+    printf("  FAIL  could not rewrite %s\n", bin.c_str());
+    ++g_failures;
+    return;
+  }
+  {
+    Disc disc;
+    Check(disc.Open(bin.c_str()), "open an all-data image");
+    CheckEqual(disc.track_count(), 1, "an all-data disc is still one track");
+    CheckEqual(disc.track(0).length, 100, "covering the whole file");
+    disc.Close();
+  }
+  remove(bin.c_str());
+}
+
+// Picking the image when the cue sheet is sitting right next to it is an easy
+// thing for someone to do, and used to cost them every music track on the
+// disc: the sheet is the only place the track layout exists.
+void TestSiblingCueIsAdopted(const std::string& directory) {
+  printf("an image next to its cue sheet uses the sheet\n");
+
+  const std::string bin = directory + "media_sibling.bin";
+  const std::string cue = directory + "media_sibling.cue";
+  if (!WriteMixedImage(bin, 60, 40) ||
+      !WriteText(cue,
+                 "FILE \"media_sibling.bin\" BINARY\r\n"
+                 "  TRACK 01 MODE2/2352\r\n"
+                 "    INDEX 01 00:00:00\r\n"
+                 "  TRACK 02 AUDIO\r\n"
+                 "    INDEX 01 00:00:60\r\n"
+                 "  TRACK 03 AUDIO\r\n"
+                 "    INDEX 01 00:01:05\r\n")) {
+    printf("  FAIL  could not write the pair\n");
+    ++g_failures;
+    return;
+  }
+
+  Disc disc;
+  Check(disc.Open(bin.c_str()), "open the image, not the sheet");
+  // Three tracks is the sheet talking. Scanning the sectors alone finds the
+  // data/audio boundary and can find nothing beyond it, so it would say two -
+  // which is how this check tells the two apart.
+  CheckEqual(disc.track_count(), 3, "the layout came from the cue sheet");
+  CheckEqual(disc.track(2).start_lba, Disc::kLeadInSectors + 80,
+             "including a boundary no scan could have found");
+  disc.Close();
+
+  // With the sheet gone the same image falls back to what it can see.
+  remove(cue.c_str());
+  Disc alone;
+  Check(alone.Open(bin.c_str()), "open it again with the sheet removed");
+  CheckEqual(alone.track_count(), 2, "and it is back to what it can work out");
+  alone.Close();
+
+  remove(bin.c_str());
+}
 // Drives the controller the way software does: write parameters, write the
 // command, then step time until the interrupt appears and read the response.
 class ControllerHarness {
@@ -251,6 +372,105 @@ class ControllerHarness {
   Cdrom* cdrom_;
 };
 
+// The three things the BIOS CD player needs that nothing else does. A game
+// reads data sectors and never touches any of this, which is why all three
+// could be wrong at once with every game still booting.
+void TestCdAudioControl(emulation::psx::System* system,
+                        const std::string& directory) {
+  printf("cd audio: swapping, position, and play from where you are\n");
+
+  // A two track disc, data then audio, with a cue sheet to lay it out.
+  const std::string bin = directory + "media_cdda.bin";
+  const std::string cue = directory + "media_cdda.cue";
+  if (!WriteMixedImage(bin, 60, 100) ||
+      !WriteText(cue,
+                 "FILE \"media_cdda.bin\" BINARY\r\n"
+                 "  TRACK 01 MODE2/2352\r\n"
+                 "    INDEX 01 00:00:00\r\n"
+                 "  TRACK 02 AUDIO\r\n"
+                 "    INDEX 01 00:00:60\r\n")) {
+    printf("  FAIL  could not write the pair\n");
+    ++g_failures;
+    return;
+  }
+
+  BeginTest("swapping a disc");
+  ControllerHarness cd(system);
+  uint8_t response[16];
+  int length = 0;
+
+  // Putting a disc in is a lid open and close, and software is entitled to
+  // be told. Without the shell-open bit the BIOS CD player never learns the
+  // tray has anything in it and never reads the table of contents at all.
+  //
+  // The swap has to be tested without ejecting first, because that is what
+  // the front end does and because an eject sets the same bit - testing
+  // eject-then-load would pass whether or not loading sets it.
+  system->EjectDisc();
+  Check(system->LoadDisc(cue.c_str()), "put a disc in");
+  cd.Command(0x01, nullptr, 0);                 // Getstat
+  cd.WaitForInterrupt(response, &length, 16);
+  cd.Command(0x01, nullptr, 0);
+  cd.WaitForInterrupt(response, &length, 16);
+  Check(length >= 1 && (response[0] & 0x10) == 0,
+        "the lid bit clears once it has been read");
+
+  Check(system->LoadDisc(cue.c_str()), "swap in another disc, no eject");
+  cd.Command(0x01, nullptr, 0);
+  Check(cd.WaitForInterrupt(response, &length, 16) != 0, "the drive answered");
+  Check(length >= 1 && (response[0] & 0x10) != 0,
+        "the first status after a swap says the lid was open");
+
+  cd.Command(0x01, nullptr, 0);
+  cd.WaitForInterrupt(response, &length, 16);
+  Check(length >= 1 && (response[0] & 0x10) == 0,
+        "and reading it clears it again");
+
+  BeginTest("Play with a bad track");
+  // An out of range track is an error. Checked before anything is playing,
+  // so the answer cannot be confused with a leftover response.
+  const uint8_t track_99[1] = { 0x99 };
+  cd.Command(0x03, track_99, 1);
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 5,
+             "a track that is not on the disc is an error");
+
+  BeginTest("GetlocP");
+  // GetlocP is eight bytes of subchannel and does not begin with a status
+  // byte. One in front of it shifts every field along by one, so software
+  // reads the status as the track number and the time is a byte out of step.
+  const uint8_t track2_msf[3] = { 0x00, 0x02, 0x60 };   // track 2 starts here
+  cd.Command(0x02, track2_msf, 3);                      // Setloc
+  cd.WaitForInterrupt(response, &length, 16);
+  cd.Command(0x16, nullptr, 0);                         // SeekP
+  cd.WaitForInterrupt(response, &length, 16);           // the acknowledge
+  cd.WaitForInterrupt(response, &length, 16);           // and the completion
+
+  cd.Command(0x11, nullptr, 0);                         // GetlocP
+  Check(cd.WaitForInterrupt(response, &length, 16) != 0, "GetlocP answered");
+  CheckEqual(length, 8, "GetlocP returns eight bytes");
+  CheckEqual(response[0], 0x02, "the first byte is the track, not the status");
+  CheckEqual(response[1], 0x01, "the second is the index");
+  // Absolute time counts the two second lead-in, so track 2 at file sector 60
+  // is at 00:02:60 on the disc.
+  CheckEqual(response[5], 0x00, "absolute minute");
+  CheckEqual(response[6], 0x02, "absolute second");
+  CheckEqual(response[7], 0x60, "absolute frame");
+
+  BeginTest("Play from the current position");
+  // Play with a track number of zero is not an invalid track: it means carry
+  // on from where the head is. The BIOS CD player sends one of these every
+  // frame while a track plays, and answering each with an error left it
+  // retrying for ever with nothing coming out.
+  const uint8_t track_zero[1] = { 0x00 };
+  cd.Command(0x03, track_zero, 1);
+  const uint8_t interrupt = cd.WaitForInterrupt(response, &length, 16);
+  Check(interrupt != 0, "Play answered at all");
+  Check(interrupt != 5, "Play with track zero is not an error");
+
+  system->EjectDisc();
+  remove(cue.c_str());
+  remove(bin.c_str());
+}
 void TestControllerWithoutDisc(emulation::psx::System* system) {
   printf("cd-rom controller, empty tray\n");
 
@@ -749,6 +969,8 @@ int main(int argc, char** argv) {
   TestBcdAndMsf();
   TestIsoImage(directory);
   TestRawImageAndCue(directory);
+  TestBareImageTrackLayout(directory);
+  TestSiblingCueIsAdopted(directory);
   TestIso9660(directory);
   TestSystemCnf();
   TestSettingsFile(directory);
@@ -759,6 +981,7 @@ int main(int argc, char** argv) {
   system->InitializeWithoutBios();
   TestControllerWithoutDisc(system);
   TestControllerWithDisc(system, directory);
+  TestCdAudioControl(system, directory);
   TestDiscBoot(system, directory);
   system->Deinitialize();
   delete system;

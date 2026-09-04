@@ -110,6 +110,13 @@ class Disc {
 
   bool OpenCue(const char* path);
   bool OpenImage(const char* path);
+  // Where the data track ends in a raw image, found from the sectors
+  // themselves when no cue sheet says.
+  uint32_t FindDataTrackLength(const Source& source) const;
+  bool IsDataSector(const Source& source, uint32_t file_sector) const;
+  // A cue sheet of the same name beside an image, if there is one - the only
+  // place a track layout exists for a bare dump.
+  static std::string FindSiblingCue(const std::string& image_path);
   bool OpenDevice(const char* path);
   bool AddFileSource(const std::string& path, Source* out) const;
 

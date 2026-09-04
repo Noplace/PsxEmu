@@ -87,6 +87,18 @@ The cost is timing fidelity. It would also matter to a recompiler, which wants
 the cache-control write at `0xFFFE0130` as its signal that code has changed -
 see [Recompiler-Plan.md](Recompiler-Plan.md).
 
+### Menu backgrounds draw as rainbow noise
+
+The BIOS menus - MAIN MENU, MEMORY CARD, the CD player - draw coloured noise
+behind their highlighted labels where a flat or gently shaded fill belongs.
+The shapes and the text are right, so this is a fill reading from somewhere
+nothing was written: a texture page or CLUT that is not where the GPU thinks
+it is. It has been there all along and nothing measured it, because until the
+harness could write a PNG nothing had looked at these screens.
+
+Not investigated. Nothing is known to depend on it, but it is the only known
+case of the GPU drawing something visibly wrong.
+
 ### Cause's interrupt-pending bits are faked
 
 `RaiseException` sets `Cause` bits 8-15 from `SR`'s interrupt mask rather than
@@ -168,14 +180,21 @@ Missing: `04` Forward and `05` Backward (CD-audio scan), `12` SetSession
 
 None of these has been asked for by anything tested so far.
 
-### Disc images - a bare image has no track layout
+### Disc images - a bare image can only work out so much
 
-`OpenImage` assumes one data track covering the whole file. That is right for a
-single-track game and wrong for any disc with CD-DA: the audio tracks are read
-as data, `GetTN`/`GetTD` report one track where there are twelve, and a game
-that plays a music track gets nothing. A cue sheet supplies the layout, which
-is why `.cue` works and a bare image of the same disc does not. `.ccd` is not
-read at all, and no compressed container is supported.
+A cue sheet gives the full track layout and everything works from it, CD music
+included. Without one the layout has to be inferred, and only part of it can
+be: a data sector is recognisable by its twelve byte sync pattern and audio is
+not, so `OpenImage` finds where the data track ends by binary search and calls
+everything after it one audio track. Where one music track ends and the next
+begins is recorded nowhere in the data area - it lived in the lead-in, which a
+dump does not include - so a disc with twelve music tracks still mounts as two,
+and a game that asks for track 5 by number still gets nothing. That needs the
+cue sheet, and if one is sitting beside the image it is now used automatically.
+
+Still missing: `.ccd` is not read at all, though it carries a real table of
+contents and would give a complete layout; and no compressed container is
+supported.
 
 Planned in [Disc-Formats-Plan.md](Disc-Formats-Plan.md).
 
@@ -247,6 +266,15 @@ come before any optimisation work.
 
 Things that look missing and are not, so they are not re-investigated:
 
+- **CD audio (CD-DA) playback, and the BIOS CD player.** Both work. `Play`
+  seeks, the drive hands raw 2352-byte sectors to the SPU once a sector time,
+  and they are mixed through the same CD input XA-ADPCM uses. The BIOS CD
+  player lists a disc's tracks, seeks to the one chosen and counts the time up
+  while it plays - which needs three things games never touch: the shell-open
+  latch that says a disc was swapped, GetlocP's exact eight-byte subchannel
+  reply, and `Play` treating a track number of zero as "carry on from here".
+  See bugs 34 and 35. When CD music appears not to work the cause is usually
+  the track layout - see disc images above.
 - **Load delay slots.** Modelled. A load reaches its register one instruction
   later than the instruction that issued it, a register write in that slot
   beats the load rather than being overwritten by it, and lwl/lwr forward to

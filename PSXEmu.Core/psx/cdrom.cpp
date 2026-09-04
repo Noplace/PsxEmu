@@ -60,7 +60,8 @@ int Cdrom::Initialize() {
   index_ = 0;
   // No disc and no motor until something says otherwise. The shell-open bit
   // starts set, which is what tells software the tray state is unknown.
-  status_ = kStatusShellOpen;
+  status_ = 0;
+  shell_open_ = true;   // nothing in the drive until something is put there
   interrupt_enable_ = 0;
   interrupt_flag_ = 0;
 
@@ -104,6 +105,13 @@ bool Cdrom::OpenDisc(const char* path) {
   }
   if (!disc_.Open(path))
     return false;
+  // Swapping a disc is a lid opening and closing as far as software is
+  // concerned, and it has to be told. Whatever was playing stops, and the
+  // shell-open latch is set so the next status read says the disc may have
+  // changed - see StatusByte.
+  reading_ = false;
+  playing_ = false;
+  shell_open_ = true;
   status_ = kStatusMotorOn;
   seek_lba_ = Disc::kLeadInSectors;
   read_lba_ = Disc::kLeadInSectors;
@@ -114,7 +122,8 @@ void Cdrom::CloseDisc() {
   disc_.Close();
   reading_ = false;
   playing_ = false;
-  status_ = kStatusShellOpen;
+  shell_open_ = true;
+  status_ = 0;              // no disc, no motor
 }
 
 int32_t Cdrom::SectorCycles() const {
@@ -254,6 +263,26 @@ void Cdrom::ClearParameters() {
 // Responses
 // ---------------------------------------------------------------------------
 
+
+// The status byte as software sees it, which is not quite the live status.
+//
+// Bit 4 does not say "the lid is open", it says "the lid is or was open", and
+// it stays set after the lid closes until something reads it. That latch is
+// the only way software finds out a disc has been swapped: the BIOS CD player
+// polls the status and re-reads the table of contents when it sees the bit.
+// Without it a disc can be changed under software that has no reason to look
+// again, and it goes on believing the tray is empty - which is exactly what
+// choosing a track in the CD player and hearing nothing looks like.
+uint8_t Cdrom::StatusByte() {
+  uint8_t value = status_;
+  if (shell_open_)
+    value |= kStatusShellOpen;
+  // Reading clears it, but only once there is a disc to read again. With the
+  // tray genuinely empty the bit stays set, which is what it is for.
+  if (shell_open_ && disc_.loaded())
+    shell_open_ = false;
+  return value;
+}
 void Cdrom::QueueResponse(Interrupt interrupt, int32_t delay,
                           const uint8_t* data, uint8_t length) {
   PendingResponse response;
@@ -267,11 +296,12 @@ void Cdrom::QueueResponse(Interrupt interrupt, int32_t delay,
 }
 
 void Cdrom::QueueStatus(Interrupt interrupt, int32_t delay) {
-  QueueResponse(interrupt, delay, &status_, 1);
+  const uint8_t value = StatusByte();
+  QueueResponse(interrupt, delay, &value, 1);
 }
 
 void Cdrom::QueueError(uint8_t error_code, int32_t delay) {
-  const uint8_t data[2] = { static_cast<uint8_t>(status_ | kStatusError),
+  const uint8_t data[2] = { static_cast<uint8_t>(StatusByte() | kStatusError),
                             error_code };
   QueueResponse(kIntError, delay, data, 2);
 }
@@ -319,9 +349,19 @@ void Cdrom::Tick(uint32_t cycles) {
 // Reading
 // ---------------------------------------------------------------------------
 
-void Cdrom::GetReport(uint8_t* data) {
-  uint8_t minute, second, frame;
-  Disc::LbaToMsf(read_lba_, &minute, &second, &frame);
+// Where the head is, as the subchannel reports it: the track and index it is
+// inside, the time since that track started, and the time since the start of
+// the disc. Eight bytes, all BCD.
+//
+// This is what GetlocP answers with, and there is no status byte in front of
+// it. Putting one there shifts every field along by one, so software reads
+// the status as the track number, the track number as the index, and a time
+// that is one byte out of step - which is why the BIOS CD player could list
+// the tracks off a disc and then sit at 00:00 for ever when told to play one.
+void Cdrom::GetPosition(uint8_t* data) {
+  uint8_t absolute_minute, absolute_second, absolute_frame;
+  Disc::LbaToMsf(read_lba_, &absolute_minute, &absolute_second,
+                 &absolute_frame);
 
   uint8_t current_track = 1;
   uint8_t index = 1;
@@ -336,21 +376,51 @@ void Cdrom::GetReport(uint8_t* data) {
     }
   }
 
-  uint8_t track_minute, track_second, track_frame;
+  uint8_t relative_minute, relative_second, relative_frame;
   if (read_lba_ >= track_start) {
-    Disc::LbaToMsf(read_lba_ - track_start, &track_minute, &track_second, &track_frame);
+    Disc::LbaToMsf(read_lba_ - track_start, &relative_minute,
+                   &relative_second, &relative_frame);
   } else {
-    track_minute = track_second = track_frame = 0;
+    relative_minute = relative_second = relative_frame = 0;
   }
 
-  data[0] = status_;
-  data[1] = Disc::ToBcd(current_track);
-  data[2] = Disc::ToBcd(index);
-  data[3] = track_minute;
-  data[4] = track_second;
-  data[5] = track_frame;
-  data[6] = minute;
-  data[7] = second;
+  data[0] = Disc::ToBcd(current_track);
+  data[1] = Disc::ToBcd(index);
+  data[2] = relative_minute;
+  data[3] = relative_second;
+  data[4] = relative_frame;
+  data[5] = absolute_minute;
+  data[6] = absolute_second;
+  data[7] = absolute_frame;
+}
+
+// The unsolicited position packet the drive sends while playing audio, which
+// software turns on with mode bit 2.
+//
+// Same information as GetlocP, but this one carries the status first and only
+// one of the two times, and it ends with a peak level rather than the third
+// byte of the other. Which time it carries is not a separate field: bit 7 of
+// the seconds byte says so, and software that wants both waits for both to
+// come round.
+void Cdrom::GetReport(uint8_t* data, bool relative) {
+  uint8_t position[8];
+  GetPosition(position);
+  data[0] = StatusByte();
+  data[1] = position[0];                 // track
+  data[2] = position[1];                 // index
+  if (relative) {
+    data[3] = position[2];               // minute within the track
+    data[4] = position[3] | 0x80;        // bit 7: this is the track time
+    data[5] = position[4];
+  } else {
+    data[3] = position[5];               // minute from the start of the disc
+    data[4] = position[6];
+    data[5] = position[7];
+  }
+  // The peak level the signal processor would have measured. Nothing here
+  // measures it, and only a VU meter would miss it.
+  data[6] = 0;
+  data[7] = 0;
 }
 // ---------------------------------------------------------------------------
 // XA-ADPCM
@@ -543,22 +613,32 @@ void Cdrom::StepRead(uint32_t cycles) {
 
   if (playing_) {
     if (disc_.ReadSector(read_lba_, sector_)) {
+      ++stats_.cdda_sectors;
       system().spu().QueueCdAudio(sector_);
       if (read_lba_ >= disc_.total_sectors()) {
         playing_ = false;
         status_ &= ~kStatusPlaying;
         QueueStatus(kIntDataEnd, 0); // INT4
       } else {
-        if (mode_ & 0x04) { // Report mode
-          if (pending_.empty()) {
+        // Report mode. The drive does not report on every sector - that would
+        // be seventy-five interrupts a second - but on eight of the seventy-
+        // five, alternating between the time from the start of the disc and
+        // the time within the track. Which eight is not arbitrary: software
+        // reads the pattern off the absolute frame number, so the phase
+        // matters as much as the rate.
+        if ((mode_ & 0x04) && pending_.empty()) {
+          const uint8_t absolute_frame =
+              Disc::ToBcd(static_cast<uint8_t>(read_lba_ % 75));
+          if ((absolute_frame & 0x0F) == 0) {
             uint8_t data[8];
-            GetReport(data);
+            GetReport(data, (absolute_frame & 0x10) != 0);
             QueueResponse(kIntDataReady, 0, data, 8);
           }
         }
       }
       ++read_lba_;
     } else {
+      ++stats_.cdda_failures;
       QueueError(0x04, kAcknowledgeDelay);
       reading_ = false;
       playing_ = false;
@@ -584,7 +664,8 @@ void Cdrom::ExecuteCommand(uint8_t command) {
   ++stats_.issued[command];
   // The commands that move the head or start and stop a read, in sequence with
   // the sectors, so a stream can be read as a story rather than a total.
-  if (command == 0x06 || command == 0x09 || command == 0x15 ||
+  if (command == 0x06 || command == 0x09 || command == 0x15 || command == 0x03 ||
+      command == 0x16 ||
       command == 0x1B || command == 0x0A || command == 0x08) {
     {
       Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
@@ -618,18 +699,26 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         QueueError(0x80, kAcknowledgeDelay);
         break;
       }
+      // The parameter, when there is one, is a track number in BCD - but
+      // zero is not a track, it means "carry on from wherever the head is",
+      // and the BIOS CD player sends exactly that every frame while a track
+      // is playing. Treating it as an out of range track answered every one
+      // of them with an error, the player retried for ever, and choosing a
+      // track in it did nothing at all.
+      bool play_from_here = true;
       if (!parameter_fifo_.empty()) {
-        uint8_t track_bcd = TakeParameter();
-        uint8_t track = ((track_bcd >> 4) * 10) + (track_bcd & 0x0F);
-        if (track >= 1 && track <= disc_.track_count()) {
+        const uint8_t track = Disc::FromBcd(TakeParameter());
+        if (track != 0) {
+          if (track > disc_.track_count()) {
+            QueueError(0x10, kAcknowledgeDelay);
+            break;
+          }
           seek_lba_ = disc_.track(track - 1).start_lba;
-        } else {
-          QueueError(0x10, kAcknowledgeDelay);
-          break;
+          play_from_here = false;
         }
-      } else if (!seek_pending_) {
-        seek_lba_ = read_lba_;
       }
+      if (play_from_here && !seek_pending_)
+        seek_lba_ = read_lba_;
       seek_pending_ = false;
       read_lba_ = seek_lba_;
       reading_ = false;
@@ -717,7 +806,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
     case 0x0F: {  // Getparam
       // Returns current parameters: stat, mode, file, channel, sm
       // We don't fully track file/channel/sm from Setfilter yet, so return 0s
-      const uint8_t data[5] = { status_, mode_, 0, 0, 0 };
+      const uint8_t data[5] = { StatusByte(), mode_, 0, 0, 0 };
       QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 5);
       break;
     }
@@ -725,7 +814,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
     case 0x10: {  // GetlocL
       // Returns sector header/subheader: stat, min, sec, frame, mode, file, channel, sm
       const uint8_t data[8] = {
-        status_,
+        StatusByte(),
         sector_[12], sector_[13], sector_[14], sector_[15],
         sector_[16], sector_[17], sector_[18]
       };
@@ -735,7 +824,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
 
     case 0x11: {  // GetlocP - where the head is, in track and disc terms
       uint8_t data[8];
-      GetReport(data);
+      GetPosition(data);
       QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 8);
       break;
     }
@@ -746,7 +835,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         break;
       }
       const uint8_t data[3] = {
-        status_,
+        StatusByte(),
         Disc::ToBcd(1),
         Disc::ToBcd(static_cast<uint8_t>(disc_.track_count()))
       };
@@ -765,7 +854,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         lba = disc_.track(requested - 1).start_lba;
       uint8_t minute, second, frame;
       Disc::LbaToMsf(lba, &minute, &second, &frame);
-      const uint8_t data[4] = { status_, minute, second, frame };
+      const uint8_t data[4] = { StatusByte(), minute, second, frame };
       QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 4);
       break;
     }

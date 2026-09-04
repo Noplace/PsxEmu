@@ -85,6 +85,17 @@ class Spu : public Component {
     uint64_t frames_dropped;     // the buffer filled and nobody drained it
     uint32_t voices_active;      // at the last frame
     int16_t peak_left, peak_right;
+    // The CD audio path, which has no other way of saying whether it did
+    // anything. A track that plays silently is indistinguishable from one
+    // that never started unless these are counted separately.
+    uint64_t cd_samples_in;      // stereo pairs handed over by the drive
+    // The CD input carries CD-DA and XA-ADPCM alike - the hardware has one
+    // of it - so what comes out cannot be attributed to either. Only the
+    // CD-DA side of what goes in is counted separately.
+    uint64_t cd_samples_out;     // pairs mixed in, from either source
+    uint64_t cd_samples_dropped; // pairs overwritten before anyone read them
+    uint64_t cd_frames_muted;    // pairs thrown away with the enable bit clear
+    int16_t cd_peak;             // loudest CD sample seen, before volume
   };
   const Stats& stats() const { return stats_; }
 

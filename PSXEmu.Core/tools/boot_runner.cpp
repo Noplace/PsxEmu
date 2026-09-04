@@ -138,6 +138,12 @@ struct Options {
   const char* vram;
   const char* wav;
   int frames;
+  // A disc put in after the machine is already running, the way someone
+  // reaches the CD player: boot with the tray empty, pick CD PLAYER, then
+  // insert. The disc is a different one from --disc, which is mounted at
+  // boot and makes the BIOS start the game on it instead.
+  const char* insert;
+  int insert_at;
   int trace;
   uint64_t trace_skip;
   uint32_t trace_at;
@@ -222,6 +228,181 @@ bool WritePpm(const char* path, const uint32_t* pixels, int width, int height) {
   return true;
 }
 
+// A frame as a .bmp, because a .ppm cannot be looked at without converting it
+// first and half of working out where the machine is stuck is looking at the
+// screen. Uncompressed 24-bit, bottom-up, which is the format at its simplest.
+bool WriteBmp(const char* path, const uint32_t* pixels, int width, int height) {
+  FILE* fp = fopen(path, "wb");
+  if (fp == nullptr)
+    return false;
+  const int row_bytes = width * 3;
+  const int padding = (4 - (row_bytes % 4)) % 4;
+  const uint32_t image_bytes =
+      static_cast<uint32_t>((row_bytes + padding) * height);
+  const uint32_t offset = 14 + 40;
+  const uint32_t file_bytes = offset + image_bytes;
+
+  uint8_t header[54];
+  memset(header, 0, sizeof(header));
+  header[0] = 'B'; header[1] = 'M';
+  memcpy(&header[2], &file_bytes, 4);
+  memcpy(&header[10], &offset, 4);
+  const uint32_t info_size = 40;
+  memcpy(&header[14], &info_size, 4);
+  const int32_t w = width;
+  const int32_t h = height;               // positive: rows run bottom to top
+  memcpy(&header[18], &w, 4);
+  memcpy(&header[22], &h, 4);
+  const uint16_t planes = 1, bits = 24;
+  memcpy(&header[26], &planes, 2);
+  memcpy(&header[28], &bits, 2);
+  memcpy(&header[34], &image_bytes, 4);
+  fwrite(header, 1, sizeof(header), fp);
+
+  const uint8_t pad[3] = { 0, 0, 0 };
+  for (int y = height - 1; y >= 0; --y) {
+    for (int x = 0; x < width; ++x) {
+      const uint32_t pixel = pixels[y * width + x];
+      const uint8_t bgr[3] = {
+        static_cast<uint8_t>(pixel & 0xFF),
+        static_cast<uint8_t>((pixel >> 8) & 0xFF),
+        static_cast<uint8_t>((pixel >> 16) & 0xFF),
+      };
+      fwrite(bgr, 1, 3, fp);
+    }
+    if (padding > 0)
+      fwrite(pad, 1, padding, fp);
+  }
+  fclose(fp);
+  return true;
+}
+
+// A frame as a .png, because half of working out where a machine is stuck is
+// looking at the screen, and a .ppm cannot be looked at without converting it
+// first.
+//
+// No compression library is involved: a zlib stream is allowed to consist of
+// stored - literally uncompressed - deflate blocks, which needs nothing but a
+// length and its complement in front of each one. The file is bigger than it
+// would otherwise be and every viewer reads it.
+namespace png {
+
+uint32_t Crc32(const uint8_t* data, size_t length, uint32_t crc) {
+  static uint32_t table[256];
+  static bool built = false;
+  if (!built) {
+    for (uint32_t n = 0; n < 256; ++n) {
+      uint32_t c = n;
+      for (int k = 0; k < 8; ++k)
+        c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+      table[n] = c;
+    }
+    built = true;
+  }
+  crc = ~crc;
+  for (size_t i = 0; i < length; ++i)
+    crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+  return ~crc;
+}
+
+void PutBigEndian(std::vector<uint8_t>& out, uint32_t value) {
+  out.push_back(static_cast<uint8_t>(value >> 24));
+  out.push_back(static_cast<uint8_t>(value >> 16));
+  out.push_back(static_cast<uint8_t>(value >> 8));
+  out.push_back(static_cast<uint8_t>(value));
+}
+
+void Chunk(std::vector<uint8_t>& out, const char* type,
+           const std::vector<uint8_t>& data) {
+  PutBigEndian(out, static_cast<uint32_t>(data.size()));
+  const size_t crc_start = out.size();
+  out.insert(out.end(), type, type + 4);
+  out.insert(out.end(), data.begin(), data.end());
+  const uint32_t crc =
+      Crc32(&out[crc_start], out.size() - crc_start, 0);
+  PutBigEndian(out, crc);
+}
+
+}  // namespace png
+
+bool WritePng(const char* path, const uint32_t* pixels, int width,
+              int height) {
+  if (width <= 0 || height <= 0)
+    return false;
+
+  // Raw scanlines, each behind a zero filter byte.
+  std::vector<uint8_t> raw;
+  raw.reserve(static_cast<size_t>(height) * (1 + width * 3));
+  for (int y = 0; y < height; ++y) {
+    raw.push_back(0);
+    for (int x = 0; x < width; ++x) {
+      const uint32_t pixel = pixels[y * width + x];
+      raw.push_back(static_cast<uint8_t>((pixel >> 16) & 0xFF));
+      raw.push_back(static_cast<uint8_t>((pixel >> 8) & 0xFF));
+      raw.push_back(static_cast<uint8_t>(pixel & 0xFF));
+    }
+  }
+
+  // zlib: header, stored deflate blocks, adler32 of the raw bytes.
+  std::vector<uint8_t> z;
+  z.push_back(0x78);
+  z.push_back(0x01);
+  size_t offset = 0;
+  while (offset < raw.size()) {
+    const size_t block = (raw.size() - offset > 65535)
+                             ? 65535 : (raw.size() - offset);
+    const bool last = (offset + block) >= raw.size();
+    z.push_back(last ? 1 : 0);
+    z.push_back(static_cast<uint8_t>(block & 0xFF));
+    z.push_back(static_cast<uint8_t>(block >> 8));
+    z.push_back(static_cast<uint8_t>(~block & 0xFF));
+    z.push_back(static_cast<uint8_t>((~block >> 8) & 0xFF));
+    z.insert(z.end(), raw.begin() + offset, raw.begin() + offset + block);
+    offset += block;
+  }
+  uint32_t a = 1, b = 0;
+  for (size_t i = 0; i < raw.size(); ++i) {
+    a = (a + raw[i]) % 65521;
+    b = (b + a) % 65521;
+  }
+  png::PutBigEndian(z, (b << 16) | a);
+
+  std::vector<uint8_t> out;
+  static const uint8_t kSignature[8] = { 0x89, 'P', 'N', 'G',
+                                         0x0D, 0x0A, 0x1A, 0x0A };
+  out.insert(out.end(), kSignature, kSignature + 8);
+
+  std::vector<uint8_t> ihdr;
+  png::PutBigEndian(ihdr, static_cast<uint32_t>(width));
+  png::PutBigEndian(ihdr, static_cast<uint32_t>(height));
+  ihdr.push_back(8);    // bits per channel
+  ihdr.push_back(2);    // truecolour
+  ihdr.push_back(0);    // deflate
+  ihdr.push_back(0);    // adaptive filtering
+  ihdr.push_back(0);    // no interlace
+  png::Chunk(out, "IHDR", ihdr);
+  png::Chunk(out, "IDAT", z);
+  png::Chunk(out, "IEND", std::vector<uint8_t>());
+
+  FILE* fp = fopen(path, "wb");
+  if (fp == nullptr)
+    return false;
+  const bool ok = fwrite(out.data(), 1, out.size(), fp) == out.size();
+  fclose(fp);
+  return ok;
+}
+// Writes whichever format the name asks for.
+bool WriteFrame(const char* path, const uint32_t* pixels, int width,
+                int height) {
+  const size_t length = strlen(path);
+  if (length >= 4 && _stricmp(path + length - 4, ".png") == 0)
+    return WritePng(path, pixels, width, height);
+  if (length >= 4 && _stricmp(path + length - 4, ".bmp") == 0)
+    return WriteBmp(path, pixels, width, height);
+  return WritePpm(path, pixels, width, height);
+}
+
+
 // How many pixels differ from black. A frame that is entirely black almost
 // always means the run never got as far as drawing anything, and that is worth
 // distinguishing from a frame that is merely wrong.
@@ -253,6 +434,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->vram = nullptr;
   options->wav = nullptr;
   options->frames = 300;
+  options->insert = nullptr;
+  options->insert_at = 0;
   options->trace = 0;
   options->trace_skip = 0;
   options->trace_at = 0;
@@ -276,6 +459,9 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->disc = argv[++i];
     } else if (strcmp(arg, "--frames") == 0 && i + 1 < argc) {
       options->frames = atoi(argv[++i]);
+    } else if (strcmp(arg, "--insert") == 0 && i + 2 < argc) {
+      options->insert = argv[++i];
+      options->insert_at = atoi(argv[++i]);
     } else if (strcmp(arg, "--ppm") == 0 && i + 1 < argc) {
       options->ppm = argv[++i];
     } else if (strcmp(arg, "--vram") == 0 && i + 1 < argc) {
@@ -473,6 +659,16 @@ int main(int argc, char** argv) {
     if (now != last_frame) {
       last_frame = now;
       ++frames;
+      // Put the disc in while the machine runs, which is how someone reaches
+      // the CD player: the BIOS boots the game on any disc that is already
+      // there, so the tray has to start empty.
+      if (options.insert != nullptr && frames == options.insert_at) {
+        if (system->LoadDisc(options.insert))
+          printf("inserted       %s at frame %d\n", options.insert, frames);
+        else
+          printf("inserted       FAILED to open %s\n", options.insert);
+        fflush(stdout);
+      }
       // A timeline of one run, which is far cheaper than bisecting with many.
       // The checksum going quiet while the counters keep moving is a game
       // waiting for input; everything going quiet is a hang.
@@ -586,6 +782,11 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(cd_stats.sectors_read),
          static_cast<unsigned long long>(cd_stats.interrupts),
          static_cast<unsigned long long>(cd_stats.unknown_commands));
+  if (cd_stats.cdda_sectors != 0 || cd_stats.cdda_failures != 0) {
+    printf("cdda           %llu sectors played, %llu could not be read\n",
+           static_cast<unsigned long long>(cd_stats.cdda_sectors),
+           static_cast<unsigned long long>(cd_stats.cdda_failures));
+  }
   if (cd_stats.xa_sectors != 0 || cd_stats.xa_filtered != 0) {
     printf("               %llu XA audio sectors decoded, %llu filtered out\n",
            static_cast<unsigned long long>(cd_stats.xa_sectors),
@@ -643,7 +844,8 @@ int main(int argc, char** argv) {
             const char* name =
                 e.mode == 0x06 ? "ReadN" : e.mode == 0x09 ? "Pause" :
                 e.mode == 0x15 ? "SeekL" : e.mode == 0x1B ? "ReadS" :
-                e.mode == 0x0A ? "Init"  : e.mode == 0x08 ? "Stop"  : "?";
+                e.mode == 0x0A ? "Init"  : e.mode == 0x08 ? "Stop"  :
+                e.mode == 0x03 ? "Play"  : e.mode == 0x16 ? "SeekP" : "?";
             printf("  %-8s at lba %6u  (previous sector %u/%u taken)\n", name,
                    e.lba, e.consumed, e.size);
             break;
@@ -775,6 +977,15 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(spu_stats.key_ons),
          static_cast<unsigned long long>(spu_stats.blocks_decoded),
          spu_stats.peak_left, spu_stats.peak_right);
+  if (spu_stats.cd_samples_in != 0 || spu_stats.cd_samples_out != 0) {
+    printf("cd audio       %llu CD-DA pairs in (peak %d), %llu mixed from the"
+           " CD input, %llu dropped, %llu muted\n",
+           static_cast<unsigned long long>(spu_stats.cd_samples_in),
+           spu_stats.cd_peak,
+           static_cast<unsigned long long>(spu_stats.cd_samples_out),
+           static_cast<unsigned long long>(spu_stats.cd_samples_dropped),
+           static_cast<unsigned long long>(spu_stats.cd_frames_muted));
+  }
 
   {
     const emulation::psx::Mdec::Stats& m = system->io().mdec.stats();
@@ -992,13 +1203,13 @@ int main(int argc, char** argv) {
       const uint32_t b = (((p >> 10) & 0x1F) << 3) | (((p >> 10) & 0x1F) >> 2);
       pixels[i] = (r << 16) | (g << 8) | b;
     }
-    if (WritePpm(options.vram, pixels.data(), w, h))
+    if (WriteFrame(options.vram, pixels.data(), w, h))
       printf("wrote          %s (%dx%d, %d non-black)\n", options.vram, w, h,
              NonBlackPixels(pixels.data(), w * h));
   }
 
   if (options.ppm != nullptr) {
-    if (WritePpm(options.ppm, pixels, width, height))
+    if (WriteFrame(options.ppm, pixels, width, height))
       printf("wrote          %s\n", options.ppm);
     else
       fprintf(stderr, "failed to write %s\n", options.ppm);

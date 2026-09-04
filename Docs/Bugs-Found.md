@@ -1396,3 +1396,153 @@ workloads, with every diagnostic in the build compiled in. That does not make
 a recompiler pointless, but it does move it out of "needed to run games at
 all" and into "needed for headroom" - which is a different argument, and one
 the plan should now be re-read against.
+
+## 34. CD audio did not play, and playback was not the reason
+
+Reported as "playing CD audio tracks, not working". The obvious place to look
+is the playback path - `Play`, the sector feed, the SPU's CD input - and all of
+it turned out to be correct. The fault was one step earlier and looked nothing
+like an audio problem.
+
+**What the measurement said.** The CD input had no diagnostics at all, so a
+track playing silently and a track that never started were indistinguishable.
+Adding counters for pairs handed over, pairs mixed, pairs dropped and pairs
+thrown away with the enable bit clear answered it immediately. Ridge Racer,
+booted from its cue sheet:
+
+```
+cd audio  1255968 CD-DA pairs in (peak 29648), 1255866 mixed from the CD
+          input, 0 dropped, 0 muted
+```
+
+Twenty-eight seconds of music, nothing dropped, nothing muted. To rule out the
+possibility that this was a data track being read as audio - which would also
+be loud - the sector `Play` actually read was compared against the image:
+
+```
+file sector 140990:  2e 09 8b 00 7c 07 2e 00 62 06 f2 ff ...   smooth PCM
+file sector    100:  00 ff ff ff ff ff ff ff ff ff ff 00 ...   data sync
+```
+
+Genuine music. Playback works.
+
+**What was actually wrong.** The same game booted from its `.bin` instead of
+its `.cue` mounts as one data track covering the whole disc, issues no `Play`
+at all, and is silent. The track layout is not in the image: it lived in the
+disc's lead-in, which a dump of the data area does not contain. So the game
+asks how many tracks there are, is told one, and never asks for a note. Nothing
+in the audio path ever runs, and nothing reports anything, because from the
+emulator's point of view nothing went wrong.
+
+**Two fixes.**
+
+*A cue sheet beside the image is now used.* Picking `game.bin` when
+`game.cue` is sitting next to it is an easy thing for someone to do and used
+to cost them every music track on the disc. Ridge Racer opened by its `.bin`
+now mounts 14 tracks and plays.
+
+*An image with no sheet at all works out what it can.* A data sector is
+recognisable by its twelve byte sync pattern and audio is not, so a binary
+search - about twenty reads of a half-gigabyte file - finds where the data
+track ends. On Ridge Racer it lands on sector 1737, which is exactly where the
+cue sheet says track 2 begins. That is worth having on its own: reporting the
+whole disc as data meant a game reading past the data track was handed music
+and told it was a filesystem.
+
+The second fix does *not* restore music for a disc with several tracks. Where
+one music track ends and the next begins is recorded nowhere in the data area,
+so twelve tracks still mount as two and a game that asks for track 5 by number
+still gets nothing. Ridge Racer without its cue boots and stays silent, which
+is the honest outcome - and [Gaps.md](Gaps.md) says so rather than implying
+the case is covered.
+
+**A measurement bug found on the way.** The first version of the counters
+reported Air Combat as "0 pairs in, 2,154,314 mixed", which reads as an
+emulator fault and is not one: CD-DA and XA-ADPCM share a single CD input,
+because the hardware has one, and only the CD-DA side of what goes in was being
+counted. The output counter is now labelled for what it measures rather than
+what it was assumed to measure. `QueueCdAudio` had also been duplicating
+`PushCdFrame` rather than calling it, which is why the drop counter only
+covered one of the two paths; it calls it now.
+
+**Verification.** Three new `media_test` checks groups covering the sync scan,
+the all-data case, and cue adoption - 17 checks, taking the file to 132. Both
+new behaviours were then broken deliberately to confirm the tests catch them:
+removing the scan (6 failures) and never looking for the sibling sheet (2,
+including the one that distinguishes a three-track sheet from a two-track
+scan). The BIOS shell checksum is unchanged and both regression games render
+exactly as before.
+
+## 35. Three bugs between the BIOS CD player and a note of music
+
+Reported as choosing a track in the BIOS CD player and hearing nothing. Bug 34
+had already established that CD-DA playback itself works, so this was somewhere
+else entirely - and it was three separate faults in a row, each of which alone
+is enough to produce silence. All three live on a path no game uses: a game
+reads data sectors and never asks the drive where it is or tells it to resume,
+which is why every game booted with all three broken.
+
+Getting to it needed two things the harness did not have: `--insert <disc>
+<frame>` to put a disc in while the machine is already running, because the
+BIOS boots any disc that is already there rather than showing its menu, and a
+PNG writer so a frame could actually be looked at. The first screenshot
+answered a question three runs of button-pressing had not: the cursor starts on
+MEMORY CARD, and CD PLAYER is *below* it, not beside it.
+
+**35a. Swapping a disc told software nothing.** `OpenDisc` set the status
+straight to "motor on". On hardware, opening the lid sets bit 4 of the status
+and it latches - it reads "is or was open" until something reads it - and that
+latch is the only way software finds out the disc changed. Without it the CD
+player sat with an empty track list for ever: it had no reason to look again.
+With it, the player reads the table of contents and lists all fourteen tracks.
+
+The status is now built by `StatusByte()`, which folds the latch in and clears
+it on the first read once a disc is present, and every response that carries a
+status goes through it.
+
+**35b. GetlocP had a status byte in front of it.** The command returns eight
+bytes of subchannel - track, index, time within the track, time from the start
+of the disc, all BCD - and no status. Ours prepended one, so every field was
+one byte out: software read the status as the track number, the track as the
+index, and a time shifted by a byte. It also pushed the absolute frame off the
+end. The CD player drives its whole display from this, which is why it sat at
+00:00.
+
+The report packet sent during playback is a *different* shape - status first,
+one of the two times, then a peak level - so `GetPosition` and `GetReport` are
+now separate functions rather than one used for both.
+
+**35c. `Play` with a track number of zero was rejected as an invalid track.**
+Zero is not a track: it means carry on from where the head is, and the BIOS CD
+player sends exactly that every frame while a track plays. Each one came back
+INT5. The player retried for ever - 1,250 Play commands and 1,249 errors in a
+twenty second run - and nothing came out. Now zero means what it means, and an
+out of range track is still an error.
+
+**Also fixed on the way: the reports were sent seventy-five times a second.**
+The drive reports on eight sectors of every seventy-five, alternating between
+the time from the start of the disc and the time within the track, with bit 7
+of the seconds byte saying which. Which eight is not arbitrary - software reads
+the pattern off the absolute frame number - so the phase matters as much as the
+rate. Interrupts during playback dropped from 1,891 to 255.
+
+**What it looks like now.** Boot the BIOS with no disc, choose CD PLAYER,
+insert a disc, pick track 6, press play: the player lists fourteen tracks,
+seeks to track 6, and the display counts up to 0:24 while 1,831 sectors of
+audio come out - the two agree exactly, 1,831 sectors being 24.4 seconds.
+
+**Verification.** A new `media_test` group, 16 checks, covering all three.
+Each was then broken deliberately to confirm the tests catch it. The first
+attempt at the swap test did *not* - it ejected before loading, and an eject
+sets the same bit, so it passed whether or not loading set it. That is the
+whole failure mode of the original bug reproduced inside its own test. It now
+swaps without ejecting, which is what the front end does.
+
+## A rendering bug found while looking at the screen
+
+Not investigated, recorded so it is not lost: the BIOS menus draw rainbow
+noise behind their highlighted labels - the MAIN MENU items, the MEMORY CARD
+buttons, the CD player's EXIT. The shapes and text are right and the noise sits
+where a flat or gently shaded fill belongs, so it looks like a texture or CLUT
+being read from somewhere nothing was written. It has been there all along and
+nothing measured it, because nothing had looked at these screens until now.
