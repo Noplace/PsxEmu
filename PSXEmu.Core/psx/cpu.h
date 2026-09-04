@@ -406,6 +406,10 @@ class Cpu : public Component {
   }*/
 
   void Tick();
+  // Charges a block of cycles the CPU did not spend executing - what a DMA
+  // takes while it holds the bus. The CPU is stopped for them, but the rest
+  // of the machine is not, so they have to be handed on.
+  void TickCycles(uint32_t cycles);
   uint32_t LoadMemory(bool cached, int size_bytes, uint32_t physical_address, uint32_t virtual_address);
   void StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physical_address, uint32_t virtual_address);
   uint32_t Load(MemorySize size, uint32_t address);
@@ -455,6 +459,65 @@ class Cpu : public Component {
   bool __inside_instruction;
   bool __inside_delay_slot;
   bool cache_flag_, valid_address_flag_;
+
+  // ---- load delay slots --------------------------------------------------
+  //
+  // On this CPU a load does not reach its register in time for the very next
+  // instruction: the value arrives one instruction later. Software written
+  // for it puts something useful in that slot, and an emulator that writes
+  // the register immediately runs such code differently - the instruction in
+  // the slot reads a value the hardware would not have given it yet.
+  //
+  // Two records model the two stages. A load arms `armed_`; at the start of
+  // the next instruction that becomes `pending_`, and at the start of the one
+  // after, `pending_` is written to the register file. Advancing at the start
+  // of an instruction rather than the end is what keeps this in program order
+  // through a branch delay slot, which runs as a nested ExecuteInstruction.
+  struct PendingLoad {
+    uint32_t reg = 0;
+    uint32_t value = 0;
+    bool active = false;
+  };
+  PendingLoad pending_load_;   // lands at the start of the next instruction
+  PendingLoad armed_load_;     // armed by the instruction running now
+
+  // Moves the load pipeline on by one instruction. Called once per
+  // instruction, before it executes.
+  void AdvanceLoadDelay();
+
+  // Every register write goes through here, because a write has to cancel a
+  // load still in flight to the same register - the hardware writes the load
+  // back first and the instruction's own result second, so the instruction
+  // wins. Writing the register directly would let the load overwrite it an
+  // instruction later.
+  void WriteReg(uint32_t index, uint32_t value) {
+    if (index != 0)
+      context_->gp.reg[index] = value;
+    if (pending_load_.active && pending_load_.reg == index)
+      pending_load_.active = false;
+  }
+
+  // A load: the value is promised now and delivered later.
+  void ArmLoad(uint32_t index, uint32_t value) {
+    // A second load to the same register discards the first before it ever
+    // reaches the register file, which is what the hardware does too.
+    if (pending_load_.active && pending_load_.reg == index)
+      pending_load_.active = false;
+    armed_load_.reg = index;
+    armed_load_.value = value;
+    armed_load_.active = (index != 0);
+  }
+
+  // LWL and LWR merge into whatever the register is about to hold, and the
+  // hardware forwards a load still in flight to them so that the usual
+  // back-to-back pair works with no gap between. Nothing else reads a
+  // register this way.
+  uint32_t ReadRegForwarded(uint32_t index) const {
+    if (pending_load_.active && pending_load_.reg == index)
+      return pending_load_.value;
+    return context_->gp.reg[index];
+  }
+
   void StageIF();
   void StageRD();
   void Jump(uint32_t address);

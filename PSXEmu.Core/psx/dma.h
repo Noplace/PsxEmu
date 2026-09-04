@@ -50,6 +50,28 @@ class Dma : public Component {
   void NoteTransfer(int channel, uint32_t words, uint32_t end,
                     uint32_t lba = 0, uint32_t first = 0);
  private:
+
+  // ---- how long a transfer takes ------------------------------------------
+  //
+  // A DMA is not free. It holds the bus for roughly a cycle a word, and the
+  // CPU is stopped for that time while everything else keeps running. Making
+  // it instantaneous - which it was - runs a game that moves a lot of data
+  // faster than the hardware relative to its own timers, its CD and its SPU.
+  //
+  // The rate is the one DuckStation uses and is a model, not a measurement:
+  // DRAM in page mode gives about one word per cycle, with one extra cycle
+  // every sixteen words for the page boundary.
+  static uint32_t RamCycles(uint32_t words) {
+    return words + (words + 15) / 16;
+  }
+  // Accrued while a transfer runs, charged to the CPU once it finishes.
+  uint32_t transfer_cycles_ = 0;
+  void ChargeWords(uint32_t words) { transfer_cycles_ += RamCycles(words); }
+  void ChargeCycles(uint32_t cycles) { transfer_cycles_ += cycles; }
+  // Runs one channel and bills the machine for the time it took.
+  // `acknowledge` is false only for the OTC channel, which this has never
+  // raised an interrupt for; that is left exactly as it was.
+  void RunChannel(int channel, bool acknowledge = true);
   DmaChannel channels[7];
   Stats stats_ = {};
   union {

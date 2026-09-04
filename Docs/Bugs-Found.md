@@ -1296,3 +1296,103 @@ counter 2 treated like counters 0 and 1 (3), the CPU-cycles-over-10 dot clock
 (1, reporting 700 against 1,100), and removing the read flush (4). The BIOS
 shell checksum is unchanged at `bd888bab645a63a9` with 0 unimplemented paths,
 and Legend of Mana and Wild Arms both render exactly as before.
+
+## 32. Load delay slots
+
+A load on the R3000A does not reach its register in time for the instruction
+right after it. The value arrives one instruction later, and software written
+for the machine both relies on that and works around it. This core wrote the
+register immediately, which is *more* permissive than the hardware - code that
+would read a stale value on a console read the fresh one here - so nothing
+broke, and nothing said anything either.
+
+**What it now does.** A load arms a record rather than writing. At the start
+of the next instruction that record becomes pending; at the start of the one
+after, it is written to the register file. Three details beyond the basic
+delay, each of which is a way to get this subtly wrong:
+
+- **A register write in the delay slot beats the load.** The hardware writes
+  the load back in its own writeback stage, one cycle before the following
+  instruction's, so the following instruction's result is the one that
+  survives. Model it the other way round and the load arrives late and quietly
+  overwrites whatever the slot computed. Every register write in the core now
+  goes through `Cpu::WriteReg`, which cancels a load in flight to the same
+  register - that is what the 44 converted write sites are for.
+- **lwl and lwr forward to each other.** They are meant to be used back to
+  back with no gap, which only works because the hardware forwards the first
+  one's result to the second. Without that, the pair silently assembles half a
+  word. `Cpu::ReadRegForwarded` is that forwarding path, and nothing else uses
+  it.
+- **The pipeline advances at the start of an instruction, not the end.** A
+  branch runs its delay slot as a nested `ExecuteInstruction`, so
+  end-of-instruction bookkeeping would run the slot's before the branch's -
+  out of program order - and a load two instructions before a branch would
+  reach its register one instruction late. This one is invisible except in
+  exactly that arrangement.
+
+**What it cost in the tests.** Nineteen `cpu_test` checks failed immediately,
+all of them tests that read a loaded register in the very next instruction -
+programs that would not have worked on the hardware. They were relying on the
+old permissiveness. The harness grew a `Settle()` that runs the two
+instructions a load needs to land, and the affected tests say so explicitly
+rather than being quietly rewritten to expect something else.
+
+**Verification.** A new `loaddelay` group, 8 checks, covering all four points
+above plus a load into r0 and a second load to the same register. Each of the
+four was then broken deliberately to confirm the tests catch it: writing the
+register immediately (1 failure), dropping the write cancellation (1),
+dropping lwl/lwr forwarding (2, including the pre-existing unaligned-word
+test), and moving the pipeline advance to the end of the instruction (1 - the
+branch case, and only that one). The BIOS shell checksum is unchanged at
+`bd888bab645a63a9` and both games render exactly as before.
+
+## 33. DMA transfers took no time at all
+
+A DMA ran to completion inside the register write that started it and the
+machine's clock did not move. A game that moves a lot of data therefore ran
+faster than the hardware relative to its own timers, its CD and its SPU - not
+by a little: a full display list is a few percent of a frame, every frame.
+
+Transfers are now billed for the bus time they take: about one cycle a word,
+plus one per sixteen for the DRAM page boundary, plus 8 cycles for each
+linked-list node and 5 more for a node carrying data. Those cycles go to
+`Cpu::TickCycles`, which advances the CPU's cycle counters - so the front
+end's pacing accounts for them - and hands them to the rest of the machine in
+the same 32-cycle steps ordinary execution uses. One enormous step would jump
+the GPU dozens of scanlines at once and leave the display gates the root
+counters watch meaningless for the whole transfer.
+
+The rate is DuckStation's model, not a measurement of real silicon, and
+[Gaps.md](Gaps.md) says so.
+
+The visible effect is small and in the right direction: over 1800 frames
+Legend of Mana executes the same work and takes 9,639 exception returns where
+it used to take 9,868, and Wild Arms 3,782 against 3,817. Fewer CPU
+instructions fit in the same wall of frames, because the bus is busy. Both
+games render identically.
+
+**Channel 6 still does not acknowledge.** The OTC channel has never raised its
+DMA interrupt here. That is left exactly as it was - whether it should is a
+separate question from how long it takes, and changing two things at once in
+the DMA is how the last three bugs there got missed.
+
+## Speed, measured for the first time
+
+Nothing in this project had ever measured wall-clock speed, which made every
+discussion of optimisation an argument about guesses.
+[Recompiler-Plan.md](Recompiler-Plan.md) says measurement should come before
+any optimisation work; `boot_runner` now reports it at the end of every run.
+
+On this machine, after the load-delay and DMA-timing work above:
+
+```
+BIOS shell        6.75s emulated in  4.57s wall = 1.48x real time, 87.5 fps
+Legend of Mana   30.36s emulated in 21.98s wall = 1.38x real time, 81.9 fps
+Wild Arms        30.36s emulated in 19.88s wall = 1.53x real time, 90.5 fps
+```
+
+The interpreter is already faster than the console it emulates, on real game
+workloads, with every diagnostic in the build compiled in. That does not make
+a recompiler pointless, but it does move it out of "needed to run games at
+all" and into "needed for headroom" - which is a different argument, and one
+the plan should now be re-read against.

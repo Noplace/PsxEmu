@@ -43,16 +43,30 @@ Three things about the counters are still approximate rather than wrong:
   scanlines can be observed, which is why the hblank gate can only change at
   batch granularity.
 
-### Cycle timing - approximate
+### Cycle timing - modelled, not measured
 
 `Cpu::Load` charges a region-dependent stall (3 cycles for RAM, 0 for the
 scratchpad, 3 for a hardware register, 5 for the BIOS ROM) on top of the
-per-instruction cost. That was enough to stop the BIOS giving up on VSync - see
-bug 16 - but it is a model, not a measurement.
+per-instruction cost. That was enough to stop the BIOS giving up on VSync -
+see bug 16 - but it is a model, not a measurement, and the per-instruction
+costs beneath it are uniform where real ones are not.
 
-DMA transfers complete instantaneously. A game that expects a transfer to take
-time, or that races a transfer against an interrupt, will see a machine that is
-faster than the hardware.
+DMA transfers now take time rather than completing instantaneously: a channel
+bills the machine roughly one cycle per word, plus one per sixteen for the
+DRAM page boundary, plus 8 cycles per linked-list node and 5 more for a node
+that carries data. The CPU is stopped for those cycles and everything else -
+the GPU, the counters, the CD, the SPU - runs through them, which is what the
+hardware does while the bus is held. The rate is DuckStation's model rather
+than a measurement of real silicon.
+
+What is still missing is any comparison against hardware. The right instrument
+is a timing test suite run on a console and on this, and nothing like that has
+been run. Until then every number here is a plausible shape, not a fact.
+
+The emulator's own speed is at least measured now: `boot_runner` reports
+emulated seconds against wall-clock seconds at the end of a run. See
+[Recompiler-Plan.md](Recompiler-Plan.md), which argues measurement should come
+before any optimisation work - that measurement now exists.
 
 ### CD audio is resampled linearly
 
@@ -72,14 +86,6 @@ cache at all.
 The cost is timing fidelity. It would also matter to a recompiler, which wants
 the cache-control write at `0xFFFE0130` as its signal that code has changed -
 see [Recompiler-Plan.md](Recompiler-Plan.md).
-
-### Load delay slots are not modelled
-
-A load's result is written to the register immediately rather than one
-instruction later. Real code almost never depends on reading the old value, and
-compilers fill the slot, so this is forgiving in practice - but it is more
-permissive than the hardware, so software that would fault on a console will
-run here.
 
 ### Cause's interrupt-pending bits are faked
 
@@ -241,6 +247,11 @@ come before any optimisation work.
 
 Things that look missing and are not, so they are not re-investigated:
 
+- **Load delay slots.** Modelled. A load reaches its register one instruction
+  later than the instruction that issued it, a register write in that slot
+  beats the load rather than being overwritten by it, and lwl/lwr forward to
+  each other so the usual back-to-back pair works with no gap. Covered by
+  `cpu_test`'s `loaddelay` group. See bug 32.
 - **`System::BootDisc` and auto-boot.** The BIOS boots discs itself, correctly,
   and that is what the front end does. `BootDisc` remains for the harness's
   `--boot-disc`, and auto-boot for `--auto-boot`, but bug 19 measured the HLE

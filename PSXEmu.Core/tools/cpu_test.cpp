@@ -195,6 +195,19 @@ class Machine {
       system_->StepInstruction();
   }
 
+  // Runs the two instructions it takes for a load still in flight to reach
+  // its register.
+  //
+  // A load on this CPU does not land until the second instruction after it,
+  // so a test that ends on a load and then reads the register is asking for a
+  // value the hardware would not have produced yet. Real code ends with the
+  // pipeline drained because there is always something after it; a test
+  // program that stops dead has to say so. The memory after every test
+  // program is zero, which decodes as NOP, so this runs two of those.
+  void Settle() {
+    Run(2);
+  }
+
   // Assembles, runs, and leaves the result in the register file. The count is
   // the number of *steps*; a taken branch runs its delay slot inside one step.
   void Execute(const std::vector<uint32_t>& program, int steps) {
@@ -554,6 +567,7 @@ void TestLoadStore(Machine& m) {
   m.Load({ LUI(t0, kDataBase >> 16), ORI(t0, t0, kDataBase & 0xFFFF),
            LB(t1, 0, t0), LBU(t2, 0, t0) });
   m.Run(4);
+    m.Settle();
   CheckEqual(m.reg(t1), 0xFFFFFFFFu, "lb 0xFF");
   CheckEqual(m.reg(t2), 0x000000FFu, "lbu 0xFF");
 
@@ -563,6 +577,7 @@ void TestLoadStore(Machine& m) {
   m.Load({ LUI(t0, kDataBase >> 16), ORI(t0, t0, kDataBase & 0xFFFF),
            LH(t1, 0, t0), LHU(t2, 0, t0) });
   m.Run(4);
+    m.Settle();
   CheckEqual(m.reg(t1), 0xFFFFFFFFu, "lh 0xFFFF");
   CheckEqual(m.reg(t2), 0x0000FFFFu, "lhu 0xFFFF");
 
@@ -589,6 +604,7 @@ void TestLoadStore(Machine& m) {
            LUI(t1, 0xDEAD), ORI(t1, t1, 0xBEEF),
            SW(t1, 0, t0), LW(t2, 0, t0) });
   m.Run(6);
+    m.Settle();
   CheckEqual(m.reg(t2), 0xDEADBEEFu, "round trip");
 }
 
@@ -624,6 +640,7 @@ void TestUnalignedLoadStore(Machine& m) {
              LUI(t1, kRegister >> 16), ORI(t1, t1, kRegister & 0xFFFF),
              LWL(t1, offset, t0) });
     m.Run(5);
+    m.Settle();
     CheckEqual(m.reg(t1), kLwlExpected[offset], "lwl result");
 
     snprintf(name, sizeof(name), "lwr at offset %d", offset);
@@ -634,6 +651,7 @@ void TestUnalignedLoadStore(Machine& m) {
              LUI(t1, kRegister >> 16), ORI(t1, t1, kRegister & 0xFFFF),
              LWR(t1, offset, t0) });
     m.Run(5);
+    m.Settle();
     CheckEqual(m.reg(t1), kLwrExpected[offset], "lwr result");
 
     // The store cases are the important ones: whatever the instruction does
@@ -668,6 +686,7 @@ void TestUnalignedLoadStore(Machine& m) {
            LWL(t1, 5, t0),           // most significant bytes
            LWR(t1, 2, t0) });        // least significant bytes
   m.Run(4);
+    m.Settle();
   CheckEqual(m.reg(t1), 0x66554433u, "the unaligned word at offset 2");
 
   BeginTest("swl+swr store a whole unaligned word");
@@ -687,6 +706,105 @@ void TestUnalignedLoadStore(Machine& m) {
 // The memory map
 // ---------------------------------------------------------------------------
 
+
+// The load delay slot. A load on this CPU does not reach its register in time
+// for the instruction right after it - the value arrives one instruction
+// later - and software written for the machine both relies on that and works
+// around it. An emulator that writes the register straight away runs such
+// code differently, and does so silently.
+void TestLoadDelaySlot(Machine& m) {
+  const uint32_t kValue = 0xCAFEF00D;
+
+  BeginTest("the instruction after a load sees the old value");
+  m.Reset();
+  m.WriteWord(kDataBase, kValue);
+  m.Load({ LUI(t0, kDataBase >> 16), ORI(t0, t0, kDataBase & 0xFFFF),
+           ORI(t1, zero, 0x1234),      // t1 has something in it beforehand
+           LW(t1, 0, t0),              // load into the same register
+           ADDU(t2, t1, zero) });      // the delay slot reads t1
+  m.Run(5);
+  CheckEqual(m.reg(t2), 0x1234u,
+             "the delay slot got the value from before the load");
+  m.Settle();
+  CheckEqual(m.reg(t1), kValue, "and the load itself did land");
+
+  BeginTest("the instruction after that sees the new value");
+  m.Reset();
+  m.WriteWord(kDataBase, kValue);
+  m.Load({ LUI(t0, kDataBase >> 16), ORI(t0, t0, kDataBase & 0xFFFF),
+           ORI(t1, zero, 0x1234),
+           LW(t1, 0, t0),
+           NOP(),                      // the delay slot
+           ADDU(t2, t1, zero) });      // one later - this one sees it
+  m.Run(6);
+  CheckEqual(m.reg(t2), kValue, "one instruction later the value is there");
+
+  // The hardware writes the load back before the next instruction's own
+  // result, so the instruction wins and the load is simply lost. Getting this
+  // backwards is the easy mistake: the load would arrive an instruction late
+  // and quietly overwrite whatever was computed in the slot.
+  BeginTest("a write in the delay slot beats the load");
+  m.Reset();
+  m.WriteWord(kDataBase, kValue);
+  m.Load({ LUI(t0, kDataBase >> 16), ORI(t0, t0, kDataBase & 0xFFFF),
+           LW(t1, 0, t0),
+           ORI(t1, zero, 0x5678),      // same register, in the delay slot
+           NOP(), NOP() });
+  m.Run(6);
+  CheckEqual(m.reg(t1), 0x5678u, "the instruction result survived");
+
+  BeginTest("a second load to the same register discards the first");
+  m.Reset();
+  m.WriteWord(kDataBase, kValue);
+  m.WriteWord(kDataBase + 4, 0x11112222);
+  m.Load({ LUI(t0, kDataBase >> 16), ORI(t0, t0, kDataBase & 0xFFFF),
+           LW(t1, 0, t0),
+           LW(t1, 4, t0),
+           NOP(), NOP() });
+  m.Run(6);
+  CheckEqual(m.reg(t1), 0x11112222u, "the second load is what lands");
+
+  // A load two instructions before a branch has to land in the branch's delay
+  // slot. The delay slot runs nested inside the branch, so anything that
+  // advances the load pipeline at the end of an instruction rather than the
+  // start gets this out of order and delivers the value one instruction late.
+  BeginTest("a load lands correctly across a branch delay slot");
+  m.Reset();
+  m.WriteWord(kDataBase, kValue);
+  m.Load({ LUI(t0, kDataBase >> 16), ORI(t0, t0, kDataBase & 0xFFFF),
+           LW(t1, 0, t0),              // load
+           BEQ(zero, zero, 8),         // branch - t1 not available here
+           ADDU(t2, t1, zero),         // its delay slot - t1 IS available
+           NOP(), NOP() });
+  m.Run(6);
+  CheckEqual(m.reg(t2), kValue,
+             "the branch delay slot saw the loaded value");
+
+  // Loading into r0 must still discard the value - r0 reads as zero however
+  // it is written.
+  BeginTest("a load into r0 changes nothing");
+  m.Reset();
+  m.WriteWord(kDataBase, kValue);
+  m.Load({ LUI(t0, kDataBase >> 16), ORI(t0, t0, kDataBase & 0xFFFF),
+           LW(zero, 0, t0),
+           NOP(), NOP() });
+  m.Run(5);
+  CheckEqual(m.reg(zero), 0u, "r0 is still zero");
+
+  // lwl and lwr are meant to be used back to back with no gap, which only
+  // works because the hardware forwards the first one to the second. Without
+  // that forwarding the pair silently loses half its result.
+  BeginTest("lwl and lwr forward to each other with no gap");
+  m.Reset();
+  m.WriteWord(kDataBase, 0x11223344);
+  m.WriteWord(kDataBase + 4, 0xAABBCCDD);
+  m.Load({ LUI(t0, kDataBase >> 16), ORI(t0, t0, kDataBase & 0xFFFF),
+           LWL(t1, 5, t0),             // unaligned word at offset 2
+           LWR(t1, 2, t0),
+           NOP(), NOP() });
+  m.Run(6);
+  CheckEqual(m.reg(t1), 0xCCDD1122u, "the pair assembled the whole word");
+}
 void TestMemoryMap(Machine& m) {
   // KUSEG, KSEG0 and KSEG1 are three views of the same 2 MB of RAM. A write
   // through one must be visible through the others.
@@ -700,6 +818,7 @@ void TestMemoryMap(Machine& m) {
            LW(t4, 0, t1),
            LW(t5, 0, t2) });
   m.Run(11);
+    m.Settle();
   CheckEqual(m.reg(t4), 0xCAFEF00Du, "read back through KUSEG");
   CheckEqual(m.reg(t5), 0xCAFEF00Du, "read back through KSEG1");
 
@@ -711,6 +830,7 @@ void TestMemoryMap(Machine& m) {
            SW(t3, 0, t0),
            LW(t4, 0, t1) });
   m.Run(9);
+    m.Settle();
   CheckEqual(m.reg(t4), 0x12345678u, "the mirror sees the same word");
 
   BeginTest("the scratchpad is its own memory");
@@ -720,6 +840,7 @@ void TestMemoryMap(Machine& m) {
            SW(t1, 0, t0),
            LW(t2, 0, t0) });
   m.Run(6);
+    m.Settle();
   CheckEqual(m.reg(t2), 0xFEEDFACEu, "scratchpad round trip");
 
   // Hardware registers appear at three virtual addresses and software uses all
@@ -734,6 +855,7 @@ void TestMemoryMap(Machine& m) {
              SW(t1, 0, t0),
              LW(t2, 0, t0) });
     m.Run(6);
+    m.Settle();
     char name[64];
     snprintf(name, sizeof(name), "I_MASK through %08X", kViews[i]);
     CheckEqual(m.reg(t2), 0x0501, name);
@@ -749,6 +871,7 @@ void TestMemoryMap(Machine& m) {
            SW(t1, 0, t0),
            LW(t2, 0, t0) });                 // after
   m.Run(6);
+    m.Settle();
   CheckEqual(m.reg(t2), m.reg(t3), "the BIOS did not take the write");
 
   BeginTest("register zero stays zero");
@@ -919,6 +1042,7 @@ const Group kGroups[] = {
   { "jumps",      TestJumps },
   { "loadstore",  TestLoadStore },
   { "unaligned",  TestUnalignedLoadStore },
+  { "loaddelay",  TestLoadDelaySlot },
   { "memory",     TestMemoryMap },
   { "exceptions", TestExceptions },
   { "interrupts", TestInterrupts },

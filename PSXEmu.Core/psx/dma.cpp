@@ -72,6 +72,31 @@ void Dma::UpdateMasterFlag() {
   master_flag_ = flag;
 }
 
+
+// Runs one channel, clears its busy bit, raises its interrupt, and bills the
+// machine for the bus time the transfer took.
+//
+// The billing has to happen after the channel state is consistent: handing
+// the cycles on runs the GPU, the counters, the CD and the SPU, and one of
+// those raising an interrupt while this channel still looked busy would be a
+// state no hardware ever presents.
+void Dma::RunChannel(int channel, bool acknowledge) {
+  transfer_cycles_ = 0;
+  switch (channel) {
+    case 0: Dma0(); break;
+    case 1: Dma1(); break;
+    case 2: Dma2(); break;
+    case 3: Dma3(); break;
+    case 4: Dma4(); break;
+    case 6: Dma6(); break;
+    default: return;
+  }
+  channels[channel].chcr &= 0xfeffffff;
+  if (acknowledge)
+    SetInterrupt(channel);
+  if (transfer_cycles_ > 0)
+    system_->cpu().TickCycles(transfer_cycles_);
+}
 void Dma::Tick() {
 }
 
@@ -143,9 +168,7 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f801088:
       channels[0].chcr = data;
       if (ShouldStart(channels[0].chcr, channels[0].enable)) {
-        Dma0();
-        channels[0].chcr &= 0xfeffffff;
-        SetInterrupt(0);
+        RunChannel(0);
       }
       break;
 
@@ -154,15 +177,13 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f801098:
       channels[1].chcr = data;
       if (ShouldStart(channels[1].chcr, channels[1].enable)) {
-        Dma1();
-        channels[1].chcr &= 0xfeffffff;
-        SetInterrupt(1);
+        RunChannel(1);
       }
       break;
      
      case 0x1f8010a0:   channels[2].madr=data;  break;
      case 0x1f8010a4:   channels[2].bcr=data;  break;
-     case 0x1f8010a8:  
+     case 0x1f8010a8:
       if (!(channels[2].chcr&0x01000000)) {
         channels[2].chcr=data;
         if (ShouldStart(channels[2].chcr, channels[2].enable)) {
@@ -171,10 +192,13 @@ void Dma::Write(uint32_t address,uint32_t data) {
             sprintf(str,",,dma 2,chcr,0x%08x,bcr,0x%08x,madr,0x%08x\n",channels[2].chcr,channels[2].bcr,channels[2].madr);
             fprintf(system_->csvlog.fp,str);
             #endif
-            Dma2();
+            RunChannel(2);
+        } else {
+          // A write that starts nothing still clears the busy bit and
+          // acknowledges, exactly as it did before.
+          channels[2].chcr&=0xfeffffff;
+          SetInterrupt(2);
         }
-        channels[2].chcr&=0xfeffffff;  
-        SetInterrupt(2);
       }
       break;
 
@@ -183,9 +207,7 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f8010b8:
       channels[3].chcr = data;
       if (ShouldStart(channels[3].chcr, channels[3].enable)) {
-        Dma3();
-        channels[3].chcr &= 0xfeffffff;
-        SetInterrupt(3);
+        RunChannel(3);
       }
       break;
   
@@ -194,9 +216,7 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f8010c8:
       channels[4].chcr = data;
       if (ShouldStart(channels[4].chcr, channels[4].enable)) {
-        Dma4();
-        channels[4].chcr &= 0xfeffffff;
-        SetInterrupt(4);
+        RunChannel(4);
       }
       break;
 
@@ -216,9 +236,13 @@ void Dma::Write(uint32_t address,uint32_t data) {
 	    if (!(channels[6].chcr&0x01000000)) {
 	      channels[6].chcr=data;
 	      if (channels[6].chcr & 0x01000000 && channels[6].enable == true) {
-	        Dma6();
-        }
-	      channels[6].chcr&=0xfeffffff;
+	        // No acknowledge: this channel has never raised its interrupt
+	        // here, and whether it should is a separate question from how
+	        // long it takes.
+	        RunChannel(6, /*acknowledge=*/false);
+        } else {
+	        channels[6].chcr&=0xfeffffff;
+	      }
 	    }
 	    break;
 
@@ -312,6 +336,7 @@ void Dma::Dma0() {
     mdec.WriteWord(ram.u32[address >> 2]);
     address = (address + step) & 0x1FFFFC;
   }
+  ChargeWords(words);
   NoteTransfer(0, words, address);
   channels[0].madr = address;
 }
@@ -334,6 +359,7 @@ void Dma::Dma1() {
     ram.u32[address >> 2] = word;
     address = (address + step) & 0x1FFFFC;
   }
+  ChargeWords(words);
   NoteTransfer(1, words, address);
   channels[1].madr = address;
 }
@@ -363,6 +389,11 @@ void Dma::Dma2() {
       const uint32_t header = ram.u32[(address & 0x1FFFFC) >> 2];
       const uint32_t count = (header >> 24) & 0xFF;
 
+      // Every node costs a header read whether it carries anything or not,
+      // and a node with data costs a little more to set up. Both numbers are
+      // DuckStation's.
+      ChargeCycles(count > 0 ? 13 : 8);
+      ChargeWords(count);
       for (uint32_t i = 0; i < count; ++i) {
         const uint32_t word_address = (address + 4 + i * 4) & 0x1FFFFC;
         gpu->WriteData(ram.u32[word_address >> 2]);
@@ -405,6 +436,7 @@ void Dma::Dma2() {
     address = static_cast<uint32_t>(address + step) & 0x1FFFFC;
   }
 
+  ChargeWords(words);
   channels[2].madr = address;
 }
 
@@ -451,6 +483,7 @@ void Dma::Dma3() {
     }
     address = (address + step) & 0x1FFFFC;
   }
+  ChargeWords(words);
   NoteTransfer(3, words, address, cdrom.delivered_lba(), first_word);
   channels[3].madr = address;
 }
@@ -481,6 +514,7 @@ void Dma::Dma4() {
       }
     address = static_cast<uint32_t>(address + step) & 0x1FFFFC;
   }
+  ChargeWords(words);
   NoteTransfer(4, words, address);
   channels[4].madr = address;
 }
@@ -512,6 +546,7 @@ void Dma::Dma6() {
     ram.u32[address >> 2] = next;
     address = (address - 4) & 0x1FFFFC;
   }
+  ChargeWords(words);
   NoteTransfer(6, words, address);
   channels[6].madr = address;
 }

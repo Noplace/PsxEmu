@@ -151,6 +151,10 @@ int Cpu::Initialize() {
   context_->ctrl.SR.raw = 0x10900000;//1111
   context_->cycles = 0;
   context_->current_cycles = 0;
+  // Nothing is in flight on a cold start, and leaving a stale record here
+  // would write a register during the first instruction after a reset.
+  pending_load_ = PendingLoad();
+  armed_load_ = PendingLoad();
   return 0;
 }
 
@@ -210,8 +214,33 @@ void Cpu::DumpTrace(const char* filename, ExceptionCodes code) {
   fclose(fp);
 }
 
+
+// Moves the load pipeline on by one instruction.
+//
+// Both halves of the load delay are here. The value a load promised lands in
+// the register file at the start of the second instruction after it, so the
+// one in between reads whatever the register held before - which is the whole
+// point, and what software written for this CPU expects.
+//
+// Doing this at the start of an instruction rather than at the end is not a
+// detail. A branch runs its delay slot as a nested ExecuteInstruction, so
+// end-of-instruction bookkeeping would run the slot's before the branch's,
+// out of program order, and a load two instructions before a branch would
+// reach its register one instruction late.
+void Cpu::AdvanceLoadDelay() {
+  if (pending_load_.active) {
+    if (pending_load_.reg != 0)
+      context_->gp.reg[pending_load_.reg] = pending_load_.value;
+    pending_load_.active = false;
+  }
+  if (armed_load_.active) {
+    pending_load_ = armed_load_;
+    armed_load_.active = false;
+  }
+}
 void Cpu::ExecuteInstruction() {
   context_->prev_pc = context_->pc;
+  AdvanceLoadDelay();
   context_->gp.zero = 0; //make sure r0 is always 0.
   
   /*if (context_->pc == 0x000000A0 && context_->gp.t1 == 0x40) {
@@ -320,6 +349,24 @@ void Cpu::Tick() {
   ++context_->cycles;
   ++context_->current_cycles;
   system_->io().Tick(1);
+}
+
+// A DMA holds the bus for the length of its transfer. The CPU does not
+// execute during that time, but the GPU, the timers, the CD and the SPU all
+// keep running - so those cycles have to reach them, and have to count
+// towards the front end's idea of how much work a frame took.
+void Cpu::TickCycles(uint32_t cycles) {
+  context_->cycles += cycles;
+  context_->current_cycles += cycles;
+  // Handed on in the same size steps ordinary execution uses. One enormous
+  // step would jump the GPU dozens of scanlines at once and leave the display
+  // gates the counters watch meaningless for the whole transfer.
+  while (cycles > 32) {
+    system_->io().Tick(32);
+    cycles -= 32;
+  }
+  if (cycles > 0)
+    system_->io().Tick(cycles);
 }
 /*
 uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address, uint32_t virtual_address) {
@@ -799,7 +846,7 @@ void Cpu::J() {
 }
 
 void Cpu::JAL() {
-  context_->gp.ra = context_->pc + 4;
+  WriteReg(31, context_->pc + 4);
   Tick();
   Jump((context_->pc & 0xF0000000) | (target_ << 2));
 }
@@ -831,52 +878,52 @@ void Cpu::BGTZ() {
 }
 
 void Cpu::ADDI() {
-  context_->gp.reg[rt_] = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
+  WriteReg(rt_, context_->gp.reg[rs_] + immediate_32bit_sign_extended_);
   Tick();
 }
 
 void Cpu::ADDIU() {
-  context_->gp.reg[rt_] = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
+  WriteReg(rt_, context_->gp.reg[rs_] + immediate_32bit_sign_extended_);
   Tick();
 }
 
 void Cpu::SLTI() {
-  context_->gp.reg[rt_] = (int32_t)context_->gp.reg[rs_] < immediate_32bit_sign_extended_;
+  WriteReg(rt_, (int32_t)context_->gp.reg[rs_] < immediate_32bit_sign_extended_);
   Tick();
 }
 
 void Cpu::SLTIU() {
-  context_->gp.reg[rt_] = context_->gp.reg[rs_] < immediate_;
+  WriteReg(rt_, context_->gp.reg[rs_] < immediate_);
   Tick();
 }
 
 
 void Cpu::ANDI() {
-  context_->gp.reg[rt_] = context_->gp.reg[rs_] & immediate_;
+  WriteReg(rt_, context_->gp.reg[rs_] & immediate_);
   Tick();
 }
 
 void Cpu::ORI() {
-  context_->gp.reg[rt_] = context_->gp.reg[rs_] | immediate_;
+  WriteReg(rt_, context_->gp.reg[rs_] | immediate_);
   Tick();
 }
 
 void Cpu::XORI() {
-  context_->gp.reg[rt_] = context_->gp.reg[rs_] ^ immediate_;
+  WriteReg(rt_, context_->gp.reg[rs_] ^ immediate_);
   Tick();
 }
 
 void Cpu::LUI() {
-  context_->gp.reg[rt_] = immediate_ << 16;
+  WriteReg(rt_, immediate_ << 16);
   Tick();
-  //context_->gp.reg[rt_] = context_->immediate_ << 16;
+  //WriteReg(rt_, context_->immediate_ << 16);
 }
 
 void Cpu::COP0() {
   switch (context_->rs()) {
     //MFC
     case 0x00: {
-      context_->gp.reg[rt_] = context_->ctrl.reg[rd_];
+      WriteReg(rt_, context_->ctrl.reg[rd_]);
       break;
     }
     //MTC
@@ -921,10 +968,10 @@ void Cpu::COP2() {
 
   switch (context_->rs()) {
     case 0x00:  // MFC2
-      context_->gp.reg[rt_] = system_->gte().ReadData(rd_);
+      WriteReg(rt_, system_->gte().ReadData(rd_));
       break;
     case 0x02:  // CFC2
-      context_->gp.reg[rt_] = system_->gte().ReadControl(rd_);
+      WriteReg(rt_, system_->gte().ReadControl(rd_));
       break;
     case 0x04:  // MTC2
       system_->gte().WriteData(rd_, context_->gp.reg[rt_]);
@@ -960,11 +1007,10 @@ void Cpu::LB() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint8_t mem = Load(kM8,virtual_address);
-  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  //load delay
-  //ExecuteInstruction();
-  ref = (int8_t)mem;
+  // The value is promised here and delivered one instruction later, which
+  // is what the hardware does - see AdvanceLoadDelay.
+  ArmLoad(rt_, static_cast<uint32_t>((int8_t)mem));
   Tick();
 }
 
@@ -972,11 +1018,10 @@ void Cpu::LH() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint16_t mem = Load(kM16,virtual_address);
-  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  //load delay
-  //ExecuteInstruction();
-  ref = (int16_t)mem;
+  // The value is promised here and delivered one instruction later, which
+  // is what the hardware does - see AdvanceLoadDelay.
+  ArmLoad(rt_, static_cast<uint32_t>((int16_t)mem));
   Tick();
 }
 
@@ -987,16 +1032,16 @@ void Cpu::LWL() {
   Tick();
   switch (virtual_address & 0x3) {
     case 0:
-      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0x00FFFFFF) | (mem<<24);
+      ArmLoad(rt_, (ReadRegForwarded(rt_) & 0x00FFFFFF) | (mem<<24));
       break;
     case 1:
-      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0x0000FFFF) | (mem<<16);
+      ArmLoad(rt_, (ReadRegForwarded(rt_) & 0x0000FFFF) | (mem<<16));
       break;
     case 2:
-      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0x000000FF) | (mem<<8);
+      ArmLoad(rt_, (ReadRegForwarded(rt_) & 0x000000FF) | (mem<<8));
       break;
     case 3:
-      context_->gp.reg[rt_] = mem;
+      ArmLoad(rt_, mem);
       break;
   }
   Tick();
@@ -1007,11 +1052,10 @@ void Cpu::LW() {
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint32_t mem;
   mem = Load(kM32,virtual_address);
-  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  //load delay
-  //ExecuteInstruction();
-  ref = mem;
+  // The value is promised here and delivered one instruction later, which
+  // is what the hardware does - see AdvanceLoadDelay.
+  ArmLoad(rt_, static_cast<uint32_t>(mem));
   Tick();
 }
 
@@ -1019,11 +1063,10 @@ void Cpu::LBU() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint32_t mem = Load(kM8,virtual_address);
-  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  //load delay
-  //ExecuteInstruction();
-  ref = (uint8_t)mem;
+  // The value is promised here and delivered one instruction later, which
+  // is what the hardware does - see AdvanceLoadDelay.
+  ArmLoad(rt_, static_cast<uint32_t>((uint8_t)mem));
   Tick();
 }
 
@@ -1031,11 +1074,10 @@ void Cpu::LHU() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
   uint32_t mem = Load(kM16,virtual_address);
-  uint32_t& ref = context_->gp.reg[rt_];
   Tick();
-  //load delay
-  //ExecuteInstruction();
-  ref = (uint16_t)mem;
+  // The value is promised here and delivered one instruction later, which
+  // is what the hardware does - see AdvanceLoadDelay.
+  ArmLoad(rt_, static_cast<uint32_t>((uint16_t)mem));
   Tick();
 }
 
@@ -1046,16 +1088,16 @@ void Cpu::LWR() {
   Tick();
   switch (virtual_address & 0x3) {
     case 0:
-      context_->gp.reg[rt_] = mem;
+      ArmLoad(rt_, mem);
       break;
     case 1:
-      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0xFF000000) | (mem>>8);
+      ArmLoad(rt_, (ReadRegForwarded(rt_) & 0xFF000000) | (mem>>8));
       break;
     case 2:
-      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0xFFFF0000) | (mem>>16);
+      ArmLoad(rt_, (ReadRegForwarded(rt_) & 0xFFFF0000) | (mem>>16));
       break;
     case 3:
-      context_->gp.reg[rt_] = (context_->gp.reg[rt_] & 0xFFFFFF00) | (mem>>24);
+      ArmLoad(rt_, (ReadRegForwarded(rt_) & 0xFFFFFF00) | (mem>>24));
       break;
   }
   Tick();
@@ -1135,32 +1177,32 @@ void Cpu::SWR() {
 }
 
 void Cpu::SLL() {
-  context_->gp.reg[rd_] = context_->gp.reg[rt_] << shamt_;
+  WriteReg(rd_, context_->gp.reg[rt_] << shamt_);
   Tick();
 }
 
 void Cpu::SRL() {
-  context_->gp.reg[rd_] = context_->gp.reg[rt_] >> shamt_;
+  WriteReg(rd_, context_->gp.reg[rt_] >> shamt_);
   Tick();
 }
 
 void Cpu::SRA() {
-  context_->gp.reg[rd_] = (int32_t)context_->gp.reg[rt_] >> shamt_;
+  WriteReg(rd_, (int32_t)context_->gp.reg[rt_] >> shamt_);
   Tick();
 }
 
 void Cpu::SLLV() {
-  context_->gp.reg[rd_] = context_->gp.reg[rt_] << (context_->gp.reg[rs_] & 0x1F);
+  WriteReg(rd_, context_->gp.reg[rt_] << (context_->gp.reg[rs_] & 0x1F));
   Tick();
 }
 
 void Cpu::SRLV() {
- context_->gp.reg[rd_] = context_->gp.reg[rt_] >> (context_->gp.reg[rs_] & 0x1F);
+ WriteReg(rd_, context_->gp.reg[rt_] >> (context_->gp.reg[rs_] & 0x1F));
  Tick();
 }
 
 void Cpu::SRAV() {
-  context_->gp.reg[rd_] = (int32_t)context_->gp.reg[rt_] >> (context_->gp.reg[rs_] & 0x1F);
+  WriteReg(rd_, (int32_t)context_->gp.reg[rt_] >> (context_->gp.reg[rs_] & 0x1F));
   Tick();
 }
 
@@ -1171,7 +1213,7 @@ void Cpu::JR() {
 }
 
 void Cpu::JALR() {
-  context_->gp.reg[rd_] = context_->pc + 4; // rd must be 31
+  WriteReg(rd_, context_->pc + 4); // rd must be 31
   Jump(context_->gp.reg[rs_]);
   if (context_->prev_pc >= 0xBFC00000)
     inside_bios_call = false;
@@ -1190,7 +1232,7 @@ void Cpu::BREAK() {
 }
 
 void Cpu::MFHI() {
-  context_->gp.reg[rd_] = context_->high;
+  WriteReg(rd_, context_->high);
   Tick();
 }
 
@@ -1200,7 +1242,7 @@ void Cpu::MTHI() {
 }
 
 void Cpu::MFLO() {
-  context_->gp.reg[rd_] = context_->low;
+  WriteReg(rd_, context_->low);
   Tick();
 }
 
@@ -1270,54 +1312,54 @@ void Cpu::ADD() {
   if (BIT(temp,32) != BIT(temp,31)) {
     RaiseException(context_->prev_pc,kOtherException,kExceptionCodeOv);
   } else {
-    context_->gp.reg[rd_] = temp & 0xffffffff;
+    WriteReg(rd_, temp & 0xffffffff);
   }
-  //context_->gp.reg[rd_] = context_->gp.reg[rs_] + context_->gp.reg[rt_];
+  //WriteReg(rd_, context_->gp.reg[rs_] + context_->gp.reg[rt_]);
   Tick();
 }
 
 void Cpu::ADDU() {
-  context_->gp.reg[rd_] = context_->gp.reg[rs_] + context_->gp.reg[rt_];
+  WriteReg(rd_, context_->gp.reg[rs_] + context_->gp.reg[rt_]);
   Tick();
 }
 
 void Cpu::SUB() {
-  context_->gp.reg[rd_] = context_->gp.reg[rs_] - context_->gp.reg[rt_];
+  WriteReg(rd_, context_->gp.reg[rs_] - context_->gp.reg[rt_]);
   Tick();
 }
 
 void Cpu::SUBU() {
-  context_->gp.reg[rd_] = context_->gp.reg[rs_] - context_->gp.reg[rt_];
+  WriteReg(rd_, context_->gp.reg[rs_] - context_->gp.reg[rt_]);
   Tick();
 }
 
 void Cpu::AND() {
-  context_->gp.reg[rd_] = context_->gp.reg[rs_] & context_->gp.reg[rt_];
+  WriteReg(rd_, context_->gp.reg[rs_] & context_->gp.reg[rt_]);
   Tick();
 }
 
 void Cpu::OR() {
-  context_->gp.reg[rd_] = context_->gp.reg[rs_] | context_->gp.reg[rt_];
+  WriteReg(rd_, context_->gp.reg[rs_] | context_->gp.reg[rt_]);
   Tick();
 }
 
 void Cpu::XOR() {
-  context_->gp.reg[rd_] = context_->gp.reg[rs_] ^ context_->gp.reg[rt_];
+  WriteReg(rd_, context_->gp.reg[rs_] ^ context_->gp.reg[rt_]);
   Tick();
 }
 
 void Cpu::NOR() {
-  context_->gp.reg[rd_] = ~(context_->gp.reg[rs_] | context_->gp.reg[rt_]);
+  WriteReg(rd_, ~(context_->gp.reg[rs_] | context_->gp.reg[rt_]));
   Tick();
 }
 
 void Cpu::SLT() {
-  context_->gp.reg[rd_] = (int32_t)context_->gp.reg[rs_] < (int32_t)context_->gp.reg[rt_];
+  WriteReg(rd_, (int32_t)context_->gp.reg[rs_] < (int32_t)context_->gp.reg[rt_]);
   Tick();
 }
 
 void Cpu::SLTU() {
-  context_->gp.reg[rd_] = context_->gp.reg[rs_] < context_->gp.reg[rt_];
+  WriteReg(rd_, context_->gp.reg[rs_] < context_->gp.reg[rt_]);
   Tick();
 }
 
@@ -1338,12 +1380,12 @@ void Cpu::BGEZ() {
 }
 
 void Cpu::BLTZAL() {
-  context_->gp.ra = context_->pc + 4;
+  WriteReg(31, context_->pc + 4);
   BLTZ();
 }
 
 void Cpu::BGEZAL() {
-  context_->gp.ra = context_->pc + 4;
+  WriteReg(31, context_->pc + 4);
   BGEZ();
 }
 

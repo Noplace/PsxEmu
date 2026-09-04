@@ -32,6 +32,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <ctime>
 #include <unordered_map>
 #include <vector>
 
@@ -424,6 +425,11 @@ int main(int argc, char** argv) {
 
   std::unordered_map<uint32_t, uint64_t> pc_counts;
 
+  // Wall clock, so the run can say how fast it actually went. Nothing in
+  // this project measured that until now, which made every discussion of
+  // optimisation an argument about guesses.
+  const clock_t wall_start = clock();
+
   const uint64_t kInstructionLimit = 4000000000ull;
   while (frames < options.frames && instructions < kInstructionLimit) {
     if (options.hot > 0)
@@ -526,6 +532,19 @@ int main(int argc, char** argv) {
   printf("\n");
   printf("instructions   %llu\n", static_cast<unsigned long long>(instructions));
   printf("frames         %d\n", frames);
+  {
+    const double seconds =
+        static_cast<double>(clock() - wall_start) / CLOCKS_PER_SEC;
+    // A PSX runs 33,868,800 cycles a second, so the emulated second count is
+    // the cycles executed divided by that. Speed is emulated time over real
+    // time: 1.00 is real speed, and under it is too slow to play.
+    const double emulated =
+        static_cast<double>(system->cpu().context()->cycles) / 33868800.0;
+    printf("speed          %.2fs emulated in %.2fs wall = %.2fx real time,"
+           " %.1f fps\n",
+           emulated, seconds, seconds > 0.0 ? emulated / seconds : 0.0,
+           seconds > 0.0 ? frames / seconds : 0.0);
+  }
   printf("resolution     %dx%d\n", width, height);
   printf("display        vram (%u,%u) %dx%d, %s\n",
          system->gpu().display_vram_x(), system->gpu().display_vram_y(),
