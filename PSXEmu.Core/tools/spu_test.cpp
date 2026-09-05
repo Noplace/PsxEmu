@@ -329,6 +329,94 @@ void TestAdpcm(Machine& m) {
   Check(PeakOf(late, 0) > 0, "still audible after looping round");
 }
 
+// How many of these frames are effectively silent. The counterpart to PeakOf:
+// a loop that takes in a block it should not is not quieter overall, it is
+// intermittently silent, and a peak cannot see that at all.
+int QuietFrames(const std::vector<int16_t>& frames, int channel,
+                int16_t threshold) {
+  int quiet = 0;
+  for (size_t i = channel; i < frames.size(); i += 2) {
+    const int16_t value = frames[i] < 0 ? static_cast<int16_t>(-frames[i])
+                                        : frames[i];
+    if (value < threshold)
+      ++quiet;
+  }
+  return quiet;
+}
+
+// Where a voice loops back to is set two ways - by a block carrying the
+// loop-start flag, and by software writing the repeat address itself - and
+// which of them wins, when, is the whole of bug 39. Final Fantasy VII sets
+// the loop point by register and then keys on, for every note of its prelude;
+// a key-on that resets the repeat address to the start address throws that
+// away and loops over three blocks where the game asked for one, playing the
+// whole piece a twelfth flat through a waveform it never asked for.
+void TestLoopAddress(Machine& m) {
+  printf("adpcm loop address\n");
+
+  BeginTest("a repeat address written before key-on survives the key-on");
+  m.Reset();
+  // Final Fantasy VII's shape exactly: silence, silence, then the waveform,
+  // with the loop pointed at the waveform alone and nothing in the data
+  // saying where the loop starts.
+  m.Upload(0x1000, SilentBlock(0x00));
+  m.Upload(0x1010, SilentBlock(0x00));
+  m.Upload(0x1020, LoudBlock(0x03));       // end and repeat, no loop-start
+  m.WriteVoice(0, 0x6, 0x1000 / 8);        // start at the silence
+  m.WriteVoice(0, 0xE, 0x1020 / 8);        // loop the waveform only
+  m.WriteVoice(0, 0x4, 0x1000);            // one sample per output frame
+  m.WriteVoice(0, 0x0, 0x3FFF);
+  m.WriteVoice(0, 0x2, 0x3FFF);
+  m.WriteVoice(0, 0x8, 0x00FF);            // fast attack, no decay
+  m.Write(kKeyOnLow, 0x0001);
+  m.Run(128);                              // past the silence and settled
+  const std::vector<int16_t> looped = m.Run(112);   // four blocks' worth
+  CheckEqual(QuietFrames(looped, 0, 1000), 0,
+             "no silence once looping - the loop is the waveform alone");
+  Check(PeakOf(looped, 0) > 1000, "and it is audible");
+
+  BeginTest("the repeat address reads back what was written, after key-on");
+  CheckEqual(m.ReadVoice(0, 0xE), 0x1020 / 8, "repeat address unchanged");
+
+  BeginTest("without one written, the loop-start flag still sets it");
+  m.Reset();
+  m.Upload(0x1000, SilentBlock(0x00));
+  m.Upload(0x1010, LoudBlock(0x04));       // loop starts here
+  m.Upload(0x1020, LoudBlock(0x03));       // end and repeat
+  m.WriteVoice(0, 0x6, 0x1000 / 8);
+  m.WriteVoice(0, 0x4, 0x1000);
+  m.WriteVoice(0, 0x0, 0x3FFF);
+  m.WriteVoice(0, 0x2, 0x3FFF);
+  m.WriteVoice(0, 0x8, 0x00FF);
+  m.Write(kKeyOnLow, 0x0001);
+  m.Run(128);
+  const std::vector<int16_t> flagged = m.Run(112);
+  CheckEqual(QuietFrames(flagged, 0, 1000), 0,
+             "the flag excludes the leading silence from the loop");
+  CheckEqual(m.ReadVoice(0, 0xE), 0x1010 / 8,
+             "the repeat address is the flagged block");
+
+  BeginTest("software's repeat address outranks the loop-start flag");
+  // Same three blocks, but the loop is redirected back over the silence while
+  // the voice is running. The flagged block is inside the new loop, so the
+  // flag gets a chance to take the loop point back every time round - and
+  // must not, until the voice is keyed on again.
+  m.WriteVoice(0, 0xE, 0x1000 / 8);
+  m.Run(256);                              // let it come round several times
+  const std::vector<int16_t> redirected = m.Run(112);
+  Check(QuietFrames(redirected, 0, 1000) > 0,
+        "the silence is back in the loop and stays there");
+  CheckEqual(m.ReadVoice(0, 0xE), 0x1000 / 8,
+             "the flag did not take the loop point back");
+
+  BeginTest("a key-on lets the loop-start flag win again");
+  m.Write(kKeyOnLow, 0x0001);
+  m.Run(128);
+  const std::vector<int16_t> rekeyed = m.Run(112);
+  CheckEqual(QuietFrames(rekeyed, 0, 1000), 0,
+             "the flagged loop point is in force after keying on");
+}
+
 void TestEnvelope(Machine& m) {
   printf("adsr envelope\n");
 
@@ -336,7 +424,11 @@ void TestEnvelope(Machine& m) {
   m.Reset();
   // A looping block: an unlooped one runs off the end after 28 samples into
   // zeroed sound RAM and correctly goes silent, which would hide the ramp.
-  m.Upload(0x1000, LoudBlock(0x03));
+  // Loop-start as well as end-and-repeat (07h, not 03h) - a block that ends
+  // and repeats without ever saying where the loop begins does not loop back
+  // to itself on hardware, it loops to whatever the repeat address happens to
+  // hold. See bug 39.
+  m.Upload(0x1000, LoudBlock(0x07));
   m.WriteVoice(0, 0x6, 0x1000 / 8);
   m.WriteVoice(0, 0x4, 0x1000);
   m.WriteVoice(0, 0x0, 0x3FFF);
@@ -866,6 +958,7 @@ const Group kGroups[] = {
   { "registers", TestRegisters },
   { "keyonoff",  TestKeyOnOff },
   { "adpcm",     TestAdpcm },
+  { "loopaddr",  TestLoopAddress },
   { "envelope",  TestEnvelope },
   { "mixer",     TestMixer },
   { "timing",    TestTiming },

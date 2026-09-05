@@ -9,6 +9,9 @@
 //     --frames <n>       run for n frames and stop      (default 300)
 //     --ppm <file>       write the final frame as a PPM
 //     --vram <file>      write the whole of VRAM as a PPM
+//     --wav <file>       write everything the SPU produced as a 44100 Hz WAV
+//     --trace-spu <file> log every voice key-on and the registers behind it
+//     --spu-ram <file>   dump the 512 KB of sound RAM at the end of the run
 //     --trace <n>        print the first n instructions as they execute
 //     --trace-skip <n>   start tracing only after n instructions
 //     --trace-at <hex>[:<n>]  start tracing when the pc reaches an address,
@@ -138,6 +141,8 @@ struct Options {
   const char* ppm;
   const char* vram;
   const char* wav;
+  const char* trace_spu;
+  const char* spu_ram;
   int frames;
   // A disc put in after the machine is already running, the way someone
   // reaches the CD player: boot with the tray empty, pick CD PLAYER, then
@@ -438,6 +443,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->ppm = nullptr;
   options->vram = nullptr;
   options->wav = nullptr;
+  options->trace_spu = nullptr;
+  options->spu_ram = nullptr;
   options->frames = 300;
   options->insert = nullptr;
   options->insert_at = 0;
@@ -474,6 +481,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->vram = argv[++i];
     } else if (strcmp(arg, "--wav") == 0 && i + 1 < argc) {
       options->wav = argv[++i];
+    } else if (strcmp(arg, "--trace-spu") == 0 && i + 1 < argc) {
+      options->trace_spu = argv[++i];
+    } else if (strcmp(arg, "--spu-ram") == 0 && i + 1 < argc) {
+      options->spu_ram = argv[++i];
     } else if (strcmp(arg, "--trace") == 0 && i + 1 < argc) {
       options->trace = atoi(argv[++i]);
     } else if (strcmp(arg, "--trace-skip") == 0 && i + 1 < argc) {
@@ -568,6 +579,9 @@ int main(int argc, char** argv) {
 
   if (options.volume >= 0.0f)
     system->config().audio_volume = options.volume;
+
+  if (options.trace_spu != nullptr)
+    system->spu().set_trace_voices(true);
 
   if (options.auto_boot) {
     // Let the BIOS run its intro, then take over when it reaches the address
@@ -992,6 +1006,23 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(spu_stats.key_ons),
          static_cast<unsigned long long>(spu_stats.blocks_decoded),
          spu_stats.peak_left, spu_stats.peak_right);
+  // What software asked for, next to what came out. A voice that measures in
+  // tune says nothing about the register behind it, and a mix that is wrong
+  // in the balance between its parts is invisible in any single number.
+  if (spu_stats.key_ons != 0) {
+    printf("spu requests   max pitch %04Xh (%.2fx), %llu writes over 3FFFh; "
+           "volumes %llu sweeps / %llu levels\n",
+           spu_stats.max_pitch, spu_stats.max_pitch / 4096.0,
+           static_cast<unsigned long long>(spu_stats.pitch_writes_over_3fff),
+           static_cast<unsigned long long>(spu_stats.volume_sweeps),
+           static_cast<unsigned long long>(spu_stats.volume_levels));
+    printf("spu modes      pmon %06X  noise %06X  reverb %06X  control %04X"
+           " (reverb %s, unmute %s)\n",
+           spu_stats.pitch_modulation_seen, spu_stats.noise_seen,
+           spu_stats.reverb_seen, spu_stats.control_seen,
+           (spu_stats.control_seen & 0x0080) ? "on" : "off",
+           (spu_stats.control_seen & 0x4000) ? "on" : "off");
+  }
   if (spu_stats.cd_samples_in != 0 || spu_stats.cd_samples_out != 0) {
     printf("cd audio       %llu CD-DA pairs in (peak %d), %llu mixed"
            " (peak %d after volume), %llu dropped, %llu muted\n",
@@ -1245,6 +1276,56 @@ int main(int argc, char** argv) {
     }
   }
 
+  // Every key-on, with the registers as they stood when it fired. The pitch
+  // and the start address together say what note the voice was asked for; the
+  // volumes say whether the mix was a level or a sweep, which decides whether
+  // an unimplemented sweep is flattening it.
+  if (options.trace_spu != nullptr) {
+    const emulation::psx::Spu& spu = system->spu();
+    FILE* fp = fopen(options.trace_spu, "w");
+    if (fp != nullptr) {
+      fprintf(fp, "# time voice event pitch rate start repeat adsr vol\n");
+      for (int i = 0; i < spu.voice_event_count(); ++i) {
+        const emulation::psx::Spu::VoiceEvent& e = spu.voice_events()[i];
+        const double time =
+            e.frame / static_cast<double>(emulation::psx::Spu::kSampleRate);
+        if (e.kind == emulation::psx::Spu::kEventRepeatWrite) {
+          fprintf(fp, "%8.3f  v%02u  REPEAT= %04X  (start %04X)\n", time,
+                  e.voice, e.repeat_address, e.start_address);
+          continue;
+        }
+        fprintf(fp,
+                "%8.3f  v%02u  KEYON  pitch %04X (%6.3fx)  start %04X  "
+                "repeat-was %04X  adsr %04X %04X  vol %04X%s %04X%s\n",
+                time, e.voice, e.pitch, e.pitch / 4096.0, e.start_address,
+                e.repeat_address, e.adsr_low, e.adsr_high,
+                e.volume_left, (e.volume_left & 0x8000) ? "s" : " ",
+                e.volume_right, (e.volume_right & 0x8000) ? "s" : " ");
+      }
+      fclose(fp);
+      printf("wrote          %s (%d key-ons%s)\n", options.trace_spu,
+             spu.voice_event_count(),
+             spu.voice_event_count() >= emulation::psx::Spu::kMaxVoiceEvents
+                 ? ", TRUNCATED" : "");
+    } else {
+      fprintf(stderr, "could not write %s\n", options.trace_spu);
+    }
+  }
+
+  // The 512 KB of sound RAM as it stands at the end of the run. The only way
+  // to see what a voice was actually pointed at: a start address means
+  // nothing without the ADPCM sitting behind it.
+  if (options.spu_ram != nullptr) {
+    FILE* fp = fopen(options.spu_ram, "wb");
+    if (fp != nullptr) {
+      fwrite(system->spu().ram(), 1, emulation::psx::Spu::kRamSize, fp);
+      fclose(fp);
+      printf("wrote          %s (%u bytes of sound RAM)\n", options.spu_ram,
+             emulation::psx::Spu::kRamSize);
+    } else {
+      fprintf(stderr, "could not write %s\n", options.spu_ram);
+    }
+  }
 
   system->Deinitialize();
   delete system;

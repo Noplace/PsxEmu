@@ -1716,3 +1716,121 @@ stuck there turned out to be a different wait than the one this fix targeted.
 See that plan for what is still unexplained. The fix stands on its own
 merits regardless - see [Gaps.md](Gaps.md) for what is still approximate
 about it (data still moves eagerly; only the completion signal is paced).
+
+## 39. Key-on threw away the loop point, and Final Fantasy VII played a twelfth flat
+
+Final Fantasy VII reaches its title screen and starts the prelude at 33.5
+seconds. Every note was too low, and the tone was wrong as well as the pitch -
+buzzy where it should have been smooth. FMV and CD audio were unaffected,
+which pointed at the voice path, because nothing else in the SPU is shared
+between the two.
+
+### What the capture said, before any code was read
+
+`boot_runner --wav` over 3600 frames, then `wav_pitch` over the result. The
+arpeggio came out as a clean ladder - C2 F2 G2 A2, C3 F3 G3 A3, C4 F4 G4 A4,
+C5, turning at F5 698.21 Hz and descending the same way. Across 27 seconds and
+1173 analysis windows: **lowest B1, highest F5, every note within a few cents
+of equal temperament, no dropouts and no silences.**
+
+That shape was the finding. A clamp or a fold hits high notes and leaves low
+ones alone; this was a **constant** factor, applied to everything, with every
+interval preserved exactly. It ruled out the two suspects that reading the code
+had produced - `VxPitch` being masked to 14 bits rather than clamped, and the
+pitch-modulation path - before either was touched. Both would have detuned some
+notes and not others.
+
+### What the game was actually asking for
+
+New counters on `Spu::Stats`, printed by `boot_runner`, and a `--trace-spu` log
+of every key-on. One run settled it:
+
+```
+spu requests   max pitch 3FFFh (4.00x), 0 writes over 3FFFh; volumes 0 sweeps / 4006 levels
+spu modes      pmon 000000  noise 000000  reverb FFFFFF  control C0B5
+```
+
+No pitch above 3FFFh anywhere (the one 3FFFh is the BIOS zeroing the voices at
+0.146s), so the mask never fired. No pitch modulation. No volume sweeps, so the
+unimplemented sweep was not flattening the mix either. Three hypotheses gone in
+one line each.
+
+The trace showed all 438 prelude notes playing **one** sample, at start
+address 186Ah, across six voices - and this, on every single note:
+
+```
+33.569  v10  REPEAT= 186E  (start 186A)
+33.569  v10  KEYON  pitch 017E ( 0.093x)  start 186A  repeat-was 186E
+```
+
+FF7 sets the loop point by register and *then* keys on. `KeyOn` was resetting
+`repeat_address` to `start_address`, throwing it away every time.
+
+The sound RAM dump (`--spu-ram`) showed why that mattered so much. At 186Ah:
+two blocks of silence, then at 186Eh a block whose nibbles decode to
+`0,1,2,3,4,5,6,6,5,4,3,2,1,0,0,-1...-6,-6...-1,0` - a 28-sample triangle,
+flagged end-and-repeat, with no loop-start flag anywhere in the sample.
+
+| | Loop | Samples | Base at 1.0x |
+|---|---|---|---|
+| What FF7 asked for | 186Eh alone | 28 | 1575 Hz |
+| What it got | 186Ah..186Eh | 84 | 525 Hz |
+
+Exactly three times too long, so exactly a third of the frequency: a perfect
+twelfth, on every note, with every interval intact. And the loop carried two
+blocks of silence for every one of waveform, so a continuous triangle came out
+as a pulse train - the wrong timbre and the wrong pitch, from one cause.
+
+### The fix
+
+`KeyOn` no longer touches the repeat address. Key-on sets where a voice
+*starts*; where it *loops* belongs to software and to the loop-start flag in
+the data. The `repeat_set` flag, which was written in three places and read in
+none, became `ignore_loop_start` and got its real meaning: while software has
+set the loop point since the last key-on, a block carrying the loop-start flag
+does not overwrite it.
+
+FF7 writing that register 438 times, once before every note, is the evidence
+that hardware keeps it. A sound driver does not make the same pointless
+register write 438 times.
+
+### Verification
+
+Every note in the capture moved by exactly three:
+
+| Before | After |
+|---|---|
+| C2 65.37 Hz | G3 196.06 |
+| F2 87.25 | C4 262.38 |
+| G2 97.94 | D4 293.64 |
+| A2 109.98 | E4 329.19 |
+| C3 130.77 | G4 391.70 |
+| **F5 698.21 (top)** | **C7 2095.77** |
+
+The arpeggio cell is now C-D-E-G - C major pentatonic, which is the Prelude's
+actual figure - where before it was an F-based cell. Mean RMS over the music
+rose from 612 to 1041, because two thirds of the loop is no longer silence.
+
+A new `loopaddr` group in `spu_test`, 8 checks, taking spu_test from 99 to 107.
+Four of the eight fail against the old behaviour - measured, by putting it back
+and running the group against it. The other three harnesses' counts are
+unchanged, and 3600 frames of FF7 produce an identical framebuffer checksum,
+instruction count and interrupt count before and after: the change is audible
+and nothing else.
+
+**Why no test caught this.** `spu_test` had 99 passing checks over the ADPCM
+path, including "a looping sample keeps playing". Nothing asserted *where* a
+voice loops back to - only that it was still making a noise afterwards, which a
+voice looping over three times as much sample as it should does perfectly well.
+One of the existing envelope tests had to be corrected as part of this: it
+looped a block flagged end-and-repeat with no loop-start flag and relied on
+key-on to supply the loop point, which is the very behaviour that was wrong.
+It encoded the implementation rather than the hardware, exactly what section 6
+of the standards warns about.
+
+**Still open, and separate.** `reverb FFFFFF` with the reverb master enable
+set: FF7 routes all 24 voices through a reverb that this core implements as a
+two-tap delay rather than the hardware's comb-and-all-pass network. That is a
+real difference in what the prelude sounds like and it is untouched by this
+fix. See [Gaps.md](Gaps.md) and
+[FF7-Prelude-Pitch-Plan.md](FF7-Prelude-Pitch-Plan.md).

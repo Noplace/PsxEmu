@@ -117,6 +117,37 @@ Every one of these is a silent failure otherwise. A sector reader off by the
 controller that ignores a command it does not know hangs whatever sent it.
 Neither says anything except "the game did not boot".
 
+## spu_test
+
+    spu_test [group]
+
+Unit tests for the sound unit. No BIOS, no window, no audio device. Sample
+data is written into sound RAM, voices are keyed on through their real
+registers, and the frames that come out are checked.
+
+**Current: 107 checks, 0 failures.**
+
+| Group | Covers |
+|---|---|
+| `registers` | the voice register file, per-voice addressing, the read-only ones |
+| `keyonoff` | key-on and key-off being edge-triggered, ENDX set and cleared |
+| `adpcm` | block decode, the shift and filter, the end and repeat flags |
+| `loopaddr` | where a voice loops back to: a repeat address written before key-on surviving it, the loop-start flag setting it when software has not, software outranking the flag until the next key-on |
+| `envelope` | the attack ramping rather than starting at full, the level being readable, silence without a key-on |
+| `mixer` | per-voice and main volume, left and right kept separate |
+| `timing` | one frame per 768 cycles, and the frame count over a known run |
+| `noiseirq` | the noise generator running, the IRQ address compare |
+| `cdvolume` | the CD input volume as a plain signed level, not a sweep register (bug 36) |
+| `xaparams` `xacounts` `xashift` `xastereo` `xafilter` `xasat` | XA-ADPCM: parameter offsets, frame counts, silence and shift, mono and stereo, the filter carrying across sectors, saturation |
+
+`loopaddr` is the one worth reading twice. Four of its eight checks fail
+against the implementation as it stood before bug 39 (measured, by putting the
+old behaviour back and running the group against it) - while all 99 checks that
+existed then passed. Nothing asserted where a voice loops back to, only that it
+was still making a noise afterwards, and a voice looping over three times as
+much sample as it should makes a noise perfectly happily. "Still audible" and
+"audible and correct" are not the same measurement.
+
 ## boot_runner
 
     boot_runner <bios.bin> [options]
@@ -136,6 +167,8 @@ Neither says anything except "the game did not boot".
 | `--hot <n>` | Print the n most-executed addresses |
 | `--dis <hex>:<n>` | Disassemble n instructions from an address (RAM or BIOS) |
 | `--watch-vram x,y,w,h` | Report which GP0 command wrote each pixel into a VRAM area |
+| `--wav <file>` | Write everything the SPU produced as a 44100 Hz stereo WAV |
+| `--press b@f[+h]` | Press a button at frame f, holding h frames |
 | `--quiet` | Suppress the per-100-frame progress lines |
 
 Exit code is 0 if anything was drawn, 1 if the final frame was entirely black.
@@ -176,6 +209,31 @@ separate every case:
 Bug 14 was found from two of those numbers sitting next to each other:
 textured quads were being issued, and 5.19 million texels were being rejected
 as transparent with nothing clipped and nothing mask-rejected.
+
+## wav_pitch
+
+    wav_pitch <file.wav> [options]
+
+Reads what `boot_runner --wav` wrote and prints what note is in it, window by
+window: time, RMS, peak, frequency, the nearest equal-tempered note and how far
+off it is in cents.
+
+| Option | Effect |
+|---|---|
+| `--from <sec>` / `--to <sec>` | The range to analyse |
+| `--window <n>` / `--hop <n>` | Analysis window and step, in samples (2048 / 1024) |
+| `--min-rms <n>` | Skip windows quieter than this (default 300) |
+| `--min-hz <n>` / `--max-hz <n>` | Search range (default 60 / 5000) |
+| `--summary` | One line per note instead of one per window |
+
+It exists because audio is the one part of this machine with no equivalent of a
+framebuffer checksum. "The notes sound low" cannot be diffed, put in a bug
+report, or checked again after a change; `F5 698 Hz, +0.6 cents` can.
+
+Pitch is detected with YIN's cumulative mean normalised difference rather than
+plain autocorrelation. That is not a detail: autocorrelation's characteristic
+failure mode is reporting a note an octave out, and octaves are exactly what
+this tool gets pointed at. It depends on nothing, not even the core.
 
 ## Baselines
 

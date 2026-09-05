@@ -113,10 +113,25 @@ const int16_t kGauss[512] = {
 
 }  // namespace
 
-Spu::Spu() : ram_(nullptr), buffer_(nullptr), engine_(nullptr) {
+Spu::Spu()
+    : ram_(nullptr),
+      buffer_(nullptr),
+      engine_(nullptr),
+      trace_voices_(false),
+      voice_events_(nullptr),
+      voice_event_count_(0) {
 }
 
 Spu::~Spu() {
+}
+
+// Allocated on demand: a front end never asks for this, and 16384 events is
+// 320 KB nobody else should pay for.
+void Spu::set_trace_voices(bool on) {
+  if (on && voice_events_ == nullptr)
+    voice_events_ = new VoiceEvent[kMaxVoiceEvents];
+  voice_event_count_ = 0;
+  trace_voices_ = on;
 }
 
 int Spu::Initialize() {
@@ -164,8 +179,11 @@ int Spu::Initialize() {
 int Spu::Deinitialize() {
   delete[] ram_;
   delete[] buffer_;
+  delete[] voice_events_;
   ram_ = nullptr;
   buffer_ = nullptr;
+  voice_events_ = nullptr;
+  voice_event_count_ = 0;
   return 0;
 }
 
@@ -209,11 +227,11 @@ void Spu::DecodeBlock(Voice& voice) {
   if (filter > 4)
     filter = 0;
 
-  // A block flagged as the loop point records where to come back to.
-  if (flags & 0x04) {
+  // A block flagged as the loop point records where to come back to - unless
+  // software has set the loop point by register since the last key-on, which
+  // takes precedence over the flag until the voice is keyed on again.
+  if ((flags & 0x04) && !voice.ignore_loop_start)
     voice.repeat_address = static_cast<uint16_t>((address / 8) & 0xFFFF);
-    voice.repeat_set = true;
-  }
 
   for (int i = 0; i < 28; ++i) {
     const uint8_t byte = ram_[address + 2 + (i / 2)];
@@ -345,9 +363,19 @@ void Spu::StepEnvelope(Voice& voice) {
 
 void Spu::KeyOn(int index) {
   Voice& voice = voices_[index];
+  const uint16_t repeat_before = voice.repeat_address;
   voice.current_address = static_cast<uint32_t>(voice.start_address) * 8;
-  voice.repeat_address = voice.start_address;
-  voice.repeat_set = false;
+  // The repeat address is deliberately left alone. Key-on sets where the
+  // voice starts, not where it loops - software is free to set a loop point
+  // by register before keying on, and the hardware keeps it.
+  //
+  // Resetting it here to the start address is what made Final Fantasy VII's
+  // prelude play a twelfth flat. It writes repeat=186Eh and then keys on with
+  // start=186Ah for every note; 186Ah is two blocks of silence followed by a
+  // 28-sample triangle at 186Eh, so throwing the repeat address away turned a
+  // 28-sample loop into an 84-sample one - a third of the frequency, on every
+  // note, and a buzzing pulse train instead of a continuous tone. See bug 39.
+  voice.ignore_loop_start = false;
   voice.counter = 0;
   voice.decoded_index = 28;          // force a decode on the first step
   voice.previous0 = voice.previous1 = 0;
@@ -361,6 +389,20 @@ void Spu::KeyOn(int index) {
   voice.ended = false;
   endx_ &= ~(1u << index);
   ++stats_.key_ons;
+
+  if (trace_voices_ && voice_event_count_ < kMaxVoiceEvents) {
+    VoiceEvent& event = voice_events_[voice_event_count_++];
+    event.frame = stats_.frames;
+    event.kind = kEventKeyOn;
+    event.voice = static_cast<uint16_t>(index);
+    event.pitch = voice.pitch;
+    event.start_address = voice.start_address;
+    event.repeat_address = repeat_before;
+    event.adsr_low = voice.adsr_low;
+    event.adsr_high = voice.adsr_high;
+    event.volume_left = voice.volume_left;
+    event.volume_right = voice.volume_right;
+  }
 }
 
 void Spu::KeyOff(int index) {
@@ -816,16 +858,39 @@ void Spu::Write(uint32_t address, uint16_t data) {
     const int index = offset / 0x10;
     Voice& voice = voices_[index];
     switch (offset & 0x0F) {
-      case 0x0: voice.volume_left = data; return;
-      case 0x2: voice.volume_right = data; return;
-      case 0x4: voice.pitch = data; return;
+      // Bit 15 of a volume register selects a sweep rather than a level.
+      // Sweeps are not implemented - VolumeOf treats one as full scale - so
+      // the count of them is the measure of how much of a game's mix is being
+      // flattened, which nothing on the output side can reveal.
+      case 0x0: voice.volume_left = data;
+                if (data & 0x8000) ++stats_.volume_sweeps;
+                else ++stats_.volume_levels;
+                return;
+      case 0x2: voice.volume_right = data;
+                if (data & 0x8000) ++stats_.volume_sweeps;
+                else ++stats_.volume_levels;
+                return;
+      case 0x4: voice.pitch = data;
+                if (data > stats_.max_pitch) stats_.max_pitch = data;
+                if (data > 0x3FFF) ++stats_.pitch_writes_over_3fff;
+                return;
       case 0x6: voice.start_address = data; return;
       case 0x8: voice.adsr_low = data; return;
       case 0xA: voice.adsr_high = data; return;
       case 0xC: voice.adsr_volume = data;
                 voice.level = data & 0x7FFF; return;
       default:  voice.repeat_address = data;
-                voice.repeat_set = true; return;
+                voice.ignore_loop_start = true;
+                if (trace_voices_ && voice_event_count_ < kMaxVoiceEvents) {
+                  VoiceEvent& event = voice_events_[voice_event_count_++];
+                  memset(&event, 0, sizeof(event));
+                  event.frame = stats_.frames;
+                  event.kind = kEventRepeatWrite;
+                  event.voice = static_cast<uint16_t>(index);
+                  event.repeat_address = data;
+                  event.start_address = voice.start_address;
+                }
+                return;
     }
   }
 
@@ -859,17 +924,31 @@ void Spu::Write(uint32_t address, uint16_t data) {
         if (data & (1u << i)) KeyOff(16 + i);
       return;
 
-    case 0x190: pitch_modulation_ = (pitch_modulation_ & 0xFFFF0000) | data; return;
+    // The three per-voice mode masks. Each is remembered as "ever set" as
+    // well as stored: whether a game uses pitch modulation, noise or reverb
+    // at all decides whether the approximations in those paths can be the
+    // reason it sounds wrong, and reading the live register cannot say,
+    // because software clears them again between notes.
+    case 0x190: pitch_modulation_ = (pitch_modulation_ & 0xFFFF0000) | data;
+                stats_.pitch_modulation_seen |= data;
+                return;
     case 0x192: pitch_modulation_ =
                     (pitch_modulation_ & 0xFFFF) | (static_cast<uint32_t>(data) << 16);
+                stats_.pitch_modulation_seen |= static_cast<uint32_t>(data) << 16;
                 return;
-    case 0x194: noise_mode_ = (noise_mode_ & 0xFFFF0000) | data; return;
+    case 0x194: noise_mode_ = (noise_mode_ & 0xFFFF0000) | data;
+                stats_.noise_seen |= data;
+                return;
     case 0x196: noise_mode_ =
                     (noise_mode_ & 0xFFFF) | (static_cast<uint32_t>(data) << 16);
+                stats_.noise_seen |= static_cast<uint32_t>(data) << 16;
                 return;
-    case 0x198: reverb_mode_ = (reverb_mode_ & 0xFFFF0000) | data; return;
+    case 0x198: reverb_mode_ = (reverb_mode_ & 0xFFFF0000) | data;
+                stats_.reverb_seen |= data;
+                return;
     case 0x19A: reverb_mode_ =
                     (reverb_mode_ & 0xFFFF) | (static_cast<uint32_t>(data) << 16);
+                stats_.reverb_seen |= static_cast<uint32_t>(data) << 16;
                 return;
     case 0x19C: case 0x19E: return;      // ENDX is read-only
 
@@ -889,6 +968,7 @@ void Spu::Write(uint32_t address, uint16_t data) {
       return;
     case 0x1AA:
       control_ = data;
+      stats_.control_seen |= data;
       // Acknowledging the interrupt is done by clearing the enable bit.
       if ((data & 0x0040) == 0)
         status_ &= ~0x0040;

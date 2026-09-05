@@ -143,6 +143,48 @@ Fixing the voice/main halving is a separate pass: it doubles every game's
 audio and would want the master-gain default dropped to match, so it needs
 measuring on its own rather than riding along here.
 
+### Volume sweeps are not implemented
+
+Bit 15 of a voice or main volume register selects a sweep - a ramp, linear or
+exponential, up or down, at one of 128 rates - instead of a fixed level.
+`Spu::VolumeOf` reads any such register as 3FFFh, full scale, because the
+sweep's starting level is not stored in the register and nothing tracks one.
+
+A sequencer uses sweeps for note attack shaping, tremolo and cross-fades
+between layered voices, so a game that uses them has its dynamics flattened:
+every part plays at the level of the loudest. Nothing about pitch changes,
+which makes it hard to hear as a fault rather than as a mix.
+
+`boot_runner`'s `spu requests` line counts sweep writes against level writes,
+so whether a given game is affected is now one run rather than a guess. Final
+Fantasy VII is not: 0 sweeps against 4006 plain levels over 3600 frames, its
+panning done by rewriting levels note by note. That was worth knowing during
+bug 39, and it is worth checking before blaming this for anything.
+
+### The reverb is a two-tap delay, not the hardware's network
+
+`Spu::ProcessReverb` runs a two-tap delay out of the reverb work area, with a
+single feedback term off the two master reverb volumes. The hardware runs a
+comb-and-all-pass network out of the same buffer, driven by the 32 reverb
+registers (`1F801DC0h..`) - the all-pass and comb delays, their feedback and
+filter coefficients, and the input filters. All 32 are stored and none but the
+first two are used.
+
+The shape of the effect is there - a decaying echo at some depth - but not its
+response, and the delay length is not even a fixed room: it is derived from
+however much sound RAM sits above `reverb_base_`, so a game that allocates a
+large work area gets a long slapback rather than a large hall.
+
+This is not academic. Final Fantasy VII routes **all 24 voices** through the
+reverb with the master enable set (`reverb FFFFFF`, `control C0B5`, measured by
+`boot_runner`'s `spu modes` line), so every note of its music passes through
+it. Bug 39 fixed that music's pitch and its waveform; what it sounds like is
+still partly this.
+
+Doing it properly means implementing the documented network against the real
+register set, which is a pass of its own with `spu_test` coverage to match -
+the reverb has none today, and it is the only major SPU path in that position.
+
 ### The instruction and data caches are not modelled
 
 `ICache`/`ICache2` exist in `cpu.h` and every call site is commented out,
@@ -376,10 +418,16 @@ Things that look missing and are not, so they are not re-investigated:
 - **The MDEC.** Implemented, with `mdec_test` covering it in 59 checks. Video
   and its audio both work.
 - **The SPU.** 24 ADPCM voices, ADSR, the hardware Gaussian table, noise, pitch
-  modulation, reverb and CD-audio input, with `spu_test` covering it. The CD
-  input volume is a plain signed level, distinct from the voice/main sweep
-  format (bug 36). One known quirk remains: the voice and main volumes come out
-  at half - see the gap above.
+  modulation and CD-audio input, with `spu_test` covering it in 107 checks. The
+  CD input volume is a plain signed level, distinct from the voice/main sweep
+  format (bug 36). Where a voice loops back to now follows the hardware: a
+  repeat address written by software survives the key-on that follows it, which
+  is what Final Fantasy VII's music depends on (bug 39). Two known quirks
+  remain, both gaps above: the voice and main volumes come out at half, and
+  **volume sweeps are not implemented at all** - `VolumeOf` reads any sweep
+  register as full scale. FF7 turns out not to use them (0 sweeps against 4006
+  plain levels, measured), but a game that does will have its dynamics
+  flattened. The reverb is its own gap, above.
 - **`psx/emu.h` and `psx/emu.cpp`** are an earlier iteration superseded by
   `system.*`. They are kept in the tree but built by neither the solution nor
   the harnesses.

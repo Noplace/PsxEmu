@@ -74,6 +74,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_gte\ /Fe:Temp\tools\gte_test.exe ^
    PSXEmu.Core\tools\gte_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_wav mkdir Temp\tools\obj_wav
+cl %FLAGS% /Fo:Temp\tools\obj_wav\ /Fe:Temp\tools\wav_pitch.exe ^
+   PSXEmu.Core\tools\wav_pitch.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 echo.
 echo Built Temp\tools\boot_runner.exe
 echo Built Temp\tools\media_test.exe

@@ -100,8 +100,47 @@ class Spu : public Component {
     // silenced track (this near zero) from one that never started (in near
     // zero too) - the two look identical on the input side.
     int16_t cd_out_peak;
+
+    // What software asked the voices to do, as distinct from what came out.
+    // These are the input side of the mixer, and they are counted because
+    // measuring the output cannot recover them: a note that measures in tune
+    // says nothing about whether the register that produced it is the one
+    // that was written, and a part that is too loud looks exactly like a part
+    // that is too quiet next to it.
+    uint16_t max_pitch;                // largest VxPitch ever written
+    uint64_t pitch_writes_over_3fff;   // ... that the hardware would clamp
+    uint64_t volume_sweeps;            // voice volume writes selecting a sweep
+    uint64_t volume_levels;            // ... and selecting a plain level
+    uint32_t pitch_modulation_seen;    // PMON bits ever set
+    uint32_t noise_seen;               // NON bits ever set
+    uint32_t reverb_seen;              // EON bits ever set
+    uint16_t control_seen;             // control bits ever set
   };
   const Stats& stats() const { return stats_; }
+
+  // A bounded log of key-ons, off by default and allocated only when turned
+  // on. An audio bug is diagnosed from what software asked for, and this is
+  // the only place that is visible - by the time a voice reaches the mixer,
+  // the request and the result are the same number.
+  enum VoiceEventKind { kEventKeyOn, kEventRepeatWrite };
+  struct VoiceEvent {
+    uint64_t frame;                // stereo frames generated, so /44100 = time
+    uint16_t kind;
+    uint16_t voice;
+    uint16_t pitch;
+    uint16_t start_address;        // in 8-byte units, as written
+    // For a key-on, the repeat address as it stood *before* the key-on was
+    // applied; for a repeat write, the value written. Software that sets a
+    // loop point by register and then keys on, in that order, is only visible
+    // in the two side by side.
+    uint16_t repeat_address;
+    uint16_t adsr_low, adsr_high;
+    uint16_t volume_left, volume_right;
+  };
+  static const int kMaxVoiceEvents = 16384;
+  void set_trace_voices(bool on);
+  const VoiceEvent* voice_events() const { return voice_events_; }
+  int voice_event_count() const { return voice_event_count_; }
 
  private:
   enum AdsrPhase { kAttack, kDecay, kSustain, kRelease, kOff };
@@ -126,7 +165,10 @@ class Spu : public Component {
     int32_t level;               // 0..0x7FFF
     uint32_t envelope_counter;   // samples since the envelope last moved
     bool active;
-    bool repeat_set;             // the block flagged itself as the loop point
+    // Set when software writes the repeat address itself, cleared at key-on.
+    // While it is set, a block carrying the loop-start flag does not get to
+    // overwrite what software asked for.
+    bool ignore_loop_start;
     bool ended;                  // reached a block with the end flag
   };
 
@@ -183,6 +225,10 @@ class Spu : public Component {
 
   IAudioEngine* engine_;
   Stats stats_;
+
+  bool trace_voices_;
+  VoiceEvent* voice_events_;
+  int voice_event_count_;
 
   // ---- helpers -----------------------------------------------------------
   inline uint16_t RamHalf(uint32_t byte_address) const {
