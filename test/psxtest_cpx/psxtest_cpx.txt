@@ -1,0 +1,16 @@
+
+This is a collection of more or less complex R3000 CPU and COP tests.
+
+Navigate the menu using the D-pad, return to the menu when the results are
+shown by pressing Select and hold L2/R2 and use the D-pad to move the display
+in the menu and result display.
+
+Contact:
+
+Write to me at: maro [at] amidog [dot] se
+Get latest version from: http://psx.amidog.se
+
+History:
+
+1.1 (2013-12-31): Maintenance release.
+1.0 (2013-09-14): First release.

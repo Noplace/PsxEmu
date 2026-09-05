@@ -154,6 +154,11 @@ void System::StepInstruction() {
     }
     BootDisc(nullptr);
   }
+
+  if (auto_boot_exe_ && cpu_.context()->pc == 0x80030000) {
+    auto_boot_exe_ = false;
+    LoadPsExe(auto_boot_exe_path_.c_str());
+  }
 }
 
 // Paced against the wall clock, for a front end that wants the machine to run

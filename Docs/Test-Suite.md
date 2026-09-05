@@ -73,6 +73,27 @@ here has been checked against real software. These tests say the implementation
 agrees with the description; they do not yet say it agrees with the hardware.
 That is what amidog's suite is for, and it is the next thing to run.
 
+## gpu_test
+
+    gpu_test
+
+Register-level tests for the GPU's command and status handling. No BIOS, no
+window: commands go straight to GP0/GP1 the way the memory-mapped registers
+would, and GPUSTAT and I_STAT are read back.
+
+**Current: 13 checks, 0 failures.**
+
+This is a starting set, not full coverage - the rasteriser is exercised
+indirectly by every `boot_runner` run and the framebuffer checksums below, so
+what is here is register behaviour nothing else drives: GP0(1Fh) setting
+GPUSTAT.24 and raising I_STAT's GPU line, GP1(02h) acknowledging it and
+allowing a fresh edge, a repeated request while unacknowledged raising no
+second I_STAT edge, and GP1(00h) reset clearing both. It also pins down, as a
+fact about the current code rather than an assumption a future change
+discovers the hard way, that the three GPUSTAT readiness bits report ready
+unconditionally - there is no GP0 FIFO or drawing-time model yet. See bug 40
+in [Bugs-Found.md](Bugs-Found.md) and "no drawing time" in [Gaps.md](Gaps.md).
+
 ## media_test
 
     media_test [work-directory]
@@ -156,7 +177,8 @@ much sample as it should makes a noise perfectly happily. "Still audible" and
 |---|---|
 | `--disc <path>` | Mount a disc: a `.cue`, an image file, or a drive letter |
 | `--boot-disc` | Read SYSTEM.CNF from the mounted disc and start its executable |
-| `--exe <file>` | Side-load a PS-EXE |
+| `--auto-boot` | Let the BIOS run for real, then take over at pc=80030000 - the point it would hand a game control at |
+| `--exe <file>` | Side-load a PS-EXE. Alone, immediately - before the BIOS has run at all. With `--auto-boot`, deferred to pc=80030000 instead: the BIOS clearing BEV and Isolate Cache and setting up a video mode first, which a standalone test program can assume the same way it could on real hardware |
 | `--frames <n>` | Run for n frames, then stop (default 300) |
 | `--ppm <file>` | Write the final visible frame as a PPM |
 | `--vram <file>` | Write the whole 1024x512 of VRAM as a PPM |
@@ -314,9 +336,13 @@ wrong way, and it stays anyway.
 
 - **amidog's GTE suite** on top of `gte_test`. The local tests check the
   implementation against the hardware description; only real test software
-  checks it against the hardware.
+  checks it against the hardware. `test/psxtest_gte/` in this tree is that
+  suite - see bug 41 for how to get it running (`--auto-boot --exe`, or the
+  Win32 front end's Boot PSX-EXE menu command) - but nobody has read its
+  results yet.
 - **amidog's CPU suite** on top of `cpu_test`, which covers the instruction set
-  but not its timing.
+  but not its timing. `test/psxtest_cpu/` is present and runs to a results
+  screen unattended - see bug 41 - and nobody has read it either.
 - **Memory card round trips** in `media_test`, once cards exist. Per the
   standards document, the *wipe* is the point: write, wipe, read back, or a
   `serialize()` that stores nothing still appears to work.

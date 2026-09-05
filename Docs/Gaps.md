@@ -196,18 +196,6 @@ The cost is timing fidelity. It would also matter to a recompiler, which wants
 the cache-control write at `0xFFFE0130` as its signal that code has changed -
 see [Recompiler-Plan.md](Recompiler-Plan.md).
 
-### Menu backgrounds draw as rainbow noise
-
-The BIOS menus - MAIN MENU, MEMORY CARD, the CD player - draw coloured noise
-behind their highlighted labels where a flat or gently shaded fill belongs.
-The shapes and the text are right, so this is a fill reading from somewhere
-nothing was written: a texture page or CLUT that is not where the GPU thinks
-it is. It has been there all along and nothing measured it, because until the
-harness could write a PNG nothing had looked at these screens.
-
-Not investigated. Nothing is known to depend on it, but it is the only known
-case of the GPU drawing something visibly wrong.
-
 ### Cause's interrupt-pending bits are faked
 
 `RaiseException` sets `Cause` bits 8-15 from `SR`'s interrupt mask rather than
@@ -384,6 +372,25 @@ come before any optimisation work.
 
 Things that look missing and are not, so they are not re-investigated:
 
+- **The colourful "noise" behind MEMORY CARD and CD PLAYER.** Not a bug: it is
+  the shell's own paint-splatter decoration. A reference screenshot of real
+  SCPH1001 hardware (`playstation-scph1001-menu.png`, from a BIOS-revision
+  survey at drew1440.com) shows the identical composition - a coloured
+  splatter behind each of the two labels, the same pair of floating blue
+  spheres, the same MAIN MENU box - confirming this render is correct rather
+  than a fill reading from the wrong place. `--vram` at frame 700 shows the
+  source art sitting in VRAM at (896,0)-(956,59): a self-contained blob
+  texture, not the black of an untouched page, uploaded whole by a plain
+  CPU-to-VRAM command (3600 of 3600 pixels, nothing short). Adjacent to it at
+  (832,0) is a second, unrelated texture - a warped "MAIN MENU" pattern with a
+  stray glyph - that never appears on screen; ordinary unused shell art
+  sitting in the same texture atlas, not evidence of anything wrong either.
+  Previously listed here as unfixed and "the only known case of the GPU
+  drawing something visibly wrong"; it was never re-examined against a real
+  console because nothing had looked at these screens until the harness could
+  write a PNG, and the assumption that a plain menu should have a flat
+  background behind its text turned out to be wrong about the original,
+  not about this GPU.
 - **CD audio (CD-DA) playback, and the BIOS CD player.** Both work. `Play`
   seeks, the drive hands raw 2352-byte sectors to the SPU once a sector time,
   and they are mixed through the same CD input XA-ADPCM uses. The BIOS CD

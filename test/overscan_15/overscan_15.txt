@@ -1,0 +1,18 @@
+
+This is an examples of a (probably) unusual PSX resolution, 720x576 15bit
+(PAL interlace). This is accomplished by setting the PSX to display an image
+with 576 rows and then constantly updating the upper part of the image using
+DMA as the PSX has a hardcoded framebuffer of 1024x512 pixels. Luckily the
+RAMDAC wraps when reaching the bottom of the image, making it possible to show
+more than 512 lines.
+
+Contact:
+
+Write to me at: maro [at] amidog [dot] se
+Get latest version from: http://psx.amidog.se
+
+History:
+
+1.2 (2016-02-14): Improved startup code and added iso files.
+1.1 (2012-12-02): Improved startup code.
+1.0 (2012-11-04): First release.

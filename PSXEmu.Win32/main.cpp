@@ -40,6 +40,7 @@
 
 #include <array>
 #include <cstdio>
+#include <cstring>
 #include <iterator>
 #include <memory>
 #include <string>
@@ -62,6 +63,7 @@ enum MenuCommand {
   kCommandSwapDisc,
   kCommandEjectDisc,
   kCommandBootBios,
+  kCommandBootExe,
   kCommandOpenMemoryCardSlot1,
   kCommandOpenMemoryCardSlot2,
   kCommandCreateMemoryCardSlot1,
@@ -256,8 +258,13 @@ constexpr const char* kDiscFilter =
 constexpr const char* kCardFilter =
     "Memory Card (*.mcr;*.mcd)\0*.mcr;*.mcd\0"
     "All files (*.*)\0*.*\0";
+constexpr const char* kExeFilter =
+    "PSX Executables (*.exe;*.psx;*.psexe)\0*.exe;*.psx;*.psexe\0"
+    "All files (*.*)\0*.*\0";
 
-void SetWindowTitleForDisc(HWND window, const std::string& path) {
+// Titles the window after whatever is loaded - a disc image, a bare PS-EXE, or
+// nothing (the BIOS shell with an empty drive).
+void SetWindowTitleForPath(HWND window, const std::string& path) {
   if (path.empty()) {
     SetWindowTextW(window, kWindowTitle);
     return;
@@ -427,7 +434,7 @@ bool BootDiscFromFile(Application& app, HWND window, const std::string& path) {
   // question the player has to answer by hand.
   LoadOrCreateMemoryCardsForDisc(app, window, path);
 
-  SetWindowTitleForDisc(window, path);
+  SetWindowTitleForPath(window, path);
   app.paused = false;
   return true;
 }
@@ -437,8 +444,52 @@ void BootBios(Application& app, HWND window) {
   if (!ResetMachine(app, window))
     return;
   app.system->EjectDisc();
-  SetWindowTitleForDisc(window, std::string());
+  SetWindowTitleForPath(window, std::string());
   app.paused = false;
+}
+
+// A quick, read-only sanity check - just the 8-byte magic every PS-EXE
+// starts with - so picking the wrong kind of file is caught immediately
+// rather than several seconds into a BIOS boot. The authoritative check is
+// still System::LoadPsExe, which runs later; this only exists because that
+// one cannot run yet without undoing the whole point of booting through the
+// BIOS first.
+bool LooksLikePsExe(const std::string& path) {
+  FILE* fp = fopen(path.c_str(), "rb");
+  if (fp == nullptr)
+    return false;
+  char id[8] = {};
+  const size_t read = fread(id, 1, sizeof(id), fp);
+  fclose(fp);
+  return read == sizeof(id) && memcmp(id, "PS-X EXE", sizeof(id)) == 0;
+}
+
+// Boots through the BIOS for real, the same as switching the console on with
+// an empty drive, and only once it reaches the address it would hand a game
+// control at does the executable get side-loaded on top. Letting the BIOS
+// run first is what a raw side-load skips: clearing BEV and Isolate Cache,
+// and setting up the default video mode, both of which a standalone test
+// program can depend on having happened, the same way it could on real
+// hardware.
+bool BootPsExeFromFile(Application& app, HWND window, const std::string& path) {
+  if (!LooksLikePsExe(path)) {
+    MessageBoxW(window,
+                L"Could not load that file as a PS-X EXE.\n\n"
+                L"It must be the executable itself - the header starts with "
+                L"the 8 bytes \"PS-X EXE\" - not a disc image or a Windows "
+                L"executable.",
+                kWindowTitle, MB_OK | MB_ICONWARNING);
+    return false;
+  }
+  if (!ResetMachine(app, window))
+    return false;
+  // Nothing about a leftover disc should affect a test program that never
+  // asks the CD-ROM for anything.
+  app.system->EjectDisc();
+  app.system->set_auto_boot_exe(true, path);
+  SetWindowTitleForPath(window, path);
+  app.paused = false;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +502,7 @@ HMENU CreateMainMenu() {
   AppendMenuW(file, MF_STRING, kCommandSwapDisc, L"S&wap disc...");
   AppendMenuW(file, MF_STRING, kCommandEjectDisc, L"&Eject disc");
   AppendMenuW(file, MF_STRING, kCommandBootBios, L"Boot &BIOS");
+  AppendMenuW(file, MF_STRING, kCommandBootExe, L"Boot PSX-&EXE...");
   AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
   AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot1,
               L"Open Memory Card (Slot 1)...");
@@ -514,18 +566,28 @@ void OnCommand(Application& app, HWND window, int command) {
                     MB_OK | MB_ICONWARNING);
         break;
       }
-      SetWindowTitleForDisc(window, path);
+      SetWindowTitleForPath(window, path);
       break;
     }
 
     case kCommandEjectDisc:
       app.system->EjectDisc();
-      SetWindowTitleForDisc(window, std::string());
+      SetWindowTitleForPath(window, std::string());
       break;
 
     case kCommandBootBios:
       BootBios(app, window);
       break;
+
+    case kCommandBootExe: {
+      // A standalone test program or homebrew binary - no disc. The BIOS
+      // boots normally first; see BootPsExeFromFile for why.
+      const std::string path =
+          ChooseFile(window, FileDialog::kOpen, kExeFilter, nullptr);
+      if (!path.empty())
+        BootPsExeFromFile(app, window, path);
+      break;
+    }
 
     case kCommandOpenMemoryCardSlot1:
     case kCommandOpenMemoryCardSlot2: {
@@ -809,7 +871,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
 
   if (!command_line.disc.empty() &&
       app.system->LoadDisc(command_line.disc.c_str())) {
-    SetWindowTitleForDisc(window, command_line.disc);
+    SetWindowTitleForPath(window, command_line.disc);
     LoadOrCreateMemoryCardsForDisc(app, window, command_line.disc);
   }
 

@@ -1834,3 +1834,132 @@ two-tap delay rather than the hardware's comb-and-all-pass network. That is a
 real difference in what the prelude sounds like and it is untouched by this
 fix. See [Gaps.md](Gaps.md) and
 [FF7-Prelude-Pitch-Plan.md](FF7-Prelude-Pitch-Plan.md).
+
+## 40. GP0(1Fh) Interrupt Request did nothing
+
+`psx/gpu.cpp`
+
+Every GP0 command below `20h` - clear cache, the six nops, and `1Fh` interrupt
+request - fell into one `if (command < 0x20) { return; }` and was treated as a
+nop. Clear cache genuinely is one, nothing here models a texture cache to
+clear. `1Fh` is not: per psx-spx it sets GPUSTAT.24 and raises IRQ1 at the
+interrupt controller, acknowledged only by GP1(02h) - a real interrupt source,
+silently dropped.
+
+No game or BIOS revision seen by this project issues it - a run through the
+whole BIOS shell (`bios/SCPH1001.BIN`, 700 frames) shows zero - which is
+consistent with psx-spx's own note that it is rarely used. Found while looking
+for GPU register-level gaps rather than chasing a symptom, which is also why
+it was safe to add without anything to regress against: nothing exercises the
+path yet.
+
+### The fix
+
+```cpp
+if (command == 0x1F) {  // interrupt request
+  if (!status_.irq) {
+    status_.irq = 1;
+    system().io().SetInterrupt(kInterruptGPU);
+  }
+  return;
+}
+```
+
+Guarded on the 0-to-1 edge rather than raised unconditionally: GPUSTAT.24 is a
+level, and I_STAT is a set of sticky flags each latched once when their source
+first asserts, not re-latched by a source that is already asserted and has not
+yet been acknowledged. Software that calls this in a loop before acknowledging
+should not see a second interrupt for the one it has not handled yet. This
+half is reasoned from how every other interrupt source in this codebase
+behaves, not from a hardware measurement - flagged here in case it needs
+revisiting.
+
+### Verification
+
+New `gpu_test` harness - this codebase's first, 13 checks - covering reset
+clearing both GPUSTAT.24 and I_STAT.GPU, the command setting both, GP1(02h)
+acknowledging and allowing a fresh edge, and a repeated request while
+unacknowledged raising no second I_STAT edge. Also pins down, as a fact about
+the current code rather than an assumption, that the three GPUSTAT readiness
+bits report ready unconditionally - see "no drawing time" in
+[Gaps.md](Gaps.md).
+
+All seven existing harnesses unchanged (cpu_test 189, gte_test 99, media_test
+175, spu_test 107, mdec_test 59, timer_test 70, sio_test 28 - all still 0
+failures), and `bios/SCPH1001.BIN` at 700 frames produces the identical
+framebuffer checksum (`e6eff3d9569871e6`) before and after: nothing that was
+already working moved.
+
+## 41. A raw side-loaded PS-EXE never got a working machine to run on
+
+Requested to add a Win32 menu command to load a standalone PS-EXE directly,
+for running real test suites rather than games. The natural implementation
+was to expose `System::LoadPsExe` - already used by `boot_runner --exe` -
+through a file picker: reset, eject the disc, load, jump to the entry point.
+
+It built, ran, and matched `--exe`'s existing behaviour exactly. It was also
+useless for its actual purpose. amidog's `psxtest_cpu`, `psxtest_gpu` and
+`psxtest_gte` - real PS1 hardware test suites, not games - all loaded and ran
+millions of instructions with no crash and no unimplemented path hit, and none
+of them ever turned the display on.
+
+### What a fresh side-load skips
+
+`LoadPsExe` sets `pc`, `$gp` and `$sp` from the header and nothing else. It
+runs on whatever `Cpu::Reset()` left behind, which is the R3000A's power-on
+state, not a PS1 that is ready to run software: after 3000 frames of
+`psxtest_cpu` with no side-loaded BIOS having ever executed a single
+instruction, `SR` was still `10900000` - **BEV and Isolate Cache both still
+set**, exactly as they come out of reset.
+
+BEV routes exceptions to the ROM vectors instead of the RAM ones the game's
+own handler lives at, and Isolate Cache stops data stores reaching real
+memory. Both are cleared in the first few instructions of every real BIOS,
+before it does anything else, on a real console and in this one. A raw
+side-load never runs those instructions, and neither does it call whatever the
+BIOS uses to set up a default video mode - which is the direct reason nothing
+appeared: the test suites assume that environment because it is the one thing
+that is *always* true when a PS-EXE gets control on real hardware. There is no
+path to running one at all that does not go through the BIOS first.
+
+`LoadPsExe` used alone, with nothing depending on that environment, is not
+wrong - a synthetic snippet that sets up everything it touches is exactly what
+`media_test`'s own PS-EXE tests are. It just is not what a third-party test
+suite can assume.
+
+### The fix
+
+The same mechanism `--auto-boot` already uses for a disc: let the BIOS run for
+real, and act only once `pc` reaches `0x80030000` - the address it hands
+control onward at, whether to a disc or to the shell. `System` gained a second,
+parallel flag (`set_auto_boot_exe`), checked in `StepInstruction` right after
+the existing disc one:
+
+```cpp
+if (auto_boot_exe_ && cpu_.context()->pc == 0x80030000) {
+  auto_boot_exe_ = false;
+  LoadPsExe(auto_boot_exe_path_.c_str());
+}
+```
+
+The Win32 menu command now arms this instead of side-loading immediately: cold
+reset, eject the disc, arm, unpause. The player sees the ordinary boot logo for
+a second or two - the BIOS is genuinely running - before the test suite takes
+over. `boot_runner --exe` gained the same behaviour when combined with
+`--auto-boot`; alone, `--exe` still side-loads immediately, unchanged, since
+that immediate form is still what a self-contained snippet wants.
+
+### Verification
+
+`boot_runner bios/SCPH1001.BIN --auto-boot --exe test/psxtest_cpu/psxtest_cpu.exe`:
+display goes from `256x240, DISABLED, 0 non-black` to `512x222, enabled,
+12,705 non-black`, and the written frame is the test's real results screen -
+a legible grid of opcode and exception tests, each marked, with a totals line.
+`psxtest_gpu` and `psxtest_gte` come up the same way, as their interactive
+category-selection menus rather than results, which is correct: both need a
+button pressed to actually run.
+
+All eight harnesses unchanged (cpu_test 189, gte_test 99, media_test 175,
+spu_test 107, mdec_test 59, timer_test 70, sio_test 28, gpu_test 13 - still 0
+failures). Nothing about a disc's `--auto-boot` path changed; `--exe` without
+`--auto-boot` is byte-for-byte the same immediate side-load it always was.

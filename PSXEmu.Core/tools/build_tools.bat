@@ -64,6 +64,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_sio\ /Fe:Temp\tools\sio_test.exe ^
    PSXEmu.Core\tools\sio_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_gpu mkdir Temp\tools\obj_gpu
+cl %FLAGS% /Fo:Temp\tools\obj_gpu\ /Fe:Temp\tools\gpu_test.exe ^
+   PSXEmu.Core\tools\gpu_test.cpp %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
 if not exist Temp\tools\obj_mdec mkdir Temp\tools\obj_mdec
 cl %FLAGS% /Fo:Temp\tools\obj_mdec\ /Fe:Temp\tools\mdec_test.exe ^
    PSXEmu.Core\tools\mdec_test.cpp %CORE% %LIBS%
@@ -85,4 +90,5 @@ echo Built Temp\tools\media_test.exe
 echo Built Temp\tools\cpu_test.exe
 
 echo Built Temp\tools\gte_test.exe
+echo Built Temp\tools\gpu_test.exe
 echo Built Temp	ools\spu_test.exe

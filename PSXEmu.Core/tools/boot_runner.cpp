@@ -5,7 +5,16 @@
 //     --disc <path>      mount a disc: a .cue, an image file, or a drive letter
 //     --boot-disc        read SYSTEM.CNF from the disc and start its executable
 //     --auto-boot        let the BIOS run, then take over at pc=80030000
-//     --exe <file.exe>   side-load a PS-EXE once the BIOS reaches the shell
+//     --exe <file.exe>   side-load a PS-EXE. Combined with --auto-boot, the
+//                        BIOS runs for real first and the side-load happens
+//                        at pc=80030000 instead of immediately - the BIOS
+//                        clearing BEV and Isolate Cache, and setting up a
+//                        video mode, is what a standalone test program can
+//                        assume already happened, the same way it could on
+//                        real hardware. Without --auto-boot the side-load is
+//                        immediate, before the BIOS has run at all - for a
+//                        synthetic snippet that sets up everything it needs
+//                        itself and does not want the intro run first.
 //     --frames <n>       run for n frames and stop      (default 300)
 //     --ppm <file>       write the final frame as a PPM
 //     --vram <file>      write the whole of VRAM as a PPM
@@ -583,11 +592,21 @@ int main(int argc, char** argv) {
   if (options.trace_spu != nullptr)
     system->spu().set_trace_voices(true);
 
-  if (options.auto_boot) {
+  // --auto-boot with --exe defers the side-load to the same address rather
+  // than doing both: a raw side-load right now would run over the reset
+  // state --auto-boot exists to get past in the first place.
+  const bool defer_exe_to_auto_boot =
+      options.auto_boot && options.exe != nullptr;
+
+  if (options.auto_boot && !defer_exe_to_auto_boot) {
     // Let the BIOS run its intro, then take over when it reaches the address
     // it would hand a game control at.
     system->set_auto_boot(true);
     printf("auto-boot      armed at pc=80030000\n");
+  } else if (defer_exe_to_auto_boot) {
+    system->set_auto_boot_exe(true, options.exe);
+    printf("auto-boot      armed at pc=80030000, will side-load %s\n",
+           options.exe);
   }
 
   if (options.boot_disc) {
@@ -607,7 +626,7 @@ int main(int argc, char** argv) {
            system->cpu().context()->pc);
   }
 
-  if (options.exe != nullptr) {
+  if (options.exe != nullptr && !defer_exe_to_auto_boot) {
     if (!system->LoadPsExe(options.exe)) {
       fprintf(stderr, "failed to load %s\n", options.exe);
       return 1;

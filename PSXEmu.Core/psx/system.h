@@ -111,6 +111,20 @@ class System {
     auto_boot_ = v;
     auto_boot_path_ = path;
   }
+
+  // Same idea, for a bare PS-EXE rather than a disc: let the BIOS run for
+  // real - which is what clears BEV and Isolate Cache and sets up the
+  // default video mode, none of which a raw side-load ever touches - and
+  // only once it reaches the address it would hand a game control at, side-
+  // load the executable on top. A standalone test program built to run under
+  // a normal PS1 environment can depend on the BIOS having done that, the
+  // same way it could on real hardware; LoadPsExe alone cannot give it that.
+  bool auto_boot_exe_ = false;
+  std::string auto_boot_exe_path_;
+  void set_auto_boot_exe(bool v, const std::string& path = "") {
+    auto_boot_exe_ = v;
+    auto_boot_exe_path_ = path;
+  }
   #ifdef _DEBUG
   DebugAssist csvlog;
   #endif

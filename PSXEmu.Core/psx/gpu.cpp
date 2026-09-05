@@ -262,7 +262,17 @@ void Gpu::ExecuteCommand() {
     ++stats_.primitives;
 
   if (command == 0x02) { CmdFillRectangle(); return; }
-  if (command < 0x20)  { return; }               // nop / clear cache / irq
+  if (command == 0x1F) {  // interrupt request
+    // GPUSTAT.24 is a level, not a pulse: raising IRQ1 again while it is
+    // already set is not a new edge for I_STAT to latch. GP1(02h) is the
+    // only thing that clears it.
+    if (!status_.irq) {
+      status_.irq = 1;
+      system().io().SetInterrupt(kInterruptGPU);
+    }
+    return;
+  }
+  if (command < 0x20)  { return; }               // nop / clear cache
   if (command < 0x40)  { CmdPolygon(); return; }
   if (command < 0x60)  { CmdLine(); return; }
   if (command < 0x80)  { CmdRectangle(); return; }

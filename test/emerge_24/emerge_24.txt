@@ -1,0 +1,15 @@
+
+This is an examples of a (probably) unusual PSX resolution, 680x576 24bit
+(PAL interlace). The image is slowly emerging from the center of the display.
+This effect is created by carefully modifying the display range and offset
+registers each field.
+
+Contact:
+
+Write to me at: maro [at] amidog [dot] se
+Get latest version from: http://psx.amidog.se
+
+History:
+
+1.1 (2016-02-14): Improved startup code and added iso files.
+1.0 (2013-06-26): First release.
