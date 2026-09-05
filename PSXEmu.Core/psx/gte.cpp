@@ -622,7 +622,7 @@ void Gte::Cdp() {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-void Gte::Execute(uint32_t command) {
+uint32_t Gte::Execute(uint32_t command) {
   const uint32_t opcode = command & 0x3F;
 
   // Every command starts with FLAG clear: it reports what *this* command did.
@@ -633,29 +633,37 @@ void Gte::Execute(uint32_t command) {
   ++stats_.commands;
   ++stats_.executed[opcode];
 
+  // Real hardware's per-command latency, measured rather than uniform - a
+  // command charged 1 cycle like a plain COP2 register move is where this
+  // came from: 22 opcodes with 22 different real costs and nothing here
+  // distinguishing them, which is exactly what amidog's psxtest_gte's
+  // per-opcode timing group exists to catch. Figures from DuckStation, the
+  // same source already trusted for DMA timing (see Docs/Gaps.md).
+  uint32_t cycles = 1;
+
   switch (opcode) {
-    case 0x01: Rtps(0, true); break;
-    case 0x06: Nclip(); break;
-    case 0x0C: Op(); break;
-    case 0x10: Dpcs(false); break;
-    case 0x11: Intpl(); break;
-    case 0x12: Mvmva(command); break;
-    case 0x13: Ncds(0); break;
-    case 0x14: Cdp(); break;
-    case 0x16: Ncdt(); break;
-    case 0x1B: Nccs(0); break;
-    case 0x1C: Cc(); break;
-    case 0x1E: Ncs(0); break;
-    case 0x20: Nct(); break;
-    case 0x28: Sqr(); break;
-    case 0x29: Dcpl(); break;
-    case 0x2A: Dpct(); break;
-    case 0x2D: Avsz3(); break;
-    case 0x2E: Avsz4(); break;
-    case 0x30: Rtpt(); break;
-    case 0x3D: Gpf(); break;
-    case 0x3E: Gpl(); break;
-    case 0x3F: Ncct(); break;
+    case 0x01: Rtps(0, true); cycles = 15; break;
+    case 0x06: Nclip();       cycles = 8;  break;
+    case 0x0C: Op();          cycles = 6;  break;
+    case 0x10: Dpcs(false);   cycles = 8;  break;
+    case 0x11: Intpl();       cycles = 8;  break;
+    case 0x12: Mvmva(command);cycles = 8;  break;
+    case 0x13: Ncds(0);       cycles = 19; break;
+    case 0x14: Cdp();         cycles = 13; break;
+    case 0x16: Ncdt();        cycles = 44; break;
+    case 0x1B: Nccs(0);       cycles = 17; break;
+    case 0x1C: Cc();          cycles = 11; break;
+    case 0x1E: Ncs(0);        cycles = 14; break;
+    case 0x20: Nct();         cycles = 30; break;
+    case 0x28: Sqr();         cycles = 5;  break;
+    case 0x29: Dcpl();        cycles = 8;  break;
+    case 0x2A: Dpct();        cycles = 17; break;
+    case 0x2D: Avsz3();       cycles = 5;  break;
+    case 0x2E: Avsz4();       cycles = 6;  break;
+    case 0x30: Rtpt();        cycles = 23; break;
+    case 0x3D: Gpf();         cycles = 5;  break;
+    case 0x3E: Gpl();         cycles = 5;  break;
+    case 0x3F: Ncct();        cycles = 39; break;
     default:
       ++stats_.unknown_commands;
       break;
@@ -663,6 +671,8 @@ void Gte::Execute(uint32_t command) {
 
   if (flag_ & kFlagErrorMask)
     flag_ |= 0x80000000u;
+
+  return cycles;
 }
 
 // ---------------------------------------------------------------------------

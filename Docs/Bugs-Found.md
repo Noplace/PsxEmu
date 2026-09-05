@@ -1963,3 +1963,121 @@ All eight harnesses unchanged (cpu_test 189, gte_test 99, media_test 175,
 spu_test 107, mdec_test 59, timer_test 70, sio_test 28, gpu_test 13 - still 0
 failures). Nothing about a disc's `--auto-boot` path changed; `--exe` without
 `--auto-boot` is byte-for-byte the same immediate side-load it always was.
+
+## 42. Every GTE command cost the same one cycle, and two real hazards beside it were never modelled
+
+With bug 41's route to real test suites open, `test/psxtest_gte/` was run to
+its results screen for the first time. REG and COMPLEX - every register and
+every command's computed value and FLAG bits, checked against amidog's own
+reference rather than this project's - passed outright. TIMING did not: all
+22 opcodes it exercises came back ERROR, uniformly.
+
+### The bug that was findable
+
+`Cpu::COP2()` ran every GTE command through the same `Tick()` every ordinary
+instruction gets:
+
+```cpp
+system_->gte().Execute(context_->code);
+Tick();
+```
+
+One cycle, whether the command was `SQR` (5 cycles on real hardware) or
+`NCCT` (39). `Gte::Execute` decodes the opcode already, for its own dispatch
+switch, so it now returns what that command costs, and `Cpu::COP2` charges
+that instead - via `Cpu::TickCycles`, which existed for exactly this
+(DMA's bus-hold comment names it) but had never been called from anywhere.
+Figures are DuckStation's `AddGTETicks` table, the same source already
+trusted for DMA timing:
+
+| Op | Cycles | Op | Cycles | Op | Cycles |
+|---|---|---|---|---|---|
+| SQR | 5 | AVSZ3 | 5 | AVSZ4 | 6 |
+| GPF | 5 | GPL | 5 | OP | 6 |
+| NCLIP | 8 | DPCS | 8 | INTPL | 8 |
+| MVMVA | 8 | DPCL | 8 | CC | 11 |
+| CDP | 13 | NCS | 14 | NCCS | 17 |
+| DPCT | 17 | NCDS | 19 | RTPS | 15 |
+| RTPT | 23 | NCT | 30 | NCCT | 39 |
+| NCDT | 44 | | | | |
+
+### Two more, found while reading what real hardware documents for this
+
+Neither is what the timing figures above are about, but both are real,
+separately documented, and both were completely unmodelled:
+
+- **CFC2/MFC2 write their register the instant they run.** psx-spx: "Using
+  CFC2/MFC2 has a delay of 1 instruction until the GPR is loaded with its new
+  value" - the exact same one-instruction delay `LB`/`LH`/`LW` already have,
+  which Tekken 2's geometry is the named case of depending on. Both now go
+  through `ArmLoad`, the pending-load mechanism ordinary loads use, instead of
+  writing the register directly.
+- **Nothing stalls the CPU for a GTE command still in flight.** psx-spx: "If
+  an instruction that reads a GTE register or a GTE command is executed
+  before the current GTE command is finished, the CPU will hold until [it]
+  has finished." `Cpu` now tracks the cycle a command's result becomes ready
+  (`gte_busy_until_cycles_`) and, before dispatching a new command or an
+  MFC2/CFC2 read, bills the remaining wait if that cycle has not arrived yet.
+  MTC2/CTC2 are not documented to wait on this and do not check it.
+
+### Verification
+
+New `gtedelay` group in `cpu_test`, 5 checks: the delay-slot shapes
+`TestLoadDelaySlot` already checks for an ordinary load, aimed at MFC2
+instead (old value in the delay slot, new value one instruction later, a
+write in the delay slot beating the load) - all three would fail against the
+write-it-immediately behaviour this replaced - plus one check that issuing
+`SQR` and reading a result register back on the very next instruction costs
+at least SQR's own 5 cycles, not the 2 two ordinary instructions would.
+cpu_test 189 -> 194. All seven other harnesses unchanged, and
+`bios/SCPH1001.BIN` at 700 frames gives the same framebuffer checksum as
+before (`e6eff3d9569871e6`) - the BIOS shell issues zero GTE commands, so
+none of this had anywhere to move it.
+
+**What did not move: amidog's TIMING column.** Identical before and after,
+pixel for pixel (`0e4bc3dba27e48af`, non-black 10538/114688, both times). That
+sent this back to the disassembly, further this time, and it settled the
+question rather than leaving it open.
+
+### What TIMING actually measures, and why fixing the GTE was not enough
+
+`test/psxtest_gte`'s loop for each opcode is: reset Root Counter 2 (system
+clock, no gate - a mode write of 0 restarts it at 0, which `RootCounter` here
+already does correctly), run a fixed body **501 times** in a `bgtz` loop
+(`SQR` or whichever opcode, then `CFC2 $t1, FLAG`, a `nop`, an accumulate, the
+loop branch and its delay slot), then read the counter and store it. Reading
+the counter back at every reset/read pair in this core's own model - a
+temporary instrument, not a shipped change - gives, for every one of dozens of
+measurements across every opcode:
+
+    delta = 501 * (opcode_cycles + per-opcode_loop_overhead) + 4
+
+and `opcode_cycles` recovered from that formula is **exactly** the bug 42
+table above, every time: 5 for `SQR`, 6 for `OP`, 8 for `MVMVA`, and so on,
+with no exceptions across every opcode this reached. That is about as direct
+a confirmation as this project has had for anything: the GTE timing fix is
+not just plausible, it is measured, from inside the test that was failing,
+to produce precisely its own documented reference figures.
+
+So the per-opcode piece is right, and the test still fails, which only
+leaves one place for the discrepancy: the other 500-odd cycles per
+iteration - `CFC2`, a `nop`, an `addu`, a branch and its delay slot, none of
+them GTE - and the loop that repeats them 501 times to average out
+measurement noise. This core charges every one of those a flat one cycle,
+which is [Gaps.md](Gaps.md)'s "Cycle timing is modelled, not measured...
+the per-instruction costs beneath it are uniform where real ones are not" -
+already known, already documented, and not particular to the GTE at all.
+Multiplied by 501, a real per-instruction error too small to matter almost
+anywhere else becomes the entire result of this test. Passing amidog's GTE
+TIMING column outright needs that gap closed - real branch and load/store
+timing for the R3000A - which is a CPU-wide project of its own, not a GTE
+one, and is exactly the work [Recompiler-Plan.md](Recompiler-Plan.md)
+already names as coming after measurement, not before it.
+
+None of that takes anything away from what did get fixed here. REG and
+COMPLEX passing is real confirmation, from a source this project did not
+write, that GTE value and flag correctness agree with hardware - not just
+with a description read twice. The per-command cycle table, the busy stall,
+and the MFC2/CFC2 load delay are each independently correct and tested,
+verified now by direct measurement rather than by argument, and the
+`gtedelay` test would catch a regression in any of the three.

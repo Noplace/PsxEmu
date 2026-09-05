@@ -55,7 +55,11 @@ class Gte : public Component {
   void WriteData(uint32_t index, uint32_t value);     // MTC2
   uint32_t ReadControl(uint32_t index);               // CFC2
   void WriteControl(uint32_t index, uint32_t value);  // CTC2
-  void Execute(uint32_t command);
+  // Returns the command's cycle cost, so the caller can charge real GTE
+  // timing rather than the one cycle every other instruction takes - see
+  // the table in the .cpp. amidog's psxtest_gte times every command against
+  // exactly these figures.
+  uint32_t Execute(uint32_t command);
 
   // Kept for the aggregate header's older call site.
   void ExecuteCommand(uint32_t command) { Execute(command); }

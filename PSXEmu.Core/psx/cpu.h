@@ -493,6 +493,13 @@ class Cpu : public Component {
   // instruction, before it executes.
   void AdvanceLoadDelay();
 
+  // The cycle a GTE command's result becomes ready. A command computes
+  // instantly here, but real hardware keeps computing in the background for
+  // its own documented duration (see gte.cpp) - and stalls the CPU if a later
+  // instruction touches a GTE register or issues another command before that
+  // time. Zero-initialised, so the very first GTE access is never stalled.
+  uint64_t gte_busy_until_cycles_ = 0;
+
   // Every register write goes through here, because a write has to cancel a
   // load still in flight to the same register - the hardware writes the load
   // back first and the instruction's own result second, so the instruction

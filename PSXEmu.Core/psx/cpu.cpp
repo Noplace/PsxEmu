@@ -965,18 +965,41 @@ void Cpu::COP0() {
 // so every MFC2/MTC2/CFC2/CTC2 - which is how software gets its vertices in
 // and its results out - did nothing at all.
 void Cpu::COP2() {
-  if (context_->code & (1u << 25)) {
-    system_->gte().Execute(context_->code);
+  const bool is_command = (context_->code & (1u << 25)) != 0;
+  const uint32_t rs = context_->rs();
+  // "If an instruction that reads a GTE register or a GTE command is
+  // executed before the current GTE command is finished, the CPU will hold
+  // until [it] has finished" - psx-spx. MFC2/CFC2 are the register reads;
+  // MTC2/CTC2 load new operands and are not documented to wait on this.
+  const bool reads_register = !is_command && (rs == 0x00 || rs == 0x02);
+
+  if ((is_command || reads_register) &&
+      context_->cycles < gte_busy_until_cycles_) {
+    TickCycles(
+        static_cast<uint32_t>(gte_busy_until_cycles_ - context_->cycles));
+  }
+
+  if (is_command) {
+    // One cycle to issue, like any instruction; Execute()'s return is the
+    // command's whole documented duration (5 to 44 cycles - see gte.cpp),
+    // the remainder of which the GTE spends busy in the background and the
+    // next hazard above charges to whatever touches it too soon.
+    const uint32_t total_cycles = system_->gte().Execute(context_->code);
     Tick();
+    gte_busy_until_cycles_ =
+        context_->cycles + (total_cycles > 0 ? total_cycles - 1 : 0);
     return;
   }
 
-  switch (context_->rs()) {
+  switch (rs) {
     case 0x00:  // MFC2
-      WriteReg(rt_, system_->gte().ReadData(rd_));
+      // Like an ordinary load: the value is promised now and lands one
+      // instruction later, not immediately - psx-spx notes Tekken 2's
+      // geometry depends on getting this right.
+      ArmLoad(rt_, system_->gte().ReadData(rd_));
       break;
     case 0x02:  // CFC2
-      WriteReg(rt_, system_->gte().ReadControl(rd_));
+      ArmLoad(rt_, system_->gte().ReadControl(rd_));
       break;
     case 0x04:  // MTC2
       system_->gte().WriteData(rd_, context_->gp.reg[rt_]);

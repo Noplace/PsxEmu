@@ -8,10 +8,10 @@ Phases are ordered so that each one is testable when it lands. The ordering
 principle throughout: **nothing is "done" until a harness can show it working
 without a human looking at a window.**
 
-**Phases 4 and 5 below are stale.** They still list the SPU, CD audio, MDEC,
-load delay slots and DMA timing as not started; all five are implemented and
-tested - see [Gaps.md](Gaps.md), which is audited more recently and is the one
-to trust for current status. The phase breakdown and Phases 0-3 are otherwise
+**Phase 4 below is stale.** It still lists the SPU, CD audio and MDEC as not
+started; all three are implemented and tested - see [Gaps.md](Gaps.md), which
+is audited more recently and is the one to trust for current status. Phase 5
+is current as of bug 42. The phase breakdown and Phases 0-3 are otherwise
 accurate.
 
 ---
@@ -122,15 +122,19 @@ implemented directly against D3D11.
 
 ## Phase 5 - Timing and accuracy
 
-- [ ] amidog's CPU suite on top of `cpu_test`, which covers the instruction
-      set but not its timing.
-- [ ] Load delay slots. Currently not modelled: `LB`/`LW` write the register
-      immediately, with the delay commented out.
-- [ ] Instruction cache as a real cache, or not at all. The current `ICache2` is
-      a broken half-model that was actively corrupting data reads until it was
-      taken out of that path.
-- [ ] Per-instruction cycle counts, and memory access penalties.
-- [ ] DMA transfer timing rather than instant completion.
+- [x] Load delay slots. Modelled - see bug 32 and the "Not gaps" section of
+      Gaps.md.
+- [x] Instruction cache: deliberately not modelled as a cache at all, rather
+      than the broken half-model that used to corrupt data reads. See Gaps.md.
+- [x] DMA transfer timing rather than instant completion. Bugs 33 and 38.
+- [~] **Per-instruction cycle counts.** The GTE's are now measured-correct
+      (bug 42) - not just plausible, checked from inside the amidog test that
+      was failing. Everywhere else, still the uniform one-cycle-per-instruction
+      model bug 42 also found to be the actual remaining blocker on that same
+      test. See [CPU-Timing-Plan.md](CPU-Timing-Plan.md).
+- [ ] amidog's CPU suite on top of `cpu_test`. Present (`test/psxtest_cpu/`,
+      reachable via bug 41's `--auto-boot --exe`) and run once, unattended, to
+      a results screen - not yet read precisely. See CPU-Timing-Plan.md.
 
 ## Phase 6 - Settings, save states, memory cards, more front ends
 
@@ -164,6 +168,11 @@ actually is rather than from memory:
       bare `.img` does load.
 - [ ] **[Recompiler-Plan.md](Recompiler-Plan.md)** - dynamic recompilation,
       and the measurement that should come before any of it.
+- [ ] **[CPU-Timing-Plan.md](CPU-Timing-Plan.md)** - real per-instruction
+      cycle counts (multiply/divide, memory regions, the branch/loop-overhead
+      question bug 42's own measurement raised), verified the way bug 42
+      verified the GTE's: from inside the amidog test suites already sitting
+      in `test/`, not by argument.
 - [~] `psx/emuconfig.h` and `psx/settings.h` exist, following GBAEmu design.
       One setting so far - `audio_volume`, with an Audio menu and `psxemu.ini`
       beside the executable. The BIOS path and the disc path are still not

@@ -108,9 +108,29 @@ DuckStation actually transfers each block only as its device asks for it - so
 a device whose readiness genuinely depends on partial progress mid-transfer is
 still not modelled here.
 
-What is still missing is any comparison against hardware. The right instrument
-is a timing test suite run on a console and on this, and nothing like that has
-been run. Until then every number here is a plausible shape, not a fact.
+The GTE now bills real per-command time too (bug 42): each of its 22 commands
+charges its own documented cycle cost (5 to 44) rather than the flat one cycle
+a plain register move takes, and a command or register access issued before
+the previous one finishes stalls the CPU the way hardware does. Unlike the
+figures above, this one has actually been run against a timing test suite -
+amidog's `psxtest_gte` - and measuring this core's own numbers from inside
+that test's loop (bug 42) shows the fix is exactly right: recovered per-opcode
+costs match the documented table for every opcode reached, with no exceptions.
+The suite still fails every one of the 22 opcodes it times regardless, because
+its loop repeats each measurement 501 times to average out noise, and every
+one of the *other* instructions in that loop - a register read, a branch, its
+delay slot - is charged the same uniform one cycle as everywhere else in this
+core, magnified 501-fold into the whole result. See "GTE" below and bug 42.
+
+What is still missing everywhere else is any comparison against hardware. The
+right instrument is a timing test suite run on a console and on this; amidog's
+GTE one is the first case where that has actually happened. It answered the
+question it was pointed at cleanly - the GTE's own timing is correct - and
+surfaced the real blocker as this paragraph's own opening line, restated more
+sharply by 501 repetitions: ordinary instruction timing is modelled, not
+measured, and closing that is a CPU-wide project, not a GTE one. Until the
+same comparison happens elsewhere, every other number here is a plausible
+shape, not a fact.
 
 The emulator's own speed is at least measured now: `boot_runner` reports
 emulated seconds against wall-clock seconds at the end of a run. See
@@ -310,18 +330,46 @@ A mounted drive letter reads data sectors. Audio tracks are not read through
 the drive, and no subchannel data is available, so a physical disc cannot play
 its music.
 
-### GTE - exercised now, still not validated
+### GTE - validated for value and flags; timing still fails amidog's suite
 
 All 22 commands, the register file, saturation, the FLAG register and the
 Newton-Raphson divide are implemented, and `gte_test` covers them with 99
 checks. Real software now uses it heavily - a game run issues about 60,000
-commands with none unrecognised - which is a great deal more confidence than
-this entry used to carry.
+commands with none unrecognised.
 
-What is still missing is a *comparison*: nothing has been checked against
-hardware output. Until amidog's GTE suite runs, "passing" means "agrees with
-the description I read". The MVMVA garbage matrix (matrix select 3) is written
-from the description rather than from measurement.
+amidog's GTE test suite (`test/psxtest_gte/` - see bug 41 for how to reach it)
+has now actually run, which used to be the missing comparison against hardware
+output rather than against the description. The result is split cleanly in
+two:
+
+- **REG and COMPLEX - every register and value/flag check passes.** These
+  cover the register file's packing and read-back quirks, and every command's
+  computed result and FLAG bits, against amidog's own reference rather than
+  this project's. That is a real, independent confirmation that "passing
+  `gte_test`" and "agreeing with hardware" are the same thing here - not just
+  a description read twice.
+- **TIMING - every one of the 22 opcodes still fails, uniformly, but the GTE
+  is no longer why.** This was a real bug: every GTE command charged the CPU
+  the same one cycle a plain register move takes, whether it was `SQR` (5
+  cycles on hardware) or `NCCT` (39). Bug 42 fixed that to the documented
+  per-command figures, and separately added two related, real hardware
+  hazards this core had never modelled at all: a GTE command or register
+  access issued before the previous command finishes stalls the CPU, and
+  CFC2/MFC2 have the same one-instruction load delay as an ordinary memory
+  load (undocumented cost: Tekken 2's geometry breaks without it). All three
+  are verified in isolation - a new `gtedelay` group in `cpu_test`, 5 checks
+  - and independently confirmed by measuring this core's own numbers from
+  inside the failing test itself: recovered per-opcode costs match the
+  documented table exactly, every opcode, no exceptions. The column is still
+  all red because its loop repeats each measurement 501 times to cancel out
+  noise, and everything in that loop besides the GTE command - a register
+  read, a branch, its delay slot - is charged the same uniform one cycle as
+  the rest of this core's CPU model, magnified 501-fold into the total. That
+  is "cycle timing is modelled, not measured" above, not a GTE gap; closing
+  it needs real R3000A instruction timing, a CPU-wide project. See bug 42.
+
+The MVMVA garbage matrix (matrix select 3) is written from the description
+rather than from measurement.
 
 ## Barely started
 

@@ -98,6 +98,7 @@ uint32_t LUI(int t, int imm)                     { return IType(0x0F, 0, t, imm)
 uint32_t MFC0(int t, int d)                      { return RType(0x10, 0x00, t, d, 0, 0); }
 uint32_t MTC0(int t, int d)                      { return RType(0x10, 0x04, t, d, 0, 0); }
 uint32_t RFE()                                   { return 0x42000010; }
+uint32_t MFC2(int t, int d)                      { return RType(0x12, 0x00, t, d, 0, 0); }
 uint32_t LB(int t, int off, int s)               { return IType(0x20, s, t, off); }
 uint32_t LH(int t, int off, int s)               { return IType(0x21, s, t, off); }
 uint32_t LWL(int t, int off, int s)              { return IType(0x22, s, t, off); }
@@ -805,6 +806,61 @@ void TestLoadDelaySlot(Machine& m) {
   m.Run(6);
   CheckEqual(m.reg(t1), 0xCCDD1122u, "the pair assembled the whole word");
 }
+
+void TestGteDelay(Machine& m) {
+  // psx-spx: "Using CFC2/MFC2 has a delay of 1 instruction until the GPR is
+  // loaded with its new value." Tekken 2's geometry depends on getting this
+  // right. MFC2 used to write the register the instant it ran; it now goes
+  // through the same pending-load pipeline LW/LB/LH already use, so these
+  // are the same three shapes TestLoadDelaySlot checks for an ordinary load,
+  // aimed at MFC2 instead.
+  const uint32_t kValue = 0x00001234;  // small and positive: no int16 games
+
+  BeginTest("the instruction after MFC2 sees the old value");
+  m.Reset();
+  m.system()->gte().WriteData(1, kValue);  // VZ0
+  m.Load({ ORI(t1, zero, 0x5678),   // t1 has something in it beforehand
+           MFC2(t1, 1),             // load into the same register
+           ADDU(t2, t1, zero) });   // the delay slot reads t1
+  m.Run(3);
+  CheckEqual(m.reg(t2), 0x5678u, "the delay slot got the value from before");
+  m.Settle();
+  CheckEqual(m.reg(t1), kValue, "and MFC2 itself did land");
+
+  BeginTest("the instruction after that sees the new value");
+  m.Reset();
+  m.system()->gte().WriteData(1, kValue);
+  m.Load({ ORI(t1, zero, 0x5678),
+           MFC2(t1, 1),
+           NOP(),                  // the delay slot
+           ADDU(t2, t1, zero) });  // one later - this one sees it
+  m.Run(4);
+  CheckEqual(m.reg(t2), kValue, "one instruction later the value is there");
+
+  BeginTest("a write in the delay slot beats MFC2");
+  m.Reset();
+  m.system()->gte().WriteData(1, kValue);
+  m.Load({ MFC2(t1, 1),
+           ORI(t1, zero, 0x5678),  // same register, in the delay slot
+           NOP(), NOP() });
+  m.Run(4);
+  CheckEqual(m.reg(t1), 0x5678u, "the instruction result survived");
+
+  // psx-spx: a GTE command or register access issued before the previous
+  // command has finished stalls the CPU until it has. SQR is documented at
+  // 5 cycles; issuing it and reading a result register back immediately
+  // (through CFC2/MFC2, the same pattern amidog's psxtest_gte times) should
+  // cost noticeably more than the 2 cycles two ordinary instructions would.
+  BeginTest("a GTE register read right after a command waits for it");
+  m.Reset();
+  const uint64_t before = m.system()->cpu().context()->cycles;
+  m.Load({ RType(0x12, 0, 0, 0, 0, 0x28) | (1u << 25),  // SQR
+           MFC2(t1, 8) });                              // IR0, right after
+  m.Run(2);
+  const uint64_t elapsed = m.system()->cpu().context()->cycles - before;
+  Check(elapsed >= 5, "SQR's 5-cycle busy window was not skipped");
+}
+
 void TestMemoryMap(Machine& m) {
   // KUSEG, KSEG0 and KSEG1 are three views of the same 2 MB of RAM. A write
   // through one must be visible through the others.
@@ -1043,6 +1099,7 @@ const Group kGroups[] = {
   { "loadstore",  TestLoadStore },
   { "unaligned",  TestUnalignedLoadStore },
   { "loaddelay",  TestLoadDelaySlot },
+  { "gtedelay",   TestGteDelay },
   { "memory",     TestMemoryMap },
   { "exceptions", TestExceptions },
   { "interrupts", TestInterrupts },

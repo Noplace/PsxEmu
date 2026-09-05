@@ -15,7 +15,7 @@ Each test assembles a handful of MIPS instructions into RAM, runs them through
 the real CPU, and checks what came out - the same path a game takes. No BIOS,
 no window. A group name runs only that group.
 
-**Current: 181 checks, 0 failures.**
+**Current: 194 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -26,6 +26,8 @@ no window. A group name runs only that group.
 | `jumps` | j/jal/jr/jalr, where the link register points, and that the linking branches write it even when not taken |
 | `loadstore` | sign vs zero extension on byte and halfword loads, and that partial stores leave their neighbours alone |
 | `unaligned` | lwl/lwr/swl/swr at all four alignments, and the pairs used together to move an unaligned word |
+| `loaddelay` | a load's value landing one instruction late, a write in the delay slot beating it, a second load to the same register discarding the first, and the pairing surviving a branch delay slot |
+| `gtedelay` | MFC2 having the same one-instruction load delay as an ordinary load (bug 42, the same shapes as `loaddelay` aimed at MFC2), and that a GTE register read right after a command waits out its busy time rather than skipping it |
 | `memory` | RAM through KUSEG/KSEG0/KSEG1, RAM mirroring, the scratchpad, hardware registers through all three windows, the BIOS being read-only, and $zero staying zero |
 | `exceptions` | syscall and break vectoring, the Cop0 status stack pushing and popping, mfc0/mtc0 |
 | `interrupts` | I_STAT acknowledge semantics, the three gates that can block an interrupt, and that EPC points at the instruction that has *not* run |
@@ -334,15 +336,13 @@ wrong way, and it stays anyway.
 
 ## Still to build
 
-- **amidog's GTE suite** on top of `gte_test`. The local tests check the
-  implementation against the hardware description; only real test software
-  checks it against the hardware. `test/psxtest_gte/` in this tree is that
-  suite - see bug 41 for how to get it running (`--auto-boot --exe`, or the
-  Win32 front end's Boot PSX-EXE menu command) - but nobody has read its
-  results yet.
+- **amidog's GTE suite has now run** (`test/psxtest_gte/` - see bug 41 for how
+  to reach it, `--auto-boot --exe` or the Win32 front end's Boot PSX-EXE menu
+  command). Value and flags agree with hardware outright; timing does not -
+  see bug 42, still open, and "GTE" in Gaps.md.
 - **amidog's CPU suite** on top of `cpu_test`, which covers the instruction set
   but not its timing. `test/psxtest_cpu/` is present and runs to a results
-  screen unattended - see bug 41 - and nobody has read it either.
+  screen unattended - see bug 41 - and nobody has read it yet.
 - **Memory card round trips** in `media_test`, once cards exist. Per the
   standards document, the *wipe* is the point: write, wipe, read back, or a
   `serialize()` that stores nothing still appears to work.

@@ -286,8 +286,8 @@ uint16_t IOInterface::Read16(uint32_t address) {
     case 0x1F801114: RunPending(); return rootcounter_[1].ReadMode(); 
     case 0x1F801118: return rootcounter_[1].ReadTarget(); 
     case 0x1F801120: RunPending(); return rootcounter_[2].ReadCounter();
-    case 0x1F801124: RunPending(); return rootcounter_[2].ReadMode(); 
-    case 0x1F801128: return rootcounter_[2].ReadTarget(); 
+    case 0x1F801124: RunPending(); return rootcounter_[2].ReadMode();
+    case 0x1F801128: return rootcounter_[2].ReadTarget();
     /*case 0x1F801130: return;
     case 0x1F801134: RunPending(); rootcounter_[3].WriteMode(data); return;
     case 0x1F801138: RunPending(); rootcounter_[3].WriteTarget(data); return;*/
