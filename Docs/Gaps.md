@@ -4,14 +4,51 @@ Hardware and features still missing, ordered by how likely each is to stop a
 game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 [Bugs-Found.md](Bugs-Found.md) for what has already been fixed.
 
-Last audited after the CD-ROM command set was completed (bug 37).
+Last audited after the DMA busy-bit pacing fix (bug 38).
 
 ---
 
 ## Blocking a game right now
 
-Nothing known. The last entry here was XA-ADPCM, and it is implemented - see
-below.
+### Air Combat freezes during its intro FMV
+
+Air Combat (SLUS-00001) reaches its intro film, decodes at least one frame,
+and then stops with a black screen - the GP0 word count stops moving around
+frame 620 and never resumes. It is stuck in a wait-and-consume function
+(`8002933C`, reached through `800242B4`) spinning on a single-slot "frame
+ready" flag at `0x800A2BB8` that nothing ever sets again.
+
+This is not the XA/CD audio path (checked against bug 36 - the silence is in
+MDEC's video output, not the SPU mix) and it is not DMA busy-bit
+observability either: bug 38 was written for exactly this shape of problem,
+is a real fix, and the freeze is unchanged by it.
+
+What produces that flag is now known: it is the game's **DMA channel 3
+(CD-ROM) completion handler**, and it runs exactly once. The game starts its
+FMV correctly (`ReadS` at lba 32501, mode C0) and the drive streams 341 data
+sectors to the end of the run, but **DMA3 never runs again after the first
+one**, so nothing is ever fetched into RAM and the BIOS's own decoder reports
+`MDEC_vlec: invalid VLC ID`. Ruled out on this side: DICR write-one-to-clear,
+the halfword I_STAT acknowledge, CD interrupt gating, data-FIFO re-arming,
+the drive status byte, and any `ShouldStart` rejection (measured: zero, on
+every channel).
+
+The sharpened finding: the film never sets up a CD DMA at all - channel 3's
+MADR and BCR are written exactly 161 times each, every one during file
+loading. The single channel-3 "completion" that starts the game's frame
+pipeline is a **ghost**: DICR's flag bits are write-one-to-clear, so
+completions latched during BIOS-era loading survive the film's
+`DICR <- 00000000`, and the moment it enables channel 3 the stale flag raises
+an interrupt for a transfer that never happened. The producer marks a frame
+ready with nothing behind it and the ring is desynchronised from then on.
+Interrupt delivery itself is healthy (537 delivered, 147 swallowed). Whether
+the stale flags are faithful - psx-spx suggests they might be - is the open
+question.
+
+Investigated in detail, including several ruled-out hypotheses, in
+[Air-Combat-FMV-Plan.md](Air-Combat-FMV-Plan.md). It is the only game known
+to be blocked; the previous entry here was XA-ADPCM, which is implemented -
+see below.
 
 ## Silently wrong rather than absent
 
@@ -54,10 +91,22 @@ costs beneath it are uniform where real ones are not.
 DMA transfers now take time rather than completing instantaneously: a channel
 bills the machine roughly one cycle per word, plus one per sixteen for the
 DRAM page boundary, plus 8 cycles per linked-list node and 5 more for a node
-that carries data. The CPU is stopped for those cycles and everything else -
-the GPU, the counters, the CD, the SPU - runs through them, which is what the
-hardware does while the bus is held. The rate is DuckStation's model rather
-than a measurement of real silicon.
+that carries data. The rate is DuckStation's model rather than a measurement
+of real silicon.
+
+That billed time is also now observable (bug 38): a channel's busy bit stays
+set, and its completion interrupt waits, until that many of the machine's
+cycles have actually gone by through the CPU's own ordinary
+instruction-by-instruction ticking - not the whole amount resolved
+synchronously inside the register write that triggered it. Software that
+starts a transfer and then polls to find out when it is done now sometimes
+finds it still running, the way real software does. The data itself still
+moves eagerly, all at once, the moment the transfer is triggered; only the
+*signal* that it is done is paced against the billed cycles. That is a
+deliberately smaller change than modelling a real block-by-block bus request -
+DuckStation actually transfers each block only as its device asks for it - so
+a device whose readiness genuinely depends on partial progress mid-transfer is
+still not modelled here.
 
 What is still missing is any comparison against hardware. The right instrument
 is a timing test suite run on a console and on this, and nothing like that has

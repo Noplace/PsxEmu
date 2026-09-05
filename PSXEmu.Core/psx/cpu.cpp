@@ -368,6 +368,11 @@ void Cpu::TickCycles(uint32_t cycles) {
   if (cycles > 0)
     system_->io().Tick(cycles);
 }
+
+void Cpu::AccountCycles(uint32_t cycles) {
+  context_->cycles += cycles;
+  context_->current_cycles += cycles;
+}
 /*
 uint32_t Cpu::LoadMemory(bool cached, int size_bytes, uint32_t physical_address, uint32_t virtual_address) {
   if (IsBusError() == true) {

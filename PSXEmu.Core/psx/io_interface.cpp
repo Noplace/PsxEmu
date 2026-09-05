@@ -157,7 +157,7 @@ void IOInterface::RunPending() {
   sio.Tick(batch);
   system_->spu().Tick(batch);
 
-  dma.Tick();
+  dma.Tick(batch);
 }
 
 // A byte or halfword out of a 32-bit register.
@@ -334,6 +334,11 @@ uint32_t IOInterface::Read32(uint32_t address) {
   }
 
   if (address >= 0x1F801080 && address <= 0x1F8010F4) {
+    // A channel's busy bit clears on a schedule now (see Dma::Tick), not the
+    // instant its transfer is triggered - so a read of it, like a root
+    // counter's, has to run the pending batch first or it can report a
+    // channel as busy for up to 32 cycles after it has actually finished.
+    RunPending();
     return dma.Read(address);
   }
 
@@ -532,6 +537,12 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
   }
 
   if (address >= 0x1F801080 && address <= 0x1F8010F4) {
+    // Flush first: channel 2/5/6 refuse a new trigger while their own chcr
+    // still shows the busy bit set, and that bit is only cleared when its
+    // pending completion actually runs. Without this, a channel whose real
+    // transfer time had already elapsed - just not yet caught up with by the
+    // batch - would wrongly reject a fresh, legitimate trigger.
+    RunPending();
     dma.Write(address,data);
     return;
   }

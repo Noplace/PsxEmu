@@ -11,7 +11,8 @@
 //     --vram <file>      write the whole of VRAM as a PPM
 //     --trace <n>        print the first n instructions as they execute
 //     --trace-skip <n>   start tracing only after n instructions
-//     --trace-at <hex>   start tracing the first time the pc reaches an address
+//     --trace-at <hex>[:<n>]  start tracing when the pc reaches an address,
+//                        skipping the first n visits (decimal) if given
 //     --trace-irq [n]    start tracing at the nth hardware interrupt (default 1)
 //     --hot <n>          print the n most-executed addresses at the end
 //     --dis <hex>:<n>    disassemble n instructions of RAM from an address
@@ -148,6 +149,10 @@ struct Options {
   uint64_t trace_skip;
   uint32_t trace_at;
   bool trace_at_set;
+  // How many times to let the address go past before arming. A routine that
+  // runs hundreds of times is usually only interesting on a late call - the
+  // first one is the one that worked.
+  uint64_t trace_at_skip;
   uint64_t trace_irq;   // which interrupt to trace from; 0 means none
   const char* dis;
   const char* watch;
@@ -440,6 +445,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->trace_skip = 0;
   options->trace_at = 0;
   options->trace_at_set = false;
+  options->trace_at_skip = 0;
   options->trace_irq = 0;
   options->dis = nullptr;
   options->watch = nullptr;
@@ -473,8 +479,13 @@ bool ParseOptions(int argc, char** argv, Options* options) {
     } else if (strcmp(arg, "--trace-skip") == 0 && i + 1 < argc) {
       options->trace_skip = strtoull(argv[++i], nullptr, 0);
     } else if (strcmp(arg, "--trace-at") == 0 && i + 1 < argc) {
-      options->trace_at = strtoul(argv[++i], nullptr, 16);
+      // <hex>[:<n>] - n is how many visits to skip first, decimal, so
+      // "8002C34C:150" arms on the 151st call rather than the first.
+      const char* value = argv[++i];
+      options->trace_at = strtoul(value, nullptr, 16);
       options->trace_at_set = true;
+      const char* colon = strchr(value, ':');
+      options->trace_at_skip = (colon != nullptr) ? strtoull(colon + 1, nullptr, 10) : 0;
     } else if (strcmp(arg, "--dis") == 0 && i + 1 < argc) {
       options->dis = argv[++i];
     } else if (strcmp(arg, "--watch-vram") == 0 && i + 1 < argc) {
@@ -631,8 +642,12 @@ int main(int argc, char** argv) {
     // converting it into an ordinary skip count.
     if (options.trace_at_set &&
         system->cpu().context()->pc == options.trace_at) {
-      options.trace_skip = instructions;
-      options.trace_at_set = false;
+      if (options.trace_at_skip > 0) {
+        --options.trace_at_skip;
+      } else {
+        options.trace_skip = instructions;
+        options.trace_at_set = false;
+      }
     }
     if (options.trace > 0 && instructions >= options.trace_skip &&
         instructions < options.trace_skip + options.trace) {

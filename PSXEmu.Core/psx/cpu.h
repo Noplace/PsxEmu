@@ -410,6 +410,14 @@ class Cpu : public Component {
   // takes while it holds the bus. The CPU is stopped for them, but the rest
   // of the machine is not, so they have to be handed on.
   void TickCycles(uint32_t cycles);
+  // Bookkeeping only: advances the cycle counters bug 33 added so a DMA's
+  // cost still counts against the emulated clock, without also driving the
+  // GPU/CD/SPU/timers forward in one synchronous burst the way TickCycles
+  // does. A DMA channel that stays observably busy needs the rest of the
+  // machine to advance through its own normal per-instruction ticking while
+  // that busy window is open - see Dma::RunChannel - not all at once before
+  // the CPU's next instruction even runs, which is what TickCycles would do.
+  void AccountCycles(uint32_t cycles);
   uint32_t LoadMemory(bool cached, int size_bytes, uint32_t physical_address, uint32_t virtual_address);
   void StoreMemory(bool cached, int size_bytes,uint32_t data, uint32_t physical_address, uint32_t virtual_address);
   uint32_t Load(MemorySize size, uint32_t address);

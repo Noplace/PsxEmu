@@ -26,6 +26,12 @@ struct DmaChannel{
  uint32_t bcr;
  uint32_t chcr;
  bool enable;
+ // A completed transfer's cleanup - clearing the busy bit and raising the
+ // interrupt - is deferred by this many cycles rather than happening within
+ // the same write that triggered it. Zero means nothing pending. See
+ // Dma::RunChannel and Dma::Tick.
+ int32_t busy_cycles = 0;
+ bool busy_acknowledge = false;
 };
 
 class Dma : public Component {
@@ -34,7 +40,13 @@ class Dma : public Component {
   ~Dma();
   int Initialize();
   void SetInterrupt(int channel);
-  void Tick();
+  // Advances every channel's pending completion by this many cycles,
+  // finishing (clearing the busy bit, raising the interrupt) whichever ones
+  // run out. Called from IOInterface::RunPending with the same batch every
+  // other device is ticked with, so a channel's busy window lines up with
+  // real elapsed time rather than with how many times Write() happened to
+  // be called.
+  void Tick(uint32_t cycles);
   uint32_t Read(uint32_t address);
   void Write(uint32_t address,uint32_t data);
   DmaChannel& channel(int i) { return channels[i]; }
@@ -68,10 +80,15 @@ class Dma : public Component {
   uint32_t transfer_cycles_ = 0;
   void ChargeWords(uint32_t words) { transfer_cycles_ += RamCycles(words); }
   void ChargeCycles(uint32_t cycles) { transfer_cycles_ += cycles; }
-  // Runs one channel and bills the machine for the time it took.
-  // `acknowledge` is false only for the OTC channel, which this has never
-  // raised an interrupt for; that is left exactly as it was.
+  // Runs one channel's transfer - moving the data is still immediate, only
+  // the busy bit and the interrupt are deferred, see Tick - and arms its
+  // completion. `acknowledge` is false only for the OTC channel, which this
+  // has never raised an interrupt for; that is left exactly as it was.
   void RunChannel(int channel, bool acknowledge = true);
+  // Clears the busy bit and raises the interrupt, if this channel's
+  // completion asked for one. The one place a pending transfer actually
+  // finishes.
+  void CompletePending(int channel);
   DmaChannel channels[7];
   Stats stats_ = {};
   union {

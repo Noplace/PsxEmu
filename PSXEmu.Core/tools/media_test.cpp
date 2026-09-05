@@ -471,6 +471,86 @@ void TestCdAudioControl(emulation::psx::System* system,
   remove(cue.c_str());
   remove(bin.c_str());
 }
+// A DMA channel's busy bit and completion interrupt, driven directly through
+// the registers a game reaches them through - 0x1F80108x for channel 0
+// (MDEC-in, used here only because it needs no device to be in any
+// particular state to accept words), and DICR at 0x1F8010F4.
+//
+// This is the whole point of bug 39: a channel that was triggered and then
+// immediately observed as no longer busy told a game nothing had happened,
+// which is not a subtle difference from real hardware - it is the one thing
+// software waiting on a transfer actually checks.
+void TestDmaBusyBit(emulation::psx::System* system) {
+  BeginTest("dma busy bit");
+
+  emulation::psx::IOInterface& io = system->io();
+  const uint32_t kMadr = 0x1F801080;
+  const uint32_t kBcr  = 0x1F801084;
+  const uint32_t kChcr = 0x1F801088;
+  const uint32_t kDpcr = 0x1F8010F0;
+  const uint32_t kDicr = 0x1F8010F4;
+
+  // Enable channel 0 in DPCR, and its completion flag in DICR - the flag
+  // only latches at all if its own enable bit was set first.
+  io.Write32(kDpcr, 1u << 3);
+  io.Write32(kDicr, (1u << 16) | (1u << 23));  // enable ch0 + master enable
+
+  // 64 words in burst (sync 0) mode: RamCycles(64) = 64 + (64+15)/16 = 68
+  // cycles - long enough to see the busy window survive one tick and not
+  // the next, without the test depending on an exact cycle count elsewhere
+  // in the codebase changing underneath it.
+  io.Write32(kMadr, 0x00010000);
+  io.Write32(kBcr, 64);
+  io.Write32(kChcr, 0x11000000);   // sync 0, start (24) and trigger (28) set
+
+  CheckEqual(io.Read32(kChcr) & 0x01000000, 0x01000000,
+             "the channel is busy the instant it is triggered");
+  CheckEqual(io.Read32(kDicr) & (1u << 24), 0,
+             "and has not completed yet");
+
+  io.Tick(32);   // one batch - inside the 68-cycle transfer
+  CheckEqual(io.Read32(kChcr) & 0x01000000, 0x01000000,
+             "and is still busy partway through its own transfer time");
+
+  io.Tick(64);   // comfortably past the remaining ~36 cycles
+  CheckEqual(io.Read32(kChcr) & 0x01000000, 0,
+             "and only clears once that time has actually elapsed");
+  CheckEqual(io.Read32(kDicr) & (1u << 24), 1u << 24,
+             "with the completion interrupt landing at the same moment");
+}
+
+// Channel 2 (and 5 and 6) explicitly refuse a new trigger while their own
+// busy bit is still set. That guard existed before this change, but it was
+// checking a bit that was always already clear by the time any second write
+// could arrive - it never actually blocked anything. Now that the bit stays
+// set for real, it does.
+void TestDmaChannel2RefusesWhileBusy(emulation::psx::System* system) {
+  BeginTest("a busy channel 2 refuses a new trigger");
+
+  emulation::psx::IOInterface& io = system->io();
+  const uint32_t kMadr2 = 0x1F8010A0;
+  const uint32_t kBcr2  = 0x1F8010A4;
+  const uint32_t kChcr2 = 0x1F8010A8;
+  const uint32_t kDpcr  = 0x1F8010F0;
+
+  io.Write32(kDpcr, 1u << 11);
+  io.Write32(kMadr2, 0x00010000);
+  io.Write32(kBcr2, 64);
+  io.Write32(kChcr2, 0x11000000);
+  Check((io.Read32(kChcr2) & 0x01000000) != 0, "channel 2 is now busy");
+
+  // A second trigger, recognisably different from the first (bit 1, the
+  // address-decrement flag, set) - if the guard is doing its job this must
+  // not take effect at all.
+  io.Write32(kChcr2, 0x11000002);
+  CheckEqual(io.Read32(kChcr2), 0x11000000,
+             "the second write while busy is dropped whole, not merged");
+
+  io.Tick(96);   // past the first transfer's own ~68 cycles
+  CheckEqual(io.Read32(kChcr2) & 0x01000000, 0,
+             "and it clears on the first transfer's own schedule");
+}
+
 // The five commands that used to fall through to the "unknown command" error:
 // Forward and Backward (fast scan during CD-DA play), SetSession (the session
 // switch on a multi-session disc), Reset (a controller reboot), and GetQ (one
@@ -1113,6 +1193,8 @@ int main(int argc, char** argv) {
   TestControllerWithDisc(system, directory);
   TestCdAudioControl(system, directory);
   TestCdExtraCommands(system, directory);
+  TestDmaBusyBit(system);
+  TestDmaChannel2RefusesWhileBusy(system);
   TestDiscBoot(system, directory);
   system->Deinitialize();
   delete system;

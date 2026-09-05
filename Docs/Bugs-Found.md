@@ -1653,3 +1653,66 @@ What is approximate is stated in [Gaps.md](Gaps.md): the scan rate is a
 plausible number rather than a measured one, SetSession assumes the single
 session these disc formats carry, and GetQ has only the track table to build
 its Q bytes from. Nothing tested needs more.
+
+## 38. A DMA channel's busy bit cleared before anything could see it
+
+Bug 33 made a transfer cost real cycles, but the *result* of that transfer -
+the busy bit clearing, and the completion interrupt - still happened inside
+the very register write that triggered it, before any of those cycles had
+been spent. Software that starts a transfer and then polls CHCR, or waits on
+the interrupt, to find out when it is done saw it finish before its own next
+instruction could possibly run: the wait always fell straight through. That
+is not a subtle timing difference - it is the one thing software waiting on a
+transfer actually checks.
+
+The fix splits triggering a transfer from finishing it. `Dma::RunChannel`
+still moves the data immediately and unconditionally - nothing about *what* a
+transfer does changed, so every existing result stays byte-for-byte identical
+- but now leaves the busy bit set and defers clearing it, and raising the
+interrupt, to `Dma::Tick`, called from the same 32-cycle batches everything
+else advances in through `IOInterface::RunPending`. A channel's busy window
+now survives for as many of the machine's real cycles as bug 33 already said
+the transfer cost, crossed by the CPU's own ordinary instruction-by-instruction
+ticking rather than resolved all at once inside the triggering write.
+
+That distinction is why the cost is charged through a new `Cpu::AccountCycles`
+rather than `TickCycles`: `TickCycles` also drives the GPU, CD-ROM, SPU and
+timers forward by the same amount, synchronously, before the CPU's next
+instruction runs - which would make the busy window invisible to anything
+checking in between, defeating the point of having one. `AccountCycles` only
+advances the CPU's own counters; the rest of the machine catches up through
+its normal per-instruction ticking, at the same pace software polling the
+channel experiences.
+
+DMA register reads and writes now flush the pending batch (`RunPending`)
+before touching channel state, for the same reason root counter reads already
+do: without it, a channel could read as busy for up to 32 cycles after its
+transfer had actually finished. It also mattered for a guard that already
+existed: channels 2, 5 and 6 refuse a new trigger while their own busy bit is
+still set, but that check could never previously have blocked anything -  the
+bit it reads was always already clear by the time a second write could
+possibly arrive. Now that the bit stays set for real, the guard does too, and
+without the flush a legitimate retrigger arriving just after a transfer's real
+completion time could have been wrongly rejected.
+
+**Verification.** Two new `media_test` groups: "dma busy bit" checks that the
+bit is set the instant a transfer is triggered, stays set across one tick
+still inside its own transfer time, and only clears - with the completion
+interrupt landing at the same moment - once that time has elapsed; "a busy
+channel 2 refuses a new trigger" checks that a second CHCR write arriving
+while busy is dropped whole rather than merged in. Reverting the fix to the
+old instant-completion behaviour was confirmed to fail both groups (5 checks,
+with exactly the stale values the old behaviour would produce), then restored.
+All 719 checks across every harness (`media_test`, `cpu_test`, `gte_test`,
+`timer_test`, `sio_test`, `mdec_test`, `spu_test`) pass, the BIOS shell
+checksum is unchanged, and Legend of Mana, Wild Arms and Ridge Racer's CD
+player all render and behave identically to before.
+
+**What this did not fix.** This was written chasing
+[Air-Combat-FMV-Plan.md](Air-Combat-FMV-Plan.md)'s freeze - a game that
+triggers a DMA and polls to learn when it is done, which is exactly the shape
+of gap this closes. It did not resolve that freeze: the mechanism actually
+stuck there turned out to be a different wait than the one this fix targeted.
+See that plan for what is still unexplained. The fix stands on its own
+merits regardless - see [Gaps.md](Gaps.md) for what is still approximate
+about it (data still moves eagerly; only the completion signal is paced).

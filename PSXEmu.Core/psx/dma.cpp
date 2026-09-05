@@ -73,13 +73,27 @@ void Dma::UpdateMasterFlag() {
 }
 
 
-// Runs one channel, clears its busy bit, raises its interrupt, and bills the
-// machine for the bus time the transfer took.
+// Runs one channel and arms its completion.
 //
-// The billing has to happen after the channel state is consistent: handing
-// the cycles on runs the GPU, the counters, the CD and the SPU, and one of
-// those raising an interrupt while this channel still looked busy would be a
-// state no hardware ever presents.
+// The data has already moved by the time this returns - every channel's own
+// transfer function is unchanged, so results are byte-for-byte identical to
+// before this existed. What changed is *when the channel says so*: real
+// Sync Mode 1 hardware holds the bus, and its busy bit, for roughly a cycle a
+// word, and software that triggers a transfer and later polls CHCR expects
+// to sometimes find it still set. Clearing it and raising the interrupt
+// within the very call that started the transfer meant no code, ever,
+// running on this CPU, could observe that - see bug 38. The busy bit is left
+// exactly as the triggering write set it, and Tick() below clears it once
+// enough real, subsequently-executed cycles have gone by.
+//
+// The cost is still charged to the CPU's own clock immediately - that part
+// of bug 33 does not change - but through AccountCycles rather than
+// TickCycles, which would also drive the GPU/CD/SPU/timers through the whole
+// transfer's worth of time in one synchronous burst before the CPU's very
+// next instruction even ran. That defeats the point: this channel's busy
+// window has to be crossed by the machine's *ordinary* per-instruction
+// ticking, the same way a game waiting on it would cross it, or nothing
+// checking in between ever sees it as busy either.
 void Dma::RunChannel(int channel, bool acknowledge) {
   transfer_cycles_ = 0;
   switch (channel) {
@@ -91,13 +105,32 @@ void Dma::RunChannel(int channel, bool acknowledge) {
     case 6: Dma6(); break;
     default: return;
   }
-  channels[channel].chcr &= 0xfeffffff;
-  if (acknowledge)
-    SetInterrupt(channel);
   if (transfer_cycles_ > 0)
-    system_->cpu().TickCycles(transfer_cycles_);
+    system_->cpu().AccountCycles(transfer_cycles_);
+  // At least one tick's worth, so even a free (zero-word) transfer stays
+  // busy for one batch rather than completing before anything could check.
+  channels[channel].busy_cycles =
+      transfer_cycles_ > 0 ? static_cast<int32_t>(transfer_cycles_) : 1;
+  channels[channel].busy_acknowledge = acknowledge;
 }
-void Dma::Tick() {
+
+// The one place a pending transfer actually finishes: clears the busy bit
+// and raises the interrupt, if this one asked for one.
+void Dma::CompletePending(int channel) {
+  channels[channel].chcr &= 0xfeffffff;
+  channels[channel].busy_cycles = 0;
+  if (channels[channel].busy_acknowledge)
+    SetInterrupt(channel);
+}
+
+void Dma::Tick(uint32_t cycles) {
+  for (int channel = 0; channel < 7; ++channel) {
+    if (channels[channel].busy_cycles <= 0)
+      continue;
+    channels[channel].busy_cycles -= static_cast<int32_t>(cycles);
+    if (channels[channel].busy_cycles <= 0)
+      CompletePending(channel);
+  }
 }
 
 uint32_t Dma::Read(uint32_t address) {
