@@ -85,16 +85,19 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 13 checks, 0 failures.**
+**Current: 16 checks, 0 failures.**
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
-what is here is register behaviour nothing else drives: GP0(1Fh) setting
+what is here is register behaviour nothing else drives, plus one rasteriser
+check that earned its place by catching a real bug: GP0(1Fh) setting
 GPUSTAT.24 and raising I_STAT's GPU line, GP1(02h) acknowledging it and
 allowing a fresh edge, a repeated request while unacknowledged raising no
-second I_STAT edge, and GP1(00h) reset clearing both. It also pins down, as a
-fact about the current code rather than an assumption a future change
-discovers the hard way, that the three GPUSTAT readiness bits report ready
+second I_STAT edge, GP1(00h) reset clearing both, and a polyline's
+terminator word not being drawn as a bogus final vertex (bug 45 - it was).
+It also pins down, as a fact about the current code rather than an
+assumption a future change discovers the hard way, that the three GPUSTAT
+readiness bits report ready
 unconditionally - there is no GP0 FIFO or drawing-time model yet. See bug 40
 in [Bugs-Found.md](Bugs-Found.md) and "no drawing time" in [Gaps.md](Gaps.md).
 

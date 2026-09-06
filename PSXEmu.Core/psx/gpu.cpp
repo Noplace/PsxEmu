@@ -248,14 +248,22 @@ void Gpu::WriteData(uint32_t data) {
       return;
     }
   } else if (fifo_needed_ < 0) {
-    // Collecting a polyline. 0x55555555 (with the low bits masked) ends it.
+    // Collecting a polyline. 0x55555555 (with the low bits masked) ends it -
+    // the terminator carries no vertex data of its own and must not be
+    // appended to the fifo. It used to fall through into the shared tail
+    // below, which pushed it in as one more word and let CmdLine decode it
+    // as a bogus final vertex - X=0x5000/Y=0x5000 masked to 11 bits is
+    // (0,0), which is why a polyline's last real point grew a spurious
+    // segment back to the screen origin.
     if ((data & 0xF000F000) == 0x50005000) {
-      fifo_needed_ = fifo_count_;
-    } else {
-      if (fifo_count_ < static_cast<int>(sizeof(fifo_) / sizeof(fifo_[0])))
-        fifo_[fifo_count_++] = data;
+      ExecuteCommand();
+      fifo_count_ = 0;
+      fifo_needed_ = 0;
       return;
     }
+    if (fifo_count_ < static_cast<int>(sizeof(fifo_) / sizeof(fifo_[0])))
+      fifo_[fifo_count_++] = data;
+    return;
   }
 
   if (fifo_count_ < static_cast<int>(sizeof(fifo_) / sizeof(fifo_[0])))

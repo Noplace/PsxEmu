@@ -117,6 +117,40 @@ void TestReadinessBitsAreAlwaysSet(System* system) {
   Check((status & (1u << 28)) != 0, "ready to receive a DMA block");
 }
 
+// A polyline's terminator word (GP0, X and Y fields both 0x5000..0x5FFF)
+// used to be pushed into the vertex fifo like one more point instead of
+// being discarded, and CmdLine decoded it as a bogus final vertex - X=Y=0
+// for the common 0x50005000 terminator - so every polyline grew a spurious
+// extra segment from its last real point back to the screen origin. This
+// draws a polyline nowhere near (0,0) and checks that (0,0) itself, and a
+// point on the straight line from the last real vertex to the origin, both
+// stay untouched.
+void TestPolylineTerminatorIsNotAVertex(System* system) {
+  printf("a polyline's terminator word is not drawn as a vertex\n");
+  system->gpu().WriteStatus(0x00000000);  // GP1(00h) reset
+
+  // GP1(00h) resets the drawing area to a single pixel at (0,0), which would
+  // clip the line below out entirely and make this test pass for the wrong
+  // reason. Open it up to cover both the real line and the origin.
+  system->gpu().WriteData(0xE3000000);              // top-left (0,0)
+  system->gpu().WriteData(0xE4000000 | (300u << 10) | 300u);  // bottom-right
+
+  const uint32_t kWhite = 0xFFFFFF;
+  system->gpu().WriteData(0x48000000 | kWhite);  // mono polyline, opaque
+  system->gpu().WriteData((150u << 16) | 100u);  // (100, 150)
+  system->gpu().WriteData((150u << 16) | 200u);  // (200, 150)
+  system->gpu().WriteData(0x50005000);            // terminator
+
+  const uint16_t* vram = system->gpu().vram();
+  Check(vram[0] == 0, "(0,0) was not touched by the terminator-as-vertex bug");
+  // Roughly midway along the bogus (200,150)->(0,0) diagonal the old code
+  // would have drawn.
+  Check(vram[75 * 1024 + 100] == 0,
+        "a point on the old bogus diagonal was not touched either");
+  // The real segment did draw: its own midpoint should be lit.
+  Check(vram[150 * 1024 + 150] != 0, "the real segment was still drawn");
+}
+
 }  // namespace
 
 int main() {
@@ -128,6 +162,7 @@ int main() {
   TestAcknowledgeClearsStatusAndAllowsANewEdge(system);
   TestRepeatedRequestIsNotANewEdge(system);
   TestReadinessBitsAreAlwaysSet(system);
+  TestPolylineTerminatorIsNotAVertex(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

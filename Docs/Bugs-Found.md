@@ -2293,3 +2293,61 @@ Not attempted here: `Docs/Save-States-Plan.md` names no version-migration
 path, and none was built - a state file's version is checked and a mismatch
 is refused outright, per the plan's own "cheap now, impossible to retrofit"
 framing rather than an oversight.
+
+## 45. A polyline's terminator word was drawn as its own vertex
+
+Reported from a screenshot: a game's menu, drawn with line-strip rectangle
+borders, showed extra pink lines fanning out from the top-left corner of the
+screen to the corner of every box on screen - one spurious segment per
+polyline.
+
+### The bug
+
+`Gpu::WriteData` collects a variable-length polyline (`CommandLength`
+returns -1 for one) word by word until it sees the terminator - any word
+matching `(data & 0xF000F000) == 0x50005000`, which is how real hardware
+recognises it too, not just the single value `0x55555555`:
+
+```cpp
+} else if (fifo_needed_ < 0) {
+  if ((data & 0xF000F000) == 0x50005000) {
+    fifo_needed_ = fifo_count_;
+  } else {
+    ...
+    return;
+  }
+}
+// falls through into the shared tail below
+if (fifo_count_ < ...) fifo_[fifo_count_++] = data;
+if (fifo_count_ >= fifo_needed_) { ExecuteCommand(); ... }
+```
+
+Recognising the terminator only *froze* `fifo_needed_` at the word count
+collected so far - it did not `return`, so the terminator word itself fell
+through into the shared tail and was appended to the fifo like one more
+vertex, which immediately satisfied the just-frozen `fifo_needed_` and
+dispatched. `Gpu::CmdLine` then decoded that extra word as a real point:
+`X = data & 0x7FF`, `Y = (data >> 16) & 0x7FF`. For the terminator value
+most software actually sends, `0x50005000`, both fields mask to exactly
+zero - decoding to screen position (0,0). Every polyline the game drew grew
+an uninvited last segment from its real final point straight to the corner
+of the screen.
+
+### The fix
+
+The terminator carries no vertex data and must never reach the fifo. When
+it's recognised, dispatch immediately with what has already been collected
+and `return` - the same shape the "real data" branch two lines below it
+already used, just missing on this path.
+
+### Verification
+
+New `gpu_test` check, `TestPolylineTerminatorIsNotAVertex`: draws a two-point
+polyline nowhere near the origin, opens the drawing area to cover both the
+line and (0,0) (GP1(00h) resets it to a single pixel, which would have
+clipped the bug's own line out and passed for the wrong reason), then reads
+VRAM back. `gpu_test`: 13 -> 16 checks, 0 failures. All seven other
+harnesses unchanged, and `bios/SCPH1001.BIN --frames 400`'s checksum
+unchanged too - the BIOS shell draws no polylines, so this bug had nowhere
+to move that number; it only ever showed up in a game or menu that actually
+uses the primitive, which is exactly why it survived every check run so far.
