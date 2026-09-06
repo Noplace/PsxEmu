@@ -70,6 +70,8 @@ enum MenuCommand {
   kCommandCreateMemoryCardSlot2,
   kCommandReset,
   kCommandPause,
+  kCommandSaveState,
+  kCommandLoadState,
   kCommandVolumeFirst,
   kCommandVolumeLast = kCommandVolumeFirst + 7,
   kCommandExit,
@@ -109,6 +111,14 @@ struct Application {
   std::string settings_path;
   bool running = false;
   bool paused = true;
+
+  // A save or load requested this frame, actioned once at the top of the
+  // next frame - never mid-frame, per Docs/Save-States-Plan.md. -1 means
+  // nothing pending. The generic Save State/Load State menu items act on
+  // last_slot_, which F1-F8 also update, so the two stay in step.
+  int pending_save_slot = -1;
+  int pending_load_slot = -1;
+  int last_slot = 1;   // matches F1, the first of the eight slots
 
   // Scratch for one frame of audio, sized for the worst case at 30 fps. A
   // member rather than a function-local static so there is one per
@@ -363,6 +373,22 @@ std::string DiscIdentifier(const std::string& disc_path) {
   return name;
 }
 
+// Where a save-state slot lives: <savestates_root>\<identifier>.st<slot>,
+// the same <identifier> memory cards use (DiscIdentifier), so a state and a
+// save are found under the same name per Docs/Save-States-Plan.md. A BIOS-
+// only session (no disc mounted) has no disc path to derive that from, so it
+// gets a fixed identifier of its own rather than colliding with every other
+// BIOS-only session under an empty name.
+std::string SaveStateSlotPath(Application& app, int slot) {
+  const std::string disc_path = (app.system != nullptr)
+                                     ? app.system->cdrom().disc().path()
+                                     : std::string();
+  const std::string identifier =
+      disc_path.empty() ? "bios" : DiscIdentifier(disc_path);
+  return app.savestates_root + "\\" + identifier + ".st" +
+         std::to_string(slot);
+}
+
 // Gives the disc just mounted its own pair of memory cards, in
 // memcards_root\<disc>\card1.mcr and card2.mcr - created the first time a
 // disc is played and loaded on every boot after that.
@@ -519,6 +545,13 @@ HMENU CreateMainMenu() {
   HMENU emulation = CreatePopupMenu();
   AppendMenuW(emulation, MF_STRING, kCommandReset, L"&Reset");
   AppendMenuW(emulation, MF_STRING, kCommandPause, L"&Pause\tSpace");
+  AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
+  // Act on the slot F1-F8 last selected (slot 1 until one of them is
+  // pressed), so the keyboard and the menu stay in step with each other.
+  AppendMenuW(emulation, MF_STRING, kCommandSaveState,
+              L"&Save State\tShift+F1..F8");
+  AppendMenuW(emulation, MF_STRING, kCommandLoadState,
+              L"&Load State\tF1..F8");
 
   // Volume. The labels carry a literal percent sign, so they are built with
   // the doubled form the table stores rather than passed through a formatter.
@@ -627,6 +660,14 @@ void OnCommand(Application& app, HWND window, int command) {
       app.paused = !app.paused;
       break;
 
+    case kCommandSaveState:
+      app.pending_save_slot = app.last_slot;
+      break;
+
+    case kCommandLoadState:
+      app.pending_load_slot = app.last_slot;
+      break;
+
     case kCommandExit:
       PostMessageW(window, WM_CLOSE, 0, 0);
       break;
@@ -674,6 +715,18 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
         app->paused = !app->paused;
       if (wparam == VK_ESCAPE)
         PostMessageW(window, WM_CLOSE, 0, 0);
+      // F1-F8: plain loads that slot, Shift+ saves it. Both also become the
+      // slot the Save State/Load State menu items act on, so pressing F3 and
+      // then using the menu (or another F-key) do not disagree about which
+      // slot is "current".
+      if (app != nullptr && wparam >= VK_F1 && wparam <= VK_F8) {
+        const int slot = static_cast<int>(wparam - VK_F1) + 1;
+        app->last_slot = slot;
+        if (GetKeyState(VK_SHIFT) & 0x8000)
+          app->pending_save_slot = slot;
+        else
+          app->pending_load_slot = slot;
+      }
       return 0;
 
     case WM_DESTROY:
@@ -895,6 +948,29 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     if (app.paused) {
       Sleep(16);
       continue;
+    }
+
+    // Actioned here, between frames, never mid-frame - the top of the loop
+    // is the one point nothing about the current frame is half-done yet.
+    if (app.pending_save_slot >= 0) {
+      const std::string path = SaveStateSlotPath(app, app.pending_save_slot);
+      const std::string error = app.system->SaveState(path);
+      if (!error.empty()) {
+        const std::wstring message(error.begin(), error.end());
+        MessageBoxW(window, message.c_str(), kWindowTitle,
+                    MB_OK | MB_ICONERROR);
+      }
+      app.pending_save_slot = -1;
+    }
+    if (app.pending_load_slot >= 0) {
+      const std::string path = SaveStateSlotPath(app, app.pending_load_slot);
+      const std::string error = app.system->LoadState(path);
+      if (!error.empty()) {
+        const std::wstring message(error.begin(), error.end());
+        MessageBoxW(window, message.c_str(), kWindowTitle,
+                    MB_OK | MB_ICONERROR);
+      }
+      app.pending_load_slot = -1;
     }
 
     // Input is sampled once per frame, on this thread, and handed to the core.

@@ -39,6 +39,14 @@ int Dma::Initialize() {
   return 0;
 }
 
+void Dma::Serialise(StateIO& io) {
+  io.Plain(channels);
+  io.Plain(transfer_cycles_);
+  io.Plain(dma_enable.raw);
+  io.Plain(interrupt_control.raw);
+  io.Plain(master_flag_);
+}
+
 // A channel finished. Its flag latches only if that channel's interrupt is
 // enabled; the master flag then follows from the flags and the master enable.
 void Dma::SetInterrupt(int channel) {

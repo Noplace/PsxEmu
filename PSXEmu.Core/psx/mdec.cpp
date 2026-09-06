@@ -86,6 +86,28 @@ int Mdec::Deinitialize() {
   return S_OK;
 }
 
+void Mdec::Serialise(StateIO& io) {
+  io.Plain(state_);
+  io.Plain(command_);
+  io.Plain(words_remaining_);
+  io.Plain(data_in_enabled_);
+  io.Plain(data_out_enabled_);
+  io.Plain(current_block_);
+  io.Plain(quant_luma_);
+  io.Plain(quant_chroma_);
+  io.Plain(scale_table_);
+  io.Plain(table_words_);
+  io.Plain(table_count_);
+  io.Plain(blocks_);
+  io.Plain(block_index_);
+  io.Plain(coefficients_);
+  io.Plain(coefficient_index_);
+  io.Plain(quant_scale_);
+  io.Plain(output_);
+  io.Plain(output_count_);
+  io.Plain(output_read_);
+}
+
 void Mdec::Reset() {
   state_ = kIdle;
   command_ = 0;

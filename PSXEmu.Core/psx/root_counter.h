@@ -147,6 +147,16 @@ class RootCounter {
 
   bool counting_enabled() const { return counting_enabled_; }
 
+  void Serialise(StateIO& io) {
+    io.Plain(counter);
+    io.Plain(target);
+    io.Plain(mode.raw);
+    io.Plain(index_);
+    io.Plain(gate_);
+    io.Plain(counting_enabled_);
+    io.Plain(irq_done_);
+  }
+
   // Advances the counter and says whether the interrupt line should be
   // pulled. Steps rather than adding in one go, so a batch long enough to
   // wrap the counter more than once still lands on the right value - and in

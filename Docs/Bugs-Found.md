@@ -2081,3 +2081,215 @@ with a description read twice. The per-command cycle table, the busy stall,
 and the MFC2/CFC2 load delay are each independently correct and tested,
 verified now by direct measurement rather than by argument, and the
 `gtedelay` test would catch a regression in any of the three.
+
+## 43. Multiply and divide cost the same one cycle as ADD, and a not-taken branch cost nothing at all
+
+[CPU-Timing-Plan.md](CPU-Timing-Plan.md) exists because of bug 42: the GTE's
+own timing was right, but everything *else* in the loop that measured it -
+ordinary CPU instructions - was still charged the uniform one cycle this core
+charges everywhere, and that gap is a CPU-wide project of its own. This is
+phases 1 and 2 of it.
+
+### Phase 1: multiply and divide
+
+Verified directly against a primary fetch of
+`psx-spx.consoledev.net/cpuspecifications/` (not a search-result summary):
+
+| Instruction | rs magnitude | Cost |
+|---|---|---|
+| `MULT`/`MULTU` | 0..0x7FF (or, for `MULT`, 0xFFFFF800..0xFFFFFFFF) | 6 |
+| `MULT`/`MULTU` | 0x800..0xFFFFF (or 0xFFF00000..0xFFFFF801) | 9 |
+| `MULT`/`MULTU` | 0x100000.. (or 0x80000000..) | 13 |
+| `DIV`/`DIVU` | any | 36, fixed |
+
+This core charged all four the same one cycle `ADD` gets - exactly the gap
+the plan named as "the single most-repeated-in-real-code instance of the
+uniform-cost gap": fixed-point math, audio mixing and software division all
+lean on these constantly, and `cpu_test`'s existing `muldiv` group checks
+their *results*, not their timing, so a wrong cycle count passed every check
+there.
+
+The source also documents a hazard identical in shape to bug 42's GTE one:
+"the mul/div opcodes are starting the multiply/divide operation, starting
+takes only a single clock cycle, however, trying to read the result from the
+hi/lo registers while the mul/div operation is busy will halt the CPU until
+[it] has completed." `Cpu` now tracks `hilo_busy_until_cycles_` the same way
+it tracks `gte_busy_until_cycles_`, and `MFHI`/`MFLO` charge the remaining
+wait if it hasn't elapsed. `MTHI`/`MTLO` are not documented to wait on this,
+matching the same asymmetry `MTC2`/`CTC2` already have.
+
+One boundary is genuinely ambiguous in the primary source itself: its
+`MULT` table gives Fast's negative range as `FFFFF800h..FFFFFFFFh` and Med's
+as `FFF00000h..FFFFF801h` - a one-value overlap at `FFFFF801h`/`FFFF00001h`
+that isn't a typo this project introduced. The classification here
+(`MultiplyCyclesSigned` in `cpu.cpp`) resolves it toward the simpler,
+symmetric magnitude-banding reading and is not pinned to that exact byte -
+it costs at most 3 cycles either way, for two specific `rs` values out of
+four billion, and no primary source was found that resolves the overlap
+itself.
+
+### Phase 2: the branch/loop-overhead question, and a real bug found while answering it
+
+The plan's numbered question: bug 42's own SQR loop, measured, gave 9 cycles
+per iteration, while a naive flat-one-cycle count of the loop's instructions
+(`SQR`, `CFC2`, a `nop`, an accumulate, a branch, its delay slot) gives 10 -
+a one-cycle gap the plan flagged as possibly the branch costing less than
+assumed, possibly something else, and explicitly not to be guessed at.
+
+Reconstructing that exact loop shape in `cpu_test` (`sqrloop` group) and
+measuring this core's own `cycles` counter directly - the same method bug 42
+used, this time needing no internal instrumentation because the public test
+harness already exposes `Cpu::context()->cycles` - answered it: **this core
+already produces exactly 9.000 cycles per iteration**, matching bug 42's
+hardware-recovered value precisely. The naive flat-count's extra cycle was
+never real; it came from assuming every instruction in the loop, including
+the taken branch, costs a flat 1, when two things were already true here
+that the naive count didn't account for:
+
+- The GTE busy-wait stall bug 42 built already absorbs `CFC2`'s cost into
+  `SQR`'s 5-cycle window - `CFC2` right after `SQR` doesn't cost a separate
+  1 cycle on top of a separate wait, it costs the wait *and then* 1, with no
+  double-charge.
+- A *taken* branch already cost 0 extra beyond its delay slot's own cycle in
+  this codebase - `BEQ`/`BNE`/`BLEZ`/`BGTZ`/`BLTZ`/`BGEZ` never called
+  `Tick()` themselves, only `Jump()` did, via the delay slot instruction's
+  own normal cost. That happens to be exactly what independent sources
+  describe for the R3000A (branch resolved in decode, one delay slot
+  suffices, nothing extra to charge), and this measurement is now the
+  direct confirmation for it, the way bug 42's table was for the GTE.
+
+No branch-timing code changed as a result of this - the measurement
+confirmed the existing behaviour rather than finding it wrong. `J`/`JAL`
+still `Tick()` once for themselves *and* run the delay slot (2 cycles for
+the pair, unlike every taken conditional branch and `JR`/`JALR`'s 1) - this
+measurement doesn't reach jumps, so that asymmetry is left alone rather than
+"fixed" on the strength of an inference from a different instruction; it's
+recorded here as an open question for whoever next has a way to measure it.
+
+### The bug that was findable in the same code reading
+
+A *not-taken* conditional branch called no `Tick()` at all - 0 cycles,
+instead of the uniform 1 every other non-branch instruction in this
+interpreter charges. `Jump()` (which ticks, via the delay slot) only runs
+when the branch is taken; the not-taken path fell through to nothing. The
+delay-slot instruction's own execution was never in question - psx-spx: "the
+instruction following the branch will always be executed", and it does,
+picked up by the ordinary fetch loop either way - only the branch
+instruction's own charge was silently zero. Fixed by adding `Tick()` on the
+not-taken path of `BEQ`, `BNE`, `BLEZ`, `BGTZ`, `BLTZ`, `BGEZ`;
+`BLTZAL`/`BGEZAL` inherit it through `BLTZ`/`BGEZ`.
+
+This doesn't touch the SQR loop above (its branch is taken every iteration
+but the last), but it under-counted every not-taken branch in every game,
+silently, since this core's very first commit.
+
+### Verification
+
+New `cpu_test` groups: `muldelay` (11 checks - the magnitude-boundary cycle
+costs for both `MULT` and `MULTU`, `DIV`/`DIVU`'s fixed 36, and a busy-window
+stall check for each, in the same shape `gtedelay`'s SQR check already
+established) and `sqrloop` (1 check, reproducing the bug 42 loop and
+asserting exactly 9 cycles/iteration). `TestBranches` gained a per-case
+cycle-cost check: 1 cycle for the branch+delay-slot pair when taken, 1 for
+the branch alone when not, plus 1 more for the instruction after it.
+`cpu_test`: 194 -> 239 checks, 0 failures. `gte_test` and all six other
+harnesses unchanged (99, 107, 70, 28, 13, 59, 175 checks respectively - `0`
+failures across the board).
+
+`bios/SCPH1001.BIN --frames 400`: framebuffer checksum, non-black pixel
+count, unimplemented-path count and CD-ROM command count are all identical
+to before this change (`bd888bab645a63a9`, 305,920/305,920, 0, 3). What did
+move, exactly as expected from correctly charging cycles that were
+previously undercounted: raw instructions executed in the same 400 frames
+dropped from 115,547,800 to 97,749,265, and RFEs/interrupts taken in that
+same window rose slightly (881 -> 919 RFEs, 869 -> 907 interrupts) - more
+accurate per-instruction timing means more real time (and so more timer/VBlank
+activity) elapses per instruction executed, not a different boot path. The
+picture on screen did not change at all.
+
+Note for whoever runs these next: the baselines in
+[Test-Suite.md](Test-Suite.md) predate several unrelated fixes already on
+this branch (SPU, CD-ROM audio) and were already stale before this change -
+`media_test` reports 175 checks here, not the 103 on record, and the
+pre-existing (not newly introduced) `boot_runner` checksum was already
+`bd888bab645a63a9`, not the doc's `d357591479cbd199`, before any of this
+bug's changes landed. Worth a separate pass to refresh the whole document
+rather than folding into this one.
+
+## 44. Save states, and what the plan's own inventory missed
+
+Implemented per [Save-States-Plan.md](Save-States-Plan.md): `StateIO` in
+`psx/state.h`/`state.cpp`, a `Serialise(StateIO&)` on every component that
+holds real machine state, `System::SaveState`/`LoadState`, and
+`boot_runner --save-state`/`--load-state` plus F1-F8 (load) /
+Shift+F1-F8 (save) slots in the Win32 front end.
+
+**Three things the plan's own inventory table got wrong, all found by
+reading the actual code rather than trusting the table:**
+
+- **`CpuContext::cpr2[32]` is not GTE state.** The plan doesn't mention it
+  either way, but it would have been an easy field to "helpfully" wire up to
+  `Gte`'s registers on the assumption that's what it's for. It is zeroed once
+  in the constructor and never read or written anywhere else in the tree -
+  `Gte` keeps its own complete, separate register file. `cpr2` rides along in
+  `CpuContext`'s otherwise-flat `Serialise` as 128 bytes of inert padding;
+  special-casing it out would have been more code than the bytes are worth.
+- **The MDEC has real state the table never lists.** A macroblock can be
+  mid-decode - `state_`, partially-filled quantisation tables, `blocks_`,
+  `coefficient_index_`, an output FIFO - none of it mentioned in "what a
+  state has to contain". Skipping it would have meant a state taken mid-FMV
+  silently corrupted or hung decode on load, the exact failure mode the
+  plan's own opening line ("everything the machine can be asked about that
+  is not derivable") says a state must not have. Added `Mdec::Serialise`.
+- **The CD-ROM's `pending_` deque already stores a relative delay.** The plan
+  specifically warns "must be saved as such" as if this needed converting;
+  reading `cdrom.cpp` shows `PendingResponse::delay` is already a countdown
+  decremented every tick, not an absolute cycle timestamp, so saving it
+  mid-countdown is already correct with no conversion - the warning was
+  right to raise the question, and the answer was "already fine."
+
+**One design gap the plan left for whoever implemented it:** a component's
+`Serialise` is asked to "never fail" - it just moves bytes - but `Cdrom`
+reopening its `Disc` from a saved path is a real operation that can fail
+(the image moved), and the plan requires that be refused with a reason, not
+silently ignored. `StateIO` gained a small `SetError`/`error()` pair for
+exactly this one case: every `Serialise` still returns `void` and always
+runs to completion, but a load-time side effect that fails records why, and
+`System::LoadState` reports the first reason rather than whatever broke
+downstream because of it.
+
+**The front end's own keybinding needed a decision the plan didn't make.**
+"Numbered slots on F1-F8 with F5/F9 for quick save and load" is
+self-contradicting: F5 is both the fifth numbered slot and a distinct
+"quick" slot under that reading. Resolved as plain F1-F8 = load slot N,
+Shift+F1-F8 = save slot N, with no separate quick slot - F1 already gives
+one-key access to *a* slot, which is what "quick" was asking for.
+
+### Verification
+
+Exactly the plan's own "How to know it works", run against
+`bios/SCPH1001.BIN`, both with and without a disc mounted (`media_test`'s
+`make_test_disc` output, to specifically exercise `Cdrom`/`Disc` reopening -
+the part the plan itself flags as most likely to silently diverge):
+
+- **900 straight frames vs. 600 frames + save + (separately) load + 300
+  more**: framebuffer checksums identical (`6a4dca42586b6a5a` with no disc,
+  `ab719c80299ee383` with one), non-black pixel counts identical, and the
+  two PPM files byte-identical - not just checksum-equal.
+- **Load, then immediately re-save**: the two state files are byte-identical.
+- **A state loaded against a different BIOS** (`SCPH1000.BIN` against a
+  state made with `SCPH1001.BIN`): refused - `save state was made with a
+  different BIOS`.
+- **A state whose disc image was moved after saving**: refused - `save
+  state: disc image not found: <path>`.
+- All eight existing harnesses unchanged (`cpu_test` 239, `gte_test` 99,
+  `spu_test` 107, `timer_test` 70, `sio_test` 28, `gpu_test` 13, `mdec_test`
+  59, `media_test` 175 - 0 failures throughout), and `bios/SCPH1001.BIN
+  --frames 400`'s framebuffer checksum unchanged (`bd888bab645a63a9`) -
+  `Serialise` is new code, only ever called from `SaveState`/`LoadState`,
+  never from the hot path, so normal execution has nothing to move.
+
+Not attempted here: `Docs/Save-States-Plan.md` names no version-migration
+path, and none was built - a state file's version is checked and a mismatch
+is refused outright, per the plan's own "cheap now, impossible to retrofit"
+framing rather than an oversight.

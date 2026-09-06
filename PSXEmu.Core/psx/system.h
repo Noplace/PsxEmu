@@ -146,6 +146,19 @@ class System {
   uint64_t interrupts_blocked_im() const { return interrupts_blocked_im_; }
   // Instructions that ran with interrupts globally enabled.
   uint64_t instructions_with_ie() const { return instructions_with_ie_; }
+
+  // Writes/reads every component's Serialise, in a fixed order, behind the
+  // header Docs/Save-States-Plan.md specifies. Returns an empty string on
+  // success, or the reason on failure. The header checks (magic, version,
+  // BIOS hash) run before any live component is touched, so the expected
+  // failure modes - wrong BIOS, wrong version, not a state file, a moved
+  // disc image - never leave a running machine partially overwritten. A
+  // payload hand-truncated after a valid header is the one case that can:
+  // there is no way to know a field is the last one before reading past it,
+  // short of a second, wasted pass over every component first.
+  std::string SaveState(const std::string& path);
+  std::string LoadState(const std::string& path);
+
  private:
   std::atomic<int> state;
   utilities::Timer timer;

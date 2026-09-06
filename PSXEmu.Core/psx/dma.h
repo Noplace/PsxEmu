@@ -61,6 +61,7 @@ class Dma : public Component {
   const Stats& stats() const { return stats_; }
   void NoteTransfer(int channel, uint32_t words, uint32_t end,
                     uint32_t lba = 0, uint32_t first = 0);
+  void Serialise(StateIO& io);
  private:
 
   // ---- how long a transfer takes ------------------------------------------

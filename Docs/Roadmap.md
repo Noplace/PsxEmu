@@ -144,10 +144,13 @@ actually is rather than from memory:
 - [x] **[MDEC-Plan.md](MDEC-Plan.md)** - the motion decoder. DONE. See bug 23;
       the plan step 3 described work the hardware does not do - software does
       the variable-length decoding, not the MDEC. Covered by mdec_test.
-- [ ] **[Save-States-Plan.md](Save-States-Plan.md)** - what a state has to
-      hold, what it must not, and the serialiser that has to exist first. The
-      test is a checksum: save at frame 600, run to 900, and compare against
-      loading that state and running 300.
+- [x] **[Save-States-Plan.md](Save-States-Plan.md)** - DONE. `StateIO`
+      (`psx/state.h`), a `Serialise` on every component, and the versioned
+      header, plus `boot_runner --save-state`/`--load-state` and the front
+      end's F1-F8/Shift+F1-F8 slots. The checksum test passes exactly as
+      specified: 900 straight frames and 600-then-save-then-load-then-300
+      produce bit-identical framebuffers, with a disc mounted as well as
+      without. See bug 44.
 - [~] **[Memory-Cards-Plan.md](Memory-Cards-Plan.md)** - default cards are in:
       each disc gets its own pair, auto-created under
       `Documents\My Games\PSXEmu\memcards\<disc>\`. Eject, the per-slot menu

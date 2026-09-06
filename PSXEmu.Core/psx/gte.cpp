@@ -137,6 +137,30 @@ int Gte::Deinitialize() {
   return S_OK;
 }
 
+void Gte::Serialise(StateIO& io) {
+  io.Plain(v_);
+  io.Plain(rgbc_);
+  io.Plain(otz_);
+  io.Plain(ir_);
+  io.Plain(sxy_);
+  io.Plain(sz_);
+  io.Plain(rgb_fifo_);
+  io.Plain(res1_);
+  io.Plain(mac_);
+  io.Plain(lzcs_);
+  io.Plain(lzcr_);
+  io.Plain(matrix_);
+  io.Plain(translation_);
+  io.Plain(ofx_);
+  io.Plain(ofy_);
+  io.Plain(h_);
+  io.Plain(dqa_);
+  io.Plain(dqb_);
+  io.Plain(zsf3_);
+  io.Plain(zsf4_);
+  io.Plain(flag_);
+}
+
 // ---------------------------------------------------------------------------
 // Saturation and overflow
 // ---------------------------------------------------------------------------

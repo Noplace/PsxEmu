@@ -95,6 +95,7 @@
     <ClCompile Include="psx\root_counter.cpp" />
     <ClCompile Include="psx\sio.cpp" />
     <ClCompile Include="psx\spu.cpp" />
+    <ClCompile Include="psx\state.cpp" />
     <ClCompile Include="psx\system.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -126,6 +127,7 @@
     <ClInclude Include="psx\root_counter.h" />
     <ClInclude Include="psx\sio.h" />
     <ClInclude Include="psx\spu.h" />
+    <ClInclude Include="psx\state.h" />
     <ClInclude Include="psx\system.h" />
     <ClInclude Include="psx\types.h" />
     <ClInclude Include="utilities\cdrom\iso9660.h" />

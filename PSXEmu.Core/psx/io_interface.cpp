@@ -87,6 +87,21 @@ int IOInterface::Deinitialize() {
   return 0;
 }
 
+void IOInterface::Serialise(StateIO& state) {
+  state.Plain(io);
+  state.Bytes(ram_buffer.u8, 0x200000);
+  state.Bytes(scratchpad.u8, 0x400);
+  state.Bytes(parallel_port_buffer.u8, 64 * 1024);
+  for (auto& counter : rootcounter_)
+    counter.Serialise(state);
+  cdrom.Serialise(state);
+  mdec.Serialise(state);
+  sio.Serialise(state);
+  dma.Serialise(state);
+  state.Plain(pending_cycles_);
+  state.Plain(sysclk8_accum_);
+}
+
 void IOInterface::SetInterrupt(InterruptCodes interrupt) {
   io.interrupt_stat |= interrupt;
 }

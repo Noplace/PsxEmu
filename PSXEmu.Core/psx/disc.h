@@ -67,6 +67,12 @@ class Disc {
   bool loaded() const { return !sources_.empty(); }
   const std::string& path() const { return path_; }
 
+  // Only the path - everything else here (sources_, tracks_, the rest) is
+  // derived by Open() and is re-derived by it on load, not saved. Reopening
+  // itself, and reporting a moved image as a failure, is the caller's job
+  // (Cdrom::Serialise) - this only moves the one field that is real state.
+  void Serialise(StateIO& io) { io.Str(path_); }
+
   // Reads one sector as 2352 raw bytes. `lba` is absolute, so the first sector
   // of track 1 is kLeadInSectors.
   bool ReadSector(uint32_t lba, uint8_t* out) const;

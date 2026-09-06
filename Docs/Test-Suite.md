@@ -15,19 +15,21 @@ Each test assembles a handful of MIPS instructions into RAM, runs them through
 the real CPU, and checks what came out - the same path a game takes. No BIOS,
 no window. A group name runs only that group.
 
-**Current: 194 checks, 0 failures.**
+**Current: 239 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
 | `arithmetic` | add/sub wraparound, sign vs zero extension of immediates, the logical ops, signed vs unsigned compares |
 | `shifts` | arithmetic vs logical right shifts, variable shifts masking the amount to five bits |
 | `muldiv` | signed and unsigned multiply, HI/LO, division by zero, and the most negative value divided by -1 |
-| `branches` | every conditional, taken and not, at negative/zero/positive and at the extremes; that the delay slot runs either way; that a branch never writes its own operand |
+| `muldelay` | mult/multu's 6/9/13-cycle cost by rs magnitude, div/divu's fixed 36, and reading hi/lo before the operation finishes waiting out the busy window instead of skipping it (bug 43, the same hazard shape as `gtedelay`'s GTE check) |
+| `branches` | every conditional, taken and not, at negative/zero/positive and at the extremes; that the delay slot runs either way; that a branch never writes its own operand; that a taken branch and its delay slot cost 1 cycle together and a not-taken branch costs 1 cycle on its own (bug 43) |
 | `jumps` | j/jal/jr/jalr, where the link register points, and that the linking branches write it even when not taken |
 | `loadstore` | sign vs zero extension on byte and halfword loads, and that partial stores leave their neighbours alone |
 | `unaligned` | lwl/lwr/swl/swr at all four alignments, and the pairs used together to move an unaligned word |
 | `loaddelay` | a load's value landing one instruction late, a write in the delay slot beating it, a second load to the same register discarding the first, and the pairing surviving a branch delay slot |
 | `gtedelay` | MFC2 having the same one-instruction load delay as an ordinary load (bug 42, the same shapes as `loaddelay` aimed at MFC2), and that a GTE register read right after a command waits out its busy time rather than skipping it |
+| `sqrloop` | reconstructs bug 42's own psxtest_gte SQR loop and measures this core's cycles directly: exactly 9 cycles/iteration, matching the hardware-recovered value (bug 43) - a regression guard on the GTE-busy-wait/branch-cost interaction that answered CPU-Timing-Plan.md's phase 2 question |
 | `memory` | RAM through KUSEG/KSEG0/KSEG1, RAM mirroring, the scratchpad, hardware registers through all three windows, the BIOS being read-only, and $zero staying zero |
 | `exceptions` | syscall and break vectoring, the Cop0 status stack pushing and popping, mfc0/mtc0 |
 | `interrupts` | I_STAT acknowledge semantics, the three gates that can block an interrupt, and that EPC points at the instruction that has *not* run |
@@ -193,6 +195,8 @@ much sample as it should makes a noise perfectly happily. "Still audible" and
 | `--watch-vram x,y,w,h` | Report which GP0 command wrote each pixel into a VRAM area |
 | `--wav <file>` | Write everything the SPU produced as a 44100 Hz stereo WAV |
 | `--press b@f[+h]` | Press a button at frame f, holding h frames |
+| `--load-state <file>` | Resume from a save state instead of booting - skips `--disc`/`--boot-disc`/`--auto-boot`/`--exe` entirely |
+| `--save-state <file>` | Write a save state after the run finishes |
 | `--quiet` | Suppress the per-100-frame progress lines |
 
 Exit code is 0 if anything was drawn, 1 if the final frame was entirely black.
@@ -264,6 +268,19 @@ this tool gets pointed at. It depends on nothing, not even the core.
 Check these after any change to the CPU, timing, or the renderer - not just the
 part being worked on.
 
+**These numbers are stale as of bug 43** (predating it, not caused by it):
+running the exact commands below on this branch before bug 43's changes
+landed already gave `bd888bab645a63a9` / 115,547,800 instructions for the
+BIOS boot, not the `d357591479cbd199` / 185,794,454 on record, and
+`media_test` already reported 175 checks, not 103 - both from unrelated
+fixes (SPU, CD-ROM audio) made since this table was last refreshed. Bug 43
+itself moved the BIOS boot's instruction count further, to 97,749,265, for
+an understood reason (see bug 43: not-taken branches and mult/div now
+correctly cost more than one cycle, so fewer instructions fit in the same
+400 frames) - everything else in the row below, including the checksum,
+did not move. This whole table is worth a dedicated refresh pass rather than
+patching one row at a time.
+
 ### BIOS boot, SCPH1001
 
     boot_runner bios/SCPH1001.BIN --frames 400 --quiet
@@ -318,6 +335,28 @@ sensitive to a renderer change; the checksum is sensitive to everything.
 
 Every device is now reached. A device dropping off this list is a regression
 even when the checksum has not moved.
+
+### Save states
+
+Not a checksum table - a repeatable procedure, per bug 44. Run after any
+change that touches a `Serialise` (or anything a `Serialise` reads, which in
+practice means most of the core):
+
+    boot_runner bios/SCPH1001.BIN --frames 900 --ppm a.ppm
+    boot_runner bios/SCPH1001.BIN --frames 600 --save-state s.st
+    boot_runner bios/SCPH1001.BIN --load-state s.st --frames 300 --ppm b.ppm
+
+`a.ppm` and `b.ppm` must be byte-identical. Do it again with `--disc
+Temp/disctest.iso --boot-disc` added to all three (a `media_test`-generated
+test disc works) - the disc mount/reopen path is the one most likely to
+silently diverge and the BIOS-only run alone will not catch it. Then:
+
+    boot_runner bios/SCPH1001.BIN --load-state s.st --frames 0 --save-state s2.st
+
+`s.st` and `s2.st` must be byte-identical (catches a field saved on the way
+out but not restored on the way in). Finally, confirm a state made against
+one BIOS is refused against another, and a state whose disc image has moved
+is refused rather than silently run with a closed file.
 
 ## Traps to remember
 

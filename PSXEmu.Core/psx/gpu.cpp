@@ -122,6 +122,59 @@ int Gpu::Initialize() {
   return S_OK;
 }
 
+void Gpu::Serialise(StateIO& io) {
+  io.Bytes(vram_, sizeof(uint16_t) * kVramWidth * kVramHeight);
+  io.Plain(status_.raw);
+  io.Plain(fifo_);
+  io.Plain(fifo_count_);
+  io.Plain(fifo_needed_);
+  io.Plain(transfer_mode_);
+  io.Plain(transfer_);
+  io.Plain(read_latch_);
+  io.Plain(current_command_);
+  io.Plain(watch_x_);
+  io.Plain(watch_y_);
+  io.Plain(watch_w_);
+  io.Plain(watch_h_);
+  io.Plain(draw_area_left_);
+  io.Plain(draw_area_top_);
+  io.Plain(draw_area_right_);
+  io.Plain(draw_area_bottom_);
+  io.Plain(draw_offset_x_);
+  io.Plain(draw_offset_y_);
+  io.Plain(texture_window_mask_x_);
+  io.Plain(texture_window_mask_y_);
+  io.Plain(texture_window_offset_x_);
+  io.Plain(texture_window_offset_y_);
+  io.Plain(force_set_mask_);
+  io.Plain(check_mask_);
+  io.Plain(rect_flip_x_);
+  io.Plain(rect_flip_y_);
+  io.Plain(display_vram_x_);
+  io.Plain(display_vram_y_);
+  io.Plain(horizontal_display_start_);
+  io.Plain(horizontal_display_end_);
+  io.Plain(vertical_display_start_);
+  io.Plain(vertical_display_end_);
+  io.Plain(display_width_);
+  io.Plain(display_height_);
+  io.Plain(dot_accumulator_);
+  io.Plain(dot_clock_remainder_);
+  io.Plain(dot_clock_accum_);
+  io.Plain(pending_dot_clocks_);
+  io.Plain(pending_hblanks_);
+  io.Plain(scanline_);
+  io.Plain(was_in_vblank_);
+  io.Plain(frame_count_);
+
+  // framebuffer_ is derived, not saved - rebuild it now so a caller that
+  // reads it right after a load (boot_runner --ppm, the front end's next
+  // Present) sees the picture the restored VRAM actually holds, not
+  // whatever the buffer held before the load.
+  if (!io.saving())
+    ResolveFramebuffer();
+}
+
 int Gpu::Deinitialize() {
   delete[] vram_;
   delete[] framebuffer_;

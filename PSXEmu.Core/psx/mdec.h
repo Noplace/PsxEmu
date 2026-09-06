@@ -68,6 +68,8 @@ class Mdec : public Component {
 
   enum OutputDepth { kDepth4 = 0, kDepth8 = 1, kDepth24 = 2, kDepth15 = 3 };
 
+  void Serialise(StateIO& io);
+
  private:
   enum State {
     kIdle,

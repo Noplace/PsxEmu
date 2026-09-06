@@ -80,13 +80,36 @@ Three things about the counters are still approximate rather than wrong:
   scanlines can be observed, which is why the hblank gate can only change at
   batch granularity.
 
-### Cycle timing - modelled, not measured
+### Cycle timing - partly measured now, memory regions still modelled
 
-`Cpu::Load` charges a region-dependent stall (3 cycles for RAM, 0 for the
-scratchpad, 3 for a hardware register, 5 for the BIOS ROM) on top of the
+[CPU-Timing-Plan.md](CPU-Timing-Plan.md) tracks this gap CPU-wide; phases 1
+and 2 are done (bug 43): `MULT`/`MULTU`/`DIV`/`DIVU` charge psx-spx's
+measured 6/9/13/36-cycle table instead of the flat one cycle `ADD` gets, with
+the same busy-wait hazard as the GTE if HI/LO is read too soon, and a
+not-taken branch now charges the same uniform 1 cycle every other
+instruction does (it charged 0 before - a real bug, not part of the uniform
+model). The branch/loop-overhead question bug 42's own SQR-loop arithmetic
+raised is answered too: measuring that exact loop in `cpu_test` (`sqrloop`)
+gives exactly 9 cycles/iteration, matching bug 42's hardware-recovered value,
+because the GTE busy-wait stall already absorbs a register read's cost into
+the command's window and a taken branch already costs nothing beyond its
+delay slot - both already correct, now confirmed rather than assumed.
+
+`Cpu::Load` still charges a region-dependent stall (3 cycles for RAM, 0 for
+the scratchpad, 3 for a hardware register, 5 for the BIOS ROM) on top of the
 per-instruction cost. That was enough to stop the BIOS giving up on VSync -
-see bug 16 - but it is a model, not a measurement, and the per-instruction
-costs beneath it are uniform where real ones are not.
+see bug 16 - but it is still a model, not a measurement (CPU-Timing-Plan.md
+phase 3, not attempted yet). A primary-source fetch done for phase 1 found
+real hardware's figures are further off than this project's own prior
+search-result summary suggested - scratchpad 1 cycle, on-die I/O 5, RAM 7,
+and BIOS ROM a *programmable* 27-33 depending on a memory-control register
+this core doesn't model as a timing input yet - and that a loaded register's
+cost partly overlaps with independent instructions that follow it ("Load
+Shadow"), which a single flat per-region stall can't represent. Getting this
+region right is bug 16's fix revisited with a real instrument, but it is
+also the riskiest of the four phases to get wrong for exactly the reason bug
+16 exists, so it stays a modelled number until it gets that same measured
+treatment, deliberately, in its own pass.
 
 DMA transfers now take time rather than completing instantaneously: a channel
 bills the machine roughly one cycle per word, plus one per sixteen for the
@@ -116,21 +139,23 @@ figures above, this one has actually been run against a timing test suite -
 amidog's `psxtest_gte` - and measuring this core's own numbers from inside
 that test's loop (bug 42) shows the fix is exactly right: recovered per-opcode
 costs match the documented table for every opcode reached, with no exceptions.
-The suite still fails every one of the 22 opcodes it times regardless, because
-its loop repeats each measurement 501 times to average out noise, and every
-one of the *other* instructions in that loop - a register read, a branch, its
-delay slot - is charged the same uniform one cycle as everywhere else in this
-core, magnified 501-fold into the whole result. See "GTE" below and bug 42.
+The suite still fails every one of the 22 opcodes it times regardless,
+because its loop repeats each measurement 501 times to average out noise -
+but reconstructing that exact loop directly (bug 43, `cpu_test`'s `sqrloop`
+group) and measuring this core's own cycles now shows the *other*
+instructions in it - `CFC2`, a `nop`, an accumulate, the branch, its delay
+slot - already sum to exactly the hardware-measured 9 cycles/iteration, not
+a wrong uniform total. The suite's TIMING column staying red is not yet
+explained by this alone; see [CPU-Timing-Plan.md](CPU-Timing-Plan.md)'s
+phase 0 (pixel-sampling the column itself, not yet done) and phase 3 (memory
+region costs, the piece of "everywhere else" still genuinely modelled rather
+than measured).
 
-What is still missing everywhere else is any comparison against hardware. The
-right instrument is a timing test suite run on a console and on this; amidog's
-GTE one is the first case where that has actually happened. It answered the
-question it was pointed at cleanly - the GTE's own timing is correct - and
-surfaced the real blocker as this paragraph's own opening line, restated more
-sharply by 501 repetitions: ordinary instruction timing is modelled, not
-measured, and closing that is a CPU-wide project, not a GTE one. Until the
-same comparison happens elsewhere, every other number here is a plausible
-shape, not a fact.
+What is still missing is a comparison against hardware for memory-region
+timing specifically - phases 1 and 2 above closed the multiply/divide and
+branch pieces of it. Amidog's GTE and CPU suites remain the right instrument
+for what's left; until phase 3 gets the same treatment, `Cpu::Load`'s region
+costs are a plausible shape, not a fact.
 
 The emulator's own speed is at least measured now: `boot_runner` reports
 emulated seconds against wall-clock seconds at the end of a run. See
@@ -361,12 +386,15 @@ two:
   - and independently confirmed by measuring this core's own numbers from
   inside the failing test itself: recovered per-opcode costs match the
   documented table exactly, every opcode, no exceptions. The column is still
-  all red because its loop repeats each measurement 501 times to cancel out
-  noise, and everything in that loop besides the GTE command - a register
-  read, a branch, its delay slot - is charged the same uniform one cycle as
-  the rest of this core's CPU model, magnified 501-fold into the total. That
-  is "cycle timing is modelled, not measured" above, not a GTE gap; closing
-  it needs real R3000A instruction timing, a CPU-wide project. See bug 42.
+  all red despite that: its loop repeats each measurement 501 times to
+  cancel out noise, and bug 43 (see [CPU-Timing-Plan.md](CPU-Timing-Plan.md))
+  reconstructed that exact loop and confirmed the *other* instructions in it
+  - `CFC2`, a `nop`, an accumulate, the branch, its delay slot - already sum
+  to the correct hardware-measured total, not a wrong uniform one. Why the
+  column still reads red is therefore not this loop; it needs the plan's
+  phase 0 (pixel-sampling the column itself) and phase 3 (memory region
+  costs, still modelled rather than measured) before it's a closed question
+  rather than an open one. See bugs 42 and 43.
 
 The MVMVA garbage matrix (matrix select 3) is written from the description
 rather than from measurement.
@@ -400,11 +428,6 @@ at exit.
 There is exactly one setting in it: `audio_volume`. The BIOS path, the disc
 path, the key bindings and everything else are still command-line arguments,
 menu choices or hardcoded, and are not remembered between runs.
-
-### No save states
-
-There is no serialiser: `psx/state.h` does not exist and no component has a
-`Serialise`. Planned in [Save-States-Plan.md](Save-States-Plan.md).
 
 ### The front end is minimal
 

@@ -159,8 +159,12 @@ struct CpuContext {
   //uint32_t& gpr_rt() { return gp.reg[rt()]; }
   //uint32_t& gpr_rs() { return gp.reg[rs()]; }
 
-  
-  
+  // One flat, trivially-copyable struct - registers, pc, Cop0, cycles, the
+  // multiply/divide result pair - so a single Plain() covers all of it.
+  // cpr2 rides along even though nothing reads or writes it (see gte.h): it
+  // costs 128 inert bytes to save it, and special-casing it out is more
+  // surface area than the bytes are worth.
+  void Serialise(StateIO& io) { io.Plain(*this); }
 };
 
 }

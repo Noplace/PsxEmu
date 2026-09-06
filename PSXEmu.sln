@@ -6,6 +6,26 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PSXEmu.Core", "PSXEmu.Core\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PSXEmu.Win32", "PSXEmu.Win32\PSXEmu.Win32.vcxproj", "{5F2A1B47-9C3E-4D18-8A6B-1E7C4D9F2033}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Docs", "Docs", "{E5107D62-B4E3-4872-95CA-25AD731CBA65}"
+	ProjectSection(SolutionItems) = preProject
+		Docs\Air-Combat-FMV-Plan.md = Docs\Air-Combat-FMV-Plan.md
+		Docs\Bugs-Found.md = Docs\Bugs-Found.md
+		Docs\CPU-Timing-Plan.md = Docs\CPU-Timing-Plan.md
+		Docs\Disc-Formats-Plan.md = Docs\Disc-Formats-Plan.md
+		Docs\Emulator-Project-Standards.md = Docs\Emulator-Project-Standards.md
+		Docs\FF7-Prelude-Pitch-Plan.md = Docs\FF7-Prelude-Pitch-Plan.md
+		Docs\Gaps.md = Docs\Gaps.md
+		Docs\MDEC-Plan.md = Docs\MDEC-Plan.md
+		Docs\Memory-Cards-Plan.md = Docs\Memory-Cards-Plan.md
+		Docs\Project-Layout.md = Docs\Project-Layout.md
+		Docs\README.md = Docs\README.md
+		Docs\Recompiler-Plan.md = Docs\Recompiler-Plan.md
+		Docs\Roadmap.md = Docs\Roadmap.md
+		Docs\Save-States-Plan.md = Docs\Save-States-Plan.md
+		Docs\Test-Suite.md = Docs\Test-Suite.md
+		Docs\Wild-Arms-Press-Start-Plan.md = Docs\Wild-Arms-Press-Start-Plan.md
+	EndProjectSection
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Win32 = Debug|Win32

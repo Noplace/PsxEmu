@@ -437,6 +437,108 @@ bool System::BootDisc(DiscBootInfo* info) {
   return true;
 }
 
+// See Docs/Save-States-Plan.md. Fixed serialisation order, both directions:
+// cpu_context_, cpu_, gte_, io_ (which cascades into its own sub-components,
+// see IOInterface::Serialise), gpu_, spu_.
+std::string System::SaveState(const std::string& path) {
+  StateIO state(/*saving=*/true);
+  cpu_context_.Serialise(state);
+  cpu_.Serialise(state);
+  gte_.Serialise(state);
+  io_.Serialise(state);
+  gpu_.Serialise(state);
+  spu_.Serialise(state);
+
+  FILE* fp = fopen(path.c_str(), "wb");
+  if (fp == nullptr)
+    return "could not create " + path;
+
+  fwrite(kStateMagic, 1, sizeof(kStateMagic), fp);
+  const uint32_t version = kStateVersion;
+  fwrite(&version, sizeof(version), 1, fp);
+  const uint64_t bios_hash = Fnv1a64(io_.bios_buffer.u8, kBiosSize);
+  fwrite(&bios_hash, sizeof(bios_hash), 1, fp);
+  const std::string& disc_path = io_.cdrom.disc().path();
+  const uint32_t disc_path_length = static_cast<uint32_t>(disc_path.size());
+  fwrite(&disc_path_length, sizeof(disc_path_length), 1, fp);
+  if (disc_path_length > 0)
+    fwrite(disc_path.data(), 1, disc_path_length, fp);
+
+  const std::vector<uint8_t>& payload = state.bytes();
+  if (!payload.empty())
+    fwrite(payload.data(), 1, payload.size(), fp);
+  fclose(fp);
+  return "";
+}
+
+std::string System::LoadState(const std::string& path) {
+  FILE* fp = fopen(path.c_str(), "rb");
+  if (fp == nullptr)
+    return "could not open " + path;
+
+  char magic[sizeof(kStateMagic)];
+  if (fread(magic, 1, sizeof(magic), fp) != sizeof(magic) ||
+      memcmp(magic, kStateMagic, sizeof(magic)) != 0) {
+    fclose(fp);
+    return path + " is not a save state";
+  }
+  uint32_t version = 0;
+  fread(&version, sizeof(version), 1, fp);
+  if (version != kStateVersion) {
+    fclose(fp);
+    char detail[128];
+    snprintf(detail, sizeof(detail),
+             "save state is version %u, this build expects version %u",
+             version, kStateVersion);
+    return detail;
+  }
+  uint64_t bios_hash = 0;
+  fread(&bios_hash, sizeof(bios_hash), 1, fp);
+  if (bios_hash != Fnv1a64(io_.bios_buffer.u8, kBiosSize)) {
+    fclose(fp);
+    return "save state was made with a different BIOS";
+  }
+  // A courtesy copy for a future save browser - System::LoadState restores
+  // the real disc path from the payload below (Cdrom::Serialise), which is
+  // the single source of truth, so this is only skipped over here.
+  uint32_t disc_path_length = 0;
+  fread(&disc_path_length, sizeof(disc_path_length), 1, fp);
+  if (disc_path_length > 0)
+    fseek(fp, disc_path_length, SEEK_CUR);
+
+  std::vector<uint8_t> payload;
+  uint8_t chunk[65536];
+  size_t read;
+  while ((read = fread(chunk, 1, sizeof(chunk), fp)) > 0)
+    payload.insert(payload.end(), chunk, chunk + read);
+  fclose(fp);
+
+  StateIO state(/*saving=*/false);
+  state.BeginLoad(payload.data(), payload.size());
+  cpu_context_.Serialise(state);
+  cpu_.Serialise(state);
+  gte_.Serialise(state);
+  io_.Serialise(state);
+  gpu_.Serialise(state);
+  spu_.Serialise(state);
+
+  if (state.truncated())
+    return path + " is truncated or corrupt";
+  if (!state.error().empty())
+    return state.error();
+
+  // Iso9660 is derived from the disc, not saved (the same reasoning as the
+  // GPU's framebuffer) - reopen it the way BootDisc does, if the disc
+  // Cdrom::Serialise just reopened actually has a filesystem. Some discs
+  // (pure CD-DA) legitimately don't; that is not a load failure.
+  if (io_.cdrom.disc_loaded())
+    iso_.Open(&io_.cdrom.disc());
+  else
+    iso_.Close();
+
+  return "";
+}
+
 void System::thread_func(System* sys) {
   memset(&sys->timing_,0,sizeof(sys->timing_));
   sys->timer.Calibrate();

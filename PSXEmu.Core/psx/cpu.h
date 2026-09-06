@@ -423,8 +423,15 @@ class Cpu : public Component {
   uint32_t Load(MemorySize size, uint32_t address);
   void Store(MemorySize size, uint32_t data, uint32_t address);
   CpuContext* context() { return context_; }
-  void set_context(CpuContext* context) { context_ = context; }  
+  void set_context(CpuContext* context) { context_ = context; }
   ICache2 icache;
+
+  // context_ itself is a pointer to the CpuContext System already owns and
+  // serialises separately - callers must set_context() after loading, this
+  // only covers what actually belongs to Cpu: the icache, the load-delay
+  // pipeline, and the GTE/HI-LO busy windows. Debug-only state (the trace
+  // ring, the watch array, bios_logged) is deliberately not here.
+  void Serialise(StateIO& io);
 
   struct TraceEntry {
     uint32_t pc;
@@ -499,6 +506,14 @@ class Cpu : public Component {
   // instruction touches a GTE register or issues another command before that
   // time. Zero-initialised, so the very first GTE access is never stalled.
   uint64_t gte_busy_until_cycles_ = 0;
+
+  // Same hazard, for HI/LO: "the mul/div opcodes are starting the
+  // multiply/divide operation, starting takes only a single clock cycle,
+  // however, trying to read the result from the hi/lo registers while the
+  // mul/div operation is busy will halt the CPU until [it] has completed" -
+  // psx-spx. MFHI/MFLO check this before running; MTHI/MTLO are not
+  // documented to wait on it, same asymmetry as MTC2/CTC2 and the GTE.
+  uint64_t hilo_busy_until_cycles_ = 0;
 
   // Every register write goes through here, because a write has to cancel a
   // load still in flight to the same register - the hardware writes the load

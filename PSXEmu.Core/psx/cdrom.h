@@ -140,6 +140,15 @@ class Cdrom : public Component {
   };
   const Stats& stats() const { return stats_; }
 
+  // On load, reopens disc_ from its saved path (empty means no disc) and
+  // records an error on `io` if a non-empty path no longer resolves - "the
+  // disc image has moved" per Docs/Save-States-Plan.md - rather than running
+  // with a closed file. Every deque here is already a queue of trivially-
+  // copyable elements, including pending_'s PendingResponse::delay, which is
+  // a countdown in CPU cycles - already relative, so saving it mid-countdown
+  // needs no conversion.
+  void Serialise(StateIO& io);
+
  private:
   // A response waiting to be handed over once software is ready for it.
   struct PendingResponse {

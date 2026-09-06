@@ -76,6 +76,28 @@ int Sio::Deinitialize() {
   return S_OK;
 }
 
+void Sio::Serialise(StateIO& io) {
+  io.Plain(pad_);
+  io.Plain(control_);
+  io.Plain(mode_);
+  io.Plain(baud_);
+  io.Plain(status_);
+  io.Plain(target_);
+  io.Plain(transfer_step_);
+  io.Plain(receive_);
+  io.Plain(receive_full_);
+  io.Plain(acknowledge_);
+  io.Plain(interrupt_timer_);
+  io.Plain(interrupt_pending_);
+  io.Plain(pad_command_);
+  io.Plain(legacy_rumble_byte2_);
+  io.Plain(mc_command_);
+  io.Plain(mc_sector_);
+  io.Plain(mc_checksum_);
+  io.Plain(mc_buffer_);
+  io.Plain(mc_previous_tx_);
+}
+
 void Sio::set_connected(int slot, bool connected) {
   if (slot < 0 || slot >= 2)
     return;

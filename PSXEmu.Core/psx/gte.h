@@ -73,6 +73,11 @@ class Gte : public Component {
   };
   const Stats& stats() const { return stats_; }
 
+  // Every register - the whole "everything 3D goes through it" state - minus
+  // stats_ (diagnostics) and lm_/sf_ (set fresh from the command word at the
+  // start of every Execute(), not state that outlives one command).
+  void Serialise(StateIO& io);
+
  private:
   // ---- register file -----------------------------------------------------
   int16_t v_[3][3];        // V0, V1, V2 as (x, y, z)

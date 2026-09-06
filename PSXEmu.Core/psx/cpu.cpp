@@ -164,6 +164,15 @@ int Cpu::Deinitialize() {
   return 0;
 }
 
+void Cpu::Serialise(StateIO& io) {
+  io.Bytes(icache.buffer.u8, 0x1000 * 4);
+  io.Plain(icache.addresses);
+  io.Plain(pending_load_);
+  io.Plain(armed_load_);
+  io.Plain(gte_busy_until_cycles_);
+  io.Plain(hilo_busy_until_cycles_);
+}
+
 void Cpu::NoteExternalWrite(uint32_t tag, uint32_t byte_address,
                             uint32_t value) {
   if (watch_address_ == 0)
@@ -856,15 +865,28 @@ void Cpu::JAL() {
   Jump((context_->pc & 0xF0000000) | (target_ << 2));
 }
 
+// A taken branch costs nothing beyond its delay slot's own cycle - the
+// R3000A resolves the branch in decode, so the delay-slot instruction that
+// Jump() runs already accounts for the whole pair (confirmed by measuring
+// this core's own SQR-loop cycles against amidog's psxtest_gte, bug 42/43).
+// A *not-taken* branch has no delay-slot Jump() to tick through, though: the
+// instruction after it still runs (psx-spx: "the instruction following the
+// branch will always be executed"), but as an ordinary next fetch, not
+// through here. Without a Tick() of its own, the branch's decode cycle was
+// silently uncharged - every other non-branch instruction charges 1.
 void Cpu::BEQ() {
   if (context_->gp.reg[rs_] == context_->gp.reg[rt_]) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
+  } else {
+    Tick();
   }
 }
 
 void Cpu::BNE() {
   if (context_->gp.reg[rs_] != context_->gp.reg[rt_]) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
+  } else {
+    Tick();
   }
 }
 
@@ -872,6 +894,8 @@ void Cpu::BLEZ() {
   const int32_t r = static_cast<int32_t>(context_->gp.reg[rs_]);
   if (r <= 0) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
+  } else {
+    Tick();
   }
 }
 
@@ -879,6 +903,8 @@ void Cpu::BGTZ() {
   const int32_t r = static_cast<int32_t>(context_->gp.reg[rs_]);
   if (r > 0) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
+  } else {
+    Tick();
   }
 }
 
@@ -1259,7 +1285,13 @@ void Cpu::BREAK() {
   RaiseException(context_->prev_pc, kOtherException, kExceptionCodeBp);
 }
 
+// MFHI/MFLO read whatever a multiply or divide left behind. If that
+// operation is still busy - see hilo_busy_until_cycles_ - the read has to
+// wait for it, the same hazard COP2() already charges for a GTE register
+// read that outruns the command that fills it.
 void Cpu::MFHI() {
+  if (context_->cycles < hilo_busy_until_cycles_)
+    TickCycles(static_cast<uint32_t>(hilo_busy_until_cycles_ - context_->cycles));
   WriteReg(rd_, context_->high);
   Tick();
 }
@@ -1270,6 +1302,8 @@ void Cpu::MTHI() {
 }
 
 void Cpu::MFLO() {
+  if (context_->cycles < hilo_busy_until_cycles_)
+    TickCycles(static_cast<uint32_t>(hilo_busy_until_cycles_ - context_->cycles));
   WriteReg(rd_, context_->low);
   Tick();
 }
@@ -1279,18 +1313,40 @@ void Cpu::MTLO() {
   Tick();
 }
 
+// Multiply's execution time depends on the magnitude of rs - "small*large"
+// can be much faster than "large*small" - per psx-spx's measured bands.
+// MULT's ranges cover rs as a signed quantity split across the wrap; MULTU's
+// are the same three widths read unsigned, with no negative-side band.
+namespace {
+uint32_t MultiplyCyclesSigned(int32_t rs) {
+  const uint32_t bits = static_cast<uint32_t>(rs);
+  if (bits <= 0x000007FFu || bits >= 0xFFFFF800u) return 6;
+  if (bits <= 0x000FFFFFu || bits >= 0xFFF00000u) return 9;
+  return 13;
+}
+uint32_t MultiplyCyclesUnsigned(uint32_t rs) {
+  if (rs <= 0x000007FFu) return 6;
+  if (rs <= 0x000FFFFFu) return 9;
+  return 13;
+}
+}  // namespace
+
 void Cpu::MULT() {
   uint64_t test = int64_t((int64_t)((int32_t)context_->gp.reg[rs_]) * (int64_t)((int32_t)context_->gp.reg[rt_]));
   context_->low  = (uint32_t)(test & 0xFFFFFFFF);
   context_->high = (uint32_t)((test >> 32) & 0xFFFFFFFF);
-  Tick();
+  const uint32_t cost = MultiplyCyclesSigned(static_cast<int32_t>(context_->gp.reg[rs_]));
+  TickCycles(cost);
+  hilo_busy_until_cycles_ = context_->cycles + (cost > 1 ? cost - 1 : 0);
 }
 
 void Cpu::MULTU() {
   uint64_t test = uint64_t((uint64_t)((uint32_t)context_->gp.reg[rs_]) * (uint64_t)((uint32_t)context_->gp.reg[rt_]));
   context_->low  = (uint32_t)(test & 0xFFFFFFFF);
   context_->high = (uint32_t)((test >> 32) & 0xFFFFFFFF);
-  Tick();
+  const uint32_t cost = MultiplyCyclesUnsigned(context_->gp.reg[rs_]);
+  TickCycles(cost);
+  hilo_busy_until_cycles_ = context_->cycles + (cost > 1 ? cost - 1 : 0);
 }
 
 // Division on MIPS never traps. Both degenerate cases have defined answers,
@@ -1315,7 +1371,9 @@ void Cpu::DIV() {
     context_->low = static_cast<uint32_t>(dividend / divisor);
     context_->high = static_cast<uint32_t>(dividend % divisor);
   }
-  Tick();
+  // Fixed at 36 cycles regardless of operands - psx-spx.
+  TickCycles(36);
+  hilo_busy_until_cycles_ = context_->cycles + 35;
 }
 
 void Cpu::DIVU() {
@@ -1329,7 +1387,8 @@ void Cpu::DIVU() {
     context_->low = dividend / divisor;
     context_->high = dividend % divisor;
   }
-  Tick();
+  TickCycles(36);
+  hilo_busy_until_cycles_ = context_->cycles + 35;
 }
 
 void Cpu::ADD() {
@@ -1396,6 +1455,8 @@ void Cpu::BLTZ() {
   bool cond = r < 0; //(context_->gp.reg[rs_] & 0x80000000)==0x80000000;
   if (cond==true) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
+  } else {
+    Tick();
   }
 }
 
@@ -1404,6 +1465,8 @@ void Cpu::BGEZ() {
   bool cond = (context_->gp.reg[rs_] & 0x80000000)==0;//r >= 0;//
   if (cond==true) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
+  } else {
+    Tick();
   }
 }
 

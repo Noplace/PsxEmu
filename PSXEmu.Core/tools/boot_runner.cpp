@@ -31,6 +31,9 @@
 //     --watch-vram x,y,w,h   report which GP0 command wrote into a VRAM area
 //     --press b@f[+h]    press a button at frame f, holding h frames
 //                        e.g. --press start@1800 --press down+cross@2000+8
+//     --load-state <f>   resume from a save state instead of booting - skips
+//                        --disc/--boot-disc/--auto-boot/--exe entirely
+//     --save-state <f>   write a save state after the run finishes
 //     --quiet            suppress the per-100-frame progress lines
 //
 // Takes no window, no input and no audio device, so it can be run from a shell
@@ -178,6 +181,16 @@ struct Options {
   int frame_log;
   float volume;
   std::vector<Press> presses;
+  // Applied once, right after the BIOS is loaded and before any other setup
+  // (--boot-disc/--auto-boot/--exe are skipped when this is set - the state
+  // load overwrites everything they would have done anyway). Lets a run
+  // resume from a saved point instead of booting from scratch, which is how
+  // Docs/Save-States-Plan.md's own round-trip test is actually driven: save
+  // at the end of one run, load at the start of another, and diff the
+  // pictures --frames further on in each.
+  const char* load_state;
+  // Applied once, after the frame loop finishes, alongside --ppm/--vram.
+  const char* save_state;
 };
 
 // FNV-1a over the visible framebuffer. Small, order-sensitive, and good enough
@@ -472,6 +485,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->quiet = false;
   options->frame_log = 0;
   options->volume = -1.0f;
+  options->load_state = nullptr;
+  options->save_state = nullptr;
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -479,6 +494,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->exe = argv[++i];
     } else if (strcmp(arg, "--disc") == 0 && i + 1 < argc) {
       options->disc = argv[++i];
+    } else if (strcmp(arg, "--load-state") == 0 && i + 1 < argc) {
+      options->load_state = argv[++i];
+    } else if (strcmp(arg, "--save-state") == 0 && i + 1 < argc) {
+      options->save_state = argv[++i];
     } else if (strcmp(arg, "--frames") == 0 && i + 1 < argc) {
       options->frames = atoi(argv[++i]);
     } else if (strcmp(arg, "--insert") == 0 && i + 2 < argc) {
@@ -573,7 +592,20 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  if (options.disc != nullptr) {
+  if (options.load_state != nullptr) {
+    const std::string error = system->LoadState(options.load_state);
+    if (!error.empty()) {
+      fprintf(stderr, "failed to load state %s: %s\n", options.load_state,
+              error.c_str());
+      return 1;
+    }
+    printf("loaded state   %s\n", options.load_state);
+  }
+
+  // A loaded state already carries the CD-ROM, GPU, CPU - everything - so
+  // none of --disc/--auto-boot/--boot-disc/--exe make sense on top of it;
+  // running them would just be overwritten by the load.
+  if (options.load_state == nullptr && options.disc != nullptr) {
     if (!system->LoadDisc(options.disc)) {
       fprintf(stderr, "failed to mount %s\n", options.disc);
       return 1;
@@ -594,44 +626,47 @@ int main(int argc, char** argv) {
 
   // --auto-boot with --exe defers the side-load to the same address rather
   // than doing both: a raw side-load right now would run over the reset
-  // state --auto-boot exists to get past in the first place.
+  // state --auto-boot exists to get past in the first place. None of this
+  // runs at all with --load-state - see the comment above its guard.
   const bool defer_exe_to_auto_boot =
       options.auto_boot && options.exe != nullptr;
 
-  if (options.auto_boot && !defer_exe_to_auto_boot) {
-    // Let the BIOS run its intro, then take over when it reaches the address
-    // it would hand a game control at.
-    system->set_auto_boot(true);
-    printf("auto-boot      armed at pc=80030000\n");
-  } else if (defer_exe_to_auto_boot) {
-    system->set_auto_boot_exe(true, options.exe);
-    printf("auto-boot      armed at pc=80030000, will side-load %s\n",
-           options.exe);
-  }
-
-  if (options.boot_disc) {
-    System::DiscBootInfo info;
-    const bool booted = system->BootDisc(&info);
-    if (!info.volume_id.empty())
-      printf("volume         %s\n", info.volume_id.c_str());
-    if (!info.boot_path.empty())
-      printf("boot line      %s\n", info.boot_path.c_str());
-    if (!booted) {
-      fprintf(stderr, "disc boot failed: %s\n",
-              info.error ? info.error : "unknown reason");
-      return 1;
+  if (options.load_state == nullptr) {
+    if (options.auto_boot && !defer_exe_to_auto_boot) {
+      // Let the BIOS run its intro, then take over when it reaches the
+      // address it would hand a game control at.
+      system->set_auto_boot(true);
+      printf("auto-boot      armed at pc=80030000\n");
+    } else if (defer_exe_to_auto_boot) {
+      system->set_auto_boot_exe(true, options.exe);
+      printf("auto-boot      armed at pc=80030000, will side-load %s\n",
+             options.exe);
     }
-    printf("booted         %s (%u bytes) at pc=%08X\n",
-           info.executable.c_str(), info.executable_size,
-           system->cpu().context()->pc);
-  }
 
-  if (options.exe != nullptr && !defer_exe_to_auto_boot) {
-    if (!system->LoadPsExe(options.exe)) {
-      fprintf(stderr, "failed to load %s\n", options.exe);
-      return 1;
+    if (options.boot_disc) {
+      System::DiscBootInfo info;
+      const bool booted = system->BootDisc(&info);
+      if (!info.volume_id.empty())
+        printf("volume         %s\n", info.volume_id.c_str());
+      if (!info.boot_path.empty())
+        printf("boot line      %s\n", info.boot_path.c_str());
+      if (!booted) {
+        fprintf(stderr, "disc boot failed: %s\n",
+                info.error ? info.error : "unknown reason");
+        return 1;
+      }
+      printf("booted         %s (%u bytes) at pc=%08X\n",
+             info.executable.c_str(), info.executable_size,
+             system->cpu().context()->pc);
     }
-    printf("side-loaded %s\n", options.exe);
+
+    if (options.exe != nullptr && !defer_exe_to_auto_boot) {
+      if (!system->LoadPsExe(options.exe)) {
+        fprintf(stderr, "failed to load %s\n", options.exe);
+        return 1;
+      }
+      printf("side-loaded %s\n", options.exe);
+    }
   }
 
   if (options.watch != nullptr) {
@@ -1279,6 +1314,14 @@ int main(int argc, char** argv) {
       printf("wrote          %s\n", options.ppm);
     else
       fprintf(stderr, "failed to write %s\n", options.ppm);
+  }
+  if (options.save_state != nullptr) {
+    const std::string error = system->SaveState(options.save_state);
+    if (error.empty())
+      printf("saved state    %s\n", options.save_state);
+    else
+      fprintf(stderr, "failed to save state %s: %s\n", options.save_state,
+              error.c_str());
   }
   if (options.wav != nullptr) {
     if (WriteWav(options.wav, audio)) {

@@ -176,6 +176,46 @@ int Spu::Initialize() {
   return 0;
 }
 
+void Spu::Serialise(StateIO& io) {
+  io.Plain(voices_);
+  io.Bytes(ram_, kRamSize);
+  io.Plain(main_volume_left_);
+  io.Plain(main_volume_right_);
+  io.Plain(reverb_volume_left_);
+  io.Plain(reverb_volume_right_);
+  io.Plain(key_on_);
+  io.Plain(key_off_);
+  io.Plain(pitch_modulation_);
+  io.Plain(noise_mode_);
+  io.Plain(reverb_mode_);
+  io.Plain(endx_);
+  io.Plain(control_);
+  io.Plain(transfer_control_);
+  io.Plain(status_);
+  io.Plain(irq_address_);
+  io.Plain(transfer_address_);
+  io.Plain(transfer_cursor_);
+  io.Plain(cd_volume_left_);
+  io.Plain(cd_volume_right_);
+  io.Plain(external_volume_left_);
+  io.Plain(external_volume_right_);
+  io.Plain(reverb_registers_);
+  io.Plain(noise_timer_);
+  io.Plain(noise_level_);
+  io.Plain(reverb_base_);
+  io.Plain(reverb_cursor_);
+  io.Plain(reverb_left_phase_);
+  io.Plain(sample_counter_);
+  io.Plain(irq_pending_);
+  io.Plain(cd_audio_buffer_);
+  io.Plain(cd_audio_read_);
+  io.Plain(cd_audio_write_);
+  io.Plain(cd_audio_count_);
+  io.Plain(cd_resample_fraction_);
+  io.Plain(cd_resample_last_);
+  io.Plain(cd_resample_scratch_);
+}
+
 int Spu::Deinitialize() {
   delete[] ram_;
   delete[] buffer_;

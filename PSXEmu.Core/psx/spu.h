@@ -142,6 +142,14 @@ class Spu : public Component {
   const VoiceEvent* voice_events() const { return voice_events_; }
   int voice_event_count() const { return voice_event_count_; }
 
+  // Every voice, every register, the noise and reverb working state, sound
+  // RAM itself (Bytes) and the CD-audio input buffer. Not saved: engine_
+  // (a host pointer, rewired by set_audio_engine after load, not state),
+  // buffer_/buffer_read_/write_/count_ (the drained-frame ring buffer -
+  // host-side output, the same reasoning as the GPU's framebuffer), stats_,
+  // and the opt-in voice_events_ trace.
+  void Serialise(StateIO& io);
+
  private:
   enum AdsrPhase { kAttack, kDecay, kSustain, kRelease, kOff };
 

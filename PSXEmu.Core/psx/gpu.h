@@ -174,6 +174,12 @@ class Gpu : public GpuCore {
     return taken;
   }
 
+  // vram_ (Bytes) plus every register/FIFO/timing field below stats_.
+  // framebuffer_ is deliberately not here - ResolveFramebuffer() rebuilds it
+  // from vram_ after a load, so a state taken mid-frame never shows a torn
+  // picture that then corrects itself (Docs/Save-States-Plan.md's own trap).
+  void Serialise(StateIO& io);
+
  private:
   // ---- state -------------------------------------------------------------
   uint16_t* vram_;

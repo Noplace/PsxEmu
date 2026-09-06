@@ -87,6 +87,10 @@ class IOInterface : public Component {
   uint32_t ReadSubWord(uint32_t address, uint32_t bytes);
   void WriteSubWord(uint32_t address, uint32_t data, uint32_t bytes);
 
+  // bios_buffer is deliberately not here - the BIOS is a user-supplied dump,
+  // not machine state; a state file carries a hash of it instead and refuses
+  // to load against a different one. access_log is diagnostics.
+  void Serialise(StateIO& io);
 };
 
 }

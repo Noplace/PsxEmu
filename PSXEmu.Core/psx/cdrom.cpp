@@ -132,6 +132,48 @@ void Cdrom::CloseDisc() {
   status_ = 0;              // no disc, no motor
 }
 
+void Cdrom::Serialise(StateIO& io) {
+  // Path only - Open() below (not the OpenDisc() wrapper, which resets
+  // reading_/playing_/shell_open_/status_/seek_lba_/read_lba_ to their
+  // freshly-mounted defaults) re-derives everything else about the disc
+  // once every field below has already been restored from the state.
+  disc_.Serialise(io);
+
+  io.Plain(index_);
+  io.Plain(status_);
+  io.Plain(shell_open_);
+  io.Plain(interrupt_enable_);
+  io.Plain(interrupt_flag_);
+  io.Deque(parameter_fifo_);
+  io.Deque(response_fifo_);
+  io.Deque(pending_);
+  io.Plain(sector_);
+  io.Plain(data_offset_);
+  io.Plain(data_size_);
+  io.Plain(data_read_);
+  io.Plain(data_fifo_loaded_);
+  io.Plain(filter_file_);
+  io.Plain(filter_channel_);
+  io.Plain(xa_);
+  io.Plain(seek_lba_);
+  io.Plain(read_lba_);
+  io.Plain(seek_pending_);
+  io.Plain(reading_);
+  io.Plain(playing_);
+  io.Plain(mode_);
+  io.Plain(read_timer_);
+  io.Plain(scan_rate_);
+
+  if (!io.saving()) {
+    const std::string path = disc_.path();
+    if (path.empty()) {
+      disc_.Close();
+    } else if (!disc_.Open(path.c_str())) {
+      io.SetError("save state: disc image not found: " + path);
+    }
+  }
+}
+
 int32_t Cdrom::SectorCycles() const {
   return (mode_ & kModeDoubleSpeed) ? (kSectorCyclesSingleSpeed / 2)
                                     : kSectorCyclesSingleSpeed;

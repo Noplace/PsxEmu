@@ -142,29 +142,42 @@ Bug 42's instrument, generalised:
 
 ## Phases
 
-**Phase 0 - re-read `psxtest_cpu`'s TIMING column properly.** Pixel-sample
-it the way bug 42 did for `psxtest_gte` rather than eyeball it, and get an
-exact list of which groups fail. This costs an hour and turns "looks like
-branches and load-delay" into a confirmed, specific list - possibly with
-entries this plan has not anticipated.
+**Phase 0 - re-read `psxtest_cpu`'s TIMING column properly. Not done.**
+Pixel-sample it the way bug 42 did for `psxtest_gte` rather than eyeball it,
+and get an exact list of which groups fail. This costs an hour and turns
+"looks like branches and load-delay" into a confirmed, specific list -
+possibly with entries this plan has not anticipated.
 
-**Phase 1 - multiply and divide.** Best-understood, most self-contained,
-highest real-game impact. Verify the operand-magnitude table above against
-a primary source, implement it in `Cpu::MULT`/`MULTU`/`DIV`/`DIVU` via the
-existing `TickCycles` (already proven correct and unused-until-bug-42
-infrastructure), and add a `cpu_test` group that checks *both* directions -
-the value already covered by `muldiv`, and now the cycle count, at each
-documented magnitude boundary. Re-run `psxtest_cpu`.
+**Phase 1 - multiply and divide. Done (bug 43).** The operand-magnitude
+table above was verified against a primary fetch of
+`psx-spx.consoledev.net/cpuspecifications/` and matches exactly. Implemented
+in `Cpu::MULT`/`MULTU`/`DIV`/`DIVU` via `TickCycles`, plus a busy-wait hazard
+for HI/LO reads (`hilo_busy_until_cycles_`, the same shape as the GTE's).
+New `cpu_test` group `muldelay` checks the cycle cost at each magnitude
+boundary for both directions, `DIV`/`DIVU`'s fixed 36, and the busy-wait.
+`psxtest_cpu` itself was not re-run against this phase in isolation (that's
+phase 4); `cpu_test`, `gte_test` and all other harnesses stayed green, and
+the BIOS boot checksum did not move.
 
-**Phase 2 - the one-cycle branch/loop-overhead question.** Apply the method
-above directly to `psxtest_gte`'s own SQR loop (bug 42's own trace is the
-starting point - the addresses and the arithmetic are already in
-[Bugs-Found.md](Bugs-Found.md)) until the recovered per-iteration cost is
-exactly 501 * (5 + overhead) with a fully-explained overhead, not a
-guessed one. This either fixes the branch cost, or finds which other
-instruction in that specific loop was wrong, or both.
+**Phase 2 - the one-cycle branch/loop-overhead question. Answered (bug
+43): the discrepancy was never real.** Reconstructing bug 42's exact SQR
+loop directly in `cpu_test` (`sqrloop` group) and measuring this core's own
+cycles gives exactly 9.000 cycles/iteration, matching the hardware-recovered
+value precisely - no branch-timing code changed. The naive flat-count's
+extra cycle came from not accounting for two things already true here: the
+GTE busy-wait stall already absorbs a register read's cost into the
+command's window, and a taken branch already costs 0 beyond its delay
+slot's own cycle (which independent sources' "resolved in decode" claim
+predicted, and this measurement now confirms directly rather than by
+argument). A real, separate bug was found and fixed in the same pass: a
+*not-taken* branch charged 0 cycles instead of the uniform 1, in every
+conditional branch. `J`/`JAL` still charge 2 for branch+delay-slot where
+`JR`/`JALR` and taken conditional branches charge 1 - left alone rather than
+"fixed" on inference, since this measurement doesn't reach jumps; a genuine
+open question for whoever can measure it next.
 
-**Phase 3 - memory region costs.** Verify the RAM/scratchpad/I/O/BIOS
+**Phase 3 - memory region costs. Not done - still the riskiest phase.**
+Verify the RAM/scratchpad/I/O/BIOS
 figures against a primary psx-spx fetch (not a search-result summary), check
 whether stores need their own table distinct from loads, and re-derive
 `Cpu::Load`'s 3/0/3/5 from measurement rather than from bug 16's
@@ -172,6 +185,35 @@ un-hang-the-boot motivation. This is the riskiest phase to get wrong: bug
 16 exists because getting this region wrong once already hung the BIOS, so
 change it with the full regression suite run after every step, not just at
 the end.
+
+**A primary fetch done for phase 1 already found the real figures, and two
+complications phase 3 will have to design around, not just port in:**
+
+    Scratchpad (1F800000h..)      1 cycle    ;on-chip SRAM, no bus access
+    On-die I/O (IRQ/DMA/timers)   5 cycles   ;one shared decoder
+    Main RAM (KUSEG/KSEG0/KSEG1)  7 cycles   ;plus occasional DRAM-refresh stalls
+    BIOS ROM (1FC00000h..)        27..33     ;8bit ROM, programmable bus delay
+
+Both complications are why this is scoped as its own phase rather than a
+drop-in table swap:
+
+- **The BIOS ROM figure is not a constant.** It depends on a memory-control
+  register the BIOS itself programs early in boot (this core already has a
+  `BusCtrl`/`Config` pair in `CpuContext::ctrl` but doesn't read them as a
+  timing input anywhere) - "27..33" is the *range* across real consoles'
+  differing bus-delay settings, not a number this project gets to pick once.
+- **"Load Shadow"**: a slow load's bus access overlaps independent
+  instructions that follow it, so the effective cost depends on what comes
+  next, not just which region was read - psx-spx's own measurement shows an
+  on-die load costing +4 cycles back-to-back but settling to +2 after four
+  independent instructions. A single flat per-region stall - what
+  `Cpu::Load` does today, and the simplest thing phase 3 could do too -
+  cannot represent this; it's the same kind of "back-to-back
+  dependent-instruction hazard beyond the load delay already modelled" the
+  "What this will not do" section below deliberately scopes out. Phase 3
+  should decide explicitly whether to accept that simplification (a flat
+  stall, documented as approximate) or take on modelling the overlap, rather
+  than drifting into it unstated.
 
 **Phase 4 - re-run both suites, in full, pixel-sampled.** The goal is not
 "green," it is an honest count: which of the 22 GTE opcodes and which

@@ -119,6 +119,8 @@ class Sio : public Component {
     if (large != nullptr) *large = pad_[slot].motor_large;
   }
 
+  void Serialise(StateIO& io);
+
  private:
   struct Pad {
     bool connected = false;

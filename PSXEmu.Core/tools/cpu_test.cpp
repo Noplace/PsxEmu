@@ -99,6 +99,8 @@ uint32_t MFC0(int t, int d)                      { return RType(0x10, 0x00, t, d
 uint32_t MTC0(int t, int d)                      { return RType(0x10, 0x04, t, d, 0, 0); }
 uint32_t RFE()                                   { return 0x42000010; }
 uint32_t MFC2(int t, int d)                      { return RType(0x12, 0x00, t, d, 0, 0); }
+uint32_t CFC2(int t, int d)                      { return RType(0x12, 0x02, t, d, 0, 0); }
+uint32_t GTE_SQR()                               { return RType(0x12, 0, 0, 0, 0, 0x28) | (1u << 25); }
 uint32_t LB(int t, int off, int s)               { return IType(0x20, s, t, off); }
 uint32_t LH(int t, int off, int s)               { return IType(0x21, s, t, off); }
 uint32_t LWL(int t, int off, int s)              { return IType(0x22, s, t, off); }
@@ -396,6 +398,115 @@ void TestMultiplyDivide(Machine& m) {
   CheckEqual(m.reg(t3), 0x456, "mtlo then mflo");
 }
 
+// psx-spx's measured multiply/divide timing: mult/multu cost 6, 9 or 13
+// cycles depending on the magnitude of rs, divide is a fixed 36 regardless of
+// operands, and reading hi/lo before the operation has finished halts the
+// CPU the same way a too-soon GTE register read does (bug 42's hazard,
+// applied to a second, independently-documented case of it).
+void TestMulDivDelay(Machine& m) {
+  struct Case {
+    const char* name;
+    uint32_t rs;
+    uint32_t cost;
+  };
+
+  // Boundary values chosen to be unambiguous under every reading of the
+  // primary source's bands - the exact edge values FFF00001h/FFFFF801h sit
+  // in a one-value overlap between adjacent bands in the source text itself
+  // and are not worth pinning down to the byte for a 6-vs-9-cycle difference
+  // no real game can observe.
+  const Case kMultuCases[] = {
+    { "multu fast, rs at the top of the fast band",   0x000007FFu, 6 },
+    { "multu med, rs at the bottom of the med band",  0x00000800u, 9 },
+    { "multu med, rs at the top of the med band",     0x000FFFFFu, 9 },
+    { "multu slow, rs at the bottom of the slow band",0x00100000u, 13 },
+    { "multu slow, rs at 0xFFFFFFFF",                 0xFFFFFFFFu, 13 },
+  };
+  for (const auto& c : kMultuCases) {
+    BeginTest(c.name);
+    m.Reset();
+    m.Load({ LUI(t0, c.rs >> 16), ORI(t0, t0, c.rs & 0xFFFF),
+             ADDIU(t1, zero, 2),
+             MULTU(t0, t1) });
+    m.Run(3);
+    const uint64_t before = m.system()->cpu().context()->cycles;
+    m.Run(1);
+    const uint64_t elapsed = m.system()->cpu().context()->cycles - before;
+    CheckEqual(static_cast<uint32_t>(elapsed), c.cost, "multu cycle cost");
+  }
+
+  const Case kMultCases[] = {
+    { "mult fast, positive",     0x000007FFu, 6 },
+    { "mult fast, negative",     0xFFFFFFFFu, 6 },   // -1
+    { "mult med, positive",      0x00000800u, 9 },
+    { "mult med, positive top",  0x000FFFFFu, 9 },
+    { "mult med, negative",      0xFFFFF000u, 9 },   // -4096, deep in the band
+    { "mult slow, positive",     0x00100000u, 13 },
+    { "mult slow, positive top", 0x7FFFFFFFu, 13 },
+    { "mult slow, negative",     0x80000000u, 13 },  // most negative
+  };
+  for (const auto& c : kMultCases) {
+    BeginTest(c.name);
+    m.Reset();
+    m.Load({ LUI(t0, c.rs >> 16), ORI(t0, t0, c.rs & 0xFFFF),
+             ADDIU(t1, zero, 2),
+             MULT(t0, t1) });
+    m.Run(3);
+    const uint64_t before = m.system()->cpu().context()->cycles;
+    m.Run(1);
+    const uint64_t elapsed = m.system()->cpu().context()->cycles - before;
+    CheckEqual(static_cast<uint32_t>(elapsed), c.cost, "mult cycle cost");
+  }
+
+  BeginTest("div and divu cost a fixed 36 cycles regardless of operands");
+  m.Reset();
+  m.Load({ ADDIU(t0, zero, -7), ADDIU(t1, zero, 2), DIV(t0, t1) });
+  m.Run(2);
+  {
+    const uint64_t before = m.system()->cpu().context()->cycles;
+    m.Run(1);
+    CheckEqual(static_cast<uint32_t>(m.system()->cpu().context()->cycles - before),
+               36, "div cycle cost");
+  }
+
+  m.Reset();
+  m.Load({ ADDIU(t0, zero, 17), ADDIU(t1, zero, 5), DIVU(t0, t1) });
+  m.Run(2);
+  {
+    const uint64_t before = m.system()->cpu().context()->cycles;
+    m.Run(1);
+    CheckEqual(static_cast<uint32_t>(m.system()->cpu().context()->cycles - before),
+               36, "divu cycle cost");
+  }
+
+  // The hazard: reading hi/lo before the operation has actually finished
+  // must wait for it, not skip it - the same shape as TestGteDelay's SQR
+  // check, aimed at multiply/divide instead.
+  BeginTest("reading lo right after a slow mult waits for it");
+  m.Reset();
+  m.Load({ LUI(t0, 0x0010), ADDIU(t1, zero, 2),   // rs in the slow band
+           MULT(t0, t1), MFLO(t2) });
+  m.Run(2);
+  {
+    const uint64_t before = m.system()->cpu().context()->cycles;
+    m.Run(2);
+    Check(m.system()->cpu().context()->cycles - before >= 13,
+          "mult's 13-cycle busy window was not skipped");
+  }
+
+  BeginTest("reading hi right after divu waits for it");
+  m.Reset();
+  m.Load({ ADDIU(t0, zero, 17), ADDIU(t1, zero, 5),
+           DIVU(t0, t1), MFHI(t2) });
+  m.Run(2);
+  {
+    const uint64_t before = m.system()->cpu().context()->cycles;
+    m.Run(2);
+    Check(m.system()->cpu().context()->cycles - before >= 36,
+          "divu's 36-cycle busy window was not skipped");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Branches - where BLEZ was found assigning to its own operand
 // ---------------------------------------------------------------------------
@@ -470,6 +581,36 @@ void TestBranches(Machine& m) {
     } else {
       CheckEqual(m.reg(t9), 1, "execution fell through");
       CheckEqual(m.reg(s0), 0, "the branch target did not run");
+    }
+  }
+
+  // A taken branch and its delay slot together cost exactly the delay slot
+  // instruction's own 1 cycle - the R3000A resolves the branch in decode, so
+  // there is nothing left to charge the branch itself (confirmed by
+  // measuring this core's own SQR-loop cycles against amidog's psxtest_gte;
+  // see bug 42/43). A *not-taken* branch has no delay slot to fuse with, so
+  // it costs 1 cycle like any other instruction, and the next instruction -
+  // which always runs, taken or not - costs its own 1 cycle separately.
+  for (size_t i = 0; i < sizeof(kCases) / sizeof(kCases[0]); ++i) {
+    const BranchCase& test = kCases[i];
+    BeginTest(std::string("branch cycle cost: ") + test.name);
+    m.Reset();
+    m.Load({ test.setup, test.branch, NOP(), NOP(), NOP() });
+    m.Run(1);  // the setup instruction
+    const uint64_t before = m.system()->cpu().context()->cycles;
+    m.Run(1);  // the branch - and, if taken, its delay slot too
+    const uint64_t branch_step = m.system()->cpu().context()->cycles - before;
+    if (test.expect_taken) {
+      CheckEqual(static_cast<uint32_t>(branch_step), 1,
+                 "taken branch + delay slot cost 1 cycle together");
+    } else {
+      CheckEqual(static_cast<uint32_t>(branch_step), 1,
+                 "not-taken branch costs 1 cycle on its own");
+      const uint64_t before_next = m.system()->cpu().context()->cycles;
+      m.Run(1);  // the instruction after it, which always runs
+      CheckEqual(static_cast<uint32_t>(
+                     m.system()->cpu().context()->cycles - before_next),
+                 1, "the instruction after a not-taken branch costs its own cycle");
     }
   }
 
@@ -861,6 +1002,63 @@ void TestGteDelay(Machine& m) {
   Check(elapsed >= 5, "SQR's 5-cycle busy window was not skipped");
 }
 
+// CPU-Timing-Plan.md's Phase 2 question, answered by measurement rather than
+// left as a guess. Reconstructs the exact loop shape Bugs-Found.md's bug 42
+// write-up describes for amidog's psxtest_gte TIMING test (SQR, CFC2 $t1
+// FLAG, a nop, an accumulate, the loop branch and its delay slot) and
+// measures this core's own per-iteration cycle delta against bug 42's own
+// recovered hardware formula (delta = 501*(opcode_cycles + overhead) + 4,
+// i.e. overhead = 9 - 5 = 4 for SQR). It comes back exactly 9: the GTE
+// busy-wait stall (bug 42) already absorbs CFC2's cost into SQR's 5-cycle
+// window, and a taken branch already costs 0 beyond its delay slot's own
+// cycle. Kept as a permanent regression check on that interaction, not
+// deleted the way bug 42's own throwaway instrument was - unlike that one,
+// this only uses the public test harness, and it is exactly the kind of
+// hardware-grounded check section 6 of Emulator-Project-Standards.md asks
+// for: one that would fail against the old, uniformly-flat-cost
+// implementation this replaced.
+void TestSqrLoopDiagnostic(Machine& m) {
+  // t0 starts at kIterations and is checked by bgtz *before* its own delay
+  // slot decrements it, so passes 1..kIterations are all taken - measuring
+  // exactly this many top-level steps never touches the eventual
+  // not-taken/fall-through pass, which this check isn't aimed at (see the
+  // branch-cycle-cost checks in TestBranches for that).
+  const int kIterations = 50;
+  BeginTest("sqr loop overhead matches bug 42's recovered hardware formula");
+  m.Reset();
+  std::vector<uint32_t> program;
+  program.push_back(ADDIU(t0, zero, kIterations));  // loop counter
+  program.push_back(ADDIU(t2, zero, 0));             // accumulator
+  const uint32_t kLoopStart = kProgramBase + static_cast<uint32_t>(program.size()) * 4;
+  program.push_back(GTE_SQR());
+  program.push_back(CFC2(t1, 31));                   // FLAG
+  program.push_back(NOP());
+  program.push_back(XOR(t2, t2, t1));                // the accumulate
+  // bgtz back to kLoopStart; offset is relative to the delay slot (pc+4).
+  const uint32_t kBranchPc = kProgramBase + static_cast<uint32_t>(program.size()) * 4;
+  const int32_t offset = static_cast<int32_t>(kLoopStart) -
+                          static_cast<int32_t>(kBranchPc + 4);
+  program.push_back(BGTZ(t0, offset));
+  program.push_back(ADDIU(t0, t0, -1));              // delay slot: decrement
+  m.Load(program);
+
+  m.Run(2);  // the two setup instructions
+  const uint64_t before = m.system()->cpu().context()->cycles;
+  // Each taken pass is 5 top-level steps: SQR, CFC2, NOP, XOR, then
+  // bgtz+delay-slot fused into one step by Cpu::Jump.
+  m.Run(5 * kIterations);
+  const uint64_t elapsed = m.system()->cpu().context()->cycles - before;
+  const double per_iteration =
+      static_cast<double>(elapsed) / static_cast<double>(kIterations);
+  printf("  sqr loop: %llu cycles over %d iterations = %.3f cycles/iteration"
+         " (hardware-measured: 9)\n",
+         static_cast<unsigned long long>(elapsed), kIterations,
+         per_iteration);
+  Check(per_iteration > 8.99 && per_iteration < 9.01,
+        "per-iteration cost should measure exactly 9 cycles, matching bug "
+        "42's recovered hardware formula");
+}
+
 void TestMemoryMap(Machine& m) {
   // KUSEG, KSEG0 and KSEG1 are three views of the same 2 MB of RAM. A write
   // through one must be visible through the others.
@@ -1094,12 +1292,14 @@ const Group kGroups[] = {
   { "arithmetic", TestArithmetic },
   { "shifts",     TestShifts },
   { "muldiv",     TestMultiplyDivide },
+  { "muldelay",   TestMulDivDelay },
   { "branches",   TestBranches },
   { "jumps",      TestJumps },
   { "loadstore",  TestLoadStore },
   { "unaligned",  TestUnalignedLoadStore },
   { "loaddelay",  TestLoadDelaySlot },
   { "gtedelay",   TestGteDelay },
+  { "sqrloop",    TestSqrLoopDiagnostic },
   { "memory",     TestMemoryMap },
   { "exceptions", TestExceptions },
   { "interrupts", TestInterrupts },
