@@ -175,6 +175,11 @@ class Sio : public Component {
   int32_t interrupt_timer_;
   bool interrupt_pending_;
 
+  // /ACK is a physical line the device pulls low for a short pulse, not a
+  // flag software can clear - it releases back to high on its own. This is
+  // the countdown to that release, armed whenever kStatusAcknowledge is set.
+  int32_t ack_pulse_timer_;
+
   int selected_slot() const { return (control_ & 0x2000) ? 1 : 0; }
 
   uint8_t Exchange(uint8_t data);

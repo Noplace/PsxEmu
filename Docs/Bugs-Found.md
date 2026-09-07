@@ -2351,3 +2351,92 @@ harnesses unchanged, and `bios/SCPH1001.BIN --frames 400`'s checksum
 unchanged too - the BIOS shell draws no polylines, so this bug had nowhere
 to move that number; it only ever showed up in a game or menu that actually
 uses the primitive, which is exactly why it survived every check run so far.
+
+## 46. A driver that polled instead of using the interrupt never saw the pad answer, and then didn't believe it once it could
+
+**Symptom.** Reported as "input not working" in Ace Combat 3. Worked through
+in [Ace-Combat-3-Input-Plan.md](Ace-Combat-3-Input-Plan.md): the disc boots
+and renders correctly, `--press` itself was validated against the BIOS
+shell, but on the title screen every one of 1402 traced pad exchanges
+aborted right after the address byte - never once sending the actual poll
+command - regardless of whether Start was held. `I_MASK` never enabled
+SIO0, so this is a custom driver that polls the status register directly
+rather than waiting on the interrupt the BIOS's own pad library uses, and
+the plan doc left it there as a localised but unverified hypothesis.
+
+**Cause.** `SIO0_STAT` bit 7 (DSR / `/ACK`) was modelled as a flag: set the
+instant a device acknowledges, and cleared only by software writing the
+acknowledge bit of `SIO0_CTRL` - which this driver, never touching the
+interrupt path at all, had no reason to ever do. On real hardware bit 7
+reflects the *live level* of the `/ACK` line: the device pulls it low for
+"circa 100 clock cycles" and releases it back to high entirely on its own -
+psx-spx even calls out that software "must first wait until SIO0_STAT.7=0"
+before an acknowledge write does anything, because clearing it directly
+isn't a thing real hardware lets software do. A driver that polls for that
+release, rather than only ever reacting to the interrupt, would poll this
+core's bit 7 forever and never see one - which is exactly the shape of the
+abort that was traced: every exchange stalling a few hundred cycles after
+the address byte, comfortably past this core's own acknowledge delay.
+
+**Fix.** `Sio` now arms a countdown (`ack_pulse_timer_`, `kAckPulseCycles =
+100`) whenever it sets the acknowledge bit, and `Sio::Tick` clears the bit
+on its own once that countdown reaches zero - independent of whether
+software ever writes the control register's acknowledge bit at all. The
+software acknowledge write itself now only clears the latched interrupt-
+request bit (9), matching the primary source: bit 7 was never software's to
+clear in the first place.
+
+**Result, first pass.** Re-traced the same exchange the plan doc captured:
+the driver now completes full command exchanges from the very start of the
+run - 0x42 polls, 0x43 (enter/exit configuration mode) and 0x45 (status
+query) all run to their natural end and stop cleanly, rather than aborting
+after the address byte. With Start held, the poll reply's button-low byte
+reads `0xF7` - exactly `~0x0008` - so the actual press was reaching the
+driver correctly.
+
+That looked like the whole fix, but it wasn't: with Start held anywhere on
+the title screen, the game still went on to exactly the same next screen at
+exactly the same frame with exactly the same checksum as never pressing it
+at all - true whether the press was 60 frames or the full ~540-frame title-
+screen window, and true again on the title screen's second loop after that
+first sequence finished and looped back. Communication had improved, but
+the game still wasn't acting on it.
+
+**Second cause.** The driver's repeated 0x43 exchanges are not it failing to
+leave configuration mode - psx-spx documents that as the correct way to
+avoid config mode's own watchdog reset ("be sure to keep issuing joypad
+reads even when not needing user input"), and it always sent the "stay in
+configuration mode" byte, exactly as that section describes. The bug was
+this core's own reply *while* in that state. psx-spx, in the section this
+project's earlier survey had only seen the title of: "while in config mode,
+the ID bytes are always F3h 5Ah" and command 42h there "same as command 42h
+in normal mode, but with **forced analog response** ... even in Digital
+Mode". `PadIdByte` computed the low nibble from `analog_mode` even inside
+config mode, replying `F1h` instead of `F3h`, and `total_length` only forced
+the eight-byte shape for commands other than 0x42 - so a config-mode poll
+from a still-digital pad got the ordinary four-byte reply and stopped two
+bytes short of what real hardware sends. A driver checking either of those
+against the documented fixed shape before trusting the payload would never
+have trusted the button bytes at all - they were numerically right and it
+still didn't matter.
+
+**Second fix.** `Sio::PadIdByte` returns `0xF3` unconditionally while
+`pad.config_mode` is set, instead of deriving the low nibble from
+`analog_mode`. `ExchangeController`'s `total_length` forces the eight-byte
+shape whenever `pad.config_mode` is set, not only when `analog_mode` is.
+
+**Result.** With Start held on the title screen, the game now takes a
+visibly different path than not pressing it: instead of continuing into the
+CD-streamed sequence, it cuts to Ace Combat 3's own main menu - "Select game
+mode." / NEW GAME / LOAD / RE-OPEN, with a LOG-IN prompt - confirmed by eye
+from a `--ppm` capture, not just a changed checksum. `sio_test` gained a
+direct check for the acknowledge pulse itself (`TestAckPulseSelfReleases`,
+ticking the port past the pulse width with no control-register write in
+between): 28 -> 31 checks, and every existing DualShock-handshake check in
+that harness - which exercises config mode and analog mode directly - still
+passes, since neither the fixed ID byte nor the forced length change
+anything about a pad that was never asked into config mode in the first
+place. All eight harnesses stay at 0 failures, and
+`bios/SCPH1001.BIN --frames 400`'s checksum is unchanged - the BIOS shell's
+own pad driver goes through interrupts and never enters config mode, so it
+had nowhere to move either time.

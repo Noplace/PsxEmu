@@ -164,6 +164,32 @@ void TestEmptySlotNeverAcknowledges(System* system) {
   CheckEqual(n, 0, "nothing comes back from a slot with nothing in it");
 }
 
+// psx-spx: the device "has to pull /ACK low for at least 2 us" and real
+// hardware normally holds it there for "circa 100 clock cycles" before
+// releasing it back to high on its own - software cannot clear this bit
+// directly (bug 46: a driver that polls STAT.7 for that release, rather than
+// only handling the interrupt, never saw one when this was modelled as a
+// software-latched flag instead of a live level).
+void TestAckPulseSelfReleases(System* system) {
+  printf("the acknowledge bit is a pulse, not a latch\n");
+  FreshPad(system, 0);
+  PadHarness pad(system);
+
+  pad.Begin(0);
+  pad.Exchange(0x01);   // device select: acknowledged, no software ack yet
+  Check(pad.Acknowledged(), "set the instant the device answers");
+
+  system->sio().Tick(90);
+  Check(pad.Acknowledged(), "still held 90 cycles in - short of the pulse");
+
+  system->sio().Tick(20);   // total 110, past the ~100-cycle pulse width
+  Check(!pad.Acknowledged(),
+        "released on its own past the pulse width - nothing wrote the "
+        "software acknowledge bit");
+
+  pad.End();
+}
+
 void TestConfigModeGatesTheSpecialCommands(System* system) {
   printf("0x44 does nothing outside configuration mode\n");
   FreshPad(system, 0);
@@ -389,6 +415,7 @@ int main() {
 
   TestDigitalPadUnaffected(system);
   TestEmptySlotNeverAcknowledges(system);
+  TestAckPulseSelfReleases(system);
   TestConfigModeGatesTheSpecialCommands(system);
   TestEnteringAnalogMode(system);
   TestStatusQueryReportsTheMode(system);

@@ -28,6 +28,13 @@ namespace {
 // How long after a byte is exchanged the acknowledge interrupt arrives.
 const int32_t kAcknowledgeCycles = 500;
 
+// How long the device holds /ACK low before releasing it back to high on its
+// own - psx-spx: "the LOW duration is circa 100 clock cycles" (also given as
+// "at least 2 us", and matching the Sony Mouse note that a normal pad or
+// memory card "set /ACK=LOW only for around 100 clk cycles"). Real hardware
+// never lets software clear this level directly - it just has to wait.
+const int32_t kAckPulseCycles = 100;
+
 // Status register bits.
 const uint16_t kStatusTxReady      = 0x0001;
 const uint16_t kStatusRxNotEmpty   = 0x0002;
@@ -67,6 +74,7 @@ int Sio::Initialize() {
   acknowledge_ = false;
   interrupt_timer_ = 0;
   interrupt_pending_ = false;
+  ack_pulse_timer_ = 0;
   pad_command_ = 0;
   legacy_rumble_byte2_ = 0;
   return S_OK;
@@ -89,6 +97,7 @@ void Sio::Serialise(StateIO& io) {
   io.Plain(acknowledge_);
   io.Plain(interrupt_timer_);
   io.Plain(interrupt_pending_);
+  io.Plain(ack_pulse_timer_);
   io.Plain(pad_command_);
   io.Plain(legacy_rumble_byte2_);
   io.Plain(mc_command_);
@@ -115,6 +124,14 @@ void Sio::set_connected(int slot, bool connected) {
 }
 
 void Sio::Tick(uint32_t cycles) {
+  if (ack_pulse_timer_ > 0) {
+    ack_pulse_timer_ -= static_cast<int32_t>(cycles);
+    if (ack_pulse_timer_ <= 0) {
+      ack_pulse_timer_ = 0;
+      status_ &= ~kStatusAcknowledge;
+    }
+  }
+
   if (!interrupt_pending_)
     return;
 
@@ -171,10 +188,16 @@ uint8_t Sio::Exchange(uint8_t data) {
 // configuration mode (which stays true regardless of analog/digital, since
 // entering configuration mode is itself a DualShock-only thing to be able to
 // do at all). The low nibble is fixed at 1 or 3 by the same analog/digital
-// split, and doubles as how long the reply is: one halfword of data beyond
-// the ID and status for a digital pad, three for an analog one.
+// split for a normal-mode reply, and doubles as how long the reply is: one
+// halfword of data beyond the ID and status for a digital pad, three for an
+// analog one. Configuration mode is not a third point on that same split,
+// though - psx-spx is explicit that "while in config mode, the ID bytes are
+// always F3h 5Ah" regardless of what the pad's analog/digital state
+// underneath it is, so the low nibble there is fixed at 3, not derived.
 uint8_t Sio::PadIdByte(const Pad& pad) const {
-  const uint8_t high = pad.config_mode ? 0xF : (pad.analog_mode ? 0x7 : 0x4);
+  if (pad.config_mode)
+    return 0xF3;
+  const uint8_t high = pad.analog_mode ? 0x7 : 0x4;
   const uint8_t low = pad.analog_mode ? 0x3 : 0x1;
   return static_cast<uint8_t>((high << 4) | low);
 }
@@ -266,8 +289,17 @@ uint8_t Sio::ExchangeController(uint8_t data, int slot) {
   // could keep up with. An unrecognised command is given the shape of an
   // ordinary poll in whatever mode the pad is already in, which is only ever
   // reached on a mode this exchange cannot itself have just changed.
-  const int total_length =
-      (pad_command_ == 0x42 || !recognised) ? (pad.analog_mode ? 8 : 4) : 8;
+  //
+  // Configuration mode forces the long shape on 0x42 too, regardless of
+  // analog_mode - psx-spx: "Config Mode - Command 42h ... Same as command
+  // 42h in normal mode, but with forced analog response (ie. analog inputs
+  // ... are returned even in Digital Mode with LED=Off)". A driver that
+  // stays in config mode between reads (psx-spx's own documented way to
+  // dodge the config-mode watchdog reset) and gets the short four-byte
+  // reply instead sees a transfer that ended early, not a normal poll.
+  const int total_length = (pad_command_ == 0x42 || !recognised)
+                                ? ((pad.analog_mode || pad.config_mode) ? 8 : 4)
+                                : 8;
 
   if (step > total_length) {
     acknowledge_ = false;
@@ -406,10 +438,12 @@ void Sio::Write08(uint32_t address, uint8_t data) {
     status_ |= kStatusRxNotEmpty | kStatusTxReady | kStatusTxDone;
     if (acknowledge_) {
       status_ |= kStatusAcknowledge;
+      ack_pulse_timer_ = kAckPulseCycles;
       interrupt_pending_ = true;
       interrupt_timer_ = kAcknowledgeCycles;
     } else {
       status_ &= ~kStatusAcknowledge;
+      ack_pulse_timer_ = 0;
       // Nothing answered, so the exchange is over and the next byte starts a
       // new one.
       transfer_step_ = 0;
@@ -443,9 +477,15 @@ void Sio::Write16(uint32_t address, uint16_t data) {
         receive_ = 0xFF;
         receive_full_ = false;
         interrupt_pending_ = false;
+        ack_pulse_timer_ = 0;
       }
       if (data & 0x0010) {          // acknowledge
-        status_ &= ~(kStatusInterrupt | kStatusAcknowledge);
+        // Only the latched interrupt-request flag is software's to clear.
+        // kStatusAcknowledge tracks the live /ACK line - it releases on its
+        // own once the device's pulse ends (psx-spx: software "must first
+        // wait until SIO0_STAT.7=0" before this write even takes effect on
+        // bit 9, on real hardware).
+        status_ &= ~kStatusInterrupt;
       }
       if ((data & 0x0002) == 0) {
         // Chip select dropped: the device is deselected and the next byte
