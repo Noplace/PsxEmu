@@ -85,18 +85,14 @@ D3D11Presenter::D3D11Presenter()
 }
 
 D3D11Presenter::~D3D11Presenter() {
-  Deinitialize();
+  Shutdown();
 }
 
-bool D3D11Presenter::Initialize(HWND window) {
+bool D3D11Presenter::Initialize(HWND window, int width, int height) {
   window_ = window;
 
-  RECT client;
-  GetClientRect(window, &client);
-  back_buffer_width_ = client.right - client.left;
-  back_buffer_height_ = client.bottom - client.top;
-  if (back_buffer_width_ <= 0) back_buffer_width_ = 640;
-  if (back_buffer_height_ <= 0) back_buffer_height_ = 480;
+  back_buffer_width_ = (width > 0) ? width : 640;
+  back_buffer_height_ = (height > 0) ? height : 480;
 
   DXGI_SWAP_CHAIN_DESC description;
   memset(&description, 0, sizeof(description));
@@ -199,7 +195,7 @@ void D3D11Presenter::ReleaseRenderTarget() {
   Release(&render_target_);
 }
 
-void D3D11Presenter::Deinitialize() {
+void D3D11Presenter::Shutdown() {
   Release(&sampler_);
   Release(&pixel_shader_);
   Release(&vertex_shader_);
@@ -260,13 +256,25 @@ bool D3D11Presenter::EnsureFrameTexture(int width, int height) {
   return true;
 }
 
-void D3D11Presenter::Present(const uint32_t* pixels, int width, int height) {
+void D3D11Presenter::BeginFrame() {
   if (device_ == nullptr || render_target_ == nullptr)
     return;
-  if (pixels == nullptr || width <= 0 || height <= 0)
+
+  const float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+  context_->OMSetRenderTargets(1, &render_target_, nullptr);
+  context_->ClearRenderTargetView(render_target_, clear);
+}
+
+void D3D11Presenter::RenderFramebuffer(const void* data, int width,
+                                       int height) {
+  if (device_ == nullptr || render_target_ == nullptr)
+    return;
+  if (data == nullptr || width <= 0 || height <= 0)
     return;
   if (!EnsureFrameTexture(width, height))
     return;
+
+  const uint32_t* pixels = static_cast<const uint32_t*>(data);
 
   D3D11_MAPPED_SUBRESOURCE mapped;
   if (SUCCEEDED(context_->Map(frame_texture_, 0, D3D11_MAP_WRITE_DISCARD, 0,
@@ -280,10 +288,6 @@ void D3D11Presenter::Present(const uint32_t* pixels, int width, int height) {
     }
     context_->Unmap(frame_texture_, 0);
   }
-
-  const float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-  context_->OMSetRenderTargets(1, &render_target_, nullptr);
-  context_->ClearRenderTargetView(render_target_, clear);
 
   // Letterbox to a fixed 4:3, not to the framebuffer's own width:height.
   // Horizontal resolution (256..640) and the vertical/interlace range are
@@ -315,8 +319,12 @@ void D3D11Presenter::Present(const uint32_t* pixels, int width, int height) {
   context_->PSSetShaderResources(0, 1, &frame_view_);
   context_->PSSetSamplers(0, 1, &sampler_);
   context_->Draw(3, 0);
+}
 
-  swap_chain_->Present(1, 0);
+void D3D11Presenter::EndFrame() {
+  if (swap_chain_ == nullptr)
+    return;
+  swap_chain_->Present(vsync_ ? 1 : 0, 0);
 }
 
 }  // namespace psxemu

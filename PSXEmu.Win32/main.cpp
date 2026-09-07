@@ -19,10 +19,15 @@
 //
 // PSXEmu.Win32 - the Win32 front end.
 //
-// Owns a window, a Direct3D presenter and the message loop. It does not own
-// any emulation: the core in PSXEmu.Core rasterises every pixel on the CPU and
-// this only uploads the finished frame. The one thing that flows the other way
-// is input, through the core's SIO device.
+// Owns a window, a graphics engine and the message loop. It does not own any
+// emulation: the core in PSXEmu.Core rasterises every pixel on the CPU and
+// this only uploads the finished frame. The one thing that flows the other
+// way is input, through the core's SIO device.
+//
+// The graphics engine is one of two, chosen at startup and switchable live
+// from the Video menu: D3D11Presenter (no filter support) or
+// D3D12GraphicsEngine (does), both behind IGraphicsEngine so the rest of this
+// file never needs to know which one is active.
 //
 //   PSXEmu.Win32.exe [bios.bin] [disc]
 //
@@ -30,9 +35,13 @@
 #include "psx/psx.h"
 
 #include "d3d11_presenter.h"
+#include "d3d12_graphics_engine.h"
 #include "gamepad.h"
 #include "audio/wasapiaudioengine.h"
 #include "audio/dsoundaudioengine.h"
+#include "shaders/legacy_shaders.h"
+#include "shaders/ps_scanline_filter.h"
+#include "shaders/ps_xbrz_filter.h"
 
 #include <commdlg.h>
 #include <shlobj.h>   // SHGetFolderPathA
@@ -74,6 +83,10 @@ enum MenuCommand {
   kCommandLoadState,
   kCommandVolumeFirst,
   kCommandVolumeLast = kCommandVolumeFirst + 7,
+  kCommandRendererFirst,
+  kCommandRendererLast = kCommandRendererFirst + 1,   // Direct3D 11, 12
+  kCommandFilterFirst,
+  kCommandFilterLast = kCommandFilterFirst + 8,       // None + 8 filters
   kCommandExit,
 };
 
@@ -89,7 +102,14 @@ enum MenuCommand {
 // wWinMain safe. They used to `return 1` after the presenter and the audio
 // device were already up, leaking both.
 struct Application {
-  psxemu::D3D11Presenter presenter;
+  // Whichever backend is actually active right now - not necessarily the
+  // same as the persisted `graphics_backend` preference, since creating the
+  // preferred one can fall back to the other. The Video menu ticks against
+  // this, not against the config.
+  std::unique_ptr<IGraphicsEngine> graphics;
+  std::string current_backend = "d3d12";
+  std::string current_filter;   // ditto, for the filter menu
+
   std::unique_ptr<IAudioEngine> audio;
   std::unique_ptr<System> system;
 
@@ -151,6 +171,63 @@ Application* AppFrom(HWND window) {
 }
 
 // ---------------------------------------------------------------------------
+// Graphics
+// ---------------------------------------------------------------------------
+
+enum class GraphicsBackend { kD3D11, kD3D12 };
+
+// Tries `preferred` first; if that engine's own device creation fails, tries
+// the other one and warns that it did, rather than failing outright - a
+// machine that can do one almost always can do the other. Only if both fail
+// does this return null, which the caller treats as a hard failure (at
+// startup) or a "could not switch, and could not go back either" one (mid
+// session, from the Video menu). `*active_backend` is set to whichever
+// engine actually ended up running, which the caller uses instead of the
+// requested one for menu ticks and persisted state from here on.
+std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(
+    GraphicsBackend preferred, HWND window, int width, int height,
+    HWND message_owner, std::string* active_backend) {
+  auto try_backend =
+      [&](GraphicsBackend backend) -> std::unique_ptr<IGraphicsEngine> {
+    std::unique_ptr<IGraphicsEngine> engine;
+    if (backend == GraphicsBackend::kD3D12)
+      engine = std::make_unique<D3D12GraphicsEngine>();
+    else
+      engine = std::make_unique<psxemu::D3D11Presenter>();
+    if (engine->Initialize(window, width, height))
+      return engine;
+    return nullptr;
+  };
+
+  if (std::unique_ptr<IGraphicsEngine> engine = try_backend(preferred)) {
+    *active_backend =
+        (preferred == GraphicsBackend::kD3D12) ? "d3d12" : "d3d11";
+    return engine;
+  }
+
+  const GraphicsBackend fallback = (preferred == GraphicsBackend::kD3D12)
+                                       ? GraphicsBackend::kD3D11
+                                       : GraphicsBackend::kD3D12;
+  if (std::unique_ptr<IGraphicsEngine> engine = try_backend(fallback)) {
+    *active_backend =
+        (fallback == GraphicsBackend::kD3D12) ? "d3d12" : "d3d11";
+    const wchar_t* preferred_name =
+        (preferred == GraphicsBackend::kD3D12) ? L"Direct3D 12" : L"Direct3D 11";
+    const wchar_t* fallback_name =
+        (fallback == GraphicsBackend::kD3D12) ? L"Direct3D 12" : L"Direct3D 11";
+    std::wstring message = preferred_name;
+    message += L" was not available; using ";
+    message += fallback_name;
+    message += L" instead.";
+    MessageBoxW(message_owner, message.c_str(), kWindowTitle,
+               MB_OK | MB_ICONWARNING);
+    return engine;
+  }
+
+  return nullptr;
+}
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 
@@ -169,6 +246,47 @@ const VolumeStep kVolumeSteps[] = {
   { 6.0f, L"&600%%" },
   { 8.0f, L"&800%%" },
 };
+
+// The two renderer choices, in the order the Video > Renderer menu and
+// EmuConfig::kValidGraphicsBackends both list them.
+struct BackendChoice { const char* key; const wchar_t* label; };
+
+const BackendChoice kBackendChoices[] = {
+  { "d3d11", L"Direct3D &11" },
+  { "d3d12", L"Direct3D &12" },
+};
+
+// The filter choices - None plus the eight ported from GBAEmu (see
+// shaders/), in the order the Video > Filter menu and
+// EmuConfig::kValidVideoFilters both list them. Only D3D12 supports these;
+// see D3D11Presenter's class comment for why.
+struct FilterChoice { const char* key; const wchar_t* label; };
+
+const FilterChoice kFilterChoices[] = {
+  { "",            L"&None" },
+  { "nearest",     L"&Nearest Neighbor (Legacy)" },
+  { "bilinear",    L"&Bilinear" },
+  { "crt",         L"CRT (&Legacy)" },
+  { "eagle",       L"Super&Eagle" },
+  { "hq2x",        L"HQ2X (&Placeholder)" },
+  { "xbrz_legacy", L"xBRZ (&Legacy Placeholder)" },
+  { "scanline",    L"&Scanline (CRT)" },
+  { "xbrz",        L"x&BRZ" },
+};
+
+// Compiles every ported filter into the engine at once - cheap (startup-cost
+// D3DCompile calls, not per-frame work), so there is no reason to defer any
+// of them until first selected.
+void LoadAllFilters(IGraphicsEngine& engine) {
+  engine.LoadPixelShaderFromString("nearest", kLegacyShaders[0]);
+  engine.LoadPixelShaderFromString("bilinear", kLegacyShaders[1]);
+  engine.LoadPixelShaderFromString("crt", kLegacyShaders[2]);
+  engine.LoadPixelShaderFromString("eagle", kLegacyShaders[3]);
+  engine.LoadPixelShaderFromString("hq2x", kLegacyShaders[4]);
+  engine.LoadPixelShaderFromString("xbrz_legacy", kLegacyShaders[5]);
+  engine.LoadCustomPixelShader("scanline", g_ps_scanline_filter, sizeof(g_ps_scanline_filter));
+  engine.LoadCustomPixelShader("xbrz", g_ps_xbrz_filter, sizeof(g_ps_xbrz_filter));
+}
 
 std::wstring SettingsPathBesideExecutable() {
   wchar_t module[MAX_PATH] = { 0 };
@@ -211,6 +329,109 @@ void SetVolume(Application& app, HWND window, float value) {
     return;
   app.system->config().audio_volume = value;
   UpdateVolumeMenu(window, app);
+  SaveSettingsIfChanged(app);
+}
+
+// Ticks the renderer actually running - app.current_backend, not the
+// persisted preference, since the two can differ after a fallback.
+void UpdateRendererMenu(HWND window, const Application& app) {
+  HMENU bar = GetMenu(window);
+  if (bar == nullptr)
+    return;
+  for (size_t i = 0; i < std::size(kBackendChoices); ++i) {
+    const bool on = (app.current_backend == kBackendChoices[i].key);
+    CheckMenuItem(bar, static_cast<UINT>(kCommandRendererFirst + i),
+                  MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+  }
+}
+
+// Ticks the current filter and greys every filter item out when the active
+// renderer does not support them - D3D11Presenter's SetPixelShader is a
+// no-op, and a menu that silently does nothing on click is worse than one
+// that looks unavailable.
+void UpdateFilterMenu(HWND window, const Application& app) {
+  HMENU bar = GetMenu(window);
+  if (bar == nullptr)
+    return;
+  const bool filters_available = (app.current_backend == "d3d12");
+  for (size_t i = 0; i < std::size(kFilterChoices); ++i) {
+    const UINT id = static_cast<UINT>(kCommandFilterFirst + i);
+    const bool on = filters_available &&
+                    (app.current_filter == kFilterChoices[i].key);
+    CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    EnableMenuItem(bar, id,
+                   MF_BYCOMMAND | (filters_available ? MF_ENABLED : MF_GRAYED));
+  }
+}
+
+void SetFilter(Application& app, HWND window, const std::string& key) {
+  if (app.current_backend != "d3d12") {
+    // Reachable from the settings file (a saved filter with graphics_backend
+    // reverted to d3d11) as well as a stray click on a greyed item - either
+    // way, say why rather than doing nothing.
+    MessageBoxW(window,
+                L"Filters require the Direct3D 12 renderer. Switch renderer "
+                L"first (Video > Renderer).",
+                kWindowTitle, MB_OK | MB_ICONWARNING);
+    return;
+  }
+  if (app.graphics != nullptr)
+    app.graphics->SetPixelShader(key);
+  app.current_filter = key;
+  if (app.system != nullptr)
+    app.system->config().video_filter = key;
+  UpdateFilterMenu(window, app);
+  SaveSettingsIfChanged(app);
+}
+
+// Live switch: tears down the active engine and brings up the other one
+// against the same window, restoring whichever filter was last saved for
+// D3D12 if that is what it switched to. CreateGraphicsEngine's own
+// try-then-fallback already covers "the one just picked will not
+// initialise"; this only has to handle the (very unlikely, since the engine
+// being replaced was working moments ago) case where the fallback fails too.
+void SetRenderer(Application& app, HWND window, const std::string& key) {
+  if (key == app.current_backend)
+    return;
+
+  RECT client;
+  GetClientRect(window, &client);
+  const int width = client.right - client.left;
+  const int height = client.bottom - client.top;
+
+  if (app.graphics != nullptr)
+    app.graphics->Shutdown();
+  app.graphics.reset();
+
+  const GraphicsBackend preferred =
+      (key == "d3d12") ? GraphicsBackend::kD3D12 : GraphicsBackend::kD3D11;
+  app.graphics = CreateGraphicsEngine(preferred, window, width, height,
+                                      window, &app.current_backend);
+  if (app.graphics == nullptr) {
+    MessageBoxW(window,
+                L"Could not switch renderer, and the previous one could not "
+                L"be restored either. Restart the emulator.",
+                kWindowTitle, MB_OK | MB_ICONERROR);
+    app.current_backend.clear();
+    app.current_filter.clear();
+    UpdateRendererMenu(window, app);
+    UpdateFilterMenu(window, app);
+    return;
+  }
+
+  app.current_filter.clear();
+  if (app.current_backend == "d3d12") {
+    LoadAllFilters(*app.graphics);
+    const std::string preferred_filter =
+        (app.system != nullptr) ? app.system->config().video_filter : "";
+    SetFilter(app, window, preferred_filter);   // also saves + updates the menu
+  } else {
+    UpdateFilterMenu(window, app);
+  }
+
+  if (app.system != nullptr)
+    app.system->config().graphics_backend = app.current_backend;
+  UpdateRendererMenu(window, app);
   SaveSettingsIfChanged(app);
 }
 
@@ -567,11 +788,31 @@ HMENU CreateMainMenu() {
                 static_cast<UINT_PTR>(kCommandVolumeFirst + i), label.c_str());
   }
 
+  HMENU renderer = CreatePopupMenu();
+  for (size_t i = 0; i < std::size(kBackendChoices); ++i) {
+    AppendMenuW(renderer, MF_STRING,
+                static_cast<UINT_PTR>(kCommandRendererFirst + i),
+                kBackendChoices[i].label);
+  }
+
+  HMENU filter = CreatePopupMenu();
+  for (size_t i = 0; i < std::size(kFilterChoices); ++i) {
+    AppendMenuW(filter, MF_STRING,
+                static_cast<UINT_PTR>(kCommandFilterFirst + i),
+                kFilterChoices[i].label);
+  }
+
+  HMENU video = CreatePopupMenu();
+  AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(renderer),
+              L"&Renderer");
+  AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(filter), L"&Filter");
+
   HMENU bar = CreateMenu();
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(emulation),
               L"&Emulation");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(volume), L"&Audio");
+  AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(video), L"&Video");
   return bar;
 }
 
@@ -679,6 +920,17 @@ void OnCommand(Application& app, HWND window, int command) {
                         static_cast<int>(std::size(kVolumeSteps))) {
         SetVolume(app, window,
                   kVolumeSteps[command - kCommandVolumeFirst].value);
+      } else if (command >= kCommandRendererFirst &&
+                command < kCommandRendererFirst +
+                              static_cast<int>(std::size(kBackendChoices))) {
+        SetRenderer(
+            app, window,
+            kBackendChoices[command - kCommandRendererFirst].key);
+      } else if (command >= kCommandFilterFirst &&
+                command < kCommandFilterFirst +
+                              static_cast<int>(std::size(kFilterChoices))) {
+        SetFilter(app, window,
+                 kFilterChoices[command - kCommandFilterFirst].key);
       }
       break;
   }
@@ -699,8 +951,9 @@ LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
 
   switch (message) {
     case WM_SIZE:
-      if (app != nullptr && wparam != SIZE_MINIMIZED)
-        app->presenter.Resize(LOWORD(lparam), HIWORD(lparam));
+      if (app != nullptr && app->graphics != nullptr &&
+          wparam != SIZE_MINIMIZED)
+        app->graphics->Resize(LOWORD(lparam), HIWORD(lparam));
       return 0;
 
     case WM_COMMAND:
@@ -872,6 +1125,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     return 1;
   }
 
+  // Loaded early, before the graphics engine exists to hold the choice - the
+  // rest of the settings (audio_volume and friends, which live on
+  // System::config()) are read back later via LoadConfig, once the machine
+  // exists to hold them; graphics_backend is read directly here too, purely
+  // to decide which engine to construct, and it is read again through the
+  // normal LoadConfig path below to end up in the same place either way.
+  app.settings_path = Narrow(SettingsPathBesideExecutable());
+  app.settings.Load(app.settings_path);
+
   WNDCLASSEXW window_class = {};
   window_class.cbSize = sizeof(window_class);
   window_class.style = CS_HREDRAW | CS_VREDRAW;
@@ -893,9 +1155,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
   if (window == nullptr)
     return 1;
 
-  if (!app.presenter.Initialize(window)) {
-    MessageBoxW(window, L"Could not create a Direct3D 11 device.",
-                kWindowTitle, MB_OK | MB_ICONERROR);
+  {
+    RECT client;
+    GetClientRect(window, &client);
+    const int client_width = client.right - client.left;
+    const int client_height = client.bottom - client.top;
+    const std::string requested_backend =
+        app.settings.GetString("graphics_backend", "d3d11");
+    const GraphicsBackend preferred = (requested_backend == "d3d12")
+                                          ? GraphicsBackend::kD3D12
+                                          : GraphicsBackend::kD3D11;
+    app.graphics = CreateGraphicsEngine(preferred, window, client_width,
+                                        client_height, window,
+                                        &app.current_backend);
+  }
+  if (app.graphics == nullptr) {
+    MessageBoxW(window, L"Could not create a Direct3D device.", kWindowTitle,
+                MB_OK | MB_ICONERROR);
     return 1;
   }
 
@@ -912,12 +1188,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     return 1;
   }
 
-  // Settings, once the machine exists to hold them. A missing file is normal
-  // on a first run and leaves the defaults in place.
-  app.settings_path = Narrow(SettingsPathBesideExecutable());
-  app.settings.Load(app.settings_path);
+  // The rest of the settings, now that the machine exists to hold them - the
+  // file itself was already loaded above, before the graphics engine, to
+  // decide which one to construct. A missing file is normal on a first run
+  // and leaves the defaults in place.
   emulation::psx::LoadConfig(app.settings, app.system->config());
+  // The engine actually running can differ from the file's own preference
+  // if that one failed and CreateGraphicsEngine fell back - reflect reality
+  // rather than silently trusting what LoadConfig just read.
+  app.system->config().graphics_backend = app.current_backend;
   UpdateVolumeMenu(window, app);
+  UpdateRendererMenu(window, app);
+  if (app.current_backend == "d3d12") {
+    LoadAllFilters(*app.graphics);
+    SetFilter(app, window, app.system->config().video_filter);
+  } else {
+    UpdateFilterMenu(window, app);
+  }
 
   // Per-disc data, under Documents\My Games\PSXEmu.
   SetUpDataDirectories(app);
@@ -1015,7 +1302,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     int width = 0;
     int height = 0;
     const uint32_t* pixels = app.system->gpu().framebuffer(width, height);
-    app.presenter.Present(pixels, width, height);
+    if (app.graphics != nullptr) {
+      app.graphics->BeginFrame();
+      app.graphics->RenderFramebuffer(pixels, width, height);
+      app.graphics->EndFrame();
+    }
   }
 
   // Written on every change already; this catches anything the last edit

@@ -20,6 +20,7 @@
 
 #include "psx/emuconfig.h"
 
+#include <array>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -134,10 +135,25 @@ class SettingsFile {
   std::map<std::string, std::string> values_;
 };
 
+// True if `value` is one of the strings in `valid` - shared by both settings
+// below, since an unrecognised value is handled the same way either time:
+// fall back to whatever was already there, the same as a missing key does.
+template <size_t N>
+inline bool IsValidChoice(const std::string& value,
+                          const std::array<const char*, N>& valid) {
+  for (const char* option : valid) {
+    if (value == option)
+      return true;
+  }
+  return false;
+}
+
 // EmuConfig <-> file. Everything in the struct is a genuine user setting, so
 // all of it round-trips.
 inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetFloat("audio_volume", c.audio_volume);
+  f.SetString("graphics_backend", c.graphics_backend);
+  f.SetString("video_filter", c.video_filter);
 }
 
 inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
@@ -146,6 +162,15 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
     c.audio_volume = EmuConfig::kMinAudioVolume;
   if (c.audio_volume > EmuConfig::kMaxAudioVolume)
     c.audio_volume = EmuConfig::kMaxAudioVolume;
+
+  const std::string backend =
+      f.GetString("graphics_backend", c.graphics_backend);
+  if (IsValidChoice(backend, EmuConfig::kValidGraphicsBackends))
+    c.graphics_backend = backend;
+
+  const std::string filter = f.GetString("video_filter", c.video_filter);
+  if (IsValidChoice(filter, EmuConfig::kValidVideoFilters))
+    c.video_filter = filter;
 }
 
 }

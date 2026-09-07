@@ -18,8 +18,11 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include "igraphicsengine.h"
+
 #include <d3d11.h>
 #include <cstdint>
+#include <string>
 
 namespace psxemu {
 
@@ -32,21 +35,42 @@ namespace psxemu {
   about the PlayStation's drawing is expressed in shaders, which is what keeps
   the core testable without a graphics device.
 
-  Swapping this for a D3D12 or Vulkan presenter changes nothing else.
+  Implements IGraphicsEngine so the front end can hold this behind a pointer
+  alongside a D3D12 alternative and switch between them; the three-call frame
+  shape (BeginFrame/RenderFramebuffer/EndFrame) is new, but each was already
+  a distinct phase inside the old single-call Present, just not split out.
+
+  This does not support pixel-shader filters - SetPixelShader and the two
+  loaders are no-ops/failures here on purpose. The D3D12 engine is the one
+  that grew that capability; a caller offering filters as a choice is
+  expected to check which engine is active first, not call these blind.
 */
-class D3D11Presenter {
+class D3D11Presenter : public IGraphicsEngine {
  public:
   D3D11Presenter();
-  ~D3D11Presenter();
+  ~D3D11Presenter() override;
 
-  bool Initialize(HWND window);
-  void Deinitialize();
+  bool Initialize(HWND window, int width, int height) override;
+  void Shutdown() override;
 
-  // Uploads and draws one frame. `pixels` is width*height of XRGB8888.
-  void Present(const uint32_t* pixels, int width, int height);
+  void BeginFrame() override;
+  void RenderFramebuffer(const void* data, int width, int height) override;
+  void EndFrame() override;
 
   // Called when the window is resized; the back buffer follows the client area.
-  void Resize(int width, int height);
+  void Resize(int width, int height) override;
+
+  void SetVsync(bool enabled) override { vsync_ = enabled; }
+
+  // No filter support - see the class comment above.
+  void SetPixelShader(const std::string&) override {}
+  bool LoadCustomPixelShader(const std::string&, const uint8_t*,
+                             size_t) override {
+    return false;
+  }
+  bool LoadPixelShaderFromString(const std::string&, const char*) override {
+    return false;
+  }
 
   bool ready() const { return device_ != nullptr; }
 
@@ -54,6 +78,7 @@ class D3D11Presenter {
   HWND window_;
   int back_buffer_width_;
   int back_buffer_height_;
+  bool vsync_ = true;
 
   ID3D11Device* device_;
   ID3D11DeviceContext* context_;

@@ -18,6 +18,9 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <array>
+#include <string>
+
 // The knobs that change how the machine behaves for the person using it, as
 // opposed to emulated hardware state.
 //
@@ -50,12 +53,37 @@ struct EmuConfig {
 
   static const float kMinAudioVolume;
   static const float kMaxAudioVolume;
+
+  // --- Video ------------------------------------------------------------
+  // Which presenter draws the framebuffer. "d3d11" is the default so an
+  // existing settings file (or none at all) behaves exactly as it did before
+  // the D3D12 path existed - nobody's picture changes on upgrade unless they
+  // opt in.
+  std::string graphics_backend = "d3d11";
+  static const std::array<const char*, 2> kValidGraphicsBackends;
+
+  // A pixel-shader filter, by the key it was loaded under - see
+  // PSXEmu.Win32/shaders/. Empty means the engine's own built-in
+  // pass-through. Only the D3D12 backend honours this; the D3D11 path has no
+  // filter support (see D3D11Presenter's class comment).
+  std::string video_filter = "";
+  static const std::array<const char*, 9> kValidVideoFilters;
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer
 // rather than anything the emulation depends on.
 inline const float EmuConfig::kMinAudioVolume = 0.0f;
 inline const float EmuConfig::kMaxAudioVolume = 8.0f;
+
+inline const std::array<const char*, 2>
+    EmuConfig::kValidGraphicsBackends = { "d3d11", "d3d12" };
+
+// Empty string ("None") first, then the eight loaded filters in the same
+// order PSXEmu.Win32's Video > Filter menu offers them.
+inline const std::array<const char*, 9> EmuConfig::kValidVideoFilters = {
+    "",         "nearest",    "bilinear", "crt",   "eagle",
+    "hq2x",     "xbrz_legacy", "scanline", "xbrz",
+};
 
 }
 }
