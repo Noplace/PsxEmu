@@ -2440,3 +2440,58 @@ place. All eight harnesses stay at 0 failures, and
 `bios/SCPH1001.BIN --frames 400`'s checksum is unchanged - the BIOS shell's
 own pad driver goes through interrupts and never enters config mode, so it
 had nowhere to move either time.
+
+## 47. The presenter let the framebuffer's own width:height ratio decide the aspect
+
+**Symptom.** Reported directly: in Ace Combat 3, the screens from the "Now
+loading." bar through the main menu found while chasing bug 46 render
+visibly narrower than normal gameplay - "the width is shrinked" - while
+everything else in the game fills the window the way it should.
+
+**Cause.** `D3D11Presenter::Present` computed the letterbox rectangle from
+`width` and `height` - the framebuffer's own pixel dimensions - straight
+off: `target_aspect = width / height`. Those two numbers are not one
+setting, though - horizontal resolution (`GP1(08h)`, 256/320/368/512/640)
+and the vertical display range plus interlace bit are independent
+registers, and both are sampling the *same* fixed, roughly 4:3 physical
+frame real hardware always drives. A game asking for fewer horizontal
+samples is asking for coarser detail, not a narrower screen, and a
+non-interlaced 240-line frame is not a shorter screen than an interlaced
+480-line one - it is the same physical height, drawn once instead of twice.
+The menu found while verifying bug 46 does exactly what a 2D menu commonly
+does: pair a lower horizontal sample rate with the full interlaced range for
+crisp text without the fill cost of 640 columns, reporting a `320x480`
+framebuffer. Fed through the old formula that is `2:3` - a portrait
+rectangle - so the presenter letterboxed it far narrower than the `640x480`
+(or `320x240`, `4:3` either way) frames on either side of it in the same
+boot, even though a real TV shows every one of them at the same width.
+
+**Fix.** The letterbox rectangle is now computed from a fixed `4:3` target,
+not from the frame's own pixel counts - `ComputeLetterboxRect`, extracted
+into `PSXEmu.Core/tools/letterbox.h` specifically so it takes no window
+handle and no graphics device, the same reason `boot_runner`'s own helpers
+live there. `D3D11Presenter::Present` calls it with `4.0f / 3.0f`;
+`width`/`height` are still used for the texture upload, just no longer for
+the aspect.
+
+**Result.** New `letterbox_test` harness, headless (no device, no window):
+a `4:3` window is filled exactly with no bars; a wide window pillarboxes to
+a fixed `4:3` rectangle rather than following the frame's own ratio; a tall
+window letterboxes the same way. 12 checks, 0 failures. `build_tools.bat`
+builds it alongside the other harnesses now: nine headless executables, not
+eight. All other harnesses unchanged at 0 failures, and
+`bios/SCPH1001.BIN --frames 400`'s checksum is untouched - this is a
+presentation-only change in `PSXEmu.Win32`, nothing `boot_runner` or any
+`PSXEmu.Core` harness can see.
+
+What this project's own conventions could not do here is put the fixed
+picture in front of a person: this machine has no usable Direct3D device to
+present to (`D3D11CreateDeviceAndSwapChain` either fails outright or
+produces a swap chain nothing ever composites), reproduced even for a
+BIOS-only boot with no disc at all, which renders correctly in well under a
+second through `boot_runner --ppm`. The fix is verified by the arithmetic
+that was actually wrong - `320/480` letterboxed as `2:3` before, exactly
+`4:3` after, checked directly - not by a screenshot of the running game.
+That is a real gap, not a formality skipped: someone with a working
+interactive build should confirm the menu fills the window the same way the
+title screen either side of it does before calling this closed.

@@ -18,6 +18,8 @@
 *****************************************************************************************************************/
 #include "d3d11_presenter.h"
 
+#include "tools/letterbox.h"
+
 #include <d3dcompiler.h>
 #include <cstring>
 
@@ -283,20 +285,25 @@ void D3D11Presenter::Present(const uint32_t* pixels, int width, int height) {
   context_->OMSetRenderTargets(1, &render_target_, nullptr);
   context_->ClearRenderTargetView(render_target_, clear);
 
-  // Letterbox rather than stretch, so the aspect the game chose survives.
-  const float target_aspect = static_cast<float>(width) / height;
-  float view_width = static_cast<float>(back_buffer_width_);
-  float view_height = view_width / target_aspect;
-  if (view_height > back_buffer_height_) {
-    view_height = static_cast<float>(back_buffer_height_);
-    view_width = view_height * target_aspect;
-  }
+  // Letterbox to a fixed 4:3, not to the framebuffer's own width:height.
+  // Horizontal resolution (256..640) and the vertical/interlace range are
+  // independent registers, both sampling the same physical ~4:3 frame real
+  // hardware always drives - a game is choosing how many samples to take
+  // across that fixed frame, not asking for a differently-shaped screen.
+  // Deriving the aspect from the pixel counts instead conflates the two: a
+  // 2D menu commonly pairs a lower horizontal sample rate with the full
+  // interlaced vertical range (320x480 here) for crisp text at a modest
+  // fill rate, which is 2:3 as a raw ratio - a portrait rectangle - and
+  // came out letterboxed far narrower than every other screen even though
+  // a real TV shows it at the same width as any other resolution.
+  const LetterboxRect rect = ComputeLetterboxRect(
+      back_buffer_width_, back_buffer_height_, 4.0f / 3.0f);
 
   D3D11_VIEWPORT viewport;
-  viewport.TopLeftX = (back_buffer_width_ - view_width) * 0.5f;
-  viewport.TopLeftY = (back_buffer_height_ - view_height) * 0.5f;
-  viewport.Width = view_width;
-  viewport.Height = view_height;
+  viewport.TopLeftX = rect.x;
+  viewport.TopLeftY = rect.y;
+  viewport.Width = rect.width;
+  viewport.Height = rect.height;
   viewport.MinDepth = 0.0f;
   viewport.MaxDepth = 1.0f;
   context_->RSSetViewports(1, &viewport);

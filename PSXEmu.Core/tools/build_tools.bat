@@ -84,6 +84,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_wav\ /Fe:Temp\tools\wav_pitch.exe ^
    PSXEmu.Core\tools\wav_pitch.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_letterbox mkdir Temp\tools\obj_letterbox
+cl %FLAGS% /Fo:Temp\tools\obj_letterbox\ /Fe:Temp\tools\letterbox_test.exe ^
+   PSXEmu.Core\tools\letterbox_test.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 echo.
 echo Built Temp\tools\boot_runner.exe
 echo Built Temp\tools\media_test.exe
