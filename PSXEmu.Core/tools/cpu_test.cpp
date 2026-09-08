@@ -1281,6 +1281,114 @@ void TestInterrupts(Machine& m) {
   CheckEqual(m.reg(t0), 1, "the interrupted instruction ran");
   CheckEqual(m.reg(t1), 1, "and the one after it");
   CheckEqual(m.reg(t2), 1, "and the one after that");
+
+  // A GTE command is the exception to the rule two tests up. Everything else
+  // is abandoned untouched with EPC pointing at it, but the hardware has
+  // already issued a GTE command to the coprocessor by the time it recognises
+  // the interrupt - which is why the BIOS handler fetches the instruction at
+  // EPC, tests it for COP2-with-bit-25, and steps EPC over it before
+  // returning. Take the interrupt in front of the instruction as well and the
+  // command is lost: it never runs, and the BIOS skips it anyway.
+  //
+  // Silent Hill loses a DPCS that way every few seconds. The colour FIFO keeps
+  // the previous packet's colour, that word carries the primitive's command
+  // byte, and a flat quad wearing a textured quad's byte makes the GPU read 12
+  // words out of an 8-word packet - after which the whole command stream is
+  // read at the wrong offset until a colour word gets executed as GP0(02h)
+  // Fill Rectangle and paints a block over the texture pages.
+  BeginTest("an interrupt lets a GTE command it lands on run first");
+  m.Reset();
+  m.set_cop0(kCop0Status, 0x10000401);
+  m.system()->gte().WriteData(9, 3);        // IR1 = 3; SQR squares it in place
+  io.io.interrupt_stat = 0x00000001;
+  io.io.interrupt_mask = 0x00000001;
+  m.Load({ GTE_SQR(), ADDIU(t0, zero, 1) });
+  m.Run(1);
+  CheckEqual(m.system()->gte().ReadData(9), 9, "SQR ran before the interrupt");
+  CheckEqual(m.cop0(kCop0Epc), kProgramBase,
+             "EPC still points at it, which is what the BIOS skips");
+  Check(m.pc() >= kExceptionVector && m.pc() < kExceptionVector + 0x100,
+        "control is in the exception handler");
+  CheckEqual(m.reg(t0), 0, "the instruction after it did not run");
+
+  BeginTest("an interrupt in front of an ordinary instruction still holds it");
+  // The same shape with a non-GTE instruction, so the check above cannot pass
+  // by the interrupt simply being delivered one instruction late for
+  // everything.
+  m.Reset();
+  m.set_cop0(kCop0Status, 0x10000401);
+  io.io.interrupt_stat = 0x00000001;
+  io.io.interrupt_mask = 0x00000001;
+  m.Load({ ADDIU(t0, zero, 1), ADDIU(t1, zero, 1) });
+  m.Run(1);
+  CheckEqual(m.reg(t0), 0, "it did not run");
+  CheckEqual(m.cop0(kCop0Epc), kProgramBase, "EPC points at it");
+}
+
+// ---------------------------------------------------------------------------
+// Cache isolation
+// ---------------------------------------------------------------------------
+
+// Cop0 SR bit 16, IsC, points data accesses at the cache instead of memory.
+// The BIOS uses it for one thing: isolate, write a word over every 16-byte
+// line of 0x0000..0x0FFF to drop those instruction-cache lines, un-isolate.
+//
+// These stores used to be written into the scratchpad at address & 0x3FF. The
+// scratchpad is a separate 1 KB of fast RAM at 0x1F800000 that isolation has
+// nothing to do with, and the mask folded the BIOS's 4 KB sweep over it four
+// times. At boot that is invisible, because nothing is in it yet; for a game
+// that drops the instruction cache while running - and keeps its GTE working
+// set in the scratchpad, as Silent Hill does - it is 15,000 stores of zero
+// through the middle of live data.
+void TestCacheIsolation(Machine& m) {
+  emulation::psx::Buffer& scratchpad = m.system()->io().scratchpad;
+  const uint32_t kIsolateCache = 0x00010000;   // SR.IsC
+
+  BeginTest("an isolated store does not reach the scratchpad");
+  m.Reset();
+  memset(scratchpad.u8, 0xAB, 0x400);
+  m.Load({ LUI(t1, 0xDEAD), ORI(t1, t1, 0xBEEF),
+           MTC0(t2, kCop0Status),               // t2 is 0 + IsC, set below
+           SW(t1, 0, zero) });                  // store to 0x00000000
+  m.set_reg(t2, 0x10000000 | kIsolateCache);
+  m.Run(4);
+  CheckEqual(scratchpad.u32[0], 0xABABABABu, "scratchpad word 0 is untouched");
+  CheckEqual(scratchpad.u32[0x3FF >> 2], 0xABABABABu, "and so is the last one");
+
+  BeginTest("an isolated store does not reach memory either");
+  CheckEqual(m.ReadWord(0x80000000), 0, "the store went to the cache");
+
+  BeginTest("an isolated store of one byte writes one byte's worth of nothing");
+  // The switch had no breaks, so a byte store also ran the halfword and word
+  // cases - three writes for one store.
+  m.Reset();
+  memset(scratchpad.u8, 0xAB, 0x400);
+  m.Load({ ORI(t1, zero, 0x00FF),
+           MTC0(t2, kCop0Status),
+           SB(t1, 0, zero) });
+  m.set_reg(t2, 0x10000000 | kIsolateCache);
+  m.Run(3);
+  CheckEqual(scratchpad.u32[0], 0xABABABABu, "no byte, halfword or word write");
+
+  BeginTest("an isolated load reads the cache, not the scratchpad");
+  m.Reset();
+  memset(scratchpad.u8, 0xAB, 0x400);
+  m.Load({ MTC0(t2, kCop0Status),
+           LW(t1, 0, zero),
+           NOP(), NOP() });
+  m.set_reg(t2, 0x10000000 | kIsolateCache);
+  m.Run(4);
+  CheckEqual(m.reg(t1), 0, "a miss reads as zero, not a slice of scratchpad");
+
+  BeginTest("stores reach the scratchpad again once the cache is un-isolated");
+  // The guard against fixing the bug by disconnecting the scratchpad.
+  m.Reset();
+  memset(scratchpad.u8, 0, 0x400);
+  m.Load({ LUI(t0, 0x1F80), ORI(t0, t0, 0x0000),
+           LUI(t1, 0xDEAD), ORI(t1, t1, 0xBEEF),
+           SW(t1, 0, t0) });
+  m.Run(5);
+  CheckEqual(scratchpad.u32[0], 0xDEADBEEFu, "an ordinary store still lands");
 }
 
 struct Group {
@@ -1303,6 +1411,7 @@ const Group kGroups[] = {
   { "memory",     TestMemoryMap },
   { "exceptions", TestExceptions },
   { "interrupts", TestInterrupts },
+  { "cacheisolation", TestCacheIsolation },
 };
 
 }  // namespace

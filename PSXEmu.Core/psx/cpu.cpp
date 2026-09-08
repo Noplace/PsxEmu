@@ -616,24 +616,15 @@ uint32_t Cpu::Load(MemorySize size, uint32_t address) {
     return 0;
   }
 
-  if ((context_->ctrl.SR.IsC) && current_stage != 1) { //cache isolation
-    uint32_t data;
-    switch (size) {
-      case kM8: data = system_->io().scratchpad.u8[(address&0x3FF)];
-      case kM16: data = system_->io().scratchpad.u16[(address&0x3FF)>>1];
-      case kM32: data = system_->io().scratchpad.u32[(address&0x3FF)>>2];
-    }
-    /*if ((context_->ctrl.SR.SwC) == 0) { //check for swap!
-      dcache_.Read(physical_address,data);
-      if (size_bytes != 4)
-        dcache_.InvalidateLine(physical_address);
-       // data = system_->io().scratchpad.u32[physical_address&0x3FF];
-    } else {
-      icache_.Read(physical_address,data);
-      if (size_bytes != 4)
-        icache_.InvalidateLine(physical_address);
-    }*/
-    return data;
+  // With the cache isolated a data read comes from the cache and never from
+  // memory. Nothing here holds cache data to hand back, so report a miss as
+  // zero. It used to return a slice of the scratchpad instead, which is a
+  // different block of memory entirely - isolation does not cover it - and the
+  // switch had no breaks, so every size fell through to the 32-bit read. An
+  // instruction fetch is exempt: the BIOS runs its cache sweep with the cache
+  // isolated and has to keep fetching while it does.
+  if ((context_->ctrl.SR.IsC) && current_stage != 1) {
+    return 0;
   }
   
   
@@ -759,24 +750,20 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
   }
 
 
-   if (context_->ctrl.SR.IsC) { //cache
-    switch (size) {
-      case kM8: system_->io().scratchpad.u8[(address&0x3FF)] = data&0xFF;
-      case kM16: system_->io().scratchpad.u16[(address&0x3FF)>>1] = data&0xFFFF;
-      case kM32: system_->io().scratchpad.u32[(address&0x3FF)>>2] = data;
-    }
-    
-    /*uint32_t cdata[4] = { data };
-    if ((context_->ctrl.SR.SwC) == 0) { //check for swap!
-      dcache_.Write(physical_address,cdata);
-      if (size_bytes != 4)
-        dcache_.InvalidateLine(physical_address);
-      //system_->io().scratchpad.u32[physical_address&0x3FF] = data;
-    } else {
-      icache_.Write(physical_address,cdata);
-      if (size_bytes != 4)
-        icache_.InvalidateLine(physical_address);
-    }*/
+  // Isolating the cache points stores at the cache instead of memory, and that
+  // is the whole mechanism the BIOS uses to drop instruction-cache lines: it
+  // isolates, writes over 0x0000..0x0FFF one word per 16-byte line, and
+  // un-isolates. So invalidate the line and write nothing.
+  //
+  // These stores used to land in the scratchpad at address & 0x3FF. The
+  // scratchpad is separate fast RAM at 0x1F800000 that isolation has nothing
+  // to do with, and the mask folded the BIOS's 4 KB sweep over it four times -
+  // 15,000 stores of zero across the whole 1 KB. Harmless at boot, when there
+  // is nothing in it yet, but a game that drops the instruction cache mid-play
+  // would have had its scratchpad wiped underneath it. The switch had no
+  // breaks either, so a byte store also did the halfword and word writes.
+  if (context_->ctrl.SR.IsC) {
+    icache.InvalidateLine(address);
     return;
   }
 
