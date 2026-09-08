@@ -154,6 +154,10 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetFloat("audio_volume", c.audio_volume);
   f.SetString("graphics_backend", c.graphics_backend);
   f.SetString("video_filter", c.video_filter);
+  f.SetString("controller_type_port1", c.controller_type[0]);
+  f.SetString("controller_type_port2", c.controller_type[1]);
+  f.SetString("input_source_port1", c.input_source[0]);
+  f.SetString("input_source_port2", c.input_source[1]);
 }
 
 inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
@@ -171,6 +175,24 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   const std::string filter = f.GetString("video_filter", c.video_filter);
   if (IsValidChoice(filter, EmuConfig::kValidVideoFilters))
     c.video_filter = filter;
+
+  const std::string type1 =
+      f.GetString("controller_type_port1", c.controller_type[0]);
+  if (IsValidChoice(type1, EmuConfig::kValidControllerTypes))
+    c.controller_type[0] = type1;
+  const std::string type2 =
+      f.GetString("controller_type_port2", c.controller_type[1]);
+  if (IsValidChoice(type2, EmuConfig::kValidControllerTypes))
+    c.controller_type[1] = type2;
+
+  const std::string source1 =
+      f.GetString("input_source_port1", c.input_source[0]);
+  if (IsValidChoice(source1, EmuConfig::kValidInputSources))
+    c.input_source[0] = source1;
+  const std::string source2 =
+      f.GetString("input_source_port2", c.input_source[1]);
+  if (IsValidChoice(source2, EmuConfig::kValidInputSources))
+    c.input_source[1] = source2;
 }
 
 }

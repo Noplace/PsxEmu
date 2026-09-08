@@ -89,6 +89,10 @@ enum MenuCommand {
   kCommandFilterFirst,
   kCommandFilterLast = kCommandFilterFirst + 8,       // None + 8 filters
   kCommandViewVram,
+  kCommandControllerTypeFirst,
+  kCommandControllerTypeLast = kCommandControllerTypeFirst + 5,  // 2 ports x 3 types
+  kCommandInputSourceFirst,
+  kCommandInputSourceLast = kCommandInputSourceFirst + 5,        // 2 ports x 3 sources
   kCommandExit,
 };
 
@@ -153,13 +157,13 @@ struct Application {
   // application rather than one per process.
   std::array<int16_t, Spu::kSampleRate / 30 * 2> audio_scratch = {};
 
-  // One XInput pad per PSX controller port. gamepads[0] backs up the
-  // keyboard on port 1; gamepads[1] is port 2, which has no keyboard fallback
-  // - two controllers need two physical pads, same as the console.
-  // gamepad_claimed tracks which XInput user indices are already latched, so
-  // the two never end up reading the one physical pad.
-  std::array<psxemu::Gamepad, 2> gamepads;
-  uint32_t gamepad_claimed = 0;
+  // Two fixed XInput slots - "Gamepad 1" and "Gamepad 2" in the Input menu,
+  // XInput user index 0 and 1 respectively. Which PSX port (if either) each
+  // one feeds, and whether a port uses a gamepad at all rather than the
+  // keyboard, is decided by EmuConfig::input_source and applied each frame -
+  // see the main loop's input block.
+  std::array<psxemu::Gamepad, 2> gamepads{ psxemu::Gamepad(0),
+                                           psxemu::Gamepad(1) };
 
   ~Application() {
     if (system != nullptr)
@@ -281,6 +285,43 @@ const FilterChoice kFilterChoices[] = {
   { "scanline",    L"&Scanline (CRT)" },
   { "xbrz",        L"x&BRZ" },
 };
+
+// The three real PS1 controllers a port can hold, in the order
+// EmuConfig::kValidControllerTypes and Sio::ControllerType both list them.
+struct ControllerTypeChoice { const char* key; const wchar_t* label; };
+
+const ControllerTypeChoice kControllerTypeChoices[] = {
+  { "digital",     L"&Original (Digital)" },
+  { "dual_analog", L"&Dual Analog (no rumble)" },
+  { "dualshock",   L"Dual&Shock" },
+};
+
+emulation::psx::Sio::ControllerType ParseControllerType(
+    const std::string& key) {
+  using emulation::psx::Sio;
+  if (key == "digital") return Sio::kDigital;
+  if (key == "dual_analog") return Sio::kDualAnalog;
+  return Sio::kDualShock;
+}
+
+// The three sources a PSX port can be mapped to, in the order
+// EmuConfig::kValidInputSources lists them. Front-end-only - Sio has no
+// notion of where a port's buttons come from, only what they are.
+struct InputSourceChoice { const char* key; const wchar_t* label; };
+
+const InputSourceChoice kInputSourceChoices[] = {
+  { "keyboard", L"&Keyboard" },
+  { "gamepad1", L"&Gamepad 1" },
+  { "gamepad2", L"Gamepad &2" },
+};
+
+enum class InputSource { kKeyboard, kGamepad1, kGamepad2 };
+
+InputSource ParseInputSource(const std::string& key) {
+  if (key == "gamepad1") return InputSource::kGamepad1;
+  if (key == "gamepad2") return InputSource::kGamepad2;
+  return InputSource::kKeyboard;
+}
 
 // Compiles every ported filter into the engine at once - cheap (startup-cost
 // D3DCompile calls, not per-frame work), so there is no reason to defer any
@@ -440,6 +481,57 @@ void SetRenderer(Application& app, HWND window, const std::string& key) {
   if (app.system != nullptr)
     app.system->config().graphics_backend = app.current_backend;
   UpdateRendererMenu(window, app);
+  SaveSettingsIfChanged(app);
+}
+
+// Ticks the controller type actually set on Sio for each port.
+void UpdateControllerTypeMenu(HWND window, const Application& app) {
+  HMENU bar = GetMenu(window);
+  if (bar == nullptr || app.system == nullptr)
+    return;
+  for (int port = 0; port < 2; ++port) {
+    const std::string& current = app.system->config().controller_type[port];
+    for (size_t i = 0; i < std::size(kControllerTypeChoices); ++i) {
+      const UINT id = static_cast<UINT>(kCommandControllerTypeFirst +
+                                        port * 3 + static_cast<int>(i));
+      const bool on = (current == kControllerTypeChoices[i].key);
+      CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+  }
+}
+
+void SetControllerType(Application& app, HWND window, int port,
+                       const std::string& key) {
+  if (app.system == nullptr)
+    return;
+  app.system->config().controller_type[port] = key;
+  app.system->sio().set_controller_type(port, ParseControllerType(key));
+  UpdateControllerTypeMenu(window, app);
+  SaveSettingsIfChanged(app);
+}
+
+// Ticks which source is mapped to each port.
+void UpdateInputSourceMenu(HWND window, const Application& app) {
+  HMENU bar = GetMenu(window);
+  if (bar == nullptr || app.system == nullptr)
+    return;
+  for (int port = 0; port < 2; ++port) {
+    const std::string& current = app.system->config().input_source[port];
+    for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
+      const UINT id = static_cast<UINT>(kCommandInputSourceFirst +
+                                        port * 3 + static_cast<int>(i));
+      const bool on = (current == kInputSourceChoices[i].key);
+      CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+  }
+}
+
+void SetInputSource(Application& app, HWND window, int port,
+                    const std::string& key) {
+  if (app.system == nullptr)
+    return;
+  app.system->config().input_source[port] = key;
+  UpdateInputSourceMenu(window, app);
   SaveSettingsIfChanged(app);
 }
 
@@ -820,10 +912,44 @@ HMENU CreateMainMenu() {
   AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewVram),
               L"View &VRAM");
 
+  // Two ports, each with its own controller-type choice and its own input
+  // source - four small popups rather than one flat list, so ticking one
+  // port's choice never has to be told apart from the other's.
+  HMENU controller_port[2];
+  HMENU source_port[2];
+  for (int port = 0; port < 2; ++port) {
+    controller_port[port] = CreatePopupMenu();
+    for (size_t i = 0; i < std::size(kControllerTypeChoices); ++i) {
+      AppendMenuW(controller_port[port], MF_STRING,
+                  static_cast<UINT_PTR>(kCommandControllerTypeFirst +
+                                        port * 3 + static_cast<int>(i)),
+                  kControllerTypeChoices[i].label);
+    }
+    source_port[port] = CreatePopupMenu();
+    for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
+      AppendMenuW(source_port[port], MF_STRING,
+                  static_cast<UINT_PTR>(kCommandInputSourceFirst +
+                                        port * 3 + static_cast<int>(i)),
+                  kInputSourceChoices[i].label);
+    }
+  }
+
+  HMENU input = CreatePopupMenu();
+  AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(controller_port[0]),
+              L"Controller Port &1");
+  AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(controller_port[1]),
+              L"Controller Port &2");
+  AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(source_port[0]),
+              L"Port 1 &Source");
+  AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(source_port[1]),
+              L"Port 2 S&ource");
+
   HMENU bar = CreateMenu();
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(emulation),
               L"&Emulation");
+  AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(input), L"&Input");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(volume), L"&Audio");
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(video), L"&Video");
   return bar;
@@ -955,6 +1081,16 @@ void OnCommand(Application& app, HWND window, int command) {
                               static_cast<int>(std::size(kFilterChoices))) {
         SetFilter(app, window,
                  kFilterChoices[command - kCommandFilterFirst].key);
+      } else if (command >= kCommandControllerTypeFirst &&
+                command <= kCommandControllerTypeLast) {
+        const int offset = command - kCommandControllerTypeFirst;
+        SetControllerType(app, window, offset / 3,
+                          kControllerTypeChoices[offset % 3].key);
+      } else if (command >= kCommandInputSourceFirst &&
+                command <= kCommandInputSourceLast) {
+        const int offset = command - kCommandInputSourceFirst;
+        SetInputSource(app, window, offset / 3,
+                       kInputSourceChoices[offset % 3].key);
       }
       break;
   }
@@ -1223,6 +1359,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
   app.system->config().graphics_backend = app.current_backend;
   UpdateVolumeMenu(window, app);
   UpdateRendererMenu(window, app);
+  app.system->sio().set_controller_type(
+      0, ParseControllerType(app.system->config().controller_type[0]));
+  app.system->sio().set_controller_type(
+      1, ParseControllerType(app.system->config().controller_type[1]));
+  UpdateControllerTypeMenu(window, app);
+  UpdateInputSourceMenu(window, app);
   if (app.current_backend == "d3d12") {
     LoadAllFilters(*app.graphics);
     SetFilter(app, window, app.system->config().video_filter);
@@ -1289,39 +1431,70 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     // being unplugged mid-game is noticed straight away rather than only
     // after the window is clicked back into; only the *buttons and axes* are
     // withheld while unfocused, matching what the keyboard already does.
-    const psxemu::Gamepad::State pad1 = app.gamepads[0].Poll(app.gamepad_claimed);
-    const psxemu::Gamepad::State pad2 = app.gamepads[1].Poll(app.gamepad_claimed);
-    app.system->sio().set_connected(1, app.gamepads[1].connected());
-
+    const psxemu::Gamepad::State gamepad_state[2] = {
+        app.gamepads[0].Poll(), app.gamepads[1].Poll() };
+    const uint16_t keyboard_buttons = ReadKeyboardPad();
     const bool focused = (GetForegroundWindow() == window);
-    app.system->sio().set_buttons(
-        0, focused ? static_cast<uint16_t>(ReadKeyboardPad() | pad1.buttons)
-                   : 0);
-    app.system->sio().set_buttons(1, focused ? pad2.buttons : 0);
-    if (focused) {
-      app.system->sio().set_axes(0, pad1.left_x, pad1.left_y, pad1.right_x,
-                                 pad1.right_y);
-      app.system->sio().set_axes(1, pad2.left_x, pad2.left_y, pad2.right_x,
-                                 pad2.right_y);
-    } else {
-      app.system->sio().set_axes(0, 0x80, 0x80, 0x80, 0x80);
-      app.system->sio().set_axes(1, 0x80, 0x80, 0x80, 0x80);
-    }
 
-    // Rumble is an output, not an input, so it is not gated on focus - the
-    // emulated machine keeps running in the background (only Pause actually
-    // stops it), and a real console would not silence a controller's motor
-    // just because another window has focus.
-    uint8_t small0 = 0, large0 = 0, small1 = 0, large1 = 0;
-    app.system->sio().motor_state(0, &small0, &large0);
-    app.system->sio().motor_state(1, &small1, &large1);
-    app.gamepads[0].SetRumble(small0, large0);
-    app.gamepads[1].SetRumble(small1, large1);
+    // Re-applied every frame rather than only when the menu changes it -
+    // exactly how set_connected below already has to be, since a Reset or a
+    // fresh disc boot reinitialises Sio to its power-on defaults, and this is
+    // what makes either pick the configured controller back up without
+    // either call site needing to know that happened. set_controller_type is
+    // a no-op once converged, so this costs nothing in the steady state.
+    app.system->sio().set_controller_type(
+        0, ParseControllerType(app.system->config().controller_type[0]));
+    app.system->sio().set_controller_type(
+        1, ParseControllerType(app.system->config().controller_type[1]));
+
+    for (int port = 0; port < 2; ++port) {
+      const InputSource source =
+          ParseInputSource(app.system->config().input_source[port]);
+      bool connected = true;   // the keyboard is always "there"
+      uint16_t buttons = 0;
+      uint8_t left_x = 0x80, left_y = 0x80, right_x = 0x80, right_y = 0x80;
+      int rumble_target = -1;  // which gamepads[] slot feels this port's motors
+
+      switch (source) {
+        case InputSource::kKeyboard:
+          buttons = focused ? keyboard_buttons : 0;
+          break;
+        case InputSource::kGamepad1:
+        case InputSource::kGamepad2: {
+          const int g = (source == InputSource::kGamepad1) ? 0 : 1;
+          connected = app.gamepads[g].connected();
+          buttons = focused ? gamepad_state[g].buttons : 0;
+          left_x = gamepad_state[g].left_x;
+          left_y = gamepad_state[g].left_y;
+          right_x = gamepad_state[g].right_x;
+          right_y = gamepad_state[g].right_y;
+          rumble_target = g;
+          break;
+        }
+      }
+
+      app.system->sio().set_connected(port, connected);
+      app.system->sio().set_buttons(port, buttons);
+      app.system->sio().set_axes(port, left_x, left_y, right_x, right_y);
+
+      // Rumble is an output, not an input, so it is not gated on focus - the
+      // emulated machine keeps running in the background (only Pause
+      // actually stops it), and a real console would not silence a
+      // controller's motor just because another window has focus. If both
+      // ports are ever mapped to the same physical pad, the second port's
+      // SetRumble call below simply wins for that frame - a real edge case
+      // (mirroring one pad to both ports), not a bug.
+      if (rumble_target >= 0) {
+        uint8_t motor_small = 0, motor_large = 0;
+        app.system->sio().motor_state(port, &motor_small, &motor_large);
+        app.gamepads[rumble_target].SetRumble(motor_small, motor_large);
+      }
+    }
 
     RunOneFrame(app);
     PumpAudio(app);
 
-    PumpAudio(app);
+    //PumpAudio(app);
 
     int width = 0;
     int height = 0;

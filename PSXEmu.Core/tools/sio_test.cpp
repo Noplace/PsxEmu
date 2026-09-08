@@ -407,6 +407,84 @@ void TestTwoSlotsAreIndependent(System* system) {
   CheckEqual(reply1[0], 0x41, "port 2 was never touched and is still digital");
 }
 
+void TestDigitalControllerTypeNeverGoesAnalog(System* system) {
+  printf("a digital-only controller type ignores the whole handshake\n");
+  FreshPad(system, 0);
+  system->sio().set_controller_type(0, Sio::kDigital);
+  PadHarness pad(system);
+
+  const uint8_t enter[1] = { 0x01 };
+  pad.Command(0, 0x43, enter, 1, nullptr, 0);
+  const uint8_t go_analog[2] = { 0x01, 0x03 };
+  pad.Command(0, 0x44, go_analog, 2, nullptr, 0);
+
+  uint8_t reply[16] = {};
+  const int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(n, 4, "still a four-byte digital reply after 0x43 and 0x44");
+  CheckEqual(reply[0], 0x41, "id never leaves 5A41h - 0x43 was never honoured");
+}
+
+void TestDualAnalogControllerTypeHasNoRumble(System* system) {
+  printf("a Dual Analog controller type goes analog but never rumbles\n");
+  FreshPad(system, 0);
+  system->sio().set_controller_type(0, Sio::kDualAnalog);
+  PadHarness pad(system);
+
+  const uint8_t enter[1] = { 0x01 };
+  const uint8_t leave[1] = { 0x00 };
+  pad.Command(0, 0x43, enter, 1, nullptr, 0);
+  const uint8_t go_analog[2] = { 0x01, 0x02 };
+  pad.Command(0, 0x44, go_analog, 2, nullptr, 0);
+  pad.Command(0, 0x43, leave, 1, nullptr, 0);
+
+  // Leaving configuration mode first, exactly as TestEnteringAnalogMode does
+  // - the ID reply is F3h5Ah for as long as config_mode stays set, regardless
+  // of analog_mode, so checking it mid-config would prove nothing.
+  uint8_t reply[16] = {};
+  const int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(n, 8, "the handshake works exactly like a DualShock's");
+  CheckEqual(reply[0], 0x73, "and it does reach analog mode");
+
+  // Map poll byte 1 to the large motor, same as TestRumbleMapping does for a
+  // DualShock, then try to drive it. 0x4D needs configuration mode active
+  // again, the same as TestRumbleMapping re-enters it.
+  pad.Command(0, 0x43, enter, 1, nullptr, 0);
+  const uint8_t mapping[6] = { 0xFF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF };
+  pad.Command(0, 0x4D, mapping, 6, nullptr, 0);
+  pad.Command(0, 0x43, leave, 1, nullptr, 0);
+  const uint8_t speeds[2] = { 0x00, 0xFF };
+  pad.Command(0, 0x42, speeds, 2, nullptr, 0);
+
+  uint8_t small = 0xFF, large = 0xFF;
+  system->sio().motor_state(0, &small, &large);
+  CheckEqual(small, 0, "no small motor exists to drive");
+  CheckEqual(large, 0,
+             "no large motor either, despite being mapped and sent a speed");
+}
+
+void TestDualShockControllerTypeDefaultStillRumbles(System* system) {
+  printf("the default DualShock type is unaffected by the new gating\n");
+  FreshPad(system, 0);
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  PadHarness pad(system);
+
+  const uint8_t enter[1] = { 0x01 };
+  pad.Command(0, 0x43, enter, 1, nullptr, 0);
+  const uint8_t go_analog[2] = { 0x01, 0x02 };
+  pad.Command(0, 0x44, go_analog, 2, nullptr, 0);
+
+  const uint8_t mapping[6] = { 0xFF, 0x01, 0xFF, 0xFF, 0xFF, 0xFF };
+  pad.Command(0, 0x4D, mapping, 6, nullptr, 0);
+  const uint8_t speeds[2] = { 0x00, 0xFF };
+  pad.Command(0, 0x42, speeds, 2, nullptr, 0);
+
+  uint8_t small = 0, large = 0;
+  system->sio().motor_state(0, &small, &large);
+  CheckEqual(large, 0xFF,
+             "a DualShock still rumbles - the gating only excludes the "
+             "other two types");
+}
+
 }  // namespace
 
 int main() {
@@ -425,6 +503,9 @@ int main() {
   TestUnconfiguredDualShockRumblesAtNothing(system);
   TestReconnectForgetsNegotiation(system);
   TestTwoSlotsAreIndependent(system);
+  TestDigitalControllerTypeNeverGoesAnalog(system);
+  TestDualAnalogControllerTypeHasNoRumble(system);
+  TestDualShockControllerTypeDefaultStillRumbles(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

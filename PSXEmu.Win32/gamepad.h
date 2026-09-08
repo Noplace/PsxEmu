@@ -18,10 +18,11 @@
 *****************************************************************************************************************/
 #pragma once
 
-// An XInput pad feeding one PSX controller port - buttons, both analog
-// sticks, and the two vibration motors.
+// One fixed XInput slot - "Gamepad 1" or "Gamepad 2" in the Win32 front
+// end's Input menu, XInput user index 0 or 1 respectively - reporting
+// buttons, both analog sticks, and the two vibration motors.
 //
-// The polling, slot search-and-latch and deadzone handling here are the same
+// The polling, deadzone handling and button mapping here are the same
 // mechanism GBAEmu's GamepadInputDevice uses for the GBA - none of it is
 // specific to that emulator, it is just what driving XInput correctly on
 // Windows looks like. What differs is entirely the mapping: PSX has four face
@@ -30,6 +31,12 @@
 // analog triggers become L2/R2 (XInput's button bitmask has no equivalent for
 // them), and there are two sticks feeding the pad's analog axes rather than
 // one standing in for a cartridge's tilt sensor.
+//
+// The index is fixed at construction rather than found by searching every
+// free XInput slot the way this used to work: which physical pad backs
+// "Gamepad 1" is now the player's own choice, made explicit through the
+// Input menu's per-port source mapping (see PSXEmu.Win32/main.cpp), so there
+// is nothing left here to search for or claim.
 //
 // Whether any of this actually reaches the emulated game is not this class's
 // decision - it reports what the physical pad is doing and nothing more. A
@@ -57,51 +64,32 @@ class Gamepad {
     uint8_t left_x = 0x80, left_y = 0x80, right_x = 0x80, right_y = 0x80;
   };
 
-  Gamepad() { ZeroMemory(&state_, sizeof(state_)); }
+  // `player_index` is the fixed XInput user index (0-3) this instance always
+  // polls.
+  explicit Gamepad(int player_index = 0) : player_index_(player_index) {
+    ZeroMemory(&state_, sizeof(state_));
+  }
 
   bool connected() const { return connected_; }
 
-  // Polls this pad. `claimed` has one bit per XInput user index; a bit
-  // already set there belongs to a different Gamepad instance's pad and is
-  // skipped over, which is what stops two PSX ports from both ending up
-  // reading the one physical controller. This instance keeps its own claim
-  // current in it: set for as long as it stays latched to a slot, cleared
-  // the moment that pad goes away, so the index is free for whichever
-  // instance finds it next.
-  State Poll(uint32_t& claimed) {
-    if (connected_)
-      claimed &= ~(1u << player_index_);
-
+  // Polls this pad's fixed slot.
+  State Poll() {
     // XInputGetState on an empty slot is not the cheap no-op it looks like,
-    // so back off to about once a second while nothing is latched rather than
-    // asking every frame.
+    // so back off to about once a second while nothing is connected rather
+    // than asking every frame.
     if (!connected_) {
       if (++idle_frames_ < 60)
         return State();
       idle_frames_ = 0;
     }
 
-    DWORD result = ERROR_DEVICE_NOT_CONNECTED;
-    if (connected_) {
-      result = XInputGetState(static_cast<DWORD>(player_index_), &state_);
-    } else {
-      for (int i = 0; i < XUSER_MAX_COUNT; ++i) {
-        if (claimed & (1u << i))
-          continue;
-        result = XInputGetState(static_cast<DWORD>(i), &state_);
-        if (result == ERROR_SUCCESS) {
-          player_index_ = i;
-          break;
-        }
-      }
-    }
-
+    const DWORD result =
+        XInputGetState(static_cast<DWORD>(player_index_), &state_);
     connected_ = (result == ERROR_SUCCESS);
     if (!connected_) {
       ZeroMemory(&state_, sizeof(state_));
       return State();
     }
-    claimed |= (1u << player_index_);
     return ReadState();
   }
 
@@ -196,7 +184,7 @@ class Gamepad {
 
   XINPUT_STATE state_;
   bool connected_ = false;
-  int player_index_ = 0;
+  int player_index_;
   int idle_frames_ = 0;
   uint8_t small_ = 0;
   uint8_t large_ = 0;

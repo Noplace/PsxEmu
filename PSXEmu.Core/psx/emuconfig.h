@@ -68,6 +68,22 @@ struct EmuConfig {
   // filter support (see D3D11Presenter's class comment).
   std::string video_filter = "";
   static const std::array<const char*, 9> kValidVideoFilters;
+
+  // --- Input --------------------------------------------------------------
+  // Which of the three real PS1 controllers is plugged into each SIO0 port -
+  // see Sio::ControllerType. "dualshock" for both, so an existing game that
+  // already negotiates analog input keeps working exactly as it did before
+  // this was choosable.
+  std::array<std::string, 2> controller_type = { "dualshock", "dualshock" };
+  static const std::array<const char*, 3> kValidControllerTypes;
+
+  // Which physical source drives each PSX port - the keyboard, or one of the
+  // two XInput slots the Input menu labels "Gamepad 1"/"Gamepad 2" (XInput
+  // user index 0 and 1 respectively). Both default to a gamepad: two people
+  // already play this way today, one pad per port with no keyboard fallback
+  // to reason about.
+  std::array<std::string, 2> input_source = { "gamepad1", "gamepad2" };
+  static const std::array<const char*, 3> kValidInputSources;
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer
@@ -84,6 +100,15 @@ inline const std::array<const char*, 9> EmuConfig::kValidVideoFilters = {
     "",         "nearest",    "bilinear", "crt",   "eagle",
     "hq2x",     "xbrz_legacy", "scanline", "xbrz",
 };
+
+// Order matches PSXEmu.Win32's Input > Controller Port menus and
+// Sio::ControllerType (kDigital, kDualAnalog, kDualShock).
+inline const std::array<const char*, 3> EmuConfig::kValidControllerTypes = {
+    "digital", "dual_analog", "dualshock" };
+
+// Order matches PSXEmu.Win32's Input > Port Source menus.
+inline const std::array<const char*, 3> EmuConfig::kValidInputSources = {
+    "keyboard", "gamepad1", "gamepad2" };
 
 }
 }

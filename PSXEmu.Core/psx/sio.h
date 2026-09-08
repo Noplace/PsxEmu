@@ -70,6 +70,22 @@ class Sio : public Component {
   // for the large variable-speed one.
   enum Motor { kSmallMotor = 0, kLargeMotor = 1 };
 
+  // Which of the three real PS1 controllers is plugged into a port, chosen
+  // by the front end rather than negotiated - a game cannot ask a port to be
+  // a different physical device, only for the one that is there to change
+  // mode.
+  //   kDigital    - the original pad (SCPH-1080): never leaves digital mode,
+  //                 ID 5A41h forever. Command 0x43 (enter configuration
+  //                 mode) is meaningless to it and does nothing, which is
+  //                 what stops 0x44/0x45/... from ever being reachable too.
+  //   kDualAnalog - the pre-DualShock Analog Joystick (SCPH-1110): goes
+  //                 analog exactly like a DualShock (5A41h/5A73h through the
+  //                 same 0x43/0x44/0x45 handshake) but has no vibration
+  //                 motors at all, so nothing it is ever told to do to them
+  //                 has any effect.
+  //   kDualShock  - today's full behaviour: analog plus both rumble motors.
+  enum ControllerType { kDigital, kDualAnalog, kDualShock };
+
   Sio();
   ~Sio();
 
@@ -105,6 +121,16 @@ class Sio : public Component {
   // negotiated - defined out of line because that is more than a field
   // assignment now.
   void set_connected(int slot, bool connected);
+
+  // Which controller is plugged into a port. Independent of Pad's negotiated
+  // state and of set_connected's reset - unlike buttons or analog mode, this
+  // is the front end's own standing choice, and a reconnect must not
+  // silently forget it. Changing it, though, *is* treated as unplugging one
+  // physical controller for a different one: see the .cpp for why.
+  void set_controller_type(int slot, ControllerType type);
+  ControllerType controller_type(int slot) const {
+    return (slot >= 0 && slot < 2) ? controller_type_[slot] : kDualShock;
+  }
 
   // What the two motors are currently being asked to do: 0 or 255 for the
   // small one, 0-255 for the large one. A front end reads this once a frame
@@ -161,6 +187,7 @@ class Sio : public Component {
   enum Target { kTargetNone, kTargetPad, kTargetMemoryCard };
 
   Pad pad_[2];
+  ControllerType controller_type_[2] = { kDualShock, kDualShock };
 
   uint16_t control_;
   uint16_t mode_;
@@ -189,7 +216,8 @@ class Sio : public Component {
   // machine in its own right now, not the four-byte reply it used to be.
   uint8_t ExchangeController(uint8_t data, int slot);
   uint8_t PadIdByte(const Pad& pad) const;
-  uint8_t PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming);
+  uint8_t PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming,
+                          bool rumble_capable);
 
   // Which controller command (0x42, 0x43, ...) the current exchange is
   // carrying out - decided by the byte the host sends right after selecting

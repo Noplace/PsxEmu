@@ -62,6 +62,13 @@ int Sio::Initialize() {
   pad_[0].connected = true;
   pad_[1].connected = false;
 
+  // The front end re-asserts its configured choice every frame - the same
+  // way it already does for `connected` - so resetting to the power-on
+  // default here rather than trying to preserve whatever was set before is
+  // enough; see PSXEmu.Win32/main.cpp's per-frame input block.
+  controller_type_[0] = kDualShock;
+  controller_type_[1] = kDualShock;
+
   control_ = 0;
   mode_ = 0;
   baud_ = 0;
@@ -86,6 +93,7 @@ int Sio::Deinitialize() {
 
 void Sio::Serialise(StateIO& io) {
   io.Plain(pad_);
+  io.Plain(controller_type_);
   io.Plain(control_);
   io.Plain(mode_);
   io.Plain(baud_);
@@ -121,6 +129,20 @@ void Sio::set_connected(int slot, bool connected) {
     pad_[slot] = fresh;
   }
   pad_[slot].connected = connected;
+}
+
+void Sio::set_controller_type(int slot, ControllerType type) {
+  if (slot < 0 || slot >= 2 || controller_type_[slot] == type)
+    return;
+  controller_type_[slot] = type;
+  // Changing the physical controller is a fresh connection as far as the
+  // protocol is concerned - a real console cannot tell a DualShock swapped
+  // for a plain digital pad from an unplug/replug, and neither should this
+  // one: whatever the old one had negotiated (analog mode, rumble mapping)
+  // must not carry over to a controller of a different kind.
+  const bool was_connected = pad_[slot].connected;
+  pad_[slot] = Pad();
+  pad_[slot].connected = was_connected;
 }
 
 void Sio::Tick(uint32_t cycles) {
@@ -215,7 +237,8 @@ uint8_t Sio::PadIdByte(const Pad& pad) const {
 // that, the pad falls back to the pattern every original one answered to -
 // a fixed two-byte code that only ever turns the small motor fully on or
 // fully off.
-uint8_t Sio::PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming) {
+uint8_t Sio::PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming,
+                             bool rumble_capable) {
   uint8_t out = 0x00;
   const uint16_t buttons = static_cast<uint16_t>(~pad.buttons);
   switch (payload_index) {
@@ -227,6 +250,13 @@ uint8_t Sio::PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming) {
     case 5: out = pad.left_y; break;
     default: break;
   }
+
+  // A Dual Analog controller (kDualAnalog) reaches this too - it has the
+  // same config/analog handshake as a DualShock - but it predates the
+  // DualShock's motors entirely, so neither rumble scheme below ever does
+  // anything on one.
+  if (!rumble_capable)
+    return out;
 
   if (pad.dualshock_enabled) {
     if (payload_index >= 0 && payload_index < 5) {
@@ -312,7 +342,8 @@ uint8_t Sio::ExchangeController(uint8_t data, int slot) {
   if (recognised) {
     switch (pad_command_) {
       case 0x42:
-        out = PollPayloadByte(pad, payload_index, data);
+        out = PollPayloadByte(pad, payload_index, data,
+                              controller_type_[slot] == kDualShock);
         break;
 
       case 0x43:
@@ -320,7 +351,13 @@ uint8_t Sio::ExchangeController(uint8_t data, int slot) {
         // to leave. Entering marks the pad as a DualShock for good - real
         // hardware does not forget that just because the game later takes it
         // back out of configuration mode.
-        if (payload_index == 0) {
+        //
+        // A plain digital pad (kDigital) does not understand this command at
+        // all - real one never had a configuration mode to enter - so it is
+        // simply not honoured here. That alone is what keeps such a pad's ID
+        // at 5A41h forever: config_mode and analog_mode can only ever be set
+        // from inside this gate.
+        if (payload_index == 0 && controller_type_[slot] != kDigital) {
           pad.config_mode = (data == 1);
           if (pad.config_mode)
             pad.dualshock_enabled = true;
