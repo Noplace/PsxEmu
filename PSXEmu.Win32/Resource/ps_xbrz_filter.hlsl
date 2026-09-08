@@ -1,3 +1,7 @@
+// No output channel swizzle: this project's framebuffer texture is
+// B8G8R8A8, matching Gpu::ResolveFramebuffer's own byte order already (see
+// shaders/legacy_shaders.h for the same note - a swizzle here would just
+// swap red and blue).
 Texture2D g_Tex : register(t0);
 SamplerState g_Point : register(s0);
 
@@ -72,6 +76,5 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
         }
     }
 
-    // Return using the same channel swizzle you had in your template
-    return float4(result.b, result.g, result.r, result.a);
+    return result;
 }

@@ -73,16 +73,16 @@ mov r1.z, l(0)
 mad r1.xyzw, r0.zwzw, r1.xyxy, r1.zyxz
 sample_indexable(texture2d)(float,float,float,float) r6.xyz, r1.zwzz, t0.xyzw, s0
 sample_indexable(texture2d)(float,float,float,float) r1.xyzw, r1.xyxx, t0.xyzw, s0
-movc r1.xyzw, r2.xxxx, r3.zyxw, r1.zyxw
+movc r1.xyzw, r2.xxxx, r3.xyzw, r1.xyzw
 movc r2.xyz, r2.yyyy, r5.xyzx, r6.xyzx
-add r3.xyz, r1.zyxz, -r2.xyzx
+add r3.xyz, r1.xyzx, -r2.xyzx
 add r2.xyz, -r2.xyzx, r4.xyzx
 dp3 r0.z, |r2.xyzx|, l(0.299000, 0.587000, 0.114000, 0.000000)
 lt r0.yz, l(0.000000, 0.100000, 0.100000, 0.000000), r0.yyzy
 dp3 r0.w, |r3.xyzx|, l(0.299000, 0.587000, 0.114000, 0.000000)
 lt r0.w, r0.w, l(0.150000)
-add r2.xyz, -r1.zyxz, r4.xyzx
-add r1.xyzw, -r4.zyxw, r1.xyzw
+add r2.xyz, -r1.xyzx, r4.xyzx
+add r1.xyzw, -r4.xyzw, r1.xyzw
 dp3 r2.x, |r2.xyzx|, l(0.299000, 0.587000, 0.114000, 0.000000)
 lt r2.x, l(0.100000), r2.x
 and r0.w, r0.w, r2.x
@@ -95,19 +95,19 @@ max r0.z, r0.z, l(0.000000)
 mad r0.w, r0.z, l(-2.000000), l(3.000000)
 mul r0.z, r0.z, r0.z
 mul r0.z, r0.z, r0.w
-mad r1.xyzw, r0.zzzz, r1.xyzw, r4.zyxw
-movc r1.xyzw, r0.xxxx, r1.xyzw, r4.zyxw
-movc o0.xyzw, r0.yyyy, r1.xyzw, r4.zyxw
+mad r1.xyzw, r0.zzzz, r1.xyzw, r4.xyzw
+movc r1.xyzw, r0.xxxx, r1.xyzw, r4.xyzw
+movc o0.xyzw, r0.yyyy, r1.xyzw, r4.xyzw
 ret 
 // Approximately 66 instruction slots used
 #endif
 
 const BYTE g_ps_xbrz_filter[] =
 {
-     68,  88,  66,  67, 215, 123, 
-    178,  68, 241,  16, 109, 117, 
-     70, 217, 141, 101, 128, 142, 
-     61, 191,   1,   0,   0,   0, 
+     68,  88,  66,  67, 165, 234, 
+    138, 160, 170, 213, 227, 247, 
+    242, 217, 233,  30, 232, 161, 
+    158,  68,   1,   0,   0,   0, 
      24,  11,   0,   0,   5,   0, 
       0,   0,  52,   0,   0,   0, 
     240,   0,   0,   0,  72,   1, 
@@ -416,9 +416,9 @@ const BYTE g_ps_xbrz_filter[] =
       0,   0,  55,   0,   0,   9, 
     242,   0,  16,   0,   1,   0, 
       0,   0,   6,   0,  16,   0, 
-      2,   0,   0,   0, 102,  12, 
+      2,   0,   0,   0,  70,  14, 
      16,   0,   3,   0,   0,   0, 
-    102,  12,  16,   0,   1,   0, 
+     70,  14,  16,   0,   1,   0, 
       0,   0,  55,   0,   0,   9, 
     114,   0,  16,   0,   2,   0, 
       0,   0,  86,   5,  16,   0, 
@@ -427,7 +427,7 @@ const BYTE g_ps_xbrz_filter[] =
      70,   2,  16,   0,   6,   0, 
       0,   0,   0,   0,   0,   8, 
     114,   0,  16,   0,   3,   0, 
-      0,   0, 102,   8,  16,   0, 
+      0,   0,  70,   2,  16,   0, 
       1,   0,   0,   0,  70,   2, 
      16, 128,  65,   0,   0,   0, 
       2,   0,   0,   0,   0,   0, 
@@ -464,12 +464,12 @@ const BYTE g_ps_xbrz_filter[] =
       0,   0, 154, 153,  25,  62, 
       0,   0,   0,   8, 114,   0, 
      16,   0,   2,   0,   0,   0, 
-    102,   8,  16, 128,  65,   0, 
+     70,   2,  16, 128,  65,   0, 
       0,   0,   1,   0,   0,   0, 
      70,   2,  16,   0,   4,   0, 
       0,   0,   0,   0,   0,   8, 
     242,   0,  16,   0,   1,   0, 
-      0,   0, 102,  12,  16, 128, 
+      0,   0,  70,  14,  16, 128, 
      65,   0,   0,   0,   4,   0, 
       0,   0,  70,  14,  16,   0, 
       1,   0,   0,   0,  16,   0, 
@@ -537,19 +537,19 @@ const BYTE g_ps_xbrz_filter[] =
       1,   0,   0,   0, 166,  10, 
      16,   0,   0,   0,   0,   0, 
      70,  14,  16,   0,   1,   0, 
-      0,   0, 102,  12,  16,   0, 
+      0,   0,  70,  14,  16,   0, 
       4,   0,   0,   0,  55,   0, 
       0,   9, 242,   0,  16,   0, 
       1,   0,   0,   0,   6,   0, 
      16,   0,   0,   0,   0,   0, 
      70,  14,  16,   0,   1,   0, 
-      0,   0, 102,  12,  16,   0, 
+      0,   0,  70,  14,  16,   0, 
       4,   0,   0,   0,  55,   0, 
       0,   9, 242,  32,  16,   0, 
       0,   0,   0,   0,  86,   5, 
      16,   0,   0,   0,   0,   0, 
      70,  14,  16,   0,   1,   0, 
-      0,   0, 102,  12,  16,   0, 
+      0,   0,  70,  14,  16,   0, 
       4,   0,   0,   0,  62,   0, 
       0,   1,  83,  84,  65,  84, 
     148,   0,   0,   0,  66,   0, 

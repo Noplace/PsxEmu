@@ -1,5 +1,9 @@
  // 2: CRT
 
+// No output channel swizzle: this project's framebuffer texture is
+// B8G8R8A8, matching Gpu::ResolveFramebuffer's own byte order already (see
+// shaders/legacy_shaders.h for the same note - a swizzle here would just
+// swap red and blue).
 Texture2D g_Tex : register(t0);
 SamplerState g_Linear : register(s1);
 cbuffer Params : register(b0)
@@ -13,5 +17,5 @@ float4 main(float4 pos : SV_POSITION, float2 uv : TEXCOORD0) : SV_TARGET
     float2 dc = abs(uv - 0.5) * 2.0;
     float vignette = 1.0 - pow(max(dc.x, dc.y), 4.0) * 0.3;
     c.rgb *= scanline * vignette;
-    return float4(c.b, c.g, c.r, c.a);
+    return c;
 }

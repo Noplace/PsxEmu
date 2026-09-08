@@ -63,6 +63,25 @@ inline uint8_t From5Bit(uint32_t c) {
   return static_cast<uint8_t>((c << 3) | (c >> 2));
 }
 
+// Top-left fill rule for a triangle edge, given as (dx, dy) of that edge in
+// the same a->b->c winding RasterTriangle normalises every triangle to
+// (positive signed area). Without this, a plain w >= 0 test accepts a pixel
+// sitting exactly on a shared edge for BOTH triangles that touch it - a
+// quad's own two halves along their shared diagonal, and any two adjacent
+// primitives that happen to share a screen-space edge. That is invisible for
+// opaque draws (the second one repaints the same colour) but for additive
+// semi-transparent draws it blends twice, leaving a bright seam exactly on
+// every such edge - which for a surface built from many small quads (the
+// ground, a creature's segmented body) shows up as a fine diagonal hatching
+// over the whole thing rather than one obviously-wrong line. Biasing a
+// non-top-left edge's test by -1 (integer coordinates only, so w is always a
+// whole number) makes exactly one of the two triangles that share an edge
+// claim it, matching the rule real GPUs use for the same reason.
+inline int32_t EdgeBias(int32_t dx, int32_t dy) {
+  const bool top_left = (dy > 0) || (dy == 0 && dx > 0);
+  return top_left ? 0 : -1;
+}
+
 }  // namespace
 
 Gpu::Gpu() : vram_(nullptr), framebuffer_(nullptr) {
@@ -931,12 +950,16 @@ void Gpu::RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
   const Vertex& c = (area > 0) ? v2 : v1;
   const int32_t double_area = (area > 0) ? area : -area;
 
+  const int32_t bias0 = EdgeBias(b.x - a.x, b.y - a.y);
+  const int32_t bias1 = EdgeBias(c.x - b.x, c.y - b.y);
+  const int32_t bias2 = EdgeBias(a.x - c.x, a.y - c.y);
+
   for (int32_t y = top; y <= bottom; ++y) {
     for (int32_t x = left; x <= right; ++x) {
       const int32_t w0 = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
       const int32_t w1 = (c.x - b.x) * (y - b.y) - (c.y - b.y) * (x - b.x);
       const int32_t w2 = (a.x - c.x) * (y - c.y) - (a.y - c.y) * (x - c.x);
-      if (w0 < 0 || w1 < 0 || w2 < 0)
+      if (w0 + bias0 < 0 || w1 + bias1 < 0 || w2 + bias2 < 0)
         continue;
 
       // Barycentric weights: w1 belongs to a, w2 to b, w0 to c.

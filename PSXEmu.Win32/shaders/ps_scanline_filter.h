@@ -60,7 +60,7 @@ sincos r0.y, null, r0.y
 mad r0.y, r0.y, l(0.150000), l(0.850000)
 mul r0.x, r0.x, r0.y
 sample_indexable(texture2d)(float,float,float,float) r1.xyzw, v1.xyxx, t0.xyzw, s1
-mul o0.xyz, r0.xxxx, r1.zyxz
+mul o0.xyz, r0.xxxx, r1.xyzx
 mov o0.w, r1.w
 ret 
 // Approximately 15 instruction slots used
@@ -68,10 +68,10 @@ ret
 
 const BYTE g_ps_scanline_filter[] =
 {
-     68,  88,  66,  67, 115, 145, 
-    173, 195, 193,  22, 178, 249, 
-    225, 220, 237, 163,   0, 113, 
-    219, 143,   1,   0,   0,   0, 
+     68,  88,  66,  67, 115,  14, 
+    115,  85,  52, 132, 234, 156, 
+    193, 124, 168, 121,  53, 239, 
+      7, 145,   1,   0,   0,   0, 
      84,   5,   0,   0,   5,   0, 
       0,   0,  52,   0,   0,   0, 
      16,   2,   0,   0, 104,   2, 
@@ -264,7 +264,7 @@ const BYTE g_ps_scanline_filter[] =
       0,   7, 114,  32,  16,   0, 
       0,   0,   0,   0,   6,   0, 
      16,   0,   0,   0,   0,   0, 
-    102,   8,  16,   0,   1,   0, 
+     70,   2,  16,   0,   1,   0, 
       0,   0,  54,   0,   0,   5, 
     130,  32,  16,   0,   0,   0, 
       0,   0,  58,   0,  16,   0, 

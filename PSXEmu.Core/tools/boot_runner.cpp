@@ -695,7 +695,14 @@ int main(int argc, char** argv) {
   // optimisation an argument about guesses.
   const clock_t wall_start = clock();
 
-  const uint64_t kInstructionLimit = 4000000000ull;
+  // A safety net against a genuine infinite loop, not a budget tuned to any
+  // real boot - 4 billion turned out to be too tight for its own purpose: a
+  // CPU-heavy scene (Silent Hill's first monster encounter, reached via
+  // --frames past ~13300) crosses it on totally ordinary per-frame cost,
+  // stopping the run short of the frame it asked for and printing a
+  // checksum for wherever it happened to be instead - which looked exactly
+  // like a hang until raising this uncovered that it was not one.
+  const uint64_t kInstructionLimit = 20000000000ull;
   while (frames < options.frames && instructions < kInstructionLimit) {
     if (options.hot > 0)
       ++pc_counts[system->cpu().context()->pc];

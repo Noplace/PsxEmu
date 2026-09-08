@@ -53,6 +53,7 @@
 #include <iterator>
 #include <memory>
 #include <string>
+#include <vector>
 
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -87,6 +88,7 @@ enum MenuCommand {
   kCommandRendererLast = kCommandRendererFirst + 1,   // Direct3D 11, 12
   kCommandFilterFirst,
   kCommandFilterLast = kCommandFilterFirst + 8,       // None + 8 filters
+  kCommandViewVram,
   kCommandExit,
 };
 
@@ -109,6 +111,12 @@ struct Application {
   std::unique_ptr<IGraphicsEngine> graphics;
   std::string current_backend = "d3d12";
   std::string current_filter;   // ditto, for the filter menu
+
+  // Video > View VRAM: shows the whole 1024x512 VRAM instead of the display
+  // area, for chasing texture/CLUT corruption that the normal view only
+  // shows the symptom of. Not persisted - always starts off.
+  bool view_vram = false;
+  std::vector<uint32_t> vram_view_scratch;
 
   std::unique_ptr<IAudioEngine> audio;
   std::unique_ptr<System> system;
@@ -806,6 +814,9 @@ HMENU CreateMainMenu() {
   AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(renderer),
               L"&Renderer");
   AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(filter), L"&Filter");
+  AppendMenuW(video, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewVram),
+              L"View &VRAM");
 
   HMENU bar = CreateMenu();
   AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
@@ -908,6 +919,17 @@ void OnCommand(Application& app, HWND window, int command) {
     case kCommandLoadState:
       app.pending_load_slot = app.last_slot;
       break;
+
+    case kCommandViewVram: {
+      app.view_vram = !app.view_vram;
+      HMENU bar = GetMenu(window);
+      if (bar != nullptr) {
+        CheckMenuItem(bar, static_cast<UINT>(kCommandViewVram),
+                      MF_BYCOMMAND |
+                          (app.view_vram ? MF_CHECKED : MF_UNCHECKED));
+      }
+      break;
+    }
 
     case kCommandExit:
       PostMessageW(window, WM_CLOSE, 0, 0);
@@ -1302,6 +1324,30 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     int width = 0;
     int height = 0;
     const uint32_t* pixels = app.system->gpu().framebuffer(width, height);
+
+    // Video > View VRAM substitutes the whole 1 MB VRAM, converted the same
+    // way the display area already is, for the display framebuffer - same
+    // presentation path, same letterbox helper, just a different (and much
+    // bigger, non-4:3) source rectangle. Rebuilt every frame since VRAM is
+    // never still while the machine runs.
+    if (app.view_vram) {
+      const int vram_width = emulation::psx::GpuCore::kVramWidth;
+      const int vram_height = emulation::psx::GpuCore::kVramHeight;
+      app.vram_view_scratch.resize(
+          static_cast<size_t>(vram_width) * vram_height);
+      const uint16_t* vram = app.system->gpu().vram();
+      for (int i = 0; i < vram_width * vram_height; ++i) {
+        const uint16_t p = vram[i];
+        const uint32_t r = ((p & 0x1F) << 3) | ((p & 0x1F) >> 2);
+        const uint32_t g = (((p >> 5) & 0x1F) << 3) | (((p >> 5) & 0x1F) >> 2);
+        const uint32_t b = (((p >> 10) & 0x1F) << 3) | (((p >> 10) & 0x1F) >> 2);
+        app.vram_view_scratch[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
+      }
+      pixels = app.vram_view_scratch.data();
+      width = vram_width;
+      height = vram_height;
+    }
+
     if (app.graphics != nullptr) {
       app.graphics->BeginFrame();
       app.graphics->RenderFramebuffer(pixels, width, height);
