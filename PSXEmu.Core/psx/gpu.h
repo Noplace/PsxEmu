@@ -315,9 +315,18 @@ class Gpu : public GpuCore {
   void UpdateDisplaySize();
 
   // Records a write into the watched rectangle against the command doing it.
+  //
+  // Wrapped to VRAM first, exactly as VramAt does, because that is the cell
+  // actually written: a fill, transfer or copy that runs off the right or
+  // bottom edge comes back round, and passing the unwrapped coordinate here
+  // reported it against a rectangle that does not exist. A write landing
+  // somewhere unexpected is precisely what this is for, so the one class of
+  // write most worth catching was the one it could not see.
   inline void NoteWatchWrite(uint32_t x, uint32_t y) {
     if (watch_w_ == 0)
       return;
+    x &= (kVramWidth - 1);
+    y &= (kVramHeight - 1);
     if ((x - watch_x_) < watch_w_ && (y - watch_y_) < watch_h_) {
       ++stats_.watch_writers[current_command_ & 0xFF];
       ++stats_.watch_writes;

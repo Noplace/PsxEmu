@@ -577,10 +577,27 @@ void Gpu::CmdFillRectangle() {
   const uint32_t w = ((fifo_[2] & 0x3FF) + 0x0F) & ~0x0F;
   const uint32_t h = (fifo_[2] >> 16) & 0x1FF;
 
+  // Clipped at the right and bottom edges rather than wrapped. VramAt masks
+  // its coordinates, so running off an edge used to come back round and land
+  // on whatever was at the other side - and Silent Hill leans on that not
+  // happening: it clears with fills that overhang the right edge by a few
+  // pixels (x=512 w=544 reaches 1056, 32 past the 1024 VRAM is wide) while
+  // keeping its texture palettes in the strip at x=0..31. Wrapping painted
+  // the fill colour straight over those palettes, so every 4-bit texture
+  // sharing them drew in one flat colour - a bright green figure in the dark
+  // alley, because the fill that clobbered the palette was green. A shipped
+  // game would be broken on real hardware if the fill wrapped, which is the
+  // argument that it clips.
   for (uint32_t row = 0; row < h; ++row) {
+    const uint32_t vy = y + row;
+    if (vy >= kVramHeight)
+      break;
     for (uint32_t col = 0; col < w; ++col) {
-      VramAt(x + col, y + row) = colour;
-      NoteWatchWrite(x + col, y + row);
+      const uint32_t vx = x + col;
+      if (vx >= kVramWidth)
+        break;
+      VramAt(vx, vy) = colour;
+      NoteWatchWrite(vx, vy);
     }
   }
 }
