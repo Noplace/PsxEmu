@@ -109,7 +109,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 103 checks, 0 failures.**
+**Current: 200 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -123,6 +123,11 @@ Covers, in the order it runs:
   header, and reads off both ends failing rather than returning stale bytes
 - **A cue sheet with two tracks**: track starts, lengths and types, and a
   sector inside track 2 resolving through that track's own offset
+- **An Alcohol `.mds` and its `.mdf`**: the 2448-byte stride these dumps use,
+  which no file length can reveal; the pregap that gives a track a disc
+  address 150 sectors ahead of its position in the file; that pregap reading
+  as silence rather than as an error; and the descriptor being picked up when
+  the image beside it is what was opened
 - **The controller with an empty tray**: Getstat answers, GetID reports "no
   disc" as an INT5 rather than silence, and an unknown command still answers
 - **The controller with a disc**: GetID reports a licensed region, GetTN

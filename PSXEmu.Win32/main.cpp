@@ -492,7 +492,8 @@ std::string ChooseFile(HWND window, FileDialog mode, const char* filter,
 }
 
 constexpr const char* kDiscFilter =
-    "Disc Images (*.cue;*.bin;*.img;*.iso)\0*.cue;*.bin;*.img;*.iso\0"
+    "Disc Images (*.cue;*.mds;*.bin;*.img;*.iso;*.mdf)\0"
+    "*.cue;*.mds;*.bin;*.img;*.iso;*.mdf\0"
     "All files (*.*)\0*.*\0";
 constexpr const char* kCardFilter =
     "Memory Card (*.mcr;*.mcd)\0*.mcr;*.mcd\0"
@@ -680,7 +681,8 @@ bool BootDiscFromFile(Application& app, HWND window, const std::string& path) {
   if (!app.system->LoadDisc(path.c_str())) {
     MessageBoxW(window,
                 L"Could not read that disc image.\n\n"
-                L"Supported: .cue (with its .bin or .img), .bin, .img, .iso.",
+                L"Supported: .cue (with its .bin or .img), .mds (with its "
+                L".mdf), .bin, .img, .iso.",
                 kWindowTitle, MB_OK | MB_ICONWARNING);
     return false;
   }

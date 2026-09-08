@@ -1,5 +1,38 @@
 # Disc formats: raw images, and compressed ones
 
+## Done since this was written: `.mds` / `.mdf`
+
+Alcohol 120%'s pair is read, by `Disc::OpenMds`. Opening either half works -
+the `.mds` directly, or the `.mdf` by way of the sibling lookup below, which
+now looks for a `.mds` after failing to find a `.cue`.
+
+Two things came out of doing it that were not anticipated here:
+
+**The sector stride, not the track list, was the blocking problem.** These
+dumps keep the 96 bytes of subchannel that follow every sector, so sectors sit
+2448 bytes apart. That is not a multiple of 2352, 2336 or 2048, so the guess
+`AddFileSource` made from the file length alone landed on none of them and
+every sector after the first came back from the wrong offset. A `.mdf` did not
+mount as a silent disc, it did not mount as a disc at all. `AddFileSource` now
+takes a stride when a descriptor states one, and recognises 2448 and 2368 from
+the length as a last resort.
+
+**A track's place on the disc is not its place in the file.** The two seconds
+of pregap before an audio track are given a disc address and are usually not
+written to the file, so from the second track onwards the disc runs 150 sectors
+ahead of the image. The descriptor carries both numbers - a sector address and
+a byte offset - and only the byte offset knows where the bytes are. Reading
+one for the other puts the music two seconds late and the lead-out 150 sectors
+short. Those pregap sectors now read as silence rather than failing, because a
+failed read stops CD playback with an error where a real disc would simply be
+quiet there.
+
+Both are covered by `media_test`, which builds a two-track 2448-byte pair with
+an unwritten pregap and checks the stride, the offset, the silence and the
+sibling lookup.
+
+`.ccd` is still unread; the `.mds` work did not touch it.
+
 ## First, a correction worth making before any work starts
 
 **A bare `.img` does load.** Tested against `Legend of Mana [SLUS-01013].img`
@@ -56,6 +89,8 @@ problem plus a container.
 When given `game.img`, look for `game.cue` and then `game.ccd` beside it and use
 whichever exists. This alone probably fixes the user's case and is perhaps
 thirty lines.
+
+*Done for `.cue` and `.mds`, in `Disc::FindSibling`; `.ccd` still to do.*
 
 ### Step 2: read `.ccd`
 

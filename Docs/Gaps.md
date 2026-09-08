@@ -340,8 +340,16 @@ not, so `OpenImage` finds where the data track ends by binary search and calls
 everything after it one audio track. Where one music track ends and the next
 begins is recorded nowhere in the data area - it lived in the lead-in, which a
 dump does not include - so a disc with twelve music tracks still mounts as two,
-and a game that asks for track 5 by number still gets nothing. That needs the
-cue sheet, and if one is sitting beside the image it is now used automatically.
+and a game that asks for track 5 by number still gets nothing. That needs a
+descriptor, and if a `.cue` or a `.mds` is sitting beside the image it is now
+used automatically.
+
+Alcohol's `.mds` is read and gives the same complete layout a cue sheet does.
+It also settles something a cue sheet never raises: these dumps keep the 96
+bytes of subchannel after each sector, so the stride is 2448, which no file
+length can reveal - a `.mdf` opened without its descriptor is not a quiet disc
+but an unreadable one. The descriptor states the stride, and 2448 and 2368 are
+now recognised from the length as a fallback.
 
 Still missing: `.ccd` is not read at all, though it carries a real table of
 contents and would give a complete layout; and no compressed container is
@@ -486,6 +494,8 @@ Things that look missing and are not, so they are not re-investigated:
   longer uses it.
 - **A bare `.img` not loading.** It loads and boots. The gap is the track
   layout above, not the file.
+- **`.mds`/`.mdf` not loading.** Both halves mount, the descriptor supplying
+  the track list and the sector stride. See disc images above.
 - **XA-ADPCM.** Implemented: `Cdrom::DecodeXaAdpcm` handles 4- and 8-bit, mono
   and stereo, at 37800 or 18900 Hz, with the filter history carried across
   sectors. `LoadSector` routes an audio sector to it and raises no data-ready

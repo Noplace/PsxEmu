@@ -80,6 +80,129 @@ std::string ParseCueFileName(const std::string& arguments) {
   return Trim(arguments);
 }
 
+
+// Fixed places in a media descriptor. The header names where the session
+// blocks are rather than fixing them, and files differ, so the offset is read
+// rather than assumed.
+const size_t kMdsSessionCountOffset = 0x14;
+const size_t kMdsSessionOffset = 0x50;
+const size_t kMdsSessionBlockSize = 24;
+const size_t kMdsTrackBlockSize = 0x50;
+
+bool Fits(const std::vector<uint8_t>& data, size_t offset, size_t length) {
+  return offset <= data.size() && length <= data.size() - offset;
+}
+
+// The descriptor is little-endian throughout, and is read a field at a time
+// rather than cast onto a struct: nothing guarantees the file is aligned or
+// packed the way this compiler would lay one out.
+uint16_t ReadU16(const std::vector<uint8_t>& data, size_t offset) {
+  return static_cast<uint16_t>(data[offset] |
+                               (static_cast<uint16_t>(data[offset + 1]) << 8));
+}
+
+uint32_t ReadU32(const std::vector<uint8_t>& data, size_t offset) {
+  return static_cast<uint32_t>(data[offset]) |
+         (static_cast<uint32_t>(data[offset + 1]) << 8) |
+         (static_cast<uint32_t>(data[offset + 2]) << 16) |
+         (static_cast<uint32_t>(data[offset + 3]) << 24);
+}
+
+uint64_t ReadU64(const std::vector<uint8_t>& data, size_t offset) {
+  return static_cast<uint64_t>(ReadU32(data, offset)) |
+         (static_cast<uint64_t>(ReadU32(data, offset + 4)) << 32);
+}
+
+// A descriptor is a few hundred bytes for an ordinary disc, and a few hundred
+// kilobytes when the dump kept its density map. The cap is only there so that
+// a file that is not one of these at all cannot ask for an arbitrary
+// allocation before the signature has been looked at.
+bool ReadWholeFile(const char* path, std::vector<uint8_t>* out) {
+  const long long kMaxSize = 64 * 1024 * 1024;
+  FILE* fp = fopen(path, "rb");
+  if (fp == nullptr)
+    return false;
+  fseek(fp, 0, SEEK_END);
+  const long long size = _ftelli64(fp);
+  fseek(fp, 0, SEEK_SET);
+  if (size <= 0 || size > kMaxSize) {
+    fclose(fp);
+    return false;
+  }
+  out->resize(static_cast<size_t>(size));
+  const size_t read = fread(&(*out)[0], 1, out->size(), fp);
+  fclose(fp);
+  return read == out->size();
+}
+
+std::string StemOf(const std::string& path) {
+  const size_t dot = path.find_last_of('.');
+  const size_t slash = path.find_last_of("/\\");
+  if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+    return path;
+  return path.substr(0, dot);
+}
+
+// Pulls a string out of the descriptor at `offset`, either bytes or UTF-16.
+// Stops at the terminator or at the end of the file, so a truncated
+// descriptor gives a short name rather than a read past the end.
+std::string ReadMdsString(const std::vector<uint8_t>& mds, size_t offset,
+                          bool wide) {
+  if (offset >= mds.size())
+    return std::string();
+
+  if (!wide) {
+    std::string text;
+    for (size_t i = offset; i < mds.size() && mds[i] != 0; ++i)
+      text.push_back(static_cast<char>(mds[i]));
+    return text;
+  }
+
+  std::wstring text;
+  for (size_t i = offset; i + 1 < mds.size(); i += 2) {
+    const wchar_t ch = static_cast<wchar_t>(ReadU16(mds, i));
+    if (ch == 0)
+      break;
+    text.push_back(ch);
+  }
+  if (text.empty())
+    return std::string();
+  const int size = WideCharToMultiByte(CP_ACP, 0, text.c_str(), -1, nullptr, 0,
+                                       nullptr, nullptr);
+  if (size <= 1)
+    return std::string();
+  std::string narrow(static_cast<size_t>(size - 1), '\0');
+  WideCharToMultiByte(CP_ACP, 0, text.c_str(), -1, &narrow[0], size, nullptr,
+                      nullptr);
+  return narrow;
+}
+
+// Which file holds the sectors. Every track block ends with a footer naming
+// it, and what is nearly always written there is "*.mdf" - the star standing
+// for the descriptor's own name, which is what lets a pair be renamed
+// together without breaking. Anything else is taken as a name, relative to
+// the descriptor unless it carries a path of its own.
+std::string ResolveMdfName(const std::vector<uint8_t>& mds,
+                           uint32_t footer_offset,
+                           const std::string& directory,
+                           const std::string& stem) {
+  const std::string fallback = stem + ".mdf";
+  if (footer_offset == 0 || !Fits(mds, footer_offset, 8))
+    return fallback;
+
+  const uint32_t name_offset = ReadU32(mds, footer_offset);
+  const bool wide = ReadU32(mds, footer_offset + 4) != 0;
+  const std::string name = ReadMdsString(mds, name_offset, wide);
+  if (name.empty())
+    return fallback;
+
+  if (name[0] == '*')
+    return stem + name.substr(1);
+
+  const bool absolute = name.find(':') != std::string::npos ||
+                        name[0] == '/' || name[0] == '\\';
+  return absolute ? name : directory + name;
+}
 }  // namespace
 
 Disc::Disc() : total_sectors_(0) {
@@ -129,29 +252,40 @@ void Disc::Close() {
 // never plays a note - not because playback is broken but because it never
 // starts.
 //
-// The layout is almost always sitting right next to the image in a cue sheet
-// of the same name, which is how the image was written out in the first place.
-// Picking it up is the difference between music and silence, and picking the
-// `.bin` rather than the `.cue` is an easy thing for someone to do.
+// The layout is almost always sitting right next to the image in a descriptor
+// of the same name - a `.cue` beside a `.bin`, a `.mds` beside a `.mdf` -
+// which is how the image was written out in the first place. Picking it up is
+// the difference between music and silence, and picking the image rather than
+// the descriptor is an easy thing for someone to do.
 //
-// Returns the sheet's path if one is there and names this image, empty
-// otherwise. Anything that does not open, or names some other file, is left
-// alone - a wrong layout would be worse than none.
-std::string Disc::FindSiblingCue(const std::string& image_path) {
+// Returns the descriptor's path if one is there beside this image, empty
+// otherwise. Anything that does not open is left alone - a wrong layout would
+// be worse than none.
+std::string Disc::FindSibling(const std::string& image_path,
+                              const char* extension) {
   const size_t dot = image_path.find_last_of('.');
   const size_t slash = image_path.find_last_of("/\\");
   if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
     return std::string();
 
-  const std::string stem = image_path.substr(0, dot);
-  static const char* kExtensions[] = { ".cue", ".CUE", ".Cue" };
-  for (size_t i = 0; i < sizeof(kExtensions) / sizeof(kExtensions[0]); ++i) {
-    const std::string candidate = stem + kExtensions[i];
-    FILE* fp = fopen(candidate.c_str(), "rb");
+  const std::string stem = image_path.substr(0, dot) + ".";
+  // A network share can be case sensitive where the local disk is not, so the
+  // three spellings anyone actually writes are all tried.
+  const std::string lower = ToLower(extension);
+  std::string upper = lower;
+  for (size_t i = 0; i < upper.size(); ++i)
+    upper[i] = static_cast<char>(toupper(static_cast<unsigned char>(upper[i])));
+  std::string title = lower;
+  if (!title.empty())
+    title[0] = upper[0];
+
+  const std::string candidates[] = { stem + lower, stem + upper, stem + title };
+  for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+    FILE* fp = fopen(candidates[i].c_str(), "rb");
     if (fp == nullptr)
       continue;
     fclose(fp);
-    return candidate;
+    return candidates[i];
   }
   return std::string();
 }
@@ -167,17 +301,40 @@ bool Disc::Open(const char* path) {
   bool ok = false;
   if (extension == ".cue")
     ok = OpenCue(path);
-  else if (text.size() <= 3 && text.size() >= 2 && text[1] == ':')
+  else if (extension == ".mds") {
+    ok = OpenMds(path);
+    if (!ok) {
+      // A descriptor that cannot be read still has its image sitting beside
+      // it, and that image is worth trying: version 2 of the format keeps
+      // the signature and encrypts everything after it, so there is nothing
+      // to parse, but the `.mdf` is an ordinary one and mounts on its own.
+      // What is lost is the track list, which costs a disc with CD music its
+      // music and costs a single-track disc - which is most of them -
+      // nothing at all.
+      Close();
+      const std::string image = FindSibling(text, "mdf");
+      if (!image.empty())
+        ok = OpenImage(image.c_str());
+    }
+  } else if (text.size() <= 3 && text.size() >= 2 && text[1] == ':')
     ok = OpenDevice(path);            // "D:" or "D:\"
   else if (text.compare(0, 4, "\\\\.\\") == 0)
     ok = OpenDevice(path);            // "\\.\D:"
   else {
-    // Prefer a cue sheet sitting beside the image: it is the only place the
+    // Prefer a descriptor sitting beside the image: it is the only place the
     // track layout exists, and without it a disc with CD music mounts as one
-    // data track and no game will ever ask for a note of it.
-    const std::string sibling = FindSiblingCue(text);
-    if (!sibling.empty())
-      ok = OpenCue(sibling.c_str());
+    // data track and no game will ever ask for a note of it. For an .mdf the
+    // stakes are higher still - the descriptor also carries the sector
+    // stride, without which the file does not read as a disc at all.
+    const std::string cue = FindSibling(text, "cue");
+    if (!cue.empty())
+      ok = OpenCue(cue.c_str());
+    if (!ok) {
+      Close();
+      const std::string mds = FindSibling(text, "mds");
+      if (!mds.empty())
+        ok = OpenMds(mds.c_str());
+    }
     if (!ok) {
       Close();
       ok = OpenImage(path);
@@ -192,9 +349,11 @@ bool Disc::Open(const char* path) {
   return true;
 }
 
-// Works out how sectors are laid out from the file length. A raw dump divides
-// by 2352; a Mode 2 dump without sync or header by 2336; a cooked ISO by 2048.
-bool Disc::AddFileSource(const std::string& path, Source* out) const {
+// Works out how sectors are laid out from the file length, unless a
+// descriptor has already said. A raw dump divides by 2352; a Mode 2 dump
+// without sync or header by 2336; a cooked ISO by 2048.
+bool Disc::AddFileSource(const std::string& path, Source* out,
+                         uint32_t sector_size) const {
   FILE* fp = fopen(path.c_str(), "rb");
   if (fp == nullptr)
     return false;
@@ -211,21 +370,34 @@ bool Disc::AddFileSource(const std::string& path, Source* out) const {
   out->device = nullptr;
   out->name = path;
 
-  if ((size % kRawSectorSize) == 0) {
+  if (sector_size != 0) {
+    // A descriptor said so, which beats anything the length can suggest.
+    out->sector_size = sector_size;
+  } else if ((size % kRawSectorSize) == 0) {
     out->sector_size = kRawSectorSize;
-    out->data_offset = 24;            // sync 12 + header 4 + subheader 8
   } else if ((size % 2336) == 0) {
     out->sector_size = 2336;
-    out->data_offset = 8;             // subheader only
   } else if ((size % 2048) == 0) {
     out->sector_size = 2048;
-    out->data_offset = 0;
+  } else if ((size % 2448) == 0) {
+    // Raw sectors with their 96 bytes of subchannel still attached, which is
+    // how Alcohol and CloneCD dump a disc. Checked after the three ordinary
+    // strides because a 2448 image is only rarely a multiple of any of them,
+    // whereas a plain raw image is a multiple of 2352 always.
+    out->sector_size = 2448;
+  } else if ((size % 2368) == 0) {
+    out->sector_size = 2368;          // raw plus the 16-byte Q subchannel
   } else {
     // Not a recognisable sector multiple. Raw is the best guess for a PSX
     // image, and a partial trailing sector is simply not readable.
     out->sector_size = kRawSectorSize;
-    out->data_offset = 24;
   }
+
+  // Where the 2048 user bytes begin. Anything at or above a raw sector keeps
+  // the sync and header in front of them; what follows the sector is
+  // subchannel and is ignored.
+  out->data_offset = (out->sector_size >= kRawSectorSize) ? 24
+                   : (out->sector_size >= 2336) ? 8 : 0;
 
   out->sector_count = static_cast<uint32_t>(size / out->sector_size);
   return true;
@@ -329,6 +501,142 @@ bool Disc::OpenImage(const char* path) {
   }
 
   total_sectors_ = kLeadInSectors + source.sector_count;
+  return true;
+}
+
+// Alcohol 120%'s pair: the `.mds` holds the layout and the `.mdf` holds the
+// sectors, which is the same division of labour as a cue sheet and its bin.
+// Two things make it worth reading rather than falling back on the image.
+//
+// The first is the usual one - the track list lives here and nowhere else, so
+// without it a disc with music is one data track.
+//
+// The second is particular to this format and is worse. These dumps normally
+// keep the 96 bytes of subchannel that follow every sector, giving a stride of
+// 2448 rather than 2352. That is not a multiple of 2352, 2336 or 2048, so the
+// guess `AddFileSource` makes from the file length alone lands on none of
+// them, every sector after the first is read from the wrong offset, and the
+// disc is not merely quiet but unreadable. The descriptor is the only thing
+// that says 2448, which is why a `.mdf` on its own is not worth trying.
+//
+// The descriptor is small - a few hundred bytes for a normal disc - and is
+// read whole.
+bool Disc::OpenMds(const char* path) {
+  std::vector<uint8_t> mds;
+  if (!ReadWholeFile(path, &mds) || mds.size() < kMdsSessionOffset + 4)
+    return false;
+  if (memcmp(&mds[0], "MEDIA DESCRIPTOR", 16) != 0)
+    return false;
+
+  // Only version 1 is a descriptor in the sense of being readable. Version 2,
+  // which DAEMON Tools has written since about 2011, keeps the signature and
+  // then encrypts the whole of the rest - what follows the version in one is
+  // a copyright string and several hundred bytes of noise. Checking the
+  // version matters rather than letting the parse fail on its own: the
+  // offsets read out of that noise are arbitrary numbers, and one of them
+  // landing somewhere plausible would mount a disc made of nothing.
+  if (mds[0x10] != 1)
+    return false;
+
+  const uint32_t sessions_offset = ReadU32(mds, kMdsSessionOffset);
+  const uint16_t session_count = ReadU16(mds, kMdsSessionCountOffset);
+  if (session_count == 0)
+    return false;
+
+  const std::string directory = DirectoryOf(path);
+  const std::string stem = StemOf(path);
+
+  for (uint16_t session = 0; session < session_count; ++session) {
+    const size_t block = sessions_offset + session * kMdsSessionBlockSize;
+    if (!Fits(mds, block, kMdsSessionBlockSize))
+      return false;
+
+    // The lead-in descriptors - the points that name the first track, the
+    // last track and the lead-out - are counted in with the real ones and
+    // filtered out below by their point number.
+    const uint8_t block_count = mds[block + 0x0A];
+    const uint32_t tracks_offset = ReadU32(mds, block + 0x14);
+
+    for (uint8_t index = 0; index < block_count; ++index) {
+      const size_t track = tracks_offset + index * kMdsTrackBlockSize;
+      if (!Fits(mds, track, kMdsTrackBlockSize))
+        return false;
+
+      const uint8_t point = mds[track + 0x04];
+      if (point < 1 || point > 99)
+        continue;                     // 0xA0, 0xA1, 0xA2: the lead-in
+
+      // Bit 2 of the control nibble is what tells a data track from an audio
+      // one, the same bit the drive reports in its Q subchannel.
+      const uint8_t adr_ctl = mds[track + 0x02];
+      const uint16_t stated_size = ReadU16(mds, track + 0x10);
+      const uint32_t start_sector = ReadU32(mds, track + 0x24);
+      const uint64_t start_offset = ReadU64(mds, track + 0x28);
+      const uint32_t footer_offset = ReadU32(mds, track + 0x34);
+
+      // A stride outside this range is not something this can read, and
+      // trusting it would put every sector in the wrong place; fall back to
+      // the file length, which at least has a chance of being right.
+      const uint32_t sector_size =
+          (stated_size >= 2048 && stated_size <= 2448) ? stated_size : 0;
+
+      const std::string file = ResolveMdfName(mds, footer_offset, directory,
+                                              stem);
+      if (file.empty())
+        return false;
+
+      // The same file backs every track of an ordinary dump, and it is a
+      // whole disc: open it once.
+      int source_index = -1;
+      for (size_t i = 0; i < sources_.size(); ++i) {
+        if (sources_[i].name == file) {
+          source_index = static_cast<int>(i);
+          break;
+        }
+      }
+      const bool first_track_in_file = (source_index < 0);
+      if (first_track_in_file) {
+        Source source;
+        if (!AddFileSource(file, &source, sector_size))
+          return false;
+        sources_.push_back(source);
+        source_index = static_cast<int>(sources_.size()) - 1;
+      }
+
+      // Where this track begins, twice over: the descriptor gives a disc
+      // address and, separately, a byte position in the file. They are not
+      // the same distance apart, and assuming they were is the mistake this
+      // format invites: the two seconds of pregap before an audio track have
+      // a disc address but are usually not written to the file at all, so
+      // every track after one is 150 sectors further along the disc than it
+      // is along the file. Only the byte offset knows where the bytes are.
+      const uint32_t stride = sources_[source_index].sector_size;
+      uint32_t file_lba = static_cast<uint32_t>(start_offset / stride);
+      if (file_lba == 0 && !first_track_in_file) {
+        // No offset recorded for a track that cannot be at the start of its
+        // file. The sector number is the only other thing that could place
+        // it, and is right whenever the pregaps were written out.
+        file_lba = start_sector;
+      }
+
+      Track entry;
+      entry.number = point;
+      entry.type = (adr_ctl & 0x04) ? kTrackData : kTrackAudio;
+      entry.start_lba = kLeadInSectors + start_sector;
+      entry.length = 0;               // filled in once the next track is known
+      tracks_.push_back(entry);
+
+      TrackSource track_source;
+      track_source.source = source_index;
+      track_source.file_lba = file_lba;
+      track_sources_.push_back(track_source);
+    }
+  }
+
+  if (tracks_.empty() || sources_.empty())
+    return false;
+
+  FinishTrackLayout();
   return true;
 }
 
@@ -472,7 +780,14 @@ bool Disc::OpenCue(const char* path) {
   if (tracks_.empty())
     return false;
 
-  // A track runs until the next one starts, or to the end of its file.
+  FinishTrackLayout();
+  return true;
+}
+
+// A track runs until the next one starts, or to the end of its file. The last
+// track's end is where the lead-out begins, which is what the controller
+// reports as the end of the disc.
+void Disc::FinishTrackLayout() {
   for (size_t i = 0; i < tracks_.size(); ++i) {
     const Source& source = sources_[track_sources_[i].source];
     const bool same_file = (i + 1 < tracks_.size()) &&
@@ -487,7 +802,18 @@ bool Disc::OpenCue(const char* path) {
 
   const Track& last = tracks_.back();
   total_sectors_ = last.start_lba + last.length;
-  return true;
+}
+
+// Whether an address falls in a hole between two tracks. Tracks are laid out
+// in order, so this is one pass and nearly always finds nothing: only an
+// image that left its pregaps out has holes at all.
+bool Disc::IsUnstoredGap(uint32_t lba) const {
+  for (size_t i = 0; i + 1 < tracks_.size(); ++i) {
+    if (lba >= tracks_[i].start_lba + tracks_[i].length &&
+        lba < tracks_[i + 1].start_lba)
+      return true;
+  }
+  return false;
 }
 
 void Disc::SynthesiseSectorHeader(uint8_t* sector, uint32_t lba,
@@ -539,8 +865,19 @@ bool Disc::ReadSector(uint32_t lba, uint8_t* out) const {
       break;
     }
   }
-  if (track_index < 0)
+  if (track_index < 0) {
+    // Between two tracks and inside neither: a pregap the image does not
+    // store. Alcohol leaves the two seconds before an audio track out of the
+    // file, so those sectors have a disc address and no bytes behind them.
+    // They are silence on a real disc, and answering with silence is what
+    // keeps a player that starts there running - a failed read stops it with
+    // an error instead. Anything outside the tracks altogether still fails.
+    if (IsUnstoredGap(lba)) {
+      memset(out, 0, kRawSectorSize);
+      return true;
+    }
     return false;
+  }
 
   const TrackSource& track_source = track_sources_[track_index];
   const Source& source = sources_[track_source.source];
@@ -552,11 +889,18 @@ bool Disc::ReadSector(uint32_t lba, uint8_t* out) const {
   memset(out, 0, kRawSectorSize);
   const long long byte_offset =
       static_cast<long long>(file_sector) * source.sector_size;
+  // The stride is how far apart sectors sit; what is wanted out of each one is
+  // only ever the raw sector at its front. An image that kept its subchannel
+  // strides 2448 or 2368 bytes, and the extra belongs to neither the caller's
+  // buffer nor anything above here.
+  const uint32_t wanted = (source.sector_size < kRawSectorSize)
+                              ? source.sector_size
+                              : static_cast<uint32_t>(kRawSectorSize);
 
   if (source.file != nullptr) {
     if (_fseeki64(source.file, byte_offset, SEEK_SET) != 0)
       return false;
-    if (fread(out, 1, source.sector_size, source.file) != source.sector_size)
+    if (fread(out, 1, wanted, source.file) != wanted)
       return false;
   } else if (source.device != nullptr) {
     HANDLE handle = static_cast<HANDLE>(source.device);
@@ -565,8 +909,7 @@ bool Disc::ReadSector(uint32_t lba, uint8_t* out) const {
     if (!SetFilePointerEx(handle, position, NULL, FILE_BEGIN))
       return false;
     DWORD read = 0;
-    if (!ReadFile(handle, out, source.sector_size, &read, NULL) ||
-        read != source.sector_size)
+    if (!ReadFile(handle, out, wanted, &read, NULL) || read != wanted)
       return false;
   } else {
     return false;

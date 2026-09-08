@@ -43,10 +43,11 @@ implemented directly against D3D11.
 - [x] **CD-ROM controller** at `0x1F801800-0x1F801803`: command and response
       FIFOs, the interrupt-and-acknowledge scheme, delayed responses, sector
       reading, and the commands the BIOS uses.
-- [x] **Disc images**: `.cue` sheets (multi-track, multi-file), `.bin`/`.img`
-      raw, `.iso` cooked, and a physical drive by letter. Sector size is
-      detected from the file; sync and header are synthesised for images that
-      do not store them.
+- [x] **Disc images**: `.cue` sheets (multi-track, multi-file), `.mds`/`.mdf`
+      media descriptors, `.bin`/`.img` raw, `.iso` cooked, and a physical drive
+      by letter. Sector size is detected from the file, or taken from the
+      descriptor when there is one; sync and header are synthesised for images
+      that do not store them.
 - [x] **DMA channels 2, 3 and 6**: linked-list, block and burst for the GPU,
       CD-ROM to RAM, and the ordering-table clear.
 - [x] **SIO0** controller port with the digital pad protocol, and an empty slot

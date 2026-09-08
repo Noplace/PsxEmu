@@ -22,11 +22,12 @@ A PlayStation 1 emulator revived from a 2012-2014 codebase.
 - `cpu_test`: 181 checks over the instruction set, the memory map, exceptions
   and the interrupt path. All passing.
 - `gte_test`: 99 checks over the geometry coprocessor. All passing.
-- `media_test`: 103 checks over disc images, the CD-ROM controller, ISO9660,
+- `media_test`: 200 checks over disc images, the CD-ROM controller, ISO9660,
   SYSTEM.CNF and the disc boot. All passing.
 - A software GPU that owns VRAM and produces a framebuffer.
 - DMA, the interrupt path, timers and the controller port.
-- Disc images: `.cue`, `.bin`, `.img`, `.iso`, and a physical drive.
+- Disc images: `.cue`, `.mds`/`.mdf`, `.bin`, `.img`, `.iso`, and a physical
+  drive.
 - A controller port with the digital pad protocol.
 - A Win32 front end presenting the framebuffer through Direct3D 11.
 

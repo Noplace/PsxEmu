@@ -145,7 +145,8 @@ With no arguments it looks for `bios\SCPH1001.BIN` beside the executable, then
 `SCPH1001.BIN`, then `..\..\..\bios\SCPH1001.BIN` so it works when run straight
 out of the build directory.
 
-File > Open disc mounts a `.cue`, `.bin`, `.img` or `.iso`; a drive letter can
+File > Open disc mounts a `.cue`, a `.mds`, or a `.bin`, `.img`, `.iso`
+or `.mdf` image; a drive letter can
 be passed on the command line. Keyboard maps to a digital pad in slot 1: arrows
 for the d-pad, X/Z/S/A for cross/square/circle/triangle, Q/W and 1/2 for the
 shoulders, Enter for start and Shift for select. Space pauses, Escape quits.

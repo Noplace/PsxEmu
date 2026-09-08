@@ -327,6 +327,222 @@ void TestSiblingCueIsAdopted(const std::string& directory) {
 
   remove(bin.c_str());
 }
+
+void PutU16(uint8_t* p, uint16_t value) {
+  p[0] = static_cast<uint8_t>(value);
+  p[1] = static_cast<uint8_t>(value >> 8);
+}
+
+void PutU32At(uint8_t* p, uint32_t value) {
+  p[0] = static_cast<uint8_t>(value);
+  p[1] = static_cast<uint8_t>(value >> 8);
+  p[2] = static_cast<uint8_t>(value >> 16);
+  p[3] = static_cast<uint8_t>(value >> 24);
+}
+
+// An image dumped with its subchannel: 2352 bytes of sector followed by 96
+// bytes that are not sector at all. The filler is deliberately not zero, so a
+// reader that has the stride wrong hands back 0xAA where a sector number was
+// expected rather than something that could pass for data.
+bool WriteSubchannelImage(const std::string& path, uint32_t data_sectors,
+                          uint32_t audio_sectors) {
+  static const uint8_t kSync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+  FILE* fp = fopen(path.c_str(), "wb");
+  if (fp == nullptr)
+    return false;
+  std::string sector(2448, '\0');
+  for (uint32_t i = 0; i < data_sectors + audio_sectors; ++i) {
+    memset(&sector[0], static_cast<int>(i & 0x3F), 2352);
+    memset(&sector[2352], 0xAA, 96);
+    if (i < data_sectors)
+      memcpy(&sector[0], kSync, sizeof(kSync));
+    memcpy(&sector[24], &i, sizeof(i));
+    if (fwrite(sector.data(), 1, 2448, fp) != 2448) {
+      fclose(fp);
+      return false;
+    }
+  }
+  fclose(fp);
+  return true;
+}
+
+// Builds the descriptor that goes with it: one session, a data track and an
+// audio track, and the lead-in entries a real one carries so that the parser
+// has to skip them by point number rather than by counting.
+//
+// The audio track's two-second pregap is given a disc address but no bytes,
+// which is what Alcohol actually writes and is the whole difficulty of the
+// format: after the first track, a track's position on the disc and its
+// position in the file stop being the same number.
+bool WriteMds(const std::string& path, uint32_t data_sectors,
+              uint32_t audio_sectors) {
+  const uint32_t kSectorSize = 2448;
+  const uint32_t kPregap = 150;
+  std::vector<uint8_t> mds(0x236, 0);
+
+  memcpy(&mds[0], "MEDIA DESCRIPTOR", 16);
+  mds[0x10] = 1;                              // version 1.3
+  mds[0x11] = 3;
+  PutU16(&mds[0x14], 1);                      // one session
+  PutU32At(&mds[0x50], 0x58);                 // where that session is
+
+  uint8_t* session = &mds[0x58];
+  PutU32At(session + 0x00, static_cast<uint32_t>(-static_cast<int32_t>(kPregap)));
+  PutU32At(session + 0x04, data_sectors + kPregap + audio_sectors);
+  PutU16(session + 0x08, 1);
+  session[0x0A] = 5;                          // 3 lead-in entries and 2 tracks
+  session[0x0B] = 3;
+  PutU16(session + 0x0C, 1);
+  PutU16(session + 0x0E, 2);
+  PutU32At(session + 0x14, 0x70);             // where the track blocks are
+
+  // The three lead-in points: first track, last track, lead-out.
+  const uint8_t kLeadIn[3] = { 0xA0, 0xA1, 0xA2 };
+  for (int i = 0; i < 3; ++i) {
+    uint8_t* block = &mds[0x70 + i * 0x50];
+    block[0x02] = 0x14;
+    block[0x04] = kLeadIn[i];
+  }
+
+  struct { uint8_t mode, adr_ctl, point; uint32_t start_sector, file_sector; }
+      entries[2] = {
+          { 0xEC, 0x14, 1, 0, 0 },
+          { 0xA9, 0x10, 2, data_sectors + kPregap, data_sectors },
+      };
+
+  for (int i = 0; i < 2; ++i) {
+    uint8_t* block = &mds[0x160 + i * 0x50];
+    block[0x00] = entries[i].mode;
+    block[0x01] = 0x08;                       // subchannel present
+    block[0x02] = entries[i].adr_ctl;
+    block[0x04] = entries[i].point;
+    const uint32_t absolute = entries[i].start_sector + kPregap;
+    block[0x09] = static_cast<uint8_t>(absolute / (60 * 75));
+    block[0x0A] = static_cast<uint8_t>((absolute / 75) % 60);
+    block[0x0B] = static_cast<uint8_t>(absolute % 75);
+    PutU32At(block + 0x0C, 0x200 + i * 8);    // the extra block
+    PutU16(block + 0x10, static_cast<uint16_t>(kSectorSize));
+    PutU32At(block + 0x24, entries[i].start_sector);
+    PutU32At(block + 0x28, entries[i].file_sector * kSectorSize);
+    block[0x30] = 1;                          // one file behind it
+    PutU32At(block + 0x34, 0x210 + i * 16);   // the footer
+  }
+
+  PutU32At(&mds[0x200], kPregap);
+  PutU32At(&mds[0x204], data_sectors);
+  PutU32At(&mds[0x208], kPregap);
+  PutU32At(&mds[0x20C], audio_sectors);
+
+  for (int i = 0; i < 2; ++i)
+    PutU32At(&mds[0x210 + i * 16], 0x230);    // both name the same file
+  memcpy(&mds[0x230], "*.mdf", 6);            // "the descriptor's own name"
+
+  FILE* fp = fopen(path.c_str(), "wb");
+  if (fp == nullptr)
+    return false;
+  const size_t written = fwrite(&mds[0], 1, mds.size(), fp);
+  fclose(fp);
+  return written == mds.size();
+}
+
+// Alcohol's pair, and the two things about it that nothing else in this
+// project has to deal with.
+//
+// The first is the stride. These dumps keep the 96 bytes of subchannel that
+// follow every sector, so sectors sit 2448 bytes apart - and 2448 is not a
+// multiple of 2352, 2336 or 2048, which is every stride the file length alone
+// can suggest. Guess wrong and it is not one sector that is wrong, it is
+// every sector after the first, by a growing amount. The descriptor is the
+// only thing that says otherwise.
+//
+// The second is that a track's place on the disc and its place in the file
+// are not the same number. The two seconds before an audio track are not
+// written out, so the disc runs 150 sectors ahead of the file from the second
+// track onwards. Read the disc address as a file position and the music comes
+// out two seconds late.
+void TestMdsDescriptor(const std::string& directory) {
+  printf("a media descriptor and the image it describes\n");
+
+  const std::string mdf = directory + "media_alcohol.mdf";
+  const std::string mds = directory + "media_alcohol.mds";
+  if (!WriteSubchannelImage(mdf, 60, 40) || !WriteMds(mds, 60, 40)) {
+    printf("  FAIL  could not write the pair\n");
+    ++g_failures;
+    return;
+  }
+
+  {
+    Disc disc;
+    Check(disc.Open(mds.c_str()), "open the descriptor");
+    CheckEqual(disc.track_count(), 2, "both tracks are there");
+    Check(disc.track(0).type == Disc::kTrackData, "track 1 is data");
+    Check(disc.track(1).type == Disc::kTrackAudio, "track 2 is audio");
+    CheckEqual(disc.track(0).number, 1, "numbered by their point");
+    CheckEqual(disc.track(1).number, 2, "and the second follows");
+    CheckEqual(disc.track(0).start_lba, Disc::kLeadInSectors,
+               "track 1 starts after the lead-in");
+    CheckEqual(disc.track(0).length, 60, "and runs to the pregap");
+    CheckEqual(disc.track(1).start_lba, Disc::kLeadInSectors + 60 + 150,
+               "the audio starts a pregap later on the disc");
+    CheckEqual(disc.track(1).length, 40, "and runs to the end of the file");
+    CheckEqual(disc.total_sectors(), Disc::kLeadInSectors + 60 + 150 + 40,
+               "the lead-out is where the audio ends");
+
+    // The stride. A reader that assumed 2352 would be 96 bytes further out
+    // with every sector, so sector 30 is the one that catches it.
+    uint8_t sector[Disc::kRawSectorSize];
+    Check(disc.ReadSector(Disc::kLeadInSectors + 30, sector),
+          "read a sector in the data track");
+    CheckEqual(UserWordOf(sector), 30, "it resolves to the right sector");
+
+    // The disc-against-file offset. The audio track's first sector is 210
+    // sectors along the disc and 60 along the file.
+    Check(disc.ReadSector(Disc::kLeadInSectors + 60 + 150, sector),
+          "read the first sector of the audio track");
+    CheckEqual(UserWordOf(sector), 60, "which is where the audio begins");
+    Check(disc.ReadSector(Disc::kLeadInSectors + 60 + 150 + 39, sector),
+          "read its last sector");
+    CheckEqual(UserWordOf(sector), 99, "at the end of the file");
+
+    // The pregap has an address and no bytes behind it. Silence is what is
+    // there on a real disc; a failed read would stop a player with an error.
+    memset(sector, 0xCD, sizeof(sector));
+    Check(disc.ReadSector(Disc::kLeadInSectors + 60, sector),
+          "read inside the pregap");
+    bool silent = true;
+    for (size_t i = 0; i < sizeof(sector); ++i)
+      silent = silent && sector[i] == 0;
+    Check(silent, "and it is silence, not the sectors on either side");
+
+    Check(!disc.ReadSector(disc.total_sectors(), sector),
+          "reading past the lead-out still fails");
+    disc.Close();
+  }
+
+  // Opening the image instead of the descriptor is the easy mistake, and here
+  // it is not merely a track list that is lost - without the descriptor there
+  // is no stride either, so the disc does not read at all.
+  {
+    Disc disc;
+    Check(disc.Open(mdf.c_str()), "open the image and find the descriptor");
+    CheckEqual(disc.track_count(), 2, "both tracks are still there");
+    // Scanning the sectors alone would find the same two tracks and put the
+    // audio at 210, right where the data stops; only the descriptor knows
+    // about the pregap between them. That is how this check tells which of
+    // the two answered.
+    CheckEqual(disc.track(1).start_lba, Disc::kLeadInSectors + 60 + 150,
+               "and the layout came from the descriptor, not a scan");
+    uint8_t sector[Disc::kRawSectorSize];
+    Check(disc.ReadSector(Disc::kLeadInSectors + 30, sector),
+          "and sectors still land where they should");
+    CheckEqual(UserWordOf(sector), 30, "at the right stride");
+    disc.Close();
+  }
+
+  RemoveImage(mdf);
+  RemoveImage(mds);
+}
 // Drives the controller the way software does: write parameters, write the
 // command, then step time until the interrupt appears and read the response.
 class ControllerHarness {
@@ -1181,6 +1397,7 @@ int main(int argc, char** argv) {
   TestRawImageAndCue(directory);
   TestBareImageTrackLayout(directory);
   TestSiblingCueIsAdopted(directory);
+  TestMdsDescriptor(directory);
   TestIso9660(directory);
   TestSystemCnf();
   TestSettingsFile(directory);

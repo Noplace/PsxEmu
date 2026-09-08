@@ -32,6 +32,7 @@ namespace psx {
   where they came from. Understands:
 
     .cue          a sheet naming one or more binary files and their tracks
+    .mds .mdf     Alcohol 120%'s descriptor and the sectors it describes
     .bin .img     raw sectors, sector size detected from the file length
     .iso          usually 2048-byte cooked sectors, also detected
     D: \\.\D:     a physical drive (data tracks only)
@@ -115,16 +116,31 @@ class Disc {
   std::string path_;
 
   bool OpenCue(const char* path);
+  bool OpenMds(const char* path);
   bool OpenImage(const char* path);
   // Where the data track ends in a raw image, found from the sectors
   // themselves when no cue sheet says.
   uint32_t FindDataTrackLength(const Source& source) const;
   bool IsDataSector(const Source& source, uint32_t file_sector) const;
-  // A cue sheet of the same name beside an image, if there is one - the only
-  // place a track layout exists for a bare dump.
-  static std::string FindSiblingCue(const std::string& image_path);
+  // A descriptor of the same name beside an image, if there is one - the only
+  // place a track layout exists for a bare dump. `extension` is given without
+  // its dot.
+  static std::string FindSibling(const std::string& image_path,
+                                 const char* extension);
   bool OpenDevice(const char* path);
-  bool AddFileSource(const std::string& path, Source* out) const;
+  // `sector_size` of zero means work the layout out from the file length; a
+  // descriptor that states one passes it here instead, which is the only way
+  // to read a stride the length alone cannot reveal.
+  bool AddFileSource(const std::string& path, Source* out,
+                     uint32_t sector_size = 0) const;
+
+  // Whether an address falls between two tracks rather than inside one.
+  bool IsUnstoredGap(uint32_t lba) const;
+
+  // Turns a list of track start points into lengths. Neither a cue sheet nor
+  // a media descriptor states how long a track is; both say where each one
+  // begins and leave the rest to arithmetic.
+  void FinishTrackLayout();
 
   // Fills in sync, header and mode for a sector that was not stored raw.
   static void SynthesiseSectorHeader(uint8_t* sector, uint32_t lba,
