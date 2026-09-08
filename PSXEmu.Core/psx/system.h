@@ -144,6 +144,11 @@ class System {
   // Instructions that ran with an interrupt pending but blocked by Cop0 SR.
   uint64_t interrupts_blocked() const { return interrupts_blocked_; }
   uint64_t interrupts_blocked_im() const { return interrupts_blocked_im_; }
+  // Interrupts that landed on a GTE command and so were delivered behind it
+  // rather than in front - see StepInstruction.
+  uint64_t interrupts_after_gte_command() const {
+    return interrupts_after_gte_command_;
+  }
   // Instructions that ran with interrupts globally enabled.
   uint64_t instructions_with_ie() const { return instructions_with_ie_; }
 
@@ -174,6 +179,7 @@ class System {
   uint64_t interrupts_taken_by_source_[11] = {0};
   uint64_t interrupts_blocked_;
   uint64_t interrupts_blocked_im_;
+  uint64_t interrupts_after_gte_command_ = 0;
   uint64_t instructions_with_ie_;
   static void thread_func(System* sys);
   Gpu gpu_;

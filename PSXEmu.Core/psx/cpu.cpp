@@ -293,7 +293,34 @@ void Cpu::ExecuteInstruction() {
     }
 }
 
+// Is the instruction the pc is sitting on a GTE command? Peeked rather than
+// fetched: this runs before the instruction is executed, and a fetch here
+// would charge cycles and could raise a fault of its own.
+//
+// The test is the one the BIOS exception handler makes: COP2 with bit 25 set,
+// which is 0x4A or 0x4B in the top byte. See System::StepInstruction for why
+// an interrupt must not be taken in front of one.
+bool Cpu::NextIsGteCommand() {
+  // Masked down the way AddressTranslation does, but without it: that function
+  // also sets the cache and bus-error flags, and Load() reads the bus-error
+  // flag left by the previous translation. Disturbing it here would change
+  // what the fetch immediately after this sees. KSEG2 falls outside both
+  // ranges below and answers false, which is right - nothing executes there.
+  const uint32_t pc = context_->pc;
+  const uint32_t physical = (pc < 0x80000000) ? pc : (pc & 0x1FFFFFFF);
+  uint32_t word;
+  if (physical <= 0x007FFFFF)
+    word = system_->io().ram_buffer.u32[(physical & 0x001FFFFF) >> 2];
+  else if (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF)
+    word = system_->io().bios_buffer.u32[(physical & 0x0007FFFF) >> 2];
+  else
+    return false;
+  return ((word >> 24) & 0xFE) == 0x4A;
+}
+
 void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes code) {
+
+
   #if defined(_DEBUG) && defined(CPU_DEBUG)
     if(system_->csvlog.fp)
       fprintf_s(system_->csvlog.fp,"0x%08X,0x%08X,Exception,address,0x%08X,exception,0x%08X,code=0x%08X,SR,0x%08X\n",index,context_->prev_pc,address,exception,code,context_->ctrl.SR.raw);
@@ -713,6 +740,7 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
     RaiseException(context_->prev_pc,kOtherException,kExceptionCodeAdES);
     return;
   }
+
   // A watched RAM address records who wrote it. "This structure holds garbage"
   // is otherwise a dead end: the write that put it there happened long before
   // the read that noticed.
@@ -731,7 +759,7 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
   }
 
 
-   if (context_->ctrl.SR.IsC) { //cache 
+   if (context_->ctrl.SR.IsC) { //cache
     switch (size) {
       case kM8: system_->io().scratchpad.u8[(address&0x3FF)] = data&0xFF;
       case kM16: system_->io().scratchpad.u16[(address&0x3FF)>>1] = data&0xFFFF;

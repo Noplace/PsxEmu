@@ -329,6 +329,10 @@ class Cpu : public Component {
   int Deinitialize();
   void ExecuteInstruction();
   void RaiseException(uint32_t address, Exceptions exception, ExceptionCodes code);
+
+  // True when the pc is sitting on a GTE command. System::StepInstruction has
+  // to let one of those run before it delivers an interrupt.
+  bool NextIsGteCommand();
   void Reset() { RaiseException(context_->pc,kResetException,kExceptionCodeInt); }
   bool IsBusError() {
     return !valid_address_flag_;

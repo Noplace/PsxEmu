@@ -863,6 +863,12 @@ int main(int argc, char** argv) {
   printf("               I_STAT=%08X I_MASK=%08X SR=%08X\n",
          system->io().io.interrupt_stat, system->io().io.interrupt_mask,
          ctx->ctrl.SR.raw);
+  // Interrupts that landed on a GTE command, which the hardware issues before
+  // it recognises the interrupt. Each one is a command the emulator used to
+  // drop on the floor - see System::StepInstruction.
+  printf("               %llu delivered behind a GTE command\n",
+         static_cast<unsigned long long>(
+             system->interrupts_after_gte_command()));
 
   const emulation::psx::Cdrom::Stats& cd_stats = system->cdrom().stats();
   printf("cdrom          %llu commands (last %02X), %llu sectors, "

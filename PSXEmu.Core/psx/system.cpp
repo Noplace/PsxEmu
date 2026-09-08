@@ -127,6 +127,31 @@ void System::StepInstruction() {
   // Nothing needs to check for a branch delay slot: Jump() runs the delay slot
   // inside the same ExecuteInstruction call, so control never arrives here
   // partway through a branch.
+  //
+  // A GTE command is the one instruction an interrupt may not be delivered in
+  // front of. The hardware issues it to the coprocessor before it recognises
+  // the interrupt, so by the time the handler runs the command has already
+  // happened - and the BIOS handler knows it, which is why it fetches the
+  // instruction at EPC, tests it for COP2-with-bit-25 (the 0x4A compare at
+  // 0x00000CD8) and steps EPC over it before returning. Deliver the interrupt
+  // in front of the instruction and it never executes, the BIOS skips it
+  // anyway, and the command is simply lost.
+  //
+  // Losing one is not subtle. Silent Hill builds each display-list packet with
+  // lwc2/DPCS/swc2 triplets, so a dropped DPCS leaves the colour FIFO holding
+  // the previous packet's colour - and that word carries the primitive's
+  // command byte. A 0x38 flat quad wearing a 0x3C textured-quad byte makes the
+  // GPU read a 12-word packet out of an 8-word one, and every command after it
+  // is read at the wrong offset. The game's colour words happen to look like
+  // valid commands, so the stream stays plausibly misaligned instead of
+  // failing outright, until one is executed as GP0(02h) Fill Rectangle and
+  // paints a block of ground colour across the texture pages.
+  //
+  // So let it run first and raise the interrupt behind it, with EPC still
+  // pointing at the instruction - which is what the BIOS is expecting to skip.
+  bool gte_command_first = false;
+  uint32_t gte_command_pc = 0;
+
   if (io_.io.interrupt_stat & io_.io.interrupt_mask) {
     // Cop0 SR: bit 10 is the hardware interrupt mask line the PSX wires all
     // of its interrupts to, and IEc is the global enable.
@@ -136,8 +161,14 @@ void System::StepInstruction() {
       for (int bit = 0; bit < 11; ++bit)
         if (pending & (1u << bit))
           ++interrupts_taken_by_source_[bit];
-      cpu_.RaiseException(cpu_.context()->pc, kOtherException,
-                          kExceptionCodeInt);
+      if (cpu_.NextIsGteCommand()) {
+        gte_command_first = true;
+        gte_command_pc = cpu_.context()->pc;
+        ++interrupts_after_gte_command_;
+      } else {
+        cpu_.RaiseException(cpu_.context()->pc, kOtherException,
+                            kExceptionCodeInt);
+      }
     } else if (!(cpu_.context()->ctrl.SR.raw & 0x400)) {
       ++interrupts_blocked_im_;
     } else {
@@ -146,6 +177,10 @@ void System::StepInstruction() {
   }
 
   cpu_.ExecuteInstruction();
+
+  if (gte_command_first) {
+    cpu_.RaiseException(gte_command_pc, kOtherException, kExceptionCodeInt);
+  }
 
   if (auto_boot_ && cpu_.context()->pc == 0x80030000) {
     auto_boot_ = false;
