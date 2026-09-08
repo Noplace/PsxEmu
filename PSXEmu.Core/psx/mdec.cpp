@@ -368,6 +368,17 @@ void Mdec::FinishBlock() {
 // Separable 8x8, using the cosine table the scale-table command supplied. Two
 // passes of a straightforward matrix multiply: correctness first, and this is
 // nowhere near the hot path - a 320x240 frame is 300 macroblocks.
+//
+// The table games upload holds C(u)*cos((2x+1)*u*pi/16) scaled by 32768, so
+// entry 0 is 1/sqrt(2)*32768 = 23170 (0x5A82) and entry 8 is cos(pi/16)*32768
+// = 32138 (0x7D8A). The 1D transform each pass performs is
+// f(x) = 1/2 * sum_u C(u)*F(u)*cos(...), and that leading 1/2 is not in the
+// table - so a pass divides by 65536, not by 32768. Shifting by 15 made every
+// pass twice as large as it should be, four times over the two, which clamped
+// most of a real frame to the ends of the range: dark areas crushed to black,
+// bright areas blew out to white, and a face in shadow came out a silhouette.
+// The check that should have caught it only tested that a DC-only block was
+// flat, which it is at any gain.
 void Mdec::InverseDct(const int16_t* in, int16_t* out) const {
   int32_t pass[64];
 
@@ -379,7 +390,7 @@ void Mdec::InverseDct(const int16_t* in, int16_t* out) const {
         sum += static_cast<int32_t>(in[u * 8 + x]) * scale_table_[u * 8 + y];
       // Rounded, not truncated: an arithmetic shift biases negative values
       // downwards, and half the coefficients of a real block are negative.
-      pass[y * 8 + x] = (sum + (1 << 14)) >> 15;
+      pass[y * 8 + x] = (sum + (1 << 15)) >> 16;
     }
   }
 
@@ -390,7 +401,7 @@ void Mdec::InverseDct(const int16_t* in, int16_t* out) const {
       for (int u = 0; u < 8; ++u)
         sum += pass[y * 8 + u] * scale_table_[u * 8 + x];
       // Rounded, then saturated to the range the hardware carries.
-      const int32_t value = (sum + (1 << 14)) >> 15;
+      const int32_t value = (sum + (1 << 15)) >> 16;
       out[y * 8 + x] = static_cast<int16_t>(Clamp(value, -128, 127));
     }
   }

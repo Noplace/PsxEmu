@@ -61,12 +61,19 @@ void SetFlatQuantTable(Mdec& mdec, uint8_t value) {
 // The scale table is the cosine matrix the inverse transform multiplies by.
 // This builds the real one, in the 1.15 fixed point the hardware uses, so the
 // transform can be checked against what it should actually produce.
+//
+// C(0) is 1/sqrt(2) and C(u) is 1, exactly as the table a game uploads holds
+// it - entry 0 comes out 23170 (0x5A82) and entry 8 32138 (0x7D8A), which is
+// what Silent Hill was seen to write. This used to fold an extra 1/2 into
+// both, which quietly cancelled the transform reading the table as though the
+// 1/2 in the 1D IDCT were part of it; the table was then half of hardware's
+// and the transform twice as hot, so the two agreed here and nowhere else.
 void SetScaleTable(Mdec& mdec) {
   int16_t table[64];
   for (int u = 0; u < 8; ++u) {
     for (int x = 0; x < 8; ++x) {
-      const double c = (u == 0) ? (1.0 / 2.8284271247461903)   // 1/(2*sqrt(2))
-                                : 0.5;
+      const double c = (u == 0) ? (1.0 / 1.4142135623730951)   // 1/sqrt(2)
+                                : 1.0;
       const double value =
           c * cos((2.0 * x + 1.0) * u * 3.14159265358979323846 / 16.0);
       table[u * 8 + x] = static_cast<int16_t>(value * 32768.0);
@@ -230,6 +237,14 @@ void TestDcOnlyBlockIsFlat(Mdec& mdec) {
     const uint32_t b0 = first & 0xFF;
     const uint32_t b1 = (first >> 8) & 0xFF;
     Check(b0 == b1, "pixels within a word agree");
+
+    // Flat is not enough: a transform with the wrong gain is still flat, and
+    // that is exactly how a 4x-too-hot inverse transform survived here while
+    // clipping most of every real frame to black and white. A DC-only block
+    // is the transform's own normalisation written down - it must come out at
+    // DC/8, and at quant scale 0 the DC of 16 dequantises to 16*2 = 32, so
+    // 32/8 = 4, which unsigned output offsets to 132.
+    CheckEqual(b0, 132u, "a DC-only block lands at DC/8, not some multiple");
   }
 }
 
