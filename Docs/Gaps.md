@@ -433,19 +433,24 @@ keys are preserved, and every getter takes the current value as its default.
 `psxemu.ini` beside the executable, written as settings change rather than only
 at exit.
 
-Seven settings are in it now: `audio_volume`, `graphics_backend`,
-`video_filter`, the controller type and input source for each port, and
-`cdrom_mechanical_timing`. The BIOS path, the disc path, the key bindings and
-everything else are still command-line arguments, menu choices or hardcoded,
-and are not remembered between runs.
+Eight settings are in it now: `audio_volume`, `graphics_backend`,
+`video_filter`, the controller type and input source for each port,
+`frame_limiter` and `cdrom_mechanical_timing`. The BIOS path, the disc path,
+the key bindings and everything else are still command-line arguments, menu
+choices or hardcoded, and are not remembered between runs.
 
 ### The front end is minimal
 
 A window, a menu with disc, reset and volume commands, a D3D11 presenter and
 keyboard input. No configurable bindings, no debugger, no settings UI beyond
-the volume menu, no pause indicator, no speed display -
-and that last one matters more than it sounds, because nothing in this project
-has ever measured wall-clock speed. See
+the volume menu, no pause indicator.
+
+There **is** a speed display now, in the window title: emulated frames per
+second of wall clock and that as a percentage of what the emulated display is
+producing them at. This entry used to list its absence and say it mattered
+more than it sounded, and it did - the front end turned out to have no frame
+limiter at all, so it ran at the monitor's refresh rate, which on a 165 Hz
+display is 2.8x. Nothing could see that without a number. See bug 49, and
 [Recompiler-Plan.md](Recompiler-Plan.md), which argues that measurement should
 come before any optimisation work.
 

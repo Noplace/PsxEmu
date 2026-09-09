@@ -48,6 +48,7 @@
 #include <shellapi.h>   // CommandLineToArgvW
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -89,6 +90,7 @@ enum MenuCommand {
   kCommandFilterFirst,
   kCommandFilterLast = kCommandFilterFirst + 8,       // None + 8 filters
   kCommandViewVram,
+  kCommandFrameLimiter,
   kCommandCdMechanicalTiming,
   kCommandControllerTypeFirst,
   kCommandControllerTypeLast = kCommandControllerTypeFirst + 5,  // 2 ports x 3 types
@@ -157,6 +159,24 @@ struct Application {
   // member rather than a function-local static so there is one per
   // application rather than one per process.
   std::array<int16_t, Spu::kSampleRate / 30 * 2> audio_scratch = {};
+
+  // Speed. `title_base` is what the window would be called with no readout on
+  // it - kept so the readout can be re-appended without re-deriving the name
+  // from the disc path every time it updates.
+  //
+  // Nothing in this project had ever measured wall-clock speed before this
+  // (Docs/Gaps.md said so, and said it mattered more than it sounded), so
+  // "the intro plays too fast" had no number attached to it and no way to
+  // tell a fix from a placebo.
+  std::wstring title_base = kWindowTitle;
+  uint64_t speed_frames = 0;          // emulated frames since the last update
+  std::chrono::steady_clock::time_point speed_since =
+      std::chrono::steady_clock::now();
+
+  // What actually holds the machine to 59.29 Hz (49.76 in PAL). Without it
+  // the loop runs at whatever blocks first - the monitor's refresh rate, or
+  // the sound device - see platform/frame_limiter.h.
+  utilities::FrameLimiter frame_limiter;
 
   // Two fixed XInput slots - "Gamepad 1" and "Gamepad 2" in the Input menu,
   // XInput user index 0 and 1 respectively. Which PSX port (if either) each
@@ -536,6 +556,30 @@ void SetInputSource(Application& app, HWND window, int port,
   SaveSettingsIfChanged(app);
 }
 
+// Ticks whether the machine is being held to the emulated display's frame
+// rate. Ticked is a console; unticked runs at whatever the monitor's refresh
+// rate or the sound device allows, which the title bar's percentage shows.
+void UpdateFrameLimiterMenu(HWND window, const Application& app) {
+  HMENU bar = GetMenu(window);
+  if (bar == nullptr || app.system == nullptr)
+    return;
+  const bool on = app.system->config().frame_limiter;
+  CheckMenuItem(bar, static_cast<UINT>(kCommandFrameLimiter),
+                MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+}
+
+void SetFrameLimiter(Application& app, HWND window, bool on) {
+  if (app.system == nullptr)
+    return;
+  app.system->config().frame_limiter = on;
+  // Whichever way it went, the deadline it was pacing to is stale - it has
+  // either just stopped being used or has not been used for a while. Starting
+  // clean stops the first frame back from being asked to make up the gap.
+  app.frame_limiter.Reset();
+  UpdateFrameLimiterMenu(window, app);
+  SaveSettingsIfChanged(app);
+}
+
 // Ticks whether the drive is being charged for spin-up, seek distance and
 // rotational latency. Off is the timing the emulator has always had; on makes
 // loading take about as long as a console's, which is most visible on the
@@ -622,17 +666,53 @@ constexpr const char* kExeFilter =
 
 // Titles the window after whatever is loaded - a disc image, a bare PS-EXE, or
 // nothing (the BIOS shell with an empty drive).
-void SetWindowTitleForPath(HWND window, const std::string& path) {
+//
+// Records the name in `app.title_base` rather than setting the window text
+// directly, because the speed readout is appended to it once a second and
+// would otherwise be wiped by every disc change.
+void SetWindowTitleForPath(Application& app, HWND window,
+                           const std::string& path) {
   if (path.empty()) {
-    SetWindowTextW(window, kWindowTitle);
-    return;
+    app.title_base = kWindowTitle;
+  } else {
+    const size_t slash = path.find_last_of("/\\");
+    const std::string name =
+        (slash == std::string::npos) ? path : path.substr(slash + 1);
+    app.title_base = std::wstring(kWindowTitle) + L" - " +
+                     std::wstring(name.begin(), name.end());
   }
-  const size_t slash = path.find_last_of("/\\");
-  const std::string name =
-      (slash == std::string::npos) ? path : path.substr(slash + 1);
-  const std::wstring title =
-      std::wstring(kWindowTitle) + L" - " + std::wstring(name.begin(), name.end());
-  SetWindowTextW(window, title.c_str());
+  SetWindowTextW(window, app.title_base.c_str());
+}
+
+// Appends "59.3 fps (100%)" to the window title once a second: emulated
+// frames actually produced per second of wall clock, and that as a percentage
+// of what the emulated display is producing them at.
+//
+// 100% is a console. Anything else is the front end running the machine at
+// the wrong speed, which is invisible without a number - a boot intro at 280%
+// just looks like a short intro.
+void UpdateSpeedReadout(Application& app, HWND window) {
+  ++app.speed_frames;
+  const auto now = std::chrono::steady_clock::now();
+  const double elapsed =
+      std::chrono::duration<double>(now - app.speed_since).count();
+  if (elapsed < 1.0)
+    return;
+
+  const double fps = app.speed_frames / elapsed;
+  const double target =
+      (app.system != nullptr) ? app.system->gpu().refresh_hz() : 0.0;
+  app.speed_frames = 0;
+  app.speed_since = now;
+
+  wchar_t suffix[64] = {};
+  if (target > 0.0) {
+    swprintf(suffix, std::size(suffix), L"  -  %.1f fps (%.0f%%)", fps,
+             100.0 * fps / target);
+  } else {
+    swprintf(suffix, std::size(suffix), L"  -  %.1f fps", fps);
+  }
+  SetWindowTextW(window, (app.title_base + suffix).c_str());
 }
 
 // Keyboard to digital pad. Arbitrary but conventional; a real settings file
@@ -809,7 +889,7 @@ bool BootDiscFromFile(Application& app, HWND window, const std::string& path) {
   // question the player has to answer by hand.
   LoadOrCreateMemoryCardsForDisc(app, window, path);
 
-  SetWindowTitleForPath(window, path);
+  SetWindowTitleForPath(app, window, path);
   app.paused = false;
   return true;
 }
@@ -819,7 +899,7 @@ void BootBios(Application& app, HWND window) {
   if (!ResetMachine(app, window))
     return;
   app.system->EjectDisc();
-  SetWindowTitleForPath(window, std::string());
+  SetWindowTitleForPath(app, window, std::string());
   app.paused = false;
 }
 
@@ -862,7 +942,7 @@ bool BootPsExeFromFile(Application& app, HWND window, const std::string& path) {
   // asks the CD-ROM for anything.
   app.system->EjectDisc();
   app.system->set_auto_boot_exe(true, path);
-  SetWindowTitleForPath(window, path);
+  SetWindowTitleForPath(app, window, path);
   app.paused = false;
   return true;
 }
@@ -902,6 +982,9 @@ HMENU CreateMainMenu() {
   AppendMenuW(emulation, MF_STRING, kCommandLoadState,
               L"&Load State\tF1..F8");
   AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(emulation, MF_STRING,
+              static_cast<UINT_PTR>(kCommandFrameLimiter),
+              L"&Frame Limiter");
   AppendMenuW(emulation, MF_STRING,
               static_cast<UINT_PTR>(kCommandCdMechanicalTiming),
               L"CD-ROM &Mechanical Timing");
@@ -1009,13 +1092,13 @@ void OnCommand(Application& app, HWND window, int command) {
                     MB_OK | MB_ICONWARNING);
         break;
       }
-      SetWindowTitleForPath(window, path);
+      SetWindowTitleForPath(app, window, path);
       break;
     }
 
     case kCommandEjectDisc:
       app.system->EjectDisc();
-      SetWindowTitleForPath(window, std::string());
+      SetWindowTitleForPath(app, window, std::string());
       break;
 
     case kCommandBootBios:
@@ -1088,6 +1171,11 @@ void OnCommand(Application& app, HWND window, int command) {
       }
       break;
     }
+
+    case kCommandFrameLimiter:
+      if (app.system != nullptr)
+        SetFrameLimiter(app, window, !app.system->config().frame_limiter);
+      break;
 
     case kCommandCdMechanicalTiming:
       if (app.system != nullptr) {
@@ -1278,10 +1366,16 @@ CommandLine ParseCommandLine() {
 // The frame
 // ---------------------------------------------------------------------------
 
-// Runs the machine until the GPU says a frame is finished. That keeps the pace
-// tied to the emulated display rather than to a timer here, and it is the same
-// loop the headless harness runs. The guard stops a machine that has stopped
-// producing frames from hanging the window.
+// Runs the machine until the GPU says a frame is finished - the same loop the
+// headless harness runs. The guard stops a machine that has stopped producing
+// frames from hanging the window.
+//
+// This decides how much work an iteration does. It does **not** decide when
+// the next one starts, and the comment here used to claim it did ("keeps the
+// pace tied to the emulated display rather than to a timer") - which is why
+// the front end ran at the monitor's refresh rate for as long as it did. The
+// wall clock belongs to app.frame_limiter at the bottom of the loop; see bug
+// 49 and platform/frame_limiter.h.
 void RunOneFrame(Application& app) {
   constexpr uint64_t kMaxInstructionsPerFrame = 8000000;
   const uint64_t target_frame = app.system->gpu().frame_count() + 1;
@@ -1402,6 +1496,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
       1, ParseControllerType(app.system->config().controller_type[1]));
   UpdateControllerTypeMenu(window, app);
   UpdateInputSourceMenu(window, app);
+  UpdateFrameLimiterMenu(window, app);
   UpdateCdTimingMenu(window, app);
   if (app.current_backend == "d3d12") {
     LoadAllFilters(*app.graphics);
@@ -1415,7 +1510,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
 
   if (!command_line.disc.empty() &&
       app.system->LoadDisc(command_line.disc.c_str())) {
-    SetWindowTitleForPath(window, command_line.disc);
+    SetWindowTitleForPath(app, window, command_line.disc);
     LoadOrCreateMemoryCardsForDisc(app, window, command_line.disc);
   }
 
@@ -1438,6 +1533,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
 
     if (app.paused) {
       Sleep(16);
+      // Nothing to catch up on when the machine starts again. The limiter
+      // would work this out for itself on the first frame back, but saying so
+      // here is cheaper than relying on that.
+      app.frame_limiter.Reset();
       continue;
     }
 
@@ -1531,6 +1630,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
 
     RunOneFrame(app);
     PumpAudio(app);
+    UpdateSpeedReadout(app, window);
 
     //PumpAudio(app);
 
@@ -1566,6 +1666,23 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
       app.graphics->RenderFramebuffer(pixels, width, height);
       app.graphics->EndFrame();
     }
+
+    // Last, so the wait absorbs whatever the rest of the iteration did not
+    // take. Composes with the two accidental brakes rather than fighting
+    // them: if vsync or the audio device already held this frame back past
+    // its deadline there is nothing left to wait for and this returns at
+    // once, and if neither did, this is what keeps the machine at the speed
+    // of a PlayStation instead of the speed of the screen it is drawn on.
+    //
+    // Emulation > Frame Limiter turns it off, which puts the loop back to
+    // being paced by whatever blocks first - useful to get through a load or
+    // to read the host's real headroom off the title bar, and wrong for
+    // playing. Reset while it is off so re-enabling starts a fresh deadline
+    // rather than owing however long it ran unpaced.
+    if (app.system->config().frame_limiter)
+      app.frame_limiter.Wait(app.system->gpu().refresh_hz());
+    else
+      app.frame_limiter.Reset();
   }
 
   // Written on every change already; this catches anything the last edit

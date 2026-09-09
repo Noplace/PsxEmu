@@ -85,6 +85,22 @@ struct EmuConfig {
   std::array<std::string, 2> input_source = { "gamepad1", "gamepad2" };
   static const std::array<const char*, 3> kValidInputSources;
 
+  // --- Timing -------------------------------------------------------------
+  // Whether the front end holds the machine to the emulated display's own
+  // frame rate - 59.29 Hz in NTSC, 49.76 in PAL - against the wall clock.
+  //
+  // On is a console, and is the default because it is the only setting that
+  // runs at a defined speed. Off does not mean "uncapped" so much as "paced by
+  // whatever happens to block first": the monitor's refresh rate through
+  // Present with vsync on, or the sound device's buffer filling. On a 165 Hz
+  // display with audio not gating, that is 2.8x - which is what made the BIOS
+  // intro flash past and is the whole reason this exists (bug 49).
+  //
+  // Worth turning off to get through a long load or an unskippable intro, or
+  // to see how much headroom the host has - the window title's percentage is
+  // only interesting when something is allowed to exceed 100.
+  bool frame_limiter = true;
+
   // --- CD-ROM -------------------------------------------------------------
   // Whether the drive is charged for the mechanical work a real one does:
   // spinning up from a standstill, moving the head a distance rather than

@@ -89,6 +89,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_letterbox\ /Fe:Temp\tools\letterbox_test.exe ^
    PSXEmu.Core\tools\letterbox_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_framelimit mkdir Temp\tools\obj_framelimit
+cl %FLAGS% /Fo:Temp\tools\obj_framelimit\ /Fe:Temp\tools\frame_limiter_test.exe ^
+   PSXEmu.Core\tools\frame_limiter_test.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 echo.
 echo Built Temp\tools\boot_runner.exe
 echo Built Temp\tools\media_test.exe

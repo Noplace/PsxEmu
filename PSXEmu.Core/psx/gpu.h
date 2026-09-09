@@ -135,6 +135,22 @@ class Gpu : public GpuCore {
   static const uint32_t kGpuClockDenominator = 7;
   static const uint32_t kDotsPerScanline     = 3413;
 
+  // How many frames a second the emulated display is actually producing:
+  // 33868800 * 11/7 GPU clocks, divided by a frame's worth of them. 59.29 Hz
+  // in NTSC, 49.76 in PAL - neither of which is 60, and neither of which is
+  // any host monitor's refresh rate.
+  //
+  // A front end that wants to run at the speed of the machine rather than at
+  // the speed of the screen it is drawn on needs this. Vertical blanks are
+  // what software paces itself on, so this is the machine's clock as far as
+  // anything watching it is concerned.
+  double refresh_hz() const {
+    const double gpu_clock = 33868800.0 * kGpuClockNumerator /
+                             kGpuClockDenominator;
+    const double lines = status_.video_mode ? 314.0 : 263.0;
+    return gpu_clock / (kDotsPerScanline * lines);
+  }
+
   // ---- display timing, for the root counters -----------------------------
   //
   // Counter 0 counts dot clocks and is gated by hblank; counter 1 counts

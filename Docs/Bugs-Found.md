@@ -2576,3 +2576,95 @@ with it off. Both are exactly 75 sectors a second.
 checks, 0 failures). Save states round-trip byte-identically in both modes, on
 both the BIOS-only and the disc path; `kStateVersion` is 3, because `spun_up_`
 is now in the drive's `Serialise`.
+
+---
+
+## 49. The front end never paced the machine, so it ran at the speed of the monitor
+
+**This is the one that actually made the intro short.** Bug 48 above is real
+and worth having, but it was found by measuring emulated *frames* and it could
+not have found this: it never asked how long a frame takes on a wall clock.
+
+**Symptom.** The BIOS intro goes past far faster than a console's. Unchanged by
+bug 48's fix, which is what said the diagnosis was incomplete.
+
+**Cause.** `RunOneFrame` runs the machine until the GPU finishes one frame and
+returns. The main loop then presents and goes round again. **Nothing anywhere
+in it waits.** Its comment claimed the pace was "tied to the emulated display
+rather than to a timer here", but running one emulated frame per iteration
+paces nothing at all - it only decides how much work each iteration does, not
+when the next one starts.
+
+So the rate came from whatever happened to block first:
+
+- **`Present(1, 0)`.** `vsync_` defaults true in both the D3D11 and D3D12
+  backends, so the loop is capped at the *monitor's* refresh rate. This
+  machine's display runs at **165 Hz**, against an emulated display producing
+  59.29. That is **2.78x real speed**.
+- **`QueueAudio`.** Both audio engines block when the device's buffer is full.
+  The SPU produces 744 audio frames per emulated video frame, and a device
+  consuming 44,100 a second will therefore only take 59.3 of them a second - so
+  with a working audio device this accidentally paces the machine to very
+  nearly the right rate. That is luck, not design. It does nothing when
+  `CreateAudioEngine` returned null, and it is why the same build can run at
+  the right speed on one machine and at 2.8x on another.
+
+Neither is the machine's clock, and neither belongs in charge of it.
+
+**What it cost.** Every emulated-frame figure in bug 48 was being realised at
+165 Hz, so what was actually on screen was:
+
+| | before both fixes | bug 48 alone | with the limiter |
+|---|---|---|---|
+| logo screen | 1.0 s | 2.0 s | **5.5 s** |
+| power-on to game | 4.2 s | 5.6 s | **15.5 s** |
+
+The intro is also the *worst* case, which is why it was the visible symptom: it
+is light enough to hit the 165 Hz cap, while a heavy game scene is limited by
+the host CPU and lands much nearer 1x. "Only the intro is fast" was the clue.
+
+**Fix.** `platform/frame_limiter.h` - a wall-clock deadline per frame at
+`Gpu::refresh_hz()`, which is 59.29 in NTSC and 49.76 in PAL, derived from the
+same GPU clock and scanline count the rest of the timing uses rather than
+assumed to be 60. Called last in the loop so it absorbs whatever the rest of
+the iteration did not take, and composes with the two accidental brakes instead
+of fighting them. A host that falls more than four frames behind gets a fresh
+deadline rather than sprinting to catch up.
+
+In Core, not the front end, because how fast the machine should run is a
+property of the machine - standards section 1.
+
+**And a way to see it.** The window title now carries `59.3 fps (100%)`,
+updated once a second: emulated frames per second of wall clock, against what
+the emulated display is producing them at. Docs/Gaps.md had listed the absence
+of a speed display and said it mattered more than it sounded. It did: at 280%
+an intro just looks like a short intro, and there was no number to tell a fix
+from a placebo.
+
+**And a switch.** `EmuConfig::frame_limiter`, `frame_limiter` in the settings
+file, Emulation > Frame Limiter in the menu. **On by default**, unlike
+`cdrom_mechanical_timing` above: that one is a choice between two defensible
+models of a drive, this one is the difference between running at a defined
+speed and running at whatever the host happens to allow, and only one of those
+is a PlayStation. A settings file written before the key existed leaves it on,
+which is checked rather than assumed.
+
+Off restores the pre-fix behaviour exactly - paced by vsync or the sound
+device - which is worth having for getting through a long load or an
+unskippable intro, and for reading the host's real headroom off the title bar,
+a number that is pinned at 100% while the limiter is doing its job.
+
+**What could not be checked here.** The front end does not reach its main loop
+in this session at all - the process starts, creates its window, and burns no
+further CPU, which is bug 47's "no usable Direct3D device on this machine"
+again. So the limiter is verified by `frame_limiter_test` (six checks: 59.02
+fps measured against a 59.29 target, PAL at 49.66, and a slow host running slow
+rather than catching up) and by the arithmetic above, **not** by watching the
+intro. Someone with a working interactive build should confirm the title reads
+about 100% before calling this closed.
+
+**Regression check.** All harnesses pass (866 checks, 0 failures, including the
+6 new ones). Both boot_runner baselines unmoved: BIOS boot 400 frames still
+97,749,265 instructions and `bd888bab645a63a9`, Air Combat 900 frames still
+240,999,718 and `aedac3154f8a0383`. Nothing about the core's own timing
+changed - only how often the front end asks it to advance.

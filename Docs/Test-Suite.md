@@ -272,6 +272,26 @@ plain autocorrelation. That is not a detail: autocorrelation's characteristic
 failure mode is reporting a note an octave out, and octaves are exactly what
 this tool gets pointed at. It depends on nothing, not even the core.
 
+## frame_limiter_test
+
+    frame_limiter_test
+
+Six checks on `platform/frame_limiter.h`: that a loop is held to 59.29 Hz and
+to PAL's 49.76 rather than run flat out, that work done inside the frame comes
+out of the wait rather than on top of it, that a host too slow to make the
+deadline runs slow instead of sprinting to catch up, and that `Reset` and a
+rate of zero both do what they say.
+
+It exists because **the front end's speed cannot be measured headlessly at
+all** - it is set by the monitor's refresh rate and the sound device, neither
+of which a harness has. This checks the one piece that takes the decision away
+from both of them. See bug 49; the emulator ran at 2.8x on a 165 Hz display
+for as long as it did partly because no test could have caught it.
+
+Timing-sensitive by nature, so it is the one harness that can fail on a
+heavily loaded machine without anything being wrong. The bounds are wide
+enough that only a real regression should cross them.
+
 ## Baselines
 
 Check these after any change to the CPU, timing, or the renderer - not just the
