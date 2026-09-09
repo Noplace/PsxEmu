@@ -151,6 +151,104 @@ void TestPolylineTerminatorIsNotAVertex(System* system) {
   Check(vram[150 * 1024 + 150] != 0, "the real segment was still drawn");
 }
 
+// Two adjacent opaque flat quads share a vertical edge (A's right edge is
+// B's left edge, both at x=416). Regression for the fix that scoped the
+// top-left edge-bias rule to semi-transparent primitives only: applying it
+// unconditionally (the fully-regressed state) still passed the coverage
+// test (every pixel drawn exactly once, no gaps) but changed which of the
+// two *independent, differently-coloured* primitives owns the shared edge
+// column from "whichever was drawn last" to "whichever the edge-direction
+// rule geometrically favours" - and for a ground built from many small
+// differently-textured tiles (Wild Arms' overworld) that shows up as fine
+// seams through the whole field, tile edges sampling the wrong neighbour.
+// For a single quad's own two triangles this is invisible (same texture,
+// continuous data either way), which is why it was not caught by the fix
+// that introduced the bias.
+void TestOpaqueSharedEdgeUsesLastDrawnPrimitive(System* system) {
+  printf("two independent opaque quads sharing an edge: the later one wins "
+         "the shared column, same as before edge-biasing existed\n");
+  system->gpu().WriteStatus(0x00000000);  // GP1(00h) reset
+  system->gpu().WriteData(0xE3000000);                          // top-left (0,0)
+  system->gpu().WriteData(0xE4000000 | (450u << 10) | 450u);    // bottom-right
+
+  const uint32_t kRed   = 0x0000FF;   // r=255,g=0,b=0
+  const uint32_t kGreen = 0x00FF00;   // r=0,g=255,b=0
+
+  // Quad A: x400..416, y400..416, red. Drawn first.
+  system->gpu().WriteData(0x28000000 | kRed);
+  system->gpu().WriteData((400u << 16) | 400u);
+  system->gpu().WriteData((400u << 16) | 416u);
+  system->gpu().WriteData((416u << 16) | 400u);
+  system->gpu().WriteData((416u << 16) | 416u);
+
+  // Quad B: x416..432, y400..416, green - shares A's right edge. Drawn
+  // second, so on real hardware (and pre-regression) it simply repaints
+  // that shared column, same as it always did for an opaque draw.
+  system->gpu().WriteData(0x28000000 | kGreen);
+  system->gpu().WriteData((400u << 16) | 416u);
+  system->gpu().WriteData((400u << 16) | 432u);
+  system->gpu().WriteData((416u << 16) | 416u);
+  system->gpu().WriteData((416u << 16) | 432u);
+
+  const uint16_t* vram = system->gpu().vram();
+  const uint16_t kRed15   = 0x001F;   // To15Bit(255,0,0)
+  const uint16_t kGreen15 = 0x03E0;   // To15Bit(0,255,0)
+
+  CheckEqual(vram[408 * 1024 + 404], kRed15,   "A's interior is red");
+  CheckEqual(vram[408 * 1024 + 428], kGreen15, "B's interior is green");
+  CheckEqual(vram[408 * 1024 + 416], kGreen15,
+             "the shared edge column belongs to B, the later draw - not "
+             "geometrically reassigned to A");
+}
+
+// Silent Hill regression: two adjacent semi-transparent flat quads sharing a
+// vertical edge, same additive colour, over a black background. The shared
+// edge column must be blended exactly once. Before the edge-bias rule
+// existed, a plain w>=0 test accepted that column for both triangles that
+// touch it, and an additive blend applied twice there - "a fine diagonal
+// hatching over the whole thing", per the original fix. This is the case
+// the bias must still cover after being scoped to semi-transparent draws
+// only: it is unconditional on state.semi_transparent, so this must still
+// pass exactly as it did the day the bias was introduced.
+void TestSemiTransparentSharedEdgeBlendsOnce(System* system) {
+  printf("two independent semi-transparent quads sharing an edge blend "
+         "exactly once there, not twice\n");
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (450u << 10) | 450u);
+  system->gpu().WriteData(0xE1000020);   // draw mode: semi_mode = 1 (B+F)
+
+  const uint32_t kColour = 0x000040;   // r=64,g=0,b=0 - small enough that
+                                        // a double blend (128) does not clamp
+                                        // to the same value as a single one.
+  const uint32_t kSemiFlatQuad = 0x2A000000;  // quad, semi-transparent, flat
+
+  // Quad A: x400..416, y440..456.
+  system->gpu().WriteData(kSemiFlatQuad | kColour);
+  system->gpu().WriteData((440u << 16) | 400u);
+  system->gpu().WriteData((440u << 16) | 416u);
+  system->gpu().WriteData((456u << 16) | 400u);
+  system->gpu().WriteData((456u << 16) | 416u);
+
+  // Quad B: x416..432, y440..456 - shares A's right edge.
+  system->gpu().WriteData(kSemiFlatQuad | kColour);
+  system->gpu().WriteData((440u << 16) | 416u);
+  system->gpu().WriteData((440u << 16) | 432u);
+  system->gpu().WriteData((456u << 16) | 416u);
+  system->gpu().WriteData((456u << 16) | 432u);
+
+  const uint16_t* vram = system->gpu().vram();
+  const uint16_t kSingleBlend15 = 0x0008;   // To15Bit(64,0,0): 64>>3
+  const uint16_t kDoubleBlend15 = 0x0010;   // To15Bit(128,0,0): a double add
+
+  CheckEqual(vram[448 * 1024 + 404], kSingleBlend15, "A's interior blended once");
+  CheckEqual(vram[448 * 1024 + 428], kSingleBlend15, "B's interior blended once");
+  CheckEqual(vram[448 * 1024 + 416], kSingleBlend15,
+             "the shared edge column blended exactly once, not twice");
+  Check(vram[448 * 1024 + 416] != kDoubleBlend15,
+        "explicitly not the double-blend value the original bug produced");
+}
+
 }  // namespace
 
 int main() {
@@ -163,6 +261,8 @@ int main() {
   TestRepeatedRequestIsNotANewEdge(system);
   TestReadinessBitsAreAlwaysSet(system);
   TestPolylineTerminatorIsNotAVertex(system);
+  TestOpaqueSharedEdgeUsesLastDrawnPrimitive(system);
+  TestSemiTransparentSharedEdgeBlendsOnce(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;
