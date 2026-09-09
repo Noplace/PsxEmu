@@ -44,7 +44,7 @@ namespace psx {
 // from here), then the payload itself: every component's Serialise, called
 // in the same fixed order on both sides. See System::SaveState/LoadState.
 constexpr char kStateMagic[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', 'E'};
-constexpr uint32_t kStateVersion = 2;
+constexpr uint32_t kStateVersion = 3;
 
 // FNV-1a, 64-bit. Same algorithm boot_runner.cpp's framebuffer Checksum()
 // already used - given a shared home here so the BIOS-identity hash in a

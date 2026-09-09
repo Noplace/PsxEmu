@@ -433,9 +433,11 @@ keys are preserved, and every getter takes the current value as its default.
 `psxemu.ini` beside the executable, written as settings change rather than only
 at exit.
 
-There is exactly one setting in it: `audio_volume`. The BIOS path, the disc
-path, the key bindings and everything else are still command-line arguments,
-menu choices or hardcoded, and are not remembered between runs.
+Seven settings are in it now: `audio_volume`, `graphics_backend`,
+`video_filter`, the controller type and input source for each port, and
+`cdrom_mechanical_timing`. The BIOS path, the disc path, the key bindings and
+everything else are still command-line arguments, menu choices or hardcoded,
+and are not remembered between runs.
 
 ### The front end is minimal
 

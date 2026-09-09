@@ -37,6 +37,51 @@ const int32_t kGetIdDelay = 33868;
 
 // One sector at single speed, in CPU cycles: 33868800 / 75.
 const int32_t kSectorCyclesSingleSpeed = 451584;
+
+// The mechanical costs, charged only when EmuConfig::cdrom_mechanical_timing
+// is on. Everything above describes a controller answering a command;
+// everything here describes a motor and a sled, which the delays above model
+// as free.
+//
+// Without these the drive teleports: a Setloc followed by a read moves the
+// head any distance at no cost at all, and SeekL charges the same 11.8 ms for
+// a one-sector nudge as for the full-stroke jump the BIOS makes between the
+// licence area and the game's directory. The measured effect is on
+// Docs/Bugs-Found.md's "the logo screen is short" entry - the boot spends
+// about 0.8 s of drive time where a console spends several.
+//
+// These are approximations of a mechanism, not measurements off hardware, and
+// they are deliberately on the modest side of what a 1994 drive did:
+//
+//   spin-up   1 s from a standstill to a locked, readable disc
+//   seek      20 ms to move and settle at all, plus 28 cycles per sector of
+//             distance - which puts a full stroke across a 74-minute disc
+//             (about 333,000 sectors) at roughly 300 ms
+//   latency   one sector time for the disc to bring the target round, added
+//             to the first sector of any read
+const int32_t kSpinUpCycles = 33868800;        // 1.0 s
+const int32_t kSeekSettleCycles = 677376;      // 20 ms
+const int32_t kSeekCyclesPerSector = 28;
+// Sectors on a 74-minute disc, as the cap on how far a seek can be asked to
+// go. A bad Setloc must not be able to multiply its way to an overflow.
+const uint32_t kMaxSeekDistance = 333000;
+// Pause, per the documented drive timings: about 0.07 s at single speed while
+// the drive was moving, half that at double speed - five sector times either
+// way. A drive that was already stopped answers as quickly as it does now.
+const int32_t kPauseSectorTimes = 5;
+
+// Init deliberately keeps its flat kInitDelay even here. Stretching it to the
+// 0.12 s the second response is often quoted as breaks the boot outright: the
+// BIOS bootstrap loader's CdInit gives up waiting, retries Init eight times
+// and never reaches SYSTEM.CNF - "BOOTSTRAP LOADER" is the last thing on its
+// console. Measured, not guessed at.
+//
+// It is out of scope for this setting anyway. Init starts the motor and
+// resets the controller; the waiting it does is firmware, not a head moving
+// or a disc turning, and this model only claims to cover the mechanism. The
+// one mechanical thing about it - spinning a stopped disc up - InitCycles
+// still charges.
+
 // Fast-forward/rewind scan geometry. A scan level advances this many sectors
 // per sector time instead of one, so level 1 is roughly eight times play
 // speed, and the level climbs each time Forward or Backward is sent again.
@@ -91,6 +136,11 @@ int Cdrom::Initialize() {
   mode_ = 0;
   read_timer_ = 0;
   scan_rate_ = 0;
+  // Stopped, whatever the status bit below says. The motor bit is what
+  // software reads and it has always come back on with a disc present; this
+  // is the separate question of whether the disc is up to speed, and the
+  // first command that needs it to be pays for it.
+  spun_up_ = false;
 
   memset(&stats_, 0, sizeof(stats_));
 
@@ -121,6 +171,8 @@ bool Cdrom::OpenDisc(const char* path) {
   status_ = kStatusMotorOn;
   seek_lba_ = Disc::kLeadInSectors;
   read_lba_ = Disc::kLeadInSectors;
+  // A new disc has to come up to speed, the same as one put in at power-on.
+  spun_up_ = false;
   return true;
 }
 
@@ -130,6 +182,7 @@ void Cdrom::CloseDisc() {
   playing_ = false;
   shell_open_ = true;
   status_ = 0;              // no disc, no motor
+  spun_up_ = false;
 }
 
 void Cdrom::Serialise(StateIO& io) {
@@ -163,6 +216,7 @@ void Cdrom::Serialise(StateIO& io) {
   io.Plain(mode_);
   io.Plain(read_timer_);
   io.Plain(scan_rate_);
+  io.Plain(spun_up_);
 
   if (!io.saving()) {
     const std::string path = disc_.path();
@@ -177,6 +231,75 @@ void Cdrom::Serialise(StateIO& io) {
 int32_t Cdrom::SectorCycles() const {
   return (mode_ & kModeDoubleSpeed) ? (kSectorCyclesSingleSpeed / 2)
                                     : kSectorCyclesSingleSpeed;
+}
+
+// ---------------------------------------------------------------------------
+// Mechanical timing
+//
+// Every one of these returns the flat value the drive has always used unless
+// the setting is on, so the default build behaves exactly as it did before
+// they existed - no baseline in Docs/Test-Suite.md moves.
+// ---------------------------------------------------------------------------
+
+bool Cdrom::MechanicalTiming() {
+  // Read from the config rather than cached, per emuconfig.h: the setting can
+  // be changed from the menu while a game is running. system_ is null only in
+  // a unit test that constructs a drive on its own.
+  return system_ != nullptr && system().config().cdrom_mechanical_timing;
+}
+
+int32_t Cdrom::SpinUpCycles() {
+  if (spun_up_)
+    return 0;
+  // Marked spun up either way. With the setting off nothing is charged, but
+  // the flag still has to track the drive's state or turning the setting on
+  // mid-game would bill a spin-up for a disc that is plainly already turning.
+  spun_up_ = true;
+  return MechanicalTiming() ? kSpinUpCycles : 0;
+}
+
+int32_t Cdrom::SeekCycles(uint32_t from, uint32_t to) {
+  const int32_t spin_up = SpinUpCycles();
+  if (!MechanicalTiming())
+    return kSeekDelay + spin_up;
+
+  uint32_t distance = (from > to) ? (from - to) : (to - from);
+  if (distance > kMaxSeekDistance)
+    distance = kMaxSeekDistance;
+  return spin_up + kSeekSettleCycles +
+         static_cast<int32_t>(distance) * kSeekCyclesPerSector;
+}
+
+int32_t Cdrom::FirstSectorCycles(uint32_t from, uint32_t to) {
+  if (!MechanicalTiming()) {
+    // The head has always moved for free here - a Setloc followed by a read
+    // is the implicit seek that costs nothing.
+    return SectorCycles();
+  }
+  // Already over the target: no seek, just the sector. This is not a rounding
+  // case, it is most of the reads there are. A read that carries on where the
+  // last one stopped arrives here with from == to, and so does every repeat of
+  // Play with no track argument - which is what the BIOS CD player sends once
+  // a frame for the whole of a track. Charging those a settling time would
+  // stutter CD audio sixty times a second for a head that never moved.
+  if (from == to)
+    return SpinUpCycles() + SectorCycles();
+  // SeekCycles already carries the spin-up. The sector time on the end is the
+  // disc bringing the target round once the head is over the right track.
+  return SeekCycles(from, to) + SectorCycles();
+}
+
+int32_t Cdrom::PauseCycles(bool was_moving) {
+  if (!MechanicalTiming() || !was_moving)
+    return kSecondResponseDelay;
+  return SectorCycles() * kPauseSectorTimes;
+}
+
+int32_t Cdrom::InitCycles() {
+  // The flat delay always - see kInitDelay's note above for why stretching it
+  // is both wrong for this setting and fatal to the boot. Only the spin-up,
+  // which is genuinely mechanical, is added.
+  return kInitDelay + SpinUpCycles();
 }
 
 // ---------------------------------------------------------------------------
@@ -798,12 +921,13 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       if (play_from_here && !seek_pending_)
         seek_lba_ = read_lba_;
       seek_pending_ = false;
+      const uint32_t from = read_lba_;
       read_lba_ = seek_lba_;
       reading_ = false;
       playing_ = true;
       scan_rate_ = 0;   // a Play ends any fast-forward or rewind in progress
       status_ = (status_ & ~kStatusReading) | kStatusPlaying | kStatusMotorOn;
-      read_timer_ = SectorCycles();
+      read_timer_ = FirstSectorCycles(from, read_lba_);
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       break;
     }
@@ -835,6 +959,10 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         QueueError(0x80, kAcknowledgeDelay);
         break;
       }
+      // Where the head is now, before the Setloc target replaces it: this is
+      // the implicit seek, the one the boot makes most of and the one that has
+      // always been free.
+      const uint32_t from = read_lba_;
       if (seek_pending_) {
         read_lba_ = seek_lba_;
         seek_pending_ = false;
@@ -842,34 +970,40 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       reading_ = true;
       playing_ = false;
       status_ = kStatusMotorOn | kStatusReading;
-      read_timer_ = SectorCycles();
+      read_timer_ = FirstSectorCycles(from, read_lba_);
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       break;
     }
 
-    case 0x07:    // MotorOn
+    case 0x07: {  // MotorOn
       status_ |= kStatusMotorOn;
+      const int32_t spin_up = SpinUpCycles();
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      QueueStatus(kIntComplete, kSecondResponseDelay);
+      QueueStatus(kIntComplete, kSecondResponseDelay + spin_up);
       break;
+    }
 
     case 0x08:    // Stop
       reading_ = false;
       playing_ = false;
       scan_rate_ = 0;
       status_ = 0;
+      // The motor is off now, so whatever starts it again pays to spin it up.
+      spun_up_ = false;
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       QueueStatus(kIntComplete, kInitDelay);
       break;
 
-    case 0x09:    // Pause
+    case 0x09: {  // Pause
+      const bool was_moving = reading_ || playing_;
       reading_ = false;
       playing_ = false;
       scan_rate_ = 0;
       status_ &= ~(kStatusReading | kStatusPlaying | kStatusSeeking);
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      QueueStatus(kIntComplete, kSecondResponseDelay);
+      QueueStatus(kIntComplete, PauseCycles(was_moving));
       break;
+    }
 
     case 0x0A:    // Init
       mode_ = 0;
@@ -879,7 +1013,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       status_ = disc_.loaded() ? kStatusMotorOn : 0;
       parameter_fifo_.clear();
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      QueueStatus(kIntComplete, kInitDelay);
+      QueueStatus(kIntComplete, InitCycles());
       break;
 
     case 0x0B:    // Mute
@@ -977,12 +1111,13 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       reading_ = false;
       playing_ = false;
       scan_rate_ = 0;
+      const uint32_t from = read_lba_;
       read_lba_ = seek_lba_;
       seek_pending_ = false;
       status_ = kStatusMotorOn | kStatusSeeking;
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       status_ = kStatusMotorOn;
-      QueueStatus(kIntComplete, kSeekDelay);
+      QueueStatus(kIntComplete, SeekCycles(from, read_lba_));
       break;
     }
 
@@ -998,12 +1133,13 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       if (session == 1) {
         // The one session every game disc has. Move to its start and answer
         // like a seek: acknowledge, then complete once the head is there.
+        const uint32_t from = read_lba_;
         seek_lba_ = Disc::kLeadInSectors;
         read_lba_ = seek_lba_;
         status_ = kStatusMotorOn | kStatusSeeking;
         QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
         status_ = kStatusMotorOn;
-        QueueStatus(kIntComplete, kSeekDelay);
+        QueueStatus(kIntComplete, SeekCycles(from, read_lba_));
       } else {
         // These images are single-session, so any other session number is a
         // seek to somewhere that is not there. Acknowledge, then fail.
@@ -1033,16 +1169,21 @@ void Cdrom::ExecuteCommand(uint8_t command) {
 
     case 0x1A: {  // GetID - what is in the drive
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      // Answering this means having read the lead-in, so a disc that is not
+      // turning yet has to be brought up to speed first. This is normally the
+      // first command in a boot that touches the disc at all, and so where
+      // the spin-up actually lands.
+      const int32_t spin_up = SpinUpCycles();
       if (!disc_.loaded()) {
         // "No disc". This is the answer the BIOS shell is waiting for when the
         // tray is empty, and without it the boot never leaves its timeout.
         const uint8_t data[8] = { 0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-        QueueResponse(kIntError, kGetIdDelay, data, 8);
+        QueueResponse(kIntError, kGetIdDelay + spin_up, data, 8);
       } else {
         // A licensed disc: region "SCEA" here, with the flags that mean an
         // ordinary game disc.
         const uint8_t data[8] = { 0x02, 0x00, 0x20, 0x00, 'S', 'C', 'E', 'A' };
-        QueueResponse(kIntComplete, kGetIdDelay, data, 8);
+        QueueResponse(kIntComplete, kGetIdDelay + spin_up, data, 8);
       }
       break;
     }
@@ -1061,8 +1202,11 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       seek_lba_ = Disc::kLeadInSectors;
       read_lba_ = Disc::kLeadInSectors;
       status_ = disc_.loaded() ? kStatusMotorOn : 0;
+      // A power-on is a power-on: the disc has stopped and has to come back up
+      // to speed, which InitCycles charges for below.
+      spun_up_ = false;
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      QueueStatus(kIntComplete, kInitDelay);
+      QueueStatus(kIntComplete, InitCycles());
       break;
 
     case 0x1D: {  // GetQ - read one subchannel Q entry from the table of

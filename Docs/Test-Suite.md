@@ -203,6 +203,7 @@ much sample as it should makes a noise perfectly happily. "Still audible" and
 | `--watch-vram x,y,w,h` | Report which GP0 command wrote each pixel into a VRAM area |
 | `--wav <file>` | Write everything the SPU produced as a 44100 Hz stereo WAV |
 | `--press b@f[+h]` | Press a button at frame f, holding h frames |
+| `--cd-mechanical` | Charge the CD-ROM for spin-up, seek distance and rotational latency (`EmuConfig::cdrom_mechanical_timing`). Off by default, exactly as in the front end - every baseline in this document is a flag-off number, and none of them hold with it on |
 | `--load-state <file>` | Resume from a save state instead of booting - skips `--disc`/`--boot-disc`/`--auto-boot`/`--exe` entirely |
 | `--save-state <file>` | Write a save state after the run finishes |
 | `--quiet` | Suppress the per-100-frame progress lines |

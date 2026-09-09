@@ -84,6 +84,27 @@ struct EmuConfig {
   // to reason about.
   std::array<std::string, 2> input_source = { "gamepad1", "gamepad2" };
   static const std::array<const char*, 3> kValidInputSources;
+
+  // --- CD-ROM -------------------------------------------------------------
+  // Whether the drive is charged for the mechanical work a real one does:
+  // spinning up from a standstill, moving the head a distance rather than
+  // teleporting it to the target, and waiting for the disc to come round.
+  //
+  // The costs themselves are hardware characteristics and stay in cdrom.cpp
+  // beside the code that uses them, per the note above; what lives here is
+  // only the choice of whether to charge them, because it is a genuine
+  // trade-off rather than a fact about a PlayStation.
+  //
+  // Off - the default, and the timing this emulator has always had - makes
+  // every seek flat and nearly free. Loading is faster than hardware
+  // everywhere, and it shows most on the BIOS's "Licensed by SCEA" logo
+  // screen, which is on screen for exactly as long as the drive takes and so
+  // lasts about 2.5 seconds instead of the several a console spends there.
+  //
+  // On is closer to a console at the cost of waiting for it, and of moving
+  // every disc-dependent timing baseline in Docs/Test-Suite.md - which is why
+  // it is opt-in rather than the default.
+  bool cdrom_mechanical_timing = false;
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer

@@ -204,6 +204,12 @@ class Cdrom : public Component {
   uint8_t mode_;
   int32_t read_timer_;
 
+  // Whether the disc is already turning fast enough to read from. Drive
+  // state, not a setting: it is false after a reset or a disc swap and true
+  // once something has paid the spin-up, and it is only ever *charged* for
+  // when EmuConfig::cdrom_mechanical_timing is on.
+  bool spun_up_ = false;
+
   // Fast-forward and rewind during CD-DA play, set by the Forward and Backward
   // commands. Zero is ordinary play; positive skips forward, negative back,
   // and the magnitude grows each time the same command is sent again - which
@@ -231,6 +237,24 @@ class Cdrom : public Component {
 
   // How long a sector takes at the current speed, in CPU cycles.
   int32_t SectorCycles() const;
+
+  // The mechanical costs, all in CPU cycles and all no-ops - returning the
+  // flat values the drive has always used - unless
+  // EmuConfig::cdrom_mechanical_timing is on. See cdrom.cpp for the model.
+  bool MechanicalTiming();
+  // Consumes the one-off spin-up if it has not been paid yet, so a caller can
+  // add it to whatever delay it was going to charge anyway.
+  int32_t SpinUpCycles();
+  // Moving the head from one sector to another, spin-up included.
+  int32_t SeekCycles(uint32_t from, uint32_t to);
+  // When the first sector of a read or a play arrives: the seek to get there
+  // plus the sector itself.
+  int32_t FirstSectorCycles(uint32_t from, uint32_t to);
+  // How long Pause takes to answer, which on hardware depends on whether the
+  // drive was moving.
+  int32_t PauseCycles(bool was_moving);
+  // How long Init and the commands answered like it take.
+  int32_t InitCycles();
 };
 
 }

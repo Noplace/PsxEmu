@@ -158,6 +158,7 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetString("controller_type_port2", c.controller_type[1]);
   f.SetString("input_source_port1", c.input_source[0]);
   f.SetString("input_source_port2", c.input_source[1]);
+  f.SetBool("cdrom_mechanical_timing", c.cdrom_mechanical_timing);
 }
 
 inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
@@ -193,6 +194,9 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
       f.GetString("input_source_port2", c.input_source[1]);
   if (IsValidChoice(source2, EmuConfig::kValidInputSources))
     c.input_source[1] = source2;
+
+  c.cdrom_mechanical_timing =
+      f.GetBool("cdrom_mechanical_timing", c.cdrom_mechanical_timing);
 }
 
 }

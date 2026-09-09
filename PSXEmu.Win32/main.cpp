@@ -89,6 +89,7 @@ enum MenuCommand {
   kCommandFilterFirst,
   kCommandFilterLast = kCommandFilterFirst + 8,       // None + 8 filters
   kCommandViewVram,
+  kCommandCdMechanicalTiming,
   kCommandControllerTypeFirst,
   kCommandControllerTypeLast = kCommandControllerTypeFirst + 5,  // 2 ports x 3 types
   kCommandInputSourceFirst,
@@ -535,6 +536,31 @@ void SetInputSource(Application& app, HWND window, int port,
   SaveSettingsIfChanged(app);
 }
 
+// Ticks whether the drive is being charged for spin-up, seek distance and
+// rotational latency. Off is the timing the emulator has always had; on makes
+// loading take about as long as a console's, which is most visible on the
+// BIOS's "Licensed by SCEA" logo screen - that screen is up for exactly as
+// long as the drive takes, and nothing else.
+void UpdateCdTimingMenu(HWND window, const Application& app) {
+  HMENU bar = GetMenu(window);
+  if (bar == nullptr || app.system == nullptr)
+    return;
+  const bool on = app.system->config().cdrom_mechanical_timing;
+  CheckMenuItem(bar, static_cast<UINT>(kCommandCdMechanicalTiming),
+                MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+}
+
+// Takes effect on the next command the drive is given, so there is nothing to
+// reset and no reason to make it a cold-boot-only choice - though a boot
+// already past its logo screen will not replay it.
+void SetCdMechanicalTiming(Application& app, HWND window, bool on) {
+  if (app.system == nullptr)
+    return;
+  app.system->config().cdrom_mechanical_timing = on;
+  UpdateCdTimingMenu(window, app);
+  SaveSettingsIfChanged(app);
+}
+
 // ---------------------------------------------------------------------------
 // Small helpers
 // ---------------------------------------------------------------------------
@@ -875,6 +901,10 @@ HMENU CreateMainMenu() {
               L"&Save State\tShift+F1..F8");
   AppendMenuW(emulation, MF_STRING, kCommandLoadState,
               L"&Load State\tF1..F8");
+  AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
+  AppendMenuW(emulation, MF_STRING,
+              static_cast<UINT_PTR>(kCommandCdMechanicalTiming),
+              L"CD-ROM &Mechanical Timing");
 
   // Volume. The labels carry a literal percent sign, so they are built with
   // the doubled form the table stores rather than passed through a formatter.
@@ -1058,6 +1088,13 @@ void OnCommand(Application& app, HWND window, int command) {
       }
       break;
     }
+
+    case kCommandCdMechanicalTiming:
+      if (app.system != nullptr) {
+        SetCdMechanicalTiming(app, window,
+                              !app.system->config().cdrom_mechanical_timing);
+      }
+      break;
 
     case kCommandExit:
       PostMessageW(window, WM_CLOSE, 0, 0);
@@ -1365,6 +1402,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
       1, ParseControllerType(app.system->config().controller_type[1]));
   UpdateControllerTypeMenu(window, app);
   UpdateInputSourceMenu(window, app);
+  UpdateCdTimingMenu(window, app);
   if (app.current_backend == "d3d12") {
     LoadAllFilters(*app.graphics);
     SetFilter(app, window, app.system->config().video_filter);

@@ -2495,3 +2495,84 @@ that was actually wrong - `320/480` letterboxed as `2:3` before, exactly
 That is a real gap, not a formality skipped: someone with a working
 interactive build should confirm the menu fills the window the same way the
 title screen either side of it does before calling this closed.
+
+---
+
+## 48. The drive teleports, so the boot logo screen is half as long as a console's
+
+**Not a bug - a deliberate simplification, now measured and made optional.**
+Reported as the intro "quickly disappearing" compared with a real PlayStation.
+
+**What is actually on screen.** Measured frame by frame with
+`boot_runner --frame-log 1`, Air Combat on SCPH1001, at the 59.29 Hz the GPU
+actually runs at:
+
+| frames | seconds | screen |
+|---|---|---|
+| 1-119 | 0 - 2.0 | black; display off, then on but empty |
+| 120-524 | 2.0 - 8.8 | the SONY COMPUTER ENTERTAINMENT diamond, grey ground |
+| 525-694 | 8.8 - 11.7 | "PlayStation / Licensed by SCEA", black ground |
+| 695+ | | the game |
+
+Two facts narrow it to one screen. A **no-disc run is identical through frame
+524** - same checksums, same frame numbers - so everything up to the diamond
+fading out is BIOS animation with no disc in it at all. And the BIOS console
+has **no `VSync: timeout` lines**, so the vblank-paced waits are not returning
+early the way they did in bug 16. The software-paced part of the intro is
+already the right length.
+
+That leaves the logo screen, which is the only one whose length is set by
+anything other than a frame counter: it is up for exactly as long as the drive
+takes to spin up, seek, read SYSTEM.CNF and load the executable.
+
+**What the drive costs.** For the whole BIOS boot of Legend of Mana - 8
+`Setloc`, 8 `SeekL`, 8 `ReadN`, 8 `Pause`, 2 `Init`, 3 `GetID`, 107 sectors:
+
+- `kSeekDelay` is flat 400,000 cycles (11.8 ms) whatever the distance. The
+  boot makes two full-stroke jumps, lba 173 to 45173 and back; each is charged
+  the same as a one-sector nudge.
+- `ReadN` after a `Setloc` teleports - `read_lba_ = seek_lba_`, first sector
+  one sector time later. Most of the boot's repositioning is these implicit
+  seeks and they cost **nothing at all**.
+- The motor is on from `Cdrom::Initialize`. No spin-up, no focus, no TOC read.
+- No rotational latency anywhere.
+
+Total: **~0.8 s of drive time for the whole boot**, and 0.71 s of that is just
+the 107 sectors streaming at 2x.
+
+**The setting.** `EmuConfig::cdrom_mechanical_timing`, off by default,
+`cdrom_mechanical_timing` in the settings file, Emulation > CD-ROM Mechanical
+Timing in the front end, `--cd-mechanical` in `boot_runner`. On, the drive is
+charged 1 s to spin up from a standstill, 20 ms to move and settle plus 28
+cycles per sector of distance (a full stroke across a 74-minute disc lands near
+300 ms), and one sector time of rotational latency on the first sector of a
+read. Off, every one of those returns the flat value it always did.
+
+With it on, Air Combat's logo screen goes from 170 frames to 327 - **2.9 s to
+5.5 s** - and the boot reaches the game at frame 920 rather than 695.
+
+**Two things measured rather than assumed:**
+
+**Init must keep its flat delay.** Stretching its second response to the 0.12 s
+it is often quoted as breaks the boot outright: the bootstrap loader's CdInit
+gives up waiting, retries `Init` eight times and never reaches SYSTEM.CNF -
+`BOOTSTRAP LOADER` is the last line on the BIOS console and the screen sits on
+the logo for ever. It is out of scope anyway; Init is firmware waiting, not a
+head moving. Only the spin-up is added to it.
+
+**A read that has not moved must not be charged a seek.** `Play` with no track
+argument means "carry on from here", and the BIOS CD player sends one every
+frame for the whole of a track. Charging each a settling time would stutter CD
+audio 60 times a second for a head that never moved. `FirstSectorCycles`
+returns just the sector time when `from == to`, which is also most ordinary
+reads - the ones that continue where the last stopped. Verified: 2,072 CD-DA
+sectors over 27.8 s of playback with the setting on, against 1,794 over 23.9 s
+with it off. Both are exactly 75 sectors a second.
+
+**Regression check.** With the setting off: BIOS boot at 400 frames still
+97,749,265 instructions and `bd888bab645a63a9`; Air Combat at 900 frames still
+240,999,718 instructions, `aedac3154f8a0383`, 237 CD commands, 623 sectors,
+2,225 interrupts - every figure unchanged to the digit. All harnesses pass (860
+checks, 0 failures). Save states round-trip byte-identically in both modes, on
+both the BIOS-only and the disc path; `kStateVersion` is 3, because `spun_up_`
+is now in the drive's `Serialise`.

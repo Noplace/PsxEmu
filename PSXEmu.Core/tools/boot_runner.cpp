@@ -31,6 +31,11 @@
 //     --watch-vram x,y,w,h   report which GP0 command wrote into a VRAM area
 //     --press b@f[+h]    press a button at frame f, holding h frames
 //                        e.g. --press start@1800 --press down+cross@2000+8
+//     --cd-mechanical    charge the CD-ROM for spin-up, seek distance and
+//                        rotational latency instead of moving the head for
+//                        free (EmuConfig::cdrom_mechanical_timing). Every
+//                        disc-dependent baseline moves with this on, so it is
+//                        off by default here exactly as it is in the front end
 //     --load-state <f>   resume from a save state instead of booting - skips
 //                        --disc/--boot-disc/--auto-boot/--exe entirely
 //     --save-state <f>   write a save state after the run finishes
@@ -177,6 +182,7 @@ struct Options {
   int hot;
   bool boot_disc;
   bool auto_boot;
+  bool cd_mechanical;
   bool quiet;
   int frame_log;
   float volume;
@@ -482,6 +488,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->hot = 0;
   options->boot_disc = false;
   options->auto_boot = false;
+  options->cd_mechanical = false;
   options->quiet = false;
   options->frame_log = 0;
   options->volume = -1.0f;
@@ -556,6 +563,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->boot_disc = true;
     } else if (strcmp(arg, "--auto-boot") == 0) {
       options->auto_boot = true;
+    } else if (strcmp(arg, "--cd-mechanical") == 0) {
+      options->cd_mechanical = true;
     } else if (strcmp(arg, "--quiet") == 0) {
       options->quiet = true;
     } else if (arg[0] == '-') {
@@ -590,6 +599,13 @@ int main(int argc, char** argv) {
   if (system->Initialize(options.bios) != 0) {
     fprintf(stderr, "failed to initialise the core (bios: %s)\n", options.bios);
     return 1;
+  }
+
+  // Before anything mounts a disc or restores a state, so the drive is under
+  // the timing the run asked for from its very first command.
+  if (options.cd_mechanical) {
+    system->config().cdrom_mechanical_timing = true;
+    printf("cd timing      mechanical (spin-up, seek distance, latency)\n");
   }
 
   if (options.load_state != nullptr) {
