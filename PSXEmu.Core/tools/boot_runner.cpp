@@ -852,6 +852,10 @@ int main(int argc, char** argv) {
          system->gpu().display_vram_x(), system->gpu().display_vram_y(),
          width, height,
          system->gpu().display_disabled() ? "DISABLED" : "enabled");
+  printf("crtc           hdisp %u-%u gpu clocks, GPUSTAT=%08x\n",
+         system->gpu().horizontal_display_start(),
+         system->gpu().horizontal_display_end(),
+         system->gpu().status_raw());
   printf("checksum       %016llx\n",
          static_cast<unsigned long long>(Checksum(pixels, width * height)));
   printf("non-black      %d of %d pixels\n", lit, width * height);

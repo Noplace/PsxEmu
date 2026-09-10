@@ -249,6 +249,68 @@ void TestSemiTransparentSharedEdgeBlendsOnce(System* system) {
         "explicitly not the double-blend value the original bug produced");
 }
 
+// The visible width is the horizontal display window divided by the dot
+// clock, not the resolution GP1(08) picked. Metal Gear Solid's codec screen
+// is the case that made this matter: it runs the 368-pixel mode but opens a
+// window only 318 pixels wide, and taking the mode at its word painted 50
+// columns of whatever VRAM sat to the right of its framebuffer - which, with
+// two buffers being flipped, was different garbage every frame.
+void TestVisibleWidthFollowsTheDisplayWindow(System* system) {
+  printf("the visible width comes from GP1(06), not from GP1(08)'s mode\n");
+  Gpu& gpu = system->gpu();
+
+  // GP1(06) with the standard window every game uses: 512 to 3072 GPU clocks.
+  // Each mode's nominal width is exactly what that window produces, so none of
+  // them may move.
+  struct Mode {
+    uint32_t gp1_08;   // the display-mode parameter
+    int width;         // what the standard window must still produce
+    const char* what;
+  };
+  static const Mode kModes[] = {
+    { 0x00, 256, "256 mode, standard window" },
+    { 0x01, 320, "320 mode, standard window" },
+    { 0x02, 512, "512 mode, standard window" },
+    { 0x03, 640, "640 mode, standard window" },
+  };
+  int width = 0, height = 0;
+  for (const Mode& mode : kModes) {
+    gpu.WriteStatus(0x06000000u | (3072u << 12) | 512u);
+    gpu.WriteStatus(0x08000000u | mode.gp1_08);
+    gpu.framebuffer(width, height);
+    CheckEqual(width, mode.width, mode.what);
+  }
+
+  // 368 mode divides by 7, which the standard window does not divide evenly:
+  // 2560/7 is 365 whole pixels, and the beam cannot paint the 366th.
+  gpu.WriteStatus(0x06000000u | (3072u << 12) | 512u);
+  gpu.WriteStatus(0x08000000u | 0x40);
+  gpu.framebuffer(width, height);
+  CheckEqual(width, 365, "368 mode, standard window");
+
+  // The codec screen's own registers.
+  gpu.WriteStatus(0x06000000u | (2968u << 12) | 742u);
+  gpu.WriteStatus(0x08000000u | 0x40);
+  gpu.framebuffer(width, height);
+  CheckEqual(width, 318, "368 mode, Metal Gear Solid's codec window");
+
+  // A window wider than the mode is overscan; following it would mean
+  // sampling past the framebuffer for the same reason, so it stays capped.
+  gpu.WriteStatus(0x06000000u | (3568u << 12) | 400u);
+  gpu.WriteStatus(0x08000000u | 0x01);
+  gpu.framebuffer(width, height);
+  CheckEqual(width, 320, "320 mode, a window wider than the mode");
+
+  // A nonsense window - end before start - falls back to the mode rather than
+  // producing a zero-width frame nothing can present.
+  gpu.WriteStatus(0x06000000u | (512u << 12) | 3072u);
+  gpu.WriteStatus(0x08000000u | 0x01);
+  gpu.framebuffer(width, height);
+  CheckEqual(width, 320, "320 mode, an inverted window");
+
+  gpu.WriteStatus(0x00000000);  // leave the GPU as the next test expects it
+}
+
 }  // namespace
 
 int main() {
@@ -263,6 +325,7 @@ int main() {
   TestPolylineTerminatorIsNotAVertex(system);
   TestOpaqueSharedEdgeUsesLastDrawnPrimitive(system);
   TestSemiTransparentSharedEdgeBlendsOnce(system);
+  TestVisibleWidthFollowsTheDisplayWindow(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

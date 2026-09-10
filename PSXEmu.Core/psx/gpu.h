@@ -126,6 +126,12 @@ class Gpu : public GpuCore {
   uint32_t display_vram_x() const { return display_vram_x_; }
   uint32_t display_vram_y() const { return display_vram_y_; }
   bool display_disabled() const { return status_.display_disable != 0; }
+  // The CRTC's horizontal display window, in GPU clocks. GP1(08) says how
+  // fast pixels leave the GPU; this says how many of them the beam actually
+  // paints, which is what decides the visible width.
+  uint32_t horizontal_display_start() const { return horizontal_display_start_; }
+  uint32_t horizontal_display_end() const { return horizontal_display_end_; }
+  uint32_t status_raw() const { return status_.raw; }
 
   // The GPU runs at 11/7 of the CPU clock, and a scanline is this many GPU
   // clocks wide. Declared here rather than in the .cpp because the display

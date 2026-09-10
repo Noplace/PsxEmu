@@ -2668,3 +2668,78 @@ about 100% before calling this closed.
 97,749,265 instructions and `bd888bab645a63a9`, Air Combat 900 frames still
 240,999,718 and `aedac3154f8a0383`. Nothing about the core's own timing
 changed - only how often the front end asks it to advance.
+
+---
+
+## 50. The display width was the resolution GP1(08) asked for, never the window GP1(06) opened
+
+**Symptom.** Reported directly, from Metal Gear Solid (`SLES-01370`, disc 1)
+at save state 1 - the codec screen: the picture is right, but a strip down the
+right-hand side is garbage, and it changes every frame. "I think the screen
+width is wider than it should be, so showing garbage vram on the right."
+
+**Cause.** `Gpu::UpdateDisplaySize` took the horizontal resolution field of
+`GP1(08h)` - 256/320/368/512/640 - as the width of the picture, full stop.
+It is not. That field sets the *dot clock*: how many GPU clocks one pixel
+takes on its way out (10, 8, 7, 5 or 4 of them). How many pixels get out is
+`GP1(06h)`'s business - the beam is only on between X1 and X2, so the visible
+width is that window divided by the dot clock. The height was already read
+this way, off `GP1(07h)`'s scanline range; the width was the one half that was
+assumed.
+
+The two agree for every game that leaves the window at the standard 512..3072
+GPU clocks, which is 2560 clocks and divides into exactly 256, 320, 512 and
+640 - which is why this survived every boot measured so far, Metal Gear
+Solid's own gameplay included (`GPUSTAT=d4122200`, window 624..3184, 2560/8 =
+320, the nominal width to the pixel).
+
+The codec screen is the case where they part. It switches to the 368-pixel
+mode - `GPUSTAT=d4112200`, bit 16 set, so a dot is 7 GPU clocks - and opens a
+window of only 742..2968, which is 2226 clocks, or **318** pixels. Its
+framebuffers are 320 apart in VRAM, at x=0 and x=320, flipped every frame.
+Reading 368 columns from each of those in turn is what produced the strip and
+what made it move: from the buffer at x=0 the 50 extra columns are the left
+edge of the other buffer - Snake's portrait, a second time - and from the
+buffer at x=320 they are past the framebuffers entirely, in the texture and
+CLUT area, which resolves as coloured noise.
+
+**Fix.** `UpdateDisplaySize` now computes the visible width as
+`(horizontal_display_end_ - horizontal_display_start_) / dot_clock_divider()`
+and uses it in place of the mode width. Two guards, both deliberate: a window
+*wider* than the mode does not widen the frame - that is overscan a TV paints
+off its own edge, and following it would mean sampling past the framebuffer
+for exactly the reason above - and an inverted or empty window falls back to
+the mode width rather than producing a zero-width frame nothing can present.
+
+Nothing in the front end needed changing: `ComputeLetterboxRect` has targeted
+a fixed 4:3 since bug 47 rather than the frame's own ratio, so a 318-wide
+frame fills the same rectangle a 368-wide one did, and both presenters already
+recreate their upload texture when the frame's dimensions change.
+
+**Result.** The codec screen renders clean on both buffers - frame 61 (the
+buffer at x=320, the coloured-noise one) and frame 140 (the buffer at x=0, the
+duplicated-portrait one) checked as PNGs either side of the fix.
+
+**Regression check.** By construction this can only ever narrow a frame, never
+widen one, and only when a game narrows its own window - and measured that
+way too. Metal Gear Solid's own boot is untouched at frames 900, 1800 and
+3000: `640x240` with window 640..3200 (2560/4 = 640) and `320x256` with window
+624..3184, every checksum identical to a baseline `boot_runner` built from
+`HEAD`. Both documented baselines unmoved: BIOS boot 400 frames still
+97,749,265 instructions and `bd888bab645a63a9`, Air Combat 900 frames still
+`aedac3154f8a0383`. `gpu_test` grows a case that pins the rule in both
+directions - each of the five modes still produces its nominal width from the
+standard window, 368 mode produces 365 from it (2560/7 does not divide
+evenly, and the beam cannot paint the 366th pixel), the codec screen's own
+registers produce 318, and the two guards hold - 31 checks, 0 failures, up
+from 23. `timer_test` unchanged at 70, and the solution builds.
+
+`boot_runner` prints the CRTC line the diagnosis needed and did not have:
+`crtc  hdisp 742-2968 gpu clocks, GPUSTAT=d4112200`. The display window was
+serialised into save states and reachable from nowhere else, so "how wide does
+this game actually think its screen is" had no answer short of a debugger.
+
+**What could not be checked here.** The live front end, as in bugs 47 and 49:
+`PSXEmu.Win32.exe` still never reaches its main loop on this machine. The fix
+is verified through `boot_runner` renders of the same save state the report
+came from, not by watching the codec screen in the running emulator.

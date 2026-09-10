@@ -1077,13 +1077,39 @@ void Gpu::DrawLineSegment(const Vertex& v0, const Vertex& v1,
 
 void Gpu::UpdateDisplaySize() {
   // Horizontal resolution comes from two separate fields: hres2 overrides
-  // hres1 when set.
+  // hres1 when set. This is only how fast pixels leave the GPU, though - it
+  // is the width the mode would produce if the beam were on for a whole
+  // standard line.
+  int mode_width;
   if (status_.hres2) {
-    display_width_ = 368;
+    mode_width = 368;
   } else {
     static const int kWidths[4] = { 256, 320, 512, 640 };
-    display_width_ = kWidths[status_.hres1 & 3];
+    mode_width = kWidths[status_.hres1 & 3];
   }
+
+  // How many of those pixels actually get painted is GP1(06)'s business: the
+  // beam is on between X1 and X2, so the visible width is that window divided
+  // by the clocks one pixel takes. The height has always come from GP1(07)
+  // this way; the width used to be assumed, which is what let a game whose
+  // window is narrower than its mode - Metal Gear Solid runs the 368 mode but
+  // opens only ~318 pixels' worth of window - show 50 columns of whatever
+  // VRAM sits to the right of its framebuffer, changing every time the buffers
+  // flipped.
+  //
+  // Capped at the mode width rather than allowed to grow past it: a window
+  // wider than the mode is overscan the beam paints off the side of a TV, and
+  // showing it would mean sampling the VRAM to the right of the framebuffer
+  // for exactly the reason above.
+  const int window = static_cast<int>(horizontal_display_end_) -
+                     static_cast<int>(horizontal_display_start_);
+  int width = mode_width;
+  if (window > 0) {
+    const int active = window / static_cast<int>(dot_clock_divider());
+    if (active > 0 && active < mode_width)
+      width = active;
+  }
+  display_width_ = width;
 
   int lines = static_cast<int>(vertical_display_end_) -
               static_cast<int>(vertical_display_start_);

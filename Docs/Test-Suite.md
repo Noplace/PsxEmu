@@ -85,7 +85,7 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 16 checks, 0 failures.**
+**Current: 31 checks, 0 failures.**
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
@@ -100,6 +100,15 @@ assumption a future change discovers the hard way, that the three GPUSTAT
 readiness bits report ready
 unconditionally - there is no GP0 FIFO or drawing-time model yet. See bug 40
 in [Bugs-Found.md](Bugs-Found.md) and "no drawing time" in [Gaps.md](Gaps.md).
+
+It also covers the display side, where the same two-registers-read-as-one
+mistake was possible: the visible width is `GP1(06h)`'s window divided by
+`GP1(08h)`'s dot clock, not the mode width itself. Each of the five modes
+still produces its nominal width from the standard 512..3072 window, 368 mode
+produces 365 from it, Metal Gear Solid's codec registers produce 318 rather
+than 368 (bug 50 - the extra 50 columns were VRAM past the framebuffer), and
+a window wider than the mode, or an inverted one, falls back rather than
+sampling off the end.
 
 ## media_test
 
