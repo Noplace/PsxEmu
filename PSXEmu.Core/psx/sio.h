@@ -38,6 +38,14 @@ namespace psx {
   None of this is optional plumbing bolted on afterwards - it is what a real
   pad does, and a game that never asks for analog input never sees anything
   different from the plain digital pad this always was.
+
+  A port can also hold a mouse instead of a pad (ID 5A12h) - a different
+  device entirely, with two buttons and no modes to negotiate, reporting
+  relative movement rather than an absolute stick position - or nothing at
+  all, which is the one case a real console cannot tell apart from a slot
+  nobody has ever asked about: it never acknowledges either way. Which of
+  these five is in a slot is chosen once, by the front end, the same way the
+  three pad kinds already were - see ControllerType.
 */
 class Sio : public Component {
  public:
@@ -70,10 +78,9 @@ class Sio : public Component {
   // for the large variable-speed one.
   enum Motor { kSmallMotor = 0, kLargeMotor = 1 };
 
-  // Which of the three real PS1 controllers is plugged into a port, chosen
-  // by the front end rather than negotiated - a game cannot ask a port to be
-  // a different physical device, only for the one that is there to change
-  // mode.
+  // Which of five things is plugged into a port, chosen by the front end
+  // rather than negotiated - a game cannot ask a port to be a different
+  // physical device, only for the pad that is there to change mode.
   //   kDigital    - the original pad (SCPH-1080): never leaves digital mode,
   //                 ID 5A41h forever. Command 0x43 (enter configuration
   //                 mode) is meaningless to it and does nothing, which is
@@ -84,7 +91,15 @@ class Sio : public Component {
   //                 motors at all, so nothing it is ever told to do to them
   //                 has any effect.
   //   kDualShock  - today's full behaviour: analog plus both rumble motors.
-  enum ControllerType { kDigital, kDualAnalog, kDualShock };
+  //   kMouse      - the SCPH-1030 mouse (ID 5A12h): two buttons, no modes to
+  //                 negotiate, relative movement instead of an absolute
+  //                 stick - see struct Mouse and ExchangeMouse.
+  //   kNone       - no device at all. The same as unplugging a pad
+  //                 (set_connected(slot, false)), just made a standing
+  //                 choice instead of something the front end has to
+  //                 remember to keep asserting every frame - see
+  //                 set_connected and set_controller_type.
+  enum ControllerType { kDigital, kDualAnalog, kDualShock, kMouse, kNone };
 
   Sio();
   ~Sio();
@@ -115,6 +130,27 @@ class Sio : public Component {
     pad_[slot].left_y = left_y;
     pad_[slot].right_x = right_x;
     pad_[slot].right_y = right_y;
+  }
+
+  // A mouse's own two buttons - what the wire calls "switches" rather than
+  // buttons, but the same active-low convention every button on this bus
+  // already uses. Meaningless, and harmless, on a slot not currently holding
+  // a mouse; see controller_type.
+  void set_mouse_buttons(int slot, bool left, bool right) {
+    if (slot < 0 || slot >= 2) return;
+    mouse_[slot].left = left;
+    mouse_[slot].right = right;
+  }
+
+  // Adds to the movement a mouse has not yet been asked for - see
+  // Mouse::accum_dx/accum_dy for why this accumulates rather than replaces.
+  // `dx`/`dy` are screen-space, right/down positive, which is also
+  // psx-spx's own convention for this device, so neither axis is inverted
+  // here the way a gamepad's Y axis has to be.
+  void add_mouse_motion(int slot, int32_t dx, int32_t dy) {
+    if (slot < 0 || slot >= 2) return;
+    mouse_[slot].accum_dx += dx;
+    mouse_[slot].accum_dy += dy;
   }
 
   // A pad that is freshly connected forgets whatever a previous one had
@@ -183,10 +219,34 @@ class Sio : public Component {
     uint8_t motor_large = 0;
   };
 
+  // A mouse's own protocol state. Deliberately not folded into Pad: a mouse
+  // shares nothing with the DualShock lineage beyond both living on this
+  // bus - no modes, no rumble, and its two motion fields are a relative
+  // delta rather than an absolute stick position.
+  struct Mouse {
+    bool connected = false;
+    // Active low on the wire, same as every pad button - see
+    // MouseSwitchesByte for the inversion.
+    bool left = false;
+    bool right = false;
+
+    // Movement not yet sent to the game, in the pad's signed byte range
+    // (psx-spx: "-80h..+7Fh"). Wider than a byte so it can accumulate
+    // rather than replace: the front end adds to this every emulated frame
+    // (add_mouse_motion), and a poll only ever drains as much of it as one
+    // signed byte can carry (see ExchangeMouse/DrainMouseAxis), leaving the
+    // rest for the next one. A game polling once a frame, same as this
+    // bus's buttons already are, never notices the difference; one polling
+    // less often than that does not lose movement to it either.
+    int32_t accum_dx = 0;
+    int32_t accum_dy = 0;
+  };
+
   // Which device the current exchange is talking to, and how far in it is.
-  enum Target { kTargetNone, kTargetPad, kTargetMemoryCard };
+  enum Target { kTargetNone, kTargetPad, kTargetMemoryCard, kTargetMouse };
 
   Pad pad_[2];
+  Mouse mouse_[2];
   ControllerType controller_type_[2] = { kDualShock, kDualShock };
 
   uint16_t control_;
@@ -218,6 +278,17 @@ class Sio : public Component {
   uint8_t PadIdByte(const Pad& pad) const;
   uint8_t PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming,
                           bool rumble_capable);
+
+  // The mouse side of Exchange() - its own state machine because a mouse's
+  // reply shares no structure with a pad's: one fixed length, no command
+  // byte ever changes it, see ExchangeMouse.
+  uint8_t ExchangeMouse(uint8_t data, int slot);
+  uint8_t MouseSwitchesByte(const Mouse& mouse) const;
+  // Sends as much of an accumulated motion value as one signed byte can
+  // carry and keeps whatever does not fit for the next poll, rather than
+  // clipping it away - see Mouse::accum_dx/accum_dy. Static: it has nothing
+  // to do with any other Sio state, only the accumulator it is handed.
+  static uint8_t DrainMouseAxis(int32_t& accumulator);
 
   // Which controller command (0x42, 0x43, ...) the current exchange is
   // carrying out - decided by the byte the host sends right after selecting

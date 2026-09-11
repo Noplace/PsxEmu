@@ -57,9 +57,13 @@ namespace psxemu {
     // nothing on click is worse than one that looks unavailable.
     void TickFilter(HWND window, const std::string& backend, const std::string& filter);
 
-    // The controller type set on each port, and the source each port's buttons come from.
+    // The controller type set on each port, and the source each port's buttons come from. A port
+    // whose type does not use a source at all - Sio::kMouse's mapping is fixed to the real mouse,
+    // Sio::kNone has no buttons to source - has its source items greyed out rather than removed, the
+    // same treatment TickFilter already gives a filter menu the active renderer cannot use.
     void TickControllerTypes(HWND window, const std::array<std::string, 2>& types);
-    void TickInputSources(HWND window, const std::array<std::string, 2>& sources);
+    void TickInputSources(HWND window, const std::array<std::string, 2>& sources,
+                          const std::array<std::string, 2>& controller_types);
 
     // Whether the machine is being held to the emulated display's frame rate. Ticked is a console;
     // unticked runs at whatever the monitor's refresh rate or the sound device allows, which the
@@ -76,8 +80,9 @@ namespace psxemu {
     // Settings keys
     // ---------------------------------------------------------------------------------------------
 
-    // The settings-file key ("digital", "dual_analog", "dualshock") as the type Sio takes. An
-    // unrecognised key gives a DualShock, which is what a pad that was never configured should be.
+    // The settings-file key ("digital", "dual_analog", "dualshock", "mouse", "none") as the type Sio
+    // takes. An unrecognised key gives a DualShock, which is what a pad that was never configured
+    // should be.
     emulation::psx::Sio::ControllerType ParseControllerType(const std::string& key);
 
     // Where one PSX port's buttons come from. Front-end-only - Sio has no notion of this, only of

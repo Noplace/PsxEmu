@@ -101,6 +101,7 @@
     <ClInclude Include="igraphicsengine.h" />
     <ClInclude Include="keyboard.h" />
     <ClInclude Include="menu.h" />
+    <ClInclude Include="mouse.h" />
     <ClInclude Include="shaders\legacy_shaders.h" />
     <ClInclude Include="shaders\ps_scanline_filter.h" />
     <ClInclude Include="shaders\ps_xbrz_filter.h" />

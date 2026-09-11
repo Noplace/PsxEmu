@@ -70,12 +70,12 @@ struct EmuConfig {
   static const std::array<const char*, 9> kValidVideoFilters;
 
   // --- Input --------------------------------------------------------------
-  // Which of the three real PS1 controllers is plugged into each SIO0 port -
-  // see Sio::ControllerType. "dualshock" for both, so an existing game that
-  // already negotiates analog input keeps working exactly as it did before
-  // this was choosable.
+  // What is plugged into each SIO0 port - one of the three real PS1
+  // controllers, a mouse, or nothing at all. See Sio::ControllerType.
+  // "dualshock" for both, so an existing game that already negotiates
+  // analog input keeps working exactly as it did before this was choosable.
   std::array<std::string, 2> controller_type = { "dualshock", "dualshock" };
-  static const std::array<const char*, 3> kValidControllerTypes;
+  static const std::array<const char*, 5> kValidControllerTypes;
 
   // Which physical source drives each PSX port - the keyboard, or one of the
   // two XInput slots the Input menu labels "Gamepad 1"/"Gamepad 2" (XInput
@@ -139,9 +139,9 @@ inline const std::array<const char*, 9> EmuConfig::kValidVideoFilters = {
 };
 
 // Order matches PSXEmu.Win32's Input > Controller Port menus and
-// Sio::ControllerType (kDigital, kDualAnalog, kDualShock).
-inline const std::array<const char*, 3> EmuConfig::kValidControllerTypes = {
-    "digital", "dual_analog", "dualshock" };
+// Sio::ControllerType (kDigital, kDualAnalog, kDualShock, kMouse, kNone).
+inline const std::array<const char*, 5> EmuConfig::kValidControllerTypes = {
+    "digital", "dual_analog", "dualshock", "mouse", "none" };
 
 // Order matches PSXEmu.Win32's Input > Port Source menus.
 inline const std::array<const char*, 3> EmuConfig::kValidInputSources = {

@@ -109,6 +109,8 @@ namespace psxemu {
             CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                             CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
                             nullptr, CreateMainMenu(), instance, this);
+        if (window_ != nullptr)
+            mouse_.Attach(window_);
         return window_ != nullptr;
     }
 
@@ -251,12 +253,15 @@ namespace psxemu {
     }
 
     void App::PollInput() {
+        using emulation::psx::Sio;
+
         // Input is sampled once per frame, on this thread, and handed to the core. The pads are
         // polled unconditionally, focused or not, so a controller being unplugged mid-game is
         // noticed straight away rather than only after the window is clicked back into; only the
         // *buttons and axes* are withheld while unfocused, matching what the keyboard already does.
         const Gamepad::State gamepad_state[2] = { gamepads_[0].Poll(), gamepads_[1].Poll() };
         const uint16_t keyboard_buttons = ReadKeyboardPad();
+        const Mouse::State mouse_state = mouse_.Poll();
         const bool focused = (GetForegroundWindow() == window_);
 
         // Re-applied every frame rather than only when the menu changes it - exactly how
@@ -264,12 +269,34 @@ namespace psxemu {
         // Sio to its power-on defaults, and this is what makes either pick the configured
         // controller back up without either call site needing to know that happened.
         // set_controller_type is a no-op once converged, so this costs nothing in the steady state.
-        system_->sio().set_controller_type(
-            0, ParseControllerType(system_->config().controller_type[0]));
-        system_->sio().set_controller_type(
-            1, ParseControllerType(system_->config().controller_type[1]));
+        const Sio::ControllerType controller_type[2] = {
+            ParseControllerType(system_->config().controller_type[0]),
+            ParseControllerType(system_->config().controller_type[1]),
+        };
+        system_->sio().set_controller_type(0, controller_type[0]);
+        system_->sio().set_controller_type(1, controller_type[1]);
 
         for (int port = 0; port < 2; ++port) {
+            // A port set to no controller reports nothing at all - Sio already forces connected
+            // false itself for a kNone port regardless of what is asked, but there is nothing else
+            // for the rest of this iteration to do either way.
+            if (controller_type[port] == Sio::kNone) {
+                system_->sio().set_connected(port, false);
+                continue;
+            }
+
+            // A mouse's mapping is not a player choice the way a pad's input_source is - it is
+            // always the real Windows mouse, exactly as a real PSX mouse is always whatever is
+            // plugged into the port rather than something a game can redirect.
+            if (controller_type[port] == Sio::kMouse) {
+                system_->sio().set_connected(port, true);
+                system_->sio().set_mouse_buttons(port, focused && mouse_state.left,
+                                                 focused && mouse_state.right);
+                if (focused)
+                    system_->sio().add_mouse_motion(port, mouse_state.dx, mouse_state.dy);
+                continue;
+            }
+
             const InputSource source = ParseInputSource(system_->config().input_source[port]);
             bool connected = true;   // the keyboard is always "there"
             uint16_t buttons = 0;
@@ -512,12 +539,17 @@ namespace psxemu {
         system_->config().controller_type[port] = key;
         system_->sio().set_controller_type(port, ParseControllerType(key));
         UpdateControllerTypeMenu();
+        // Switching to or from kMouse/kNone changes whether this port's source items should be
+        // greyed out, so the source menu needs refreshing too, not just the type menu's own ticks.
+        UpdateInputSourceMenu();
         SaveSettingsIfChanged();
     }
 
     void App::UpdateInputSourceMenu() {
-        if (system_ != nullptr)
-            TickInputSources(window_, system_->config().input_source);
+        if (system_ != nullptr) {
+            TickInputSources(window_, system_->config().input_source,
+                             system_->config().controller_type);
+        }
     }
 
     void App::SetInputSource(int port, const std::string& key) {
@@ -712,6 +744,11 @@ namespace psxemu {
                     app->OnKeyDown(wparam);
                 return 0;
 
+            case WM_INPUT:
+                if (app != nullptr)
+                    app->mouse_.OnRawInput(reinterpret_cast<HRAWINPUT>(lparam));
+                break;   // let DefWindowProcW do its own WM_INPUT cleanup
+
             case WM_DESTROY:
                 PostQuitMessage(0);
                 return 0;
@@ -867,8 +904,10 @@ namespace psxemu {
                     SetFilter(kFilterChoices[command - kCommandFilterFirst].key);
                 } else if (command >= kCommandControllerTypeFirst &&
                            command <= kCommandControllerTypeLast) {
+                    const int type_count = static_cast<int>(std::size(kControllerTypeChoices));
                     const int offset = command - kCommandControllerTypeFirst;
-                    SetControllerType(offset / 3, kControllerTypeChoices[offset % 3].key);
+                    SetControllerType(offset / type_count,
+                                     kControllerTypeChoices[offset % type_count].key);
                 } else if (command >= kCommandInputSourceFirst &&
                            command <= kCommandInputSourceLast) {
                     const int offset = command - kCommandInputSourceFirst;

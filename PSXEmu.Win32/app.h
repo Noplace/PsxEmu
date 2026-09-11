@@ -41,6 +41,7 @@
 #include "const.h"
 #include "engine_factory.h"
 #include "gamepad.h"
+#include "mouse.h"
 
 namespace psxemu {
 
@@ -297,6 +298,12 @@ namespace psxemu {
         // gamepad at all rather than the keyboard, is decided by EmuConfig::input_source and applied
         // each frame - see PollInput.
         std::array<Gamepad, 2> gamepads_{ Gamepad(0), Gamepad(1) };
+
+        // The real mouse. Unlike gamepads_, there is one of these regardless of how many ports use
+        // it - a port's controller_type says whether it is Sio::kMouse at all, not which of several
+        // physical mice to read, since there is only ever the one. Registered for raw input once, in
+        // CreateAppWindow; fed to Sio from PollInput.
+        Mouse mouse_;
     };
 
 }   // namespace psxemu

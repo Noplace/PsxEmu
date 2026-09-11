@@ -272,7 +272,7 @@ that 64 times, and a crash part-way through leaves a half-written card.
 
 Planned in [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
 
-### Controllers - DualShock now, no multitap or lightgun
+### Controllers - DualShock, mouse and no-controller now; no multitap or lightgun
 
 `Sio` speaks the real DualShock handshake: a pad boots as a plain digital one
 (`5A41h`) and only becomes analog (`5A73h`) if a game actually asks for
@@ -290,6 +290,28 @@ shape and zero-filled content, and `0x4C` reports a DualShock rather than a
 DualShock 2 - pressure-sensitive face buttons are not implemented, so nothing
 would read the extra data anyway. Still entirely absent: multitap, and the
 lightgun, which also needs the GPU's scanline position latched on trigger.
+
+A port can also be set to `Sio::kMouse` (the SCPH-1030 mouse, ID `5A12h`) or
+`Sio::kNone` (nothing plugged in at all), alongside the three pad kinds -
+`PSXEmu.Win32`'s Controller Port menu offers all five per port. The mouse's
+six-byte poll reply (ID, a fixed filler byte, the two buttons, then two
+signed relative motion bytes) was built against psx-spx's documented bit
+layout rather than guessed, and `sio_test` checks the exact reply bytes for a
+known button/motion state, that a movement bigger than one signed byte drains
+across as many polls as it takes rather than being clipped and losing the
+remainder, and that `kNone` never acknowledges even if something still calls
+`set_connected(slot, true)` on it by mistake. What none of that proves is
+that a real mouse-aware game actually recognises this as a mouse - no disc
+that uses one has been tried, since nocash's own notes are the only reference
+this was checked against. `PSXEmu.Win32/mouse.h` reads the real mouse via raw
+input (`WM_INPUT`) rather than cursor position, so movement is not lost at a
+screen edge, and divides the raw delta by a fixed 4 before it reaches `Sio`
+since a modern mouse's sensor resolution is well above a PS1 mouse's and
+nothing scales that automatically - guessed, not measured, and the first
+thing to revisit if the in-game feel is off. A port set to `kMouse` or
+`kNone` has its Port Source menu greyed out, since neither one reads from
+`input_source` - a mouse's mapping is fixed to the real mouse, and there is
+nothing for `kNone` to read from at all.
 
 `PSXEmu.Win32/gamepad.h` is where an XInput pad actually reaches this. The
 polling, slot search-and-latch and deadzone handling are the same generic
@@ -312,8 +334,9 @@ itself at startup, so this has not yet mattered, but a homebrew disc or a
 utility that expects the player to press the button would find nothing does.
 
 Covered by `sio_test` - the handshake, the axis byte order, the pre-DualShock
-legacy rumble pattern and the `0x4D`-configured one, and that the two ports do
-not leak state into each other.
+legacy rumble pattern and the `0x4D`-configured one, that the two ports do
+not leak state into each other, the mouse's reply shape and motion draining,
+and that `kNone` never answers.
 
 ### CD-ROM - all 28 commands answer
 

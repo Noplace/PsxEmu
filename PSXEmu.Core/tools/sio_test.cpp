@@ -462,6 +462,92 @@ void TestDualAnalogControllerTypeHasNoRumble(System* system) {
              "no large motor either, despite being mapped and sent a speed");
 }
 
+void TestMouseReportsExpectedShape(System* system) {
+  printf("mouse: id, switches and axes come back in the right shape\n");
+  system->sio().set_controller_type(0, Sio::kMouse);
+  system->sio().set_connected(0, true);
+  PadHarness pad(system);
+
+  system->sio().set_mouse_buttons(0, /*left=*/true, /*right=*/false);
+  system->sio().add_mouse_motion(0, /*dx=*/5, /*dy=*/-3);
+
+  uint8_t reply[16] = {};
+  const int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+
+  CheckEqual(n, 6, "a mouse's poll reply is six bytes");
+  CheckEqual(reply[0], 0x12, "mouse id low byte");
+  CheckEqual(reply[1], 0x5A, "mouse id high byte");
+  CheckEqual(reply[2], 0xFF, "the byte before the switches is always 0xFF");
+  CheckEqual(reply[3], 0xF4,
+             "left button held clears bit 3, right stays released (bit 2 set)");
+  CheckEqual(reply[4], 0x05, "dx comes back as sent");
+  CheckEqual(reply[5], 0xFD, "dy comes back as its two's-complement byte (-3)");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);   // leave it as found
+}
+
+void TestMouseMotionAccumulatesAcrossPolls(System* system) {
+  printf("mouse: a big movement drains across as many polls as it takes\n");
+  system->sio().set_controller_type(1, Sio::kMouse);
+  system->sio().set_connected(1, true);
+  PadHarness pad(system);
+
+  system->sio().add_mouse_motion(1, /*dx=*/300, /*dy=*/0);   // past one byte
+
+  uint8_t reply[16] = {};
+  pad.Command(1, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[4], 0x7F, "the first poll sends as much as a byte can (127)");
+
+  pad.Command(1, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[4], 0x7F, "and another 127 of the 173 that were left");
+
+  pad.Command(1, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[4], 0x2E, "and the remaining 46 on the third poll");
+
+  pad.Command(1, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[4], 0x00, "nothing left to send on the fourth");
+
+  system->sio().set_controller_type(1, Sio::kDualShock);
+}
+
+void TestNoneControllerNeverAcknowledges(System* system) {
+  printf("kNone: never answers, even if set_connected is told otherwise\n");
+  system->sio().set_controller_type(0, Sio::kNone);
+  system->sio().set_connected(0, true);   // a stale/mistaken call must not matter
+
+  PadHarness pad(system);
+  uint8_t reply[16] = {};
+  const int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(n, 0, "nothing comes back from a port set to no controller");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  FreshPad(system, 0);
+}
+
+void TestSwitchingToMouseStopsThePadAnswering(System* system) {
+  printf("switching a port to mouse retires whatever pad was negotiated\n");
+  FreshPad(system, 0);
+  PadHarness pad(system);
+  // Leave the old pad in analog mode before the switch, so this also proves
+  // the switch is a fresh identity rather than the mouse somehow inheriting
+  // the old pad's negotiated state.
+  const uint8_t enter[1] = { 0x01 };
+  pad.Command(0, 0x43, enter, 1, nullptr, 0);
+  const uint8_t go_analog[2] = { 0x01, 0x02 };
+  pad.Command(0, 0x44, go_analog, 2, nullptr, 0);
+
+  system->sio().set_controller_type(0, Sio::kMouse);
+  system->sio().set_connected(0, true);
+
+  uint8_t reply[16] = {};
+  const int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(n, 6, "it now answers with the mouse's own reply shape");
+  CheckEqual(reply[0], 0x12, "and the mouse's own id, not the pad's");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  FreshPad(system, 0);
+}
+
 void TestDualShockControllerTypeDefaultStillRumbles(System* system) {
   printf("the default DualShock type is unaffected by the new gating\n");
   FreshPad(system, 0);
@@ -506,6 +592,10 @@ int main() {
   TestDigitalControllerTypeNeverGoesAnalog(system);
   TestDualAnalogControllerTypeHasNoRumble(system);
   TestDualShockControllerTypeDefaultStillRumbles(system);
+  TestMouseReportsExpectedShape(system);
+  TestMouseMotionAccumulatesAcrossPolls(system);
+  TestNoneControllerNeverAcknowledges(system);
+  TestSwitchingToMouseStopsThePadAnswering(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

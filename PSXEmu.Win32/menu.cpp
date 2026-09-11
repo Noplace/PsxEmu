@@ -91,11 +91,12 @@ namespace psxemu {
         // from the other's.
         HMENU controller_port[2];
         HMENU source_port[2];
+        const int type_count = static_cast<int>(std::size(kControllerTypeChoices));
         for (int port = 0; port < 2; ++port) {
             controller_port[port] = CreatePopupMenu();
             for (size_t i = 0; i < std::size(kControllerTypeChoices); ++i) {
                 AppendMenuW(controller_port[port], MF_STRING,
-                            static_cast<UINT_PTR>(kCommandControllerTypeFirst + port * 3 +
+                            static_cast<UINT_PTR>(kCommandControllerTypeFirst + port * type_count +
                                                   static_cast<int>(i)),
                             kControllerTypeChoices[i].label);
             }
@@ -165,28 +166,38 @@ namespace psxemu {
         HMENU bar = GetMenu(window);
         if (bar == nullptr)
             return;
+        const int type_count = static_cast<int>(std::size(kControllerTypeChoices));
         for (int port = 0; port < 2; ++port) {
             const std::string& current = types[port];
             for (size_t i = 0; i < std::size(kControllerTypeChoices); ++i) {
-                const UINT id =
-                    static_cast<UINT>(kCommandControllerTypeFirst + port * 3 + static_cast<int>(i));
+                const UINT id = static_cast<UINT>(kCommandControllerTypeFirst +
+                                                  port * type_count + static_cast<int>(i));
                 const bool on = (current == kControllerTypeChoices[i].key);
                 CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
             }
         }
     }
 
-    void TickInputSources(HWND window, const std::array<std::string, 2>& sources) {
+    void TickInputSources(HWND window, const std::array<std::string, 2>& sources,
+                          const std::array<std::string, 2>& controller_types) {
         HMENU bar = GetMenu(window);
         if (bar == nullptr)
             return;
         for (int port = 0; port < 2; ++port) {
+            // A mouse's mapping is fixed and kNone has no buttons at all, so neither port's source
+            // choice does anything - greyed out for the same reason TickFilter greys out a filter a
+            // renderer cannot use, rather than leaving a clickable item that silently does nothing.
+            const emulation::psx::Sio::ControllerType type =
+                ParseControllerType(controller_types[port]);
+            const bool has_source = (type != emulation::psx::Sio::kMouse &&
+                                     type != emulation::psx::Sio::kNone);
             const std::string& current = sources[port];
             for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
                 const UINT id =
                     static_cast<UINT>(kCommandInputSourceFirst + port * 3 + static_cast<int>(i));
-                const bool on = (current == kInputSourceChoices[i].key);
+                const bool on = has_source && (current == kInputSourceChoices[i].key);
                 CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+                EnableMenuItem(bar, id, MF_BYCOMMAND | (has_source ? MF_ENABLED : MF_GRAYED));
             }
         }
     }
@@ -213,6 +224,10 @@ namespace psxemu {
             return Sio::kDigital;
         if (key == "dual_analog")
             return Sio::kDualAnalog;
+        if (key == "mouse")
+            return Sio::kMouse;
+        if (key == "none")
+            return Sio::kNone;
         return Sio::kDualShock;
     }
 

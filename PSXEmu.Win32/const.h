@@ -71,7 +71,7 @@ namespace psxemu {
         kCommandFrameLimiter,
         kCommandCdMechanicalTiming,
         kCommandControllerTypeFirst,
-        kCommandControllerTypeLast = kCommandControllerTypeFirst + 5,   // 2 ports x 3 types
+        kCommandControllerTypeLast = kCommandControllerTypeFirst + 9,   // 2 ports x 5 types
         kCommandInputSourceFirst,
         kCommandInputSourceLast = kCommandInputSourceFirst + 5,   // 2 ports x 3 sources
         kCommandExit,
@@ -132,14 +132,16 @@ namespace psxemu {
         { "xbrz",        L"x&BRZ" },
     };
 
-    // The three real PS1 controllers a port can hold, in the order EmuConfig::kValidControllerTypes
-    // and Sio::ControllerType both list them.
+    // What a port can hold - the three real PS1 controllers, a mouse, or nothing at all - in the
+    // order EmuConfig::kValidControllerTypes and Sio::ControllerType both list them.
     struct ControllerTypeChoice { const char* key; const wchar_t* label; };
 
     inline constexpr ControllerTypeChoice kControllerTypeChoices[] = {
         { "digital",     L"&Original (Digital)" },
         { "dual_analog", L"&Dual Analog (no rumble)" },
         { "dualshock",   L"Dual&Shock" },
+        { "mouse",       L"&Mouse" },
+        { "none",        L"&None (Disconnected)" },
     };
 
     // The three sources a PSX port can be mapped to, in the order EmuConfig::kValidInputSources

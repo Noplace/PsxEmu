@@ -57,6 +57,8 @@ int Sio::Initialize() {
   // means centred and 0xFF means unmapped.
   pad_[0] = Pad();
   pad_[1] = Pad();
+  mouse_[0] = Mouse();
+  mouse_[1] = Mouse();
   // Slot 1 has a digital pad in it, slot 2 is empty. A front end overrides
   // this as soon as it knows better.
   pad_[0].connected = true;
@@ -93,6 +95,7 @@ int Sio::Deinitialize() {
 
 void Sio::Serialise(StateIO& io) {
   io.Plain(pad_);
+  io.Plain(mouse_);
   io.Plain(controller_type_);
   io.Plain(control_);
   io.Plain(mode_);
@@ -118,6 +121,15 @@ void Sio::Serialise(StateIO& io) {
 void Sio::set_connected(int slot, bool connected) {
   if (slot < 0 || slot >= 2)
     return;
+  // kNone is a standing choice, not something the front end has to
+  // remember to keep unplugging every frame - see the class comment on
+  // ControllerType - so it overrides whatever a caller still asks for here.
+  if (controller_type_[slot] == kNone)
+    connected = false;
+  if (controller_type_[slot] == kMouse) {
+    mouse_[slot].connected = connected;
+    return;
+  }
   if (connected && !pad_[slot].connected) {
     // A freshly connected pad has negotiated nothing yet - a real DualShock
     // that has just been plugged in does not remember being in analog mode
@@ -134,15 +146,24 @@ void Sio::set_connected(int slot, bool connected) {
 void Sio::set_controller_type(int slot, ControllerType type) {
   if (slot < 0 || slot >= 2 || controller_type_[slot] == type)
     return;
-  controller_type_[slot] = type;
   // Changing the physical controller is a fresh connection as far as the
   // protocol is concerned - a real console cannot tell a DualShock swapped
   // for a plain digital pad from an unplug/replug, and neither should this
   // one: whatever the old one had negotiated (analog mode, rumble mapping)
-  // must not carry over to a controller of a different kind.
-  const bool was_connected = pad_[slot].connected;
+  // must not carry over to a controller of a different kind. old_type is
+  // read before either slot is touched, since it says which of Pad/Mouse
+  // actually held the connection being carried forward.
+  const ControllerType old_type = controller_type_[slot];
+  const bool was_connected = (old_type == kMouse) ? mouse_[slot].connected
+                            : (old_type == kNone)  ? false
+                                                    : pad_[slot].connected;
+  controller_type_[slot] = type;
   pad_[slot] = Pad();
-  pad_[slot].connected = was_connected;
+  mouse_[slot] = Mouse();
+  if (type == kMouse)
+    mouse_[slot].connected = was_connected;
+  else if (type != kNone)
+    pad_[slot].connected = was_connected;
 }
 
 void Sio::Tick(uint32_t cycles) {
@@ -176,12 +197,24 @@ uint8_t Sio::Exchange(uint8_t data) {
   const Pad& pad = pad_[slot];
 
   if (transfer_step_ == 0) {
-    // First byte selects the device: 0x01 is a controller, 0x81 a memory card.
+    // First byte selects the device: 0x01 is a controller - whichever kind
+    // is actually plugged into this slot, see controller_type_ - 0x81 a
+    // memory card. A slot set to kNone never has anything answer 0x01,
+    // exactly like an unplugged pad; that is already true of pad.connected
+    // by the time this runs (set_controller_type/set_connected enforce it),
+    // but the type is checked directly too so a mouse-holding slot answers
+    // as a mouse rather than whatever pad.connected happens to say.
     target_ = kTargetNone;
-    if (data == 0x01 && pad.connected)
-      target_ = kTargetPad;
-    else if (data == 0x81 && system().mc(slot).connected())
+    if (data == 0x01) {
+      if (controller_type_[slot] == kMouse) {
+        if (mouse_[slot].connected)
+          target_ = kTargetMouse;
+      } else if (pad.connected) {
+        target_ = kTargetPad;
+      }
+    } else if (data == 0x81 && system().mc(slot).connected()) {
       target_ = kTargetMemoryCard;
+    }
 
     acknowledge_ = (target_ != kTargetNone);
     ++transfer_step_;
@@ -190,6 +223,10 @@ uint8_t Sio::Exchange(uint8_t data) {
 
   if (target_ == kTargetMemoryCard) {
     return ExchangeMemoryCard(data, system().mc(selected_slot()));
+  }
+
+  if (target_ == kTargetMouse) {
+    return ExchangeMouse(data, slot);
   }
 
   if (target_ != kTargetPad) {
@@ -431,6 +468,81 @@ uint8_t Sio::ExchangeController(uint8_t data, int slot) {
 
   ++transfer_step_;
   acknowledge_ = (transfer_step_ <= total_length);
+  return out;
+}
+
+// The byte psx-spx calls the mouse's "switches": bits 8-9 of the halfword
+// this belongs to are always 0, bit 10 is the right button and bit 11 the
+// left, both active low, and the rest are always 1 - 0xFC is that byte at
+// rest, with the two button bits cleared as they are held.
+uint8_t Sio::MouseSwitchesByte(const Mouse& mouse) const {
+  uint8_t out = 0xFC;
+  if (mouse.left) out &= ~0x08;
+  if (mouse.right) out &= ~0x04;
+  return out;
+}
+
+uint8_t Sio::DrainMouseAxis(int32_t& accumulator) {
+  int32_t sent = accumulator;
+  if (sent > 127) sent = 127;
+  if (sent < -128) sent = -128;
+  accumulator -= sent;
+  return static_cast<uint8_t>(static_cast<int8_t>(sent));
+}
+
+// The mouse side of an exchange, from the second byte on - the first was
+// already consumed by Exchange() to pick the device. Unlike a pad, there is
+// only one reply a mouse ever gives: it has no configuration mode, no
+// analog mode and nothing else to negotiate, so `data` (the command byte
+// and everything after it) is never inspected - every command the host
+// sends here gets the same six-byte reply, psx-spx documenting no other
+// command a mouse answers to. The shape, per psx-spx: ID low (5A12h's
+// 0x12), ID high (0x5A), a fixed 0xFF filler byte, the switches, then the
+// two motion bytes.
+uint8_t Sio::ExchangeMouse(uint8_t data, int slot) {
+  Mouse& mouse = mouse_[slot];
+  const int step = transfer_step_;
+
+  if (step == 1) {
+    acknowledge_ = true;
+    ++transfer_step_;
+    return 0x12;   // ID low - 5A12h says "mouse" the way 5A41h says pad.
+  }
+  if (step == 2) {
+    acknowledge_ = true;
+    ++transfer_step_;
+    return 0x5A;   // ID high, the same byte every device on this bus uses.
+  }
+
+  const int payload_index = step - 3;
+  const int kTotalLength = 6;
+  if (step > kTotalLength) {
+    acknowledge_ = false;
+    return 0xFF;
+  }
+
+  uint8_t out = 0x00;
+  switch (payload_index) {
+    case 0:
+      // psx-spx: "bits 0-7 not used, all bits always 1" - the buttons are
+      // the next byte, not this one.
+      out = 0xFF;
+      break;
+    case 1:
+      out = MouseSwitchesByte(mouse);
+      break;
+    case 2:
+      out = DrainMouseAxis(mouse.accum_dx);
+      break;
+    case 3:
+      out = DrainMouseAxis(mouse.accum_dy);
+      break;
+    default:
+      break;
+  }
+
+  ++transfer_step_;
+  acknowledge_ = (transfer_step_ <= kTotalLength);
   return out;
 }
 
