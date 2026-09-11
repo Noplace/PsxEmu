@@ -16,21 +16,24 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-//
-// PSXEmu.Win32 - the Win32 front end.
-//
-//   PSXEmu.Win32.exe [bios.bin] [disc]
-//
-// Everything it does is App, in app.h. This exists to give the application a stack frame to live
-// in, so that whichever way Run returns - a clean exit or a failure part-way through startup -
-// everything it owns is released on the way out.
-//
+#pragma once
 
-#include "framework.h"
+// The include set every translation unit in this project needs, so each one opens with a single
+// include rather than the same block of a dozen. The same thing psx/psx.h is for the core, and the
+// same name GBAEmu uses for it - see Docs/Emulator-Project-Standards.md section 3.
+//
+// Deliberately the *common* set and nothing more. The narrow headers - commdlg.h, shlobj.h,
+// shellapi.h, xinput.h, and the two Direct3D backends - stay in the single file that needs each,
+// along with the #pragma comment(lib) that goes with them, so what a file actually depends on stays
+// readable from the top of that file.
 
-#include "app.h"
+#include "psx/psx.h"   // also brings in windows.h, with WIN32_LEAN_AND_MEAN and NOMINMAX
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
-    psxemu::App app;
-    return app.Run(instance, show);
-}
+#include <array>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <vector>

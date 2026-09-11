@@ -16,21 +16,30 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
+#pragma once
+
+// The keyboard as a digital PSX pad - the counterpart to gamepad.h beside it, and the source a
+// port uses when its EmuConfig::input_source says "keyboard".
 //
-// PSXEmu.Win32 - the Win32 front end.
-//
-//   PSXEmu.Win32.exe [bios.bin] [disc]
-//
-// Everything it does is App, in app.h. This exists to give the application a stack frame to live
-// in, so that whichever way Run returns - a clean exit or a failure part-way through startup -
-// everything it owns is released on the way out.
-//
+// Far smaller than the gamepad because there is nothing to open, nothing to lose, and no state to
+// keep: GetAsyncKeyState reads the current keyboard from anywhere, so this is one pass over the
+// map in const.h and no class to hold between calls. Whether the result reaches the emulated
+// machine is the caller's decision - the app withholds buttons while the window is unfocused,
+// exactly as it does for a gamepad.
 
 #include "framework.h"
+#include "const.h"
 
-#include "app.h"
+namespace psxemu {
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
-    psxemu::App app;
-    return app.Run(instance, show);
-}
+    // The buttons held right now, as the Sio::k* bitmask.
+    inline uint16_t ReadKeyboardPad() {
+        uint16_t buttons = 0;
+        for (const KeyBinding& binding : kKeyBindings) {
+            if (GetAsyncKeyState(binding.key) & 0x8000)
+                buttons |= binding.button;
+        }
+        return buttons;
+    }
+
+}   // namespace psxemu

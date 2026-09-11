@@ -29,36 +29,35 @@
 // immediate-mode overlay, so there is no GUI backend lifecycle here.
 class IGraphicsEngine {
  public:
-  virtual ~IGraphicsEngine() = default;
+    virtual ~IGraphicsEngine() = default;
 
-  // Lifecycle. `width`/`height` are the window's client area at the moment
-  // of construction - the caller resolves that once, rather than each
-  // implementation calling GetClientRect on its own.
-  virtual bool Initialize(HWND window_handle, int width, int height) = 0;
-  virtual void Shutdown() = 0;
+    // Lifecycle. `width`/`height` are the window's client area at the moment
+    // of construction - the caller resolves that once, rather than each
+    // implementation calling GetClientRect on its own.
+    virtual bool Initialize(HWND window_handle, int width, int height) = 0;
+    virtual void Shutdown() = 0;
 
-  // One frame: clear and bind the target, upload and draw the emulator's
-  // framebuffer, present. Three calls rather than one `Present(pixels, w,
-  // h)` because a filter change or a live renderer switch needs to happen
-  // between frames, not inside one.
-  virtual void BeginFrame() = 0;
-  virtual void RenderFramebuffer(const void* data, int width, int height) = 0;
-  virtual void EndFrame() = 0;
+    // One frame: clear and bind the target, upload and draw the emulator's
+    // framebuffer, present. Three calls rather than one `Present(pixels, w,
+    // h)` because a filter change or a live renderer switch needs to happen
+    // between frames, not inside one.
+    virtual void BeginFrame() = 0;
+    virtual void RenderFramebuffer(const void* data, int width, int height) = 0;
+    virtual void EndFrame() = 0;
 
-  // The window was resized; follow the back buffer to the new client area.
-  virtual void Resize(int width, int height) = 0;
+    // The window was resized; follow the back buffer to the new client area.
+    virtual void Resize(int width, int height) = 0;
 
-  virtual void SetVsync(bool enabled) = 0;
+    virtual void SetVsync(bool enabled) = 0;
 
-  // Video filters. `name` is a stable key ("xbrz", "scanline", ...) chosen
-  // by whoever is loading shaders, not a file name - an empty name always
-  // means the engine's own built-in pass-through. An engine that does not
-  // support filters (the D3D11 path, in this project) may simply no-op
-  // `SetPixelShader` and return false from both loaders; the caller is
-  // responsible for not offering filters as an option when that is so.
-  virtual void SetPixelShader(const std::string& name) = 0;
-  virtual bool LoadCustomPixelShader(const std::string& name,
-                                     const uint8_t* bytecode, size_t size) = 0;
-  virtual bool LoadPixelShaderFromString(const std::string& name,
-                                         const char* hlsl) = 0;
+    // Video filters. `name` is a stable key ("xbrz", "scanline", ...) chosen
+    // by whoever is loading shaders, not a file name - an empty name always
+    // means the engine's own built-in pass-through. An engine that does not
+    // support filters (the D3D11 path, in this project) may simply no-op
+    // `SetPixelShader` and return false from both loaders; the caller is
+    // responsible for not offering filters as an option when that is so.
+    virtual void SetPixelShader(const std::string& name) = 0;
+    virtual bool LoadCustomPixelShader(const std::string& name, const uint8_t* bytecode,
+                                       size_t size) = 0;
+    virtual bool LoadPixelShaderFromString(const std::string& name, const char* hlsl) = 0;
 };

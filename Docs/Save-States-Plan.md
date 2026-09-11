@@ -96,20 +96,22 @@ file.
 
 ### 4. Front end
 
-`File > Save state` and `Load state`, plus numbered slots on F1-F8 with F5/F9
-for quick save and load, which is what people expect.
+**Done**, though not quite as planned. `Emulation > Save State` and `Load State`
+(not `File`), plus numbered slots on F1-F8: plain loads a slot, Ctrl+ saves it,
+and whichever slot was last used is the one the two menu items act on. The
+F5/F9 quick save/load pair this originally called for was never added; the
+menu items covered the need.
 
-The location is already decided and the directory already exists:
-`app.savestates_root` in `main.cpp` resolves to
-`Documents\My Games\PSXEmu\savestates`, created at startup alongside
-`memcards`, and is unused until this lands. States go in there as
+The location is `App::savestates_root_` in `app.h`, resolved by
+`SetUpDataDirectories` to `Documents\My Games\PSXEmu\savestates`, created at
+startup alongside `memcards`. States go in there as
 `<disc identifier>.st<n>` - the same identifier `DiscIdentifier()` already
 derives for a disc's memory card folder (the image's filename, directory and
 extension stripped), so a state and a save are found under the same name.
 
-The front end runs the machine on its own thread; a state must be taken between
-frames, not part-way through one. Set a flag and act on it at the top of the
-frame loop.
+A state must be taken between frames, not part-way through one. The key or menu
+item sets `pending_save_slot_` / `pending_load_slot_`, and `ApplyPendingStates`
+acts on it at the top of the next frame.
 
 ## How to know it works
 

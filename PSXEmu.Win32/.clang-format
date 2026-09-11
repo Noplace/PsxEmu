@@ -1,0 +1,38 @@
+# Style for PSXEmu.Win32 only. PSXEmu.Core is 2-space Google and has no config of its own, so
+# keeping this file here rather than at the solution root is what stops it claiming the core too.
+#
+# Google with four-space scopes and a hundred columns. The deviations below are all there to stop
+# the formatter undoing something deliberate:
+#
+#   SortIncludes        psx/psx.h is an aggregate header whose include order is load-bearing.
+#   ReflowComments      the prose comments are wrapped by hand, at sentence boundaries.
+#   Cpp11BracedListStyle  false keeps the spaces in `{ 0, 0, 640, 480 }`, which is how the whole
+#                       project writes braced initialisers.
+#   AlignTrailingComments  false leaves trailing comments where they were put.
+#
+# Data tables whose layout carries meaning are wrapped in `// clang-format off` at the point of use;
+# see const.h. d3dx12.h and the generated shader headers are excluded in .clang-format-ignore.
+
+BasedOnStyle: Google
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 100
+AccessModifierOffset: -3
+NamespaceIndentation: All
+IndentCaseLabels: true
+
+SortIncludes: false
+ReflowComments: false
+Cpp11BracedListStyle: false
+AlignTrailingComments: false
+SpacesBeforeTrailingComments: 3
+
+DerivePointerAlignment: false
+PointerAlignment: Left
+
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never

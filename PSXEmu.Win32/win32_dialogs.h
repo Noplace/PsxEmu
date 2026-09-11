@@ -16,21 +16,43 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
+#pragma once
+
+// The two things the front end puts in front of a person that are not the emulated picture: a file
+// picker, and a message box saying something went wrong.
 //
-// PSXEmu.Win32 - the Win32 front end.
-//
-//   PSXEmu.Win32.exe [bios.bin] [disc]
-//
-// Everything it does is App, in app.h. This exists to give the application a stack frame to live
-// in, so that whichever way Run returns - a clean exit or a failure part-way through startup -
-// everything it owns is released on the way out.
-//
+// Both are here rather than in the app because neither needs to know anything about it - a picker
+// needs a filter and an owner window, and a message box needs text. What is worth saying is said at
+// the call site; this only owns the fact that all of them are titled the same and that the four
+// pickers differ by two flags.
 
 #include "framework.h"
 
-#include "app.h"
+namespace psxemu {
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
-    psxemu::App app;
-    return app.Run(instance, show);
-}
+    // ---------------------------------------------------------------------------------------------
+    // Message boxes
+    // ---------------------------------------------------------------------------------------------
+
+    // Titled kWindowTitle, because every one of them is. `owner` may be null, which is what the
+    // failures before there is a window to own them pass.
+    //
+    // An error is something that stopped: the BIOS would not load, the state would not save. A
+    // warning is something that carried on anyway: the disc would not read, so nothing was mounted;
+    // the preferred renderer was not there, so the other one is running.
+    void ShowError(HWND owner, const wchar_t* message);
+    void ShowWarning(HWND owner, const wchar_t* message);
+
+    // ---------------------------------------------------------------------------------------------
+    // File pickers
+    // ---------------------------------------------------------------------------------------------
+
+    enum class FileDialog { kOpen, kSave };
+
+    // One implementation for all four file pickers. There used to be a copy of this per dialog,
+    // differing only in the filter and two flags. `filter` is one of the k*Filter strings in
+    // const.h; `default_extension` may be null. Empty if the person cancelled.
+    std::string ChooseFile(HWND window, FileDialog mode, const char* filter,
+                           const char* default_extension);
+
+}   // namespace psxemu

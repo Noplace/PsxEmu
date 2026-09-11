@@ -47,85 +47,83 @@ using Microsoft::WRL::ComPtr;
 */
 class D3D12GraphicsEngine : public IGraphicsEngine {
  public:
-  D3D12GraphicsEngine();
-  ~D3D12GraphicsEngine() override;
+    D3D12GraphicsEngine();
+    ~D3D12GraphicsEngine() override;
 
-  bool Initialize(HWND window_handle, int width, int height) override;
-  void Shutdown() override;
+    bool Initialize(HWND window_handle, int width, int height) override;
+    void Shutdown() override;
 
-  void BeginFrame() override;
-  void RenderFramebuffer(const void* data, int width, int height) override;
-  void EndFrame() override;
-  void Resize(int width, int height) override;
+    void BeginFrame() override;
+    void RenderFramebuffer(const void* data, int width, int height) override;
+    void EndFrame() override;
+    void Resize(int width, int height) override;
 
-  void SetVsync(bool enabled) override;
-  void SetPixelShader(const std::string& name) override;
-  bool LoadCustomPixelShader(const std::string& name, const uint8_t* bytecode,
-                             size_t size) override;
-  bool LoadPixelShaderFromString(const std::string& name,
-                                 const char* hlsl) override;
+    void SetVsync(bool enabled) override;
+    void SetPixelShader(const std::string& name) override;
+    bool LoadCustomPixelShader(const std::string& name, const uint8_t* bytecode,
+                               size_t size) override;
+    bool LoadPixelShaderFromString(const std::string& name, const char* hlsl) override;
 
  private:
-  bool CreateDevice();
-  bool CreateCommandQueue();
-  bool CreateSwapChain(HWND window_handle);
-  bool CreateDescriptorHeaps();
-  bool CreateRenderTargetViews();
-  bool CreateCommandAllocatorsAndList();
-  bool CreateSyncObjects();
-  bool CreateRootSignatureAndPSO();
-  bool CreateFramebufferResources(int fb_width, int fb_height);
+    bool CreateDevice();
+    bool CreateCommandQueue();
+    bool CreateSwapChain(HWND window_handle);
+    bool CreateDescriptorHeaps();
+    bool CreateRenderTargetViews();
+    bool CreateCommandAllocatorsAndList();
+    bool CreateSyncObjects();
+    bool CreateRootSignatureAndPSO();
+    bool CreateFramebufferResources(int fb_width, int fb_height);
 
-  void MoveToNextFrame();
-  void FlushGPU();
+    void MoveToNextFrame();
+    void FlushGPU();
 
-  static const UINT kFrameCount = 2;  // double buffering
+    static const UINT kFrameCount = 2;   // double buffering
 
-  ComPtr<IDXGIFactory4> factory_;
-  ComPtr<ID3D12Device> device_;
-  ComPtr<ID3D12CommandQueue> command_queue_;
-  ComPtr<IDXGISwapChain3> swap_chain_;
+    ComPtr<IDXGIFactory4> factory_;
+    ComPtr<ID3D12Device> device_;
+    ComPtr<ID3D12CommandQueue> command_queue_;
+    ComPtr<IDXGISwapChain3> swap_chain_;
 
-  ComPtr<ID3D12DescriptorHeap> rtv_heap_;
-  UINT rtv_descriptor_size_ = 0;
-  ComPtr<ID3D12Resource> render_targets_[kFrameCount];
+    ComPtr<ID3D12DescriptorHeap> rtv_heap_;
+    UINT rtv_descriptor_size_ = 0;
+    ComPtr<ID3D12Resource> render_targets_[kFrameCount];
 
-  ComPtr<ID3D12CommandAllocator> command_allocators_[kFrameCount];
-  ComPtr<ID3D12GraphicsCommandList> command_list_;
+    ComPtr<ID3D12CommandAllocator> command_allocators_[kFrameCount];
+    ComPtr<ID3D12GraphicsCommandList> command_list_;
 
-  UINT frame_index_ = 0;
-  HANDLE fence_event_ = nullptr;
-  ComPtr<ID3D12Fence> fence_;
-  UINT64 fence_values_[kFrameCount] = { 0 };
+    UINT frame_index_ = 0;
+    HANDLE fence_event_ = nullptr;
+    ComPtr<ID3D12Fence> fence_;
+    UINT64 fence_values_[kFrameCount] = { 0 };
 
-  bool vsync_ = true;
-  bool tearing_support_ = false;
+    bool vsync_ = true;
+    bool tearing_support_ = false;
 
-  int width_ = 0;
-  int height_ = 0;
+    int width_ = 0;
+    int height_ = 0;
 
-  ComPtr<ID3D12RootSignature> root_signature_;
-  ComPtr<ID3D12PipelineState> default_pipeline_state_;
-  std::unordered_map<std::string, ComPtr<ID3D12PipelineState>>
-      custom_shaders_;
-  std::string current_shader_;
-  ID3D12PipelineState* current_pipeline_state_ = nullptr;
+    ComPtr<ID3D12RootSignature> root_signature_;
+    ComPtr<ID3D12PipelineState> default_pipeline_state_;
+    std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> custom_shaders_;
+    std::string current_shader_;
+    ID3D12PipelineState* current_pipeline_state_ = nullptr;
 
-  ComPtr<ID3DBlob> vs_blob_;
+    ComPtr<ID3DBlob> vs_blob_;
 
-  // Framebuffer texture & upload heap - recreated whenever the incoming
-  // frame's own width/height changes, not sized once. The PSX changes
-  // resolution mid-boot and mid-game (menus commonly run at a lower
-  // horizontal sample rate than gameplay); the GBA this engine was written
-  // for never does, so the original always called this once.
-  ComPtr<ID3D12Resource> fb_texture_;
-  ComPtr<ID3D12Resource> fb_upload_heap_;
-  ComPtr<ID3D12DescriptorHeap> srv_heap_;
+    // Framebuffer texture & upload heap - recreated whenever the incoming
+    // frame's own width/height changes, not sized once. The PSX changes
+    // resolution mid-boot and mid-game (menus commonly run at a lower
+    // horizontal sample rate than gameplay); the GBA this engine was written
+    // for never does, so the original always called this once.
+    ComPtr<ID3D12Resource> fb_texture_;
+    ComPtr<ID3D12Resource> fb_upload_heap_;
+    ComPtr<ID3D12DescriptorHeap> srv_heap_;
 
-  int fb_width_ = 0;
-  int fb_height_ = 0;
-  UINT64 fb_upload_buffer_size_ = 0;
-  D3D12_PLACED_SUBRESOURCE_FOOTPRINT fb_placed_footprint_{};
-  UINT fb_num_rows_ = 0;
-  UINT64 fb_row_size_in_bytes_ = 0;
+    int fb_width_ = 0;
+    int fb_height_ = 0;
+    UINT64 fb_upload_buffer_size_ = 0;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT fb_placed_footprint_{};
+    UINT fb_num_rows_ = 0;
+    UINT64 fb_row_size_in_bytes_ = 0;
 };

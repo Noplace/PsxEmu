@@ -55,139 +55,158 @@
 
 namespace psxemu {
 
-class Gamepad {
- public:
-  // What one poll produced, in the pad's own byte conventions - buttons as
-  // the Sio::k* bitmask, axes as 0x00=left/up, 0xFF=right/down, 0x80=centred.
-  struct State {
-    uint16_t buttons = 0;
-    uint8_t left_x = 0x80, left_y = 0x80, right_x = 0x80, right_y = 0x80;
-  };
+    class Gamepad {
+     public:
+        // What one poll produced, in the pad's own byte conventions - buttons as
+        // the Sio::k* bitmask, axes as 0x00=left/up, 0xFF=right/down, 0x80=centred.
+        struct State {
+            uint16_t buttons = 0;
+            uint8_t left_x = 0x80, left_y = 0x80, right_x = 0x80, right_y = 0x80;
+        };
 
-  // `player_index` is the fixed XInput user index (0-3) this instance always
-  // polls.
-  explicit Gamepad(int player_index = 0) : player_index_(player_index) {
-    ZeroMemory(&state_, sizeof(state_));
-  }
+        // `player_index` is the fixed XInput user index (0-3) this instance always
+        // polls.
+        explicit Gamepad(int player_index = 0) : player_index_(player_index) {
+            ZeroMemory(&state_, sizeof(state_));
+        }
 
-  bool connected() const { return connected_; }
+        bool connected() const { return connected_; }
 
-  // Polls this pad's fixed slot.
-  State Poll() {
-    // XInputGetState on an empty slot is not the cheap no-op it looks like,
-    // so back off to about once a second while nothing is connected rather
-    // than asking every frame.
-    if (!connected_) {
-      if (++idle_frames_ < 60)
-        return State();
-      idle_frames_ = 0;
-    }
+        // Polls this pad's fixed slot.
+        State Poll() {
+            // XInputGetState on an empty slot is not the cheap no-op it looks like,
+            // so back off to about once a second while nothing is connected rather
+            // than asking every frame.
+            if (!connected_) {
+                if (++idle_frames_ < 60)
+                    return State();
+                idle_frames_ = 0;
+            }
 
-    const DWORD result =
-        XInputGetState(static_cast<DWORD>(player_index_), &state_);
-    connected_ = (result == ERROR_SUCCESS);
-    if (!connected_) {
-      ZeroMemory(&state_, sizeof(state_));
-      return State();
-    }
-    return ReadState();
-  }
+            const DWORD result = XInputGetState(static_cast<DWORD>(player_index_), &state_);
+            connected_ = (result == ERROR_SUCCESS);
+            if (!connected_) {
+                ZeroMemory(&state_, sizeof(state_));
+                return State();
+            }
+            return ReadState();
+        }
 
-  // What the pad's two motors should be doing right now, read back from
-  // Sio's per-port motor state once a frame. 0 or 255 for the small one, 0
-  // to 255 for the large one - matches what XInputSetState itself wants.
-  void SetRumble(uint8_t small_motor, uint8_t large_motor) {
-    if (!connected_)
-      return;
-    if (small_motor == small_ && large_motor == large_)
-      return;
-    small_ = small_motor;
-    large_ = large_motor;
-    XINPUT_VIBRATION vibration = {};
-    // XInput's motors are both 16-bit; the small one only ever gets asked to
-    // be fully on or off, so stretching its 8-bit range across the top of
-    // XInput's is as good as any other choice.
-    vibration.wLeftMotorSpeed = static_cast<WORD>(large_) * 257;
-    vibration.wRightMotorSpeed = static_cast<WORD>(small_) * 257;
-    XInputSetState(static_cast<DWORD>(player_index_), &vibration);
-  }
+        // What the pad's two motors should be doing right now, read back from
+        // Sio's per-port motor state once a frame. 0 or 255 for the small one, 0
+        // to 255 for the large one - matches what XInputSetState itself wants.
+        void SetRumble(uint8_t small_motor, uint8_t large_motor) {
+            if (!connected_)
+                return;
+            if (small_motor == small_ && large_motor == large_)
+                return;
+            small_ = small_motor;
+            large_ = large_motor;
+            XINPUT_VIBRATION vibration = {};
+            // XInput's motors are both 16-bit; the small one only ever gets asked to
+            // be fully on or off, so stretching its 8-bit range across the top of
+            // XInput's is as good as any other choice.
+            vibration.wLeftMotorSpeed = static_cast<WORD>(large_) * 257;
+            vibration.wRightMotorSpeed = static_cast<WORD>(small_) * 257;
+            XInputSetState(static_cast<DWORD>(player_index_), &vibration);
+        }
 
- private:
-  State ReadState() const {
-    using emulation::psx::Sio;
-    State out;
-    const WORD buttons = state_.Gamepad.wButtons;
+     private:
+        State ReadState() const {
+            using emulation::psx::Sio;
+            State out;
+            const WORD buttons = state_.Gamepad.wButtons;
 
-    // By position, not by Xbox letter: A sits at the bottom of the four face
-    // buttons on both pads, and so on round the other three.
-    if (buttons & XINPUT_GAMEPAD_A) out.buttons |= Sio::kCross;
-    if (buttons & XINPUT_GAMEPAD_B) out.buttons |= Sio::kCircle;
-    if (buttons & XINPUT_GAMEPAD_X) out.buttons |= Sio::kSquare;
-    if (buttons & XINPUT_GAMEPAD_Y) out.buttons |= Sio::kTriangle;
+            // By position, not by Xbox letter: A sits at the bottom of the four face
+            // buttons on both pads, and so on round the other three.
+            if (buttons & XINPUT_GAMEPAD_A)
+                out.buttons |= Sio::kCross;
+            if (buttons & XINPUT_GAMEPAD_B)
+                out.buttons |= Sio::kCircle;
+            if (buttons & XINPUT_GAMEPAD_X)
+                out.buttons |= Sio::kSquare;
+            if (buttons & XINPUT_GAMEPAD_Y)
+                out.buttons |= Sio::kTriangle;
 
-    if (buttons & XINPUT_GAMEPAD_START) out.buttons |= Sio::kStart;
-    if (buttons & XINPUT_GAMEPAD_BACK)  out.buttons |= Sio::kSelect;
+            if (buttons & XINPUT_GAMEPAD_START)
+                out.buttons |= Sio::kStart;
+            if (buttons & XINPUT_GAMEPAD_BACK)
+                out.buttons |= Sio::kSelect;
 
-    if (buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)  out.buttons |= Sio::kL1;
-    if (buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER) out.buttons |= Sio::kR1;
-    if (buttons & XINPUT_GAMEPAD_LEFT_THUMB)     out.buttons |= Sio::kL3;
-    if (buttons & XINPUT_GAMEPAD_RIGHT_THUMB)    out.buttons |= Sio::kR3;
+            if (buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
+                out.buttons |= Sio::kL1;
+            if (buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
+                out.buttons |= Sio::kR1;
+            if (buttons & XINPUT_GAMEPAD_LEFT_THUMB)
+                out.buttons |= Sio::kL3;
+            if (buttons & XINPUT_GAMEPAD_RIGHT_THUMB)
+                out.buttons |= Sio::kR3;
 
-    // The PSX digital pad's L2/R2 are on or off; XInput's own "held" cutoff
-    // is where the analog triggers cross into that.
-    if (state_.Gamepad.bLeftTrigger  > XINPUT_GAMEPAD_TRIGGER_THRESHOLD)
-      out.buttons |= Sio::kL2;
-    if (state_.Gamepad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD)
-      out.buttons |= Sio::kR2;
+            // The PSX digital pad's L2/R2 are on or off; XInput's own "held" cutoff
+            // is where the analog triggers cross into that.
+            if (state_.Gamepad.bLeftTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD)
+                out.buttons |= Sio::kL2;
+            if (state_.Gamepad.bRightTrigger > XINPUT_GAMEPAD_TRIGGER_THRESHOLD)
+                out.buttons |= Sio::kR2;
 
-    // The d-pad works as itself, and the left stick doubles for it past a
-    // deadzone, which is what an analog stick is expected to do on a pad
-    // whose digital buttons are all this maps to when the game never asks
-    // for anything else.
-    if (buttons & XINPUT_GAMEPAD_DPAD_UP)    out.buttons |= Sio::kUp;
-    if (buttons & XINPUT_GAMEPAD_DPAD_DOWN)  out.buttons |= Sio::kDown;
-    if (buttons & XINPUT_GAMEPAD_DPAD_LEFT)  out.buttons |= Sio::kLeft;
-    if (buttons & XINPUT_GAMEPAD_DPAD_RIGHT) out.buttons |= Sio::kRight;
+            // The d-pad works as itself, and the left stick doubles for it past a
+            // deadzone, which is what an analog stick is expected to do on a pad
+            // whose digital buttons are all this maps to when the game never asks
+            // for anything else.
+            if (buttons & XINPUT_GAMEPAD_DPAD_UP)
+                out.buttons |= Sio::kUp;
+            if (buttons & XINPUT_GAMEPAD_DPAD_DOWN)
+                out.buttons |= Sio::kDown;
+            if (buttons & XINPUT_GAMEPAD_DPAD_LEFT)
+                out.buttons |= Sio::kLeft;
+            if (buttons & XINPUT_GAMEPAD_DPAD_RIGHT)
+                out.buttons |= Sio::kRight;
 
-    constexpr SHORT kStickDeadzone = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE + 2000;
-    const SHORT lx = state_.Gamepad.sThumbLX;
-    const SHORT ly = state_.Gamepad.sThumbLY;
-    if (lx >  kStickDeadzone) out.buttons |= Sio::kRight;
-    if (lx < -kStickDeadzone) out.buttons |= Sio::kLeft;
-    if (ly >  kStickDeadzone) out.buttons |= Sio::kUp;
-    if (ly < -kStickDeadzone) out.buttons |= Sio::kDown;
+            constexpr SHORT kStickDeadzone = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE + 2000;
+            const SHORT lx = state_.Gamepad.sThumbLX;
+            const SHORT ly = state_.Gamepad.sThumbLY;
+            if (lx > kStickDeadzone)
+                out.buttons |= Sio::kRight;
+            if (lx < -kStickDeadzone)
+                out.buttons |= Sio::kLeft;
+            if (ly > kStickDeadzone)
+                out.buttons |= Sio::kUp;
+            if (ly < -kStickDeadzone)
+                out.buttons |= Sio::kDown;
 
-    out.left_x = ToPsxAxis(lx, /*invert=*/false);
-    out.left_y = ToPsxAxis(ly, /*invert=*/true);
-    out.right_x = ToPsxAxis(state_.Gamepad.sThumbRX, /*invert=*/false);
-    out.right_y = ToPsxAxis(state_.Gamepad.sThumbRY, /*invert=*/true);
-    return out;
-  }
+            out.left_x = ToPsxAxis(lx, /*invert=*/false);
+            out.left_y = ToPsxAxis(ly, /*invert=*/true);
+            out.right_x = ToPsxAxis(state_.Gamepad.sThumbRX, /*invert=*/false);
+            out.right_y = ToPsxAxis(state_.Gamepad.sThumbRY, /*invert=*/true);
+            return out;
+        }
 
-  // XInput's Y axes read positive going up and PSX's read 0x00 at the top,
-  // so Y needs its sign flipped before centring; X does not, since positive
-  // is right on both. A small deadzone is applied first, so a stick that
-  // rests a little off true does not stop a game's menu from ever settling
-  // on dead centre.
-  static uint8_t ToPsxAxis(SHORT raw, bool invert) {
-    constexpr int32_t kDeadzone = 3000;
-    int32_t v = raw;
-    if (v > -kDeadzone && v < kDeadzone)
-      v = 0;
-    if (invert)
-      v = -v;
-    int32_t byte = 128 + (v / 256);
-    if (byte < 0) byte = 0;
-    if (byte > 255) byte = 255;
-    return static_cast<uint8_t>(byte);
-  }
+        // XInput's Y axes read positive going up and PSX's read 0x00 at the top,
+        // so Y needs its sign flipped before centring; X does not, since positive
+        // is right on both. A small deadzone is applied first, so a stick that
+        // rests a little off true does not stop a game's menu from ever settling
+        // on dead centre.
+        static uint8_t ToPsxAxis(SHORT raw, bool invert) {
+            constexpr int32_t kDeadzone = 3000;
+            int32_t v = raw;
+            if (v > -kDeadzone && v < kDeadzone)
+                v = 0;
+            if (invert)
+                v = -v;
+            int32_t byte = 128 + (v / 256);
+            if (byte < 0)
+                byte = 0;
+            if (byte > 255)
+                byte = 255;
+            return static_cast<uint8_t>(byte);
+        }
 
-  XINPUT_STATE state_;
-  bool connected_ = false;
-  int player_index_;
-  int idle_frames_ = 0;
-  uint8_t small_ = 0;
-  uint8_t large_ = 0;
-};
+        XINPUT_STATE state_;
+        bool connected_ = false;
+        int player_index_;
+        int idle_frames_ = 0;
+        uint8_t small_ = 0;
+        uint8_t large_ = 0;
+    };
 
-}  // namespace psxemu
+}   // namespace psxemu

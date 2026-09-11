@@ -26,7 +26,7 @@
 
 namespace psxemu {
 
-/*
+    /*
   Presents the core's framebuffer.
 
   This is the *only* thing Direct3D does in this emulator. Every pixel is
@@ -45,60 +45,57 @@ namespace psxemu {
   that grew that capability; a caller offering filters as a choice is
   expected to check which engine is active first, not call these blind.
 */
-class D3D11Presenter : public IGraphicsEngine {
- public:
-  D3D11Presenter();
-  ~D3D11Presenter() override;
+    class D3D11Presenter : public IGraphicsEngine {
+     public:
+        D3D11Presenter();
+        ~D3D11Presenter() override;
 
-  bool Initialize(HWND window, int width, int height) override;
-  void Shutdown() override;
+        bool Initialize(HWND window, int width, int height) override;
+        void Shutdown() override;
 
-  void BeginFrame() override;
-  void RenderFramebuffer(const void* data, int width, int height) override;
-  void EndFrame() override;
+        void BeginFrame() override;
+        void RenderFramebuffer(const void* data, int width, int height) override;
+        void EndFrame() override;
 
-  // Called when the window is resized; the back buffer follows the client area.
-  void Resize(int width, int height) override;
+        // Called when the window is resized; the back buffer follows the client area.
+        void Resize(int width, int height) override;
 
-  void SetVsync(bool enabled) override { vsync_ = enabled; }
+        void SetVsync(bool enabled) override { vsync_ = enabled; }
 
-  // No filter support - see the class comment above.
-  void SetPixelShader(const std::string&) override {}
-  bool LoadCustomPixelShader(const std::string&, const uint8_t*,
-                             size_t) override {
-    return false;
-  }
-  bool LoadPixelShaderFromString(const std::string&, const char*) override {
-    return false;
-  }
+        // No filter support - see the class comment above.
+        void SetPixelShader(const std::string&) override {}
+        bool LoadCustomPixelShader(const std::string&, const uint8_t*, size_t) override {
+            return false;
+        }
+        bool LoadPixelShaderFromString(const std::string&, const char*) override { return false; }
 
-  bool ready() const { return device_ != nullptr; }
+        bool ready() const { return device_ != nullptr; }
 
- private:
-  HWND window_;
-  int back_buffer_width_;
-  int back_buffer_height_;
-  bool vsync_ = true;
+     private:
+        HWND window_;
+        int back_buffer_width_;
+        int back_buffer_height_;
+        bool vsync_ = true;
 
-  ID3D11Device* device_;
-  ID3D11DeviceContext* context_;
-  IDXGISwapChain* swap_chain_;
-  ID3D11RenderTargetView* render_target_;
+        ID3D11Device* device_;
+        ID3D11DeviceContext* context_;
+        IDXGISwapChain* swap_chain_;
+        ID3D11RenderTargetView* render_target_;
 
-  // The frame, as a texture. Recreated whenever the core changes resolution -
-  // the PSX does that mid-boot, so it cannot be assumed fixed.
-  ID3D11Texture2D* frame_texture_;
-  ID3D11ShaderResourceView* frame_view_;
-  int texture_width_;
-  int texture_height_;
+        // The frame, as a texture. Recreated whenever the core changes resolution -
+        // the PSX does that mid-boot, so it cannot be assumed fixed.
+        ID3D11Texture2D* frame_texture_;
+        ID3D11ShaderResourceView* frame_view_;
+        int texture_width_;
+        int texture_height_;
 
-  ID3D11VertexShader* vertex_shader_;
-  ID3D11PixelShader* pixel_shader_;
-  ID3D11SamplerState* sampler_;
+        ID3D11VertexShader* vertex_shader_;
+        ID3D11PixelShader* pixel_shader_;
+        ID3D11SamplerState* sampler_;
 
-  bool CreateRenderTarget();
-  void ReleaseRenderTarget();
-  bool EnsureFrameTexture(int width, int height);
-};
+        bool CreateRenderTarget();
+        void ReleaseRenderTarget();
+        bool EnsureFrameTexture(int width, int height);
+    };
 
-}  // namespace psxemu
+}   // namespace psxemu

@@ -58,7 +58,7 @@ causes, and how to tell them apart in one attempt each:
 2. **A disc with audio tracks.** This is the real gap - see below.
 3. **The front end rather than the core.** Try the same file through
    `boot_runner --disc`. If that works and Boot disc does not, the fault is in
-   `main.cpp`, not `disc.cpp`.
+   `app.cpp`, not `disc.cpp`.
 4. **A CloneCD set.** The tested folder also contains a `.ccd` and a `.sub`.
    The `.ccd` holds the real track layout and nothing reads it.
 

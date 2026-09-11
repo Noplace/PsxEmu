@@ -16,21 +16,45 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-//
-// PSXEmu.Win32 - the Win32 front end.
-//
-//   PSXEmu.Win32.exe [bios.bin] [disc]
-//
-// Everything it does is App, in app.h. This exists to give the application a stack frame to live
-// in, so that whichever way Run returns - a clean exit or a failure part-way through startup -
-// everything it owns is released on the way out.
-//
+#include "win32_dialogs.h"
 
-#include "framework.h"
+#include "const.h"
 
-#include "app.h"
+#include <commdlg.h>
 
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
-    psxemu::App app;
-    return app.Run(instance, show);
-}
+#pragma comment(lib, "comdlg32.lib")
+
+namespace psxemu {
+
+    void ShowError(HWND owner, const wchar_t* message) {
+        MessageBoxW(owner, message, kWindowTitle, MB_OK | MB_ICONERROR);
+    }
+
+    void ShowWarning(HWND owner, const wchar_t* message) {
+        MessageBoxW(owner, message, kWindowTitle, MB_OK | MB_ICONWARNING);
+    }
+
+    std::string ChooseFile(HWND window, FileDialog mode, const char* filter,
+                           const char* default_extension) {
+        char file[MAX_PATH] = { 0 };
+        OPENFILENAMEA dialog = {};
+        dialog.lStructSize = sizeof(dialog);
+        dialog.hwndOwner = window;
+        dialog.lpstrFilter = filter;
+        dialog.lpstrFile = file;
+        dialog.nMaxFile = sizeof(file);
+        dialog.lpstrDefExt = default_extension;
+        dialog.Flags = OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (mode == FileDialog::kOpen) {
+            dialog.Flags |= OFN_FILEMUSTEXIST;
+            if (!GetOpenFileNameA(&dialog))
+                return std::string();
+        } else {
+            dialog.Flags |= OFN_OVERWRITEPROMPT;
+            if (!GetSaveFileNameA(&dialog))
+                return std::string();
+        }
+        return std::string(file);
+    }
+
+}   // namespace psxemu

@@ -37,7 +37,7 @@ Three things to fix while in here regardless of which feature comes first:
 
 ## Part one: swapping cards - default cards done, manual swapping still open
 
-`main.cpp` now loads or creates a disc's cards automatically on every cold
+`App` now loads or creates a disc's cards automatically on every cold
 boot - `LoadOrCreateMemoryCardsForDisc()`, called from `BootDiscFromFile` and
 from the command-line disc argument, never from `Swap disc`. Point 4 below is
 therefore done, and done slightly differently from how it reads: per-disc
