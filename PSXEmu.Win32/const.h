@@ -227,6 +227,13 @@ namespace psxemu {
     };
     // clang-format on
 
+    // How long a port stays empty when the Input menu swaps its controller for a different kind,
+    // before the new one is plugged in - see App::SetControllerType. About a second, roughly what
+    // swapping a pad by hand takes: Bomberman Party Edition needs somewhere between eleven and
+    // thirty frames of an empty port before it stops reading the old device's layout, and there is
+    // no reason to think every game is that quick.
+    inline constexpr int kControllerReplugFrames = 60;
+
     // ---------------------------------------------------------------------------------------------
     // The frame
     // ---------------------------------------------------------------------------------------------

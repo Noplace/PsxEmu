@@ -313,6 +313,10 @@ namespace psxemu {
         // physical mice to read, since there is only ever the one. Registered for raw input once, in
         // CreateAppWindow; fed to Sio from PollInput.
         Mouse mouse_;
+
+        // Frames each port has left to sit empty before the controller just chosen for it is
+        // plugged in - see SetControllerType. Zero is the steady state.
+        std::array<int, 2> replug_frames_ = { 0, 0 };
     };
 
 }   // namespace psxemu

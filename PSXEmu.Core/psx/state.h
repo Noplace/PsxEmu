@@ -44,8 +44,9 @@ namespace psx {
 // from here), then the payload itself: every component's Serialise, called
 // in the same fixed order on both sides. See System::SaveState/LoadState.
 constexpr char kStateMagic[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', 'E'};
-constexpr uint32_t kStateVersion = 5;   // 4: Sio gained a per-slot Mouse array.
+constexpr uint32_t kStateVersion = 6;   // 4: Sio gained a per-slot Mouse array.
                                          // 5: Sio's Pad became polymorphic (Multitap).
+                                         // 6: Multitap keeps method 1's replies.
 
 // FNV-1a, 64-bit. Same algorithm boot_runner.cpp's framebuffer Checksum()
 // already used - given a shared home here so the BIOS-identity hash in a

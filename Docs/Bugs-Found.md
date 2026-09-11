@@ -2907,3 +2907,102 @@ since then, not its input.
 **What could not be checked here.** The live front end, as before: this is
 verified through headless boots with the front end's port setup reproduced in a
 scratch build, not by playing.
+
+## 53. A multitap reading all four players ignored what the host said to each one
+
+**Symptom.** Found while chasing "the multitap doesn't work" in Bomberman
+Party Edition. With a multitap in either port, the game's pad driver takes
+every player through the DualShock handshake, and it never got past the first
+step: the SIO log shows 0x43 (enter configuration mode) going to player A,
+then B, then A again, every other frame, for as long as the multitap was
+plugged in.
+
+**Cause.** In method 1 - one transfer reads all four players, after an id of
+5A80h - each player's eight bytes are a whole command exchange with that
+player's pad: the host puts a command and its parameters in them, and the
+pad's answer comes back. `ExchangeMultitap` built every block as a poll reply
+worked out on the spot and threw the host's bytes away, so 0x43 never reached
+a player. DuckStation's `multitap.cpp` forwards each block to its controller
+and hands the answers back one long transfer later - what it sends at each
+position is what was stored there during the previous one. The game's driver
+behaves as if written for exactly that: each query is followed by a poll that
+collects its answer.
+
+**Fix.** Each block is now forwarded to its player as a real exchange, and
+the answers are kept in `Multitap::replies` for the next long transfer - all
+`0xFF` until one has been asked anything. `ExchangeController` takes its
+progress as a `PadExchange` (step, command, scratch byte, acknowledge) so a
+multitap can run four of them inside one transfer; the bus keeps its own in
+the registers it always had, through `ExchangeBusPad`, so a single pad's
+save-state layout is unchanged. `Multitap::Serialise` gained the replies and
+the block in progress, so `kStateVersion` is 6.
+
+**Result.** The handshake completes: 0x43 in, 0xF3 back a transfer later, the
+0x45/0x4C/0x47/0x46 queries answered with the right bytes, 0x43 out, and plain
+polls from frame 772 on.
+
+**It was not why the game took no input.** That was the port the multitap was
+in, and bug 54. Tested the other way round, with the multitap in port 2, the
+game decodes all four multitap players' buttons with this fix and without it.
+What this changes is everything a game configures per player - analog mode,
+the rumble mapping - none of which reached a multitap player before.
+
+**Regression check.** `sio_test` 105 checks, 0 failures. The long-response
+shape test now reads two long transfers - the first all `0xFF`, nothing asked
+yet - and a new case sends player B 0x43 inside one, finds its answer in the
+next, and finds player B in configuration mode in the one after. Bomberman
+with the default pad at 3000 frames, BIOS boot 400 frames, Air Combat 900
+frames and Ace Combat 3's Start press are all byte-identical to before.
+
+## 54. Swapping a controller in the menu never let the port go empty, and Bomberman went on reading a pad as a multitap
+
+**Symptom.** Reported with the multitap: "if i switch to multitap there is no
+response, and even when i switch back to any other type of controller it
+doesnt work, but if i close and open the emulator again, i can switch between
+the different types of controllers no problem."
+
+**Two causes, one of them the game's.**
+
+*The multitap goes in port 2.* Bomberman Party Edition's five-player setup is
+a pad in port 1 and a multitap with four more in port 2, and its pad decoder
+(`800577D0`) only reads a multitap in port 2. Every frame it recomputes a
+word of flags from the id in each port's latest reply - bit 0 for a multitap
+(80h) in port 1, bit 1 for one in port 2 - and with bit 0 set it clears every
+player's decoded input and skips decoding altogether. A multitap in port 1 is
+not something that game understands, and while one is there it takes no input
+from anything. With the multitap in port 2 all five players decode: `0400`
+("connected, nothing held") for each, and L1 on the multitap players gives
+`0404` in words one to four.
+
+*The swap back.* Once the multitap had been in port 1, choosing a pad again
+did not help: the flags word stayed at `FFFFFFFD`. The game's driver keeps its
+own processed copy of each port's reply, and that copy's id byte stayed 80h -
+the driver never re-read the port as a single pad, because nothing told it the
+multitap had gone. The menu swapped the device between two frames. On a
+console the port is empty while one controller is unplugged and the next
+plugged in, and that is what the driver resets on: with the port empty for 30
+frames in between, the flags word dropped back to `FFFFFFFC` and Start opened
+the menu exactly as it does on a pad that was never swapped. One, three or ten
+empty frames were not enough.
+
+**Fix.** Choosing a different controller type in the Input menu leaves the
+port empty for `kControllerReplugFrames` - 60 frames, about a second, roughly
+what swapping one by hand takes - before the new controller is plugged in.
+`App::SetControllerType` starts the countdown and `App::PollInput` holds the
+port at `kNone` until it runs out. Only a change made in the menu does this; a
+reset, a boot or a loaded state applies the configured type at once, as
+before.
+
+**How it was found.** With a scratch `boot_runner` that could change a port's
+type on a schedule, take presses on either port and dump RAM at chosen frames.
+Pressing L1 - which does nothing on the title screen - in two otherwise
+identical runs and diffing the RAM isolates exactly the bytes a press touches:
+with a pad, the driver's raw reply, its processed copy and the decoded words;
+with a multitap in port 1, the raw reply and processed copy only.
+`--watch-ram` on a decoded word found the decoder, and its disassembly the
+flags word.
+
+**What could not be checked here.** The front end, as ever: the menu path
+itself has not been run. What was verified is the sequence it produces - a
+multitap, then nothing for 60 frames, then a pad - driven through a scratch
+`boot_runner`, where Start then opens the menu as it should.

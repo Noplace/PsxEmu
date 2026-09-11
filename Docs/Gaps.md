@@ -319,15 +319,22 @@ transfer, which - psx-spx is explicit about this - does not change that
 transfer's own reply, only the next one; the transfer that is actually
 queued this way then answers 5A80h and 34 bytes total (4 players x 4
 halfwords each), 0xFF-padded past whatever a shorter reply (a plain digital
-pad) actually has. `sio_test` checks: independent negotiation on all four
-players; that `0x02`-`0x04` never acknowledge on an ordinary
-(non-multitap) port at all, which is the regression guard on the "purely
-additive, zero change for anyone not using it" claim; the escalation
-latching for the transfer *after* the one that requests it, not that one
-itself; the escalation aborting (falls back to an ordinary reply) if the
-queued transfer's command byte turns out not to be `0x42`; the exact
-34-byte shape and per-player padding; and a save/load round trip that
-checks both the type and which player's buttons ended up where.
+pad) actually has. Each player's eight bytes are a whole command exchange
+with that player: what the host sends in them reaches the player's pad - so
+0x43, 0x44 and 0x4D work per player - and what comes back is that player's
+answer to the previous long transfer's block, which is how DuckStation does
+it. The first version answered every block as a plain poll on the spot and
+dropped what the host sent, and Bomberman Party Edition's per-player
+DualShock handshake never got past its first step (bug 53). `sio_test`
+checks: independent negotiation on all four players; that `0x02`-`0x04`
+never acknowledge on an ordinary (non-multitap) port at all, which is the
+regression guard on the "purely additive, zero change for anyone not using
+it" claim; the escalation latching for the transfer *after* the one that
+requests it, not that one itself; the escalation aborting (falls back to an
+ordinary reply) if the queued transfer's command byte turns out not to be
+`0x42`; the exact 34-byte shape and per-player padding, one transfer
+behind; a block's command reaching its own player; and a save/load round
+trip that checks both the type and which player's buttons ended up where.
 
 `PSXEmu.Win32`'s Controller Port menu offers "Multitap" as a sixth choice,
 same as any other type - no separate enable toggle. Two new popups appear
@@ -342,7 +349,16 @@ is no per-player type picker yet (deliberately - see the class comment on
 `Sio::Multitap`), only per-player source. `App::PollInput`'s per-port loop
 gained a Multitap branch that is otherwise identical to the single-pad path
 run four times, sharing the same input-reading logic via a local lambda
-rather than duplicating the switch statement.
+rather than duplicating the switch statement. Changing a port's type in the
+menu leaves the port empty for about a second first
+(`kControllerReplugFrames`), as unplugging one controller and plugging in
+another would: a game that never sees the port empty can go on reading the
+old device's layout (bug 54).
+
+Which port a game wants a multitap in is the game's business. Bomberman Party
+Edition reads one only in port 2 - its five-player setup is a pad in port 1
+and four more on a multitap in port 2 - and with one in port 1 it takes no
+input from anything.
 
 Not yet done: the four memory-card slots a real multitap also provides
 (`0x81`-`0x84`, address-only - no method duality like the controller side

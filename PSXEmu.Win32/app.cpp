@@ -291,12 +291,18 @@ namespace psxemu {
         // Sio to its power-on defaults, and this is what makes either pick the configured
         // controller back up without either call site needing to know that happened.
         // set_controller_type is a no-op once converged, so this costs nothing in the steady state.
-        const Sio::ControllerType controller_type[2] = {
-            ParseControllerType(system_->config().controller_type[0]),
-            ParseControllerType(system_->config().controller_type[1]),
-        };
-        system_->sio().set_controller_type(0, controller_type[0]);
-        system_->sio().set_controller_type(1, controller_type[1]);
+        //
+        // A port whose controller has just been swapped for a different kind holds nothing at all
+        // until its replug countdown runs out - see SetControllerType.
+        Sio::ControllerType controller_type[2];
+        for (int port = 0; port < 2; ++port) {
+            const std::string& key = system_->config().controller_type[port];
+            controller_type[port] =
+                replug_frames_[port] > 0 ? Sio::kNone : ParseControllerType(key);
+            if (replug_frames_[port] > 0)
+                --replug_frames_[port];
+            system_->sio().set_controller_type(port, controller_type[port]);
+        }
 
         // What one source (keyboard, or one of the four XInput slots) is doing right now, in Sio's
         // own vocabulary. Shared by the single-pad path below and each of a Multitap's four players
@@ -585,8 +591,19 @@ namespace psxemu {
     void App::SetControllerType(int port, const std::string& key) {
         if (system_ == nullptr)
             return;
+        // A different controller is a different physical device, and on a real console the port
+        // sits empty while one is unplugged and the next plugged in. Some games need to see that
+        // before they will believe what is there now: Bomberman Party Edition's pad driver, shown
+        // a multitap and then a pad with no gap between them, went on decoding the port as a
+        // multitap and took no input from anything until the machine was reset (bug 54). So the
+        // port is left empty for kControllerReplugFrames first, and PollInput plugs the new
+        // controller in once that has run out.
+        if (system_->config().controller_type[port] != key)
+            replug_frames_[port] = kControllerReplugFrames;
         system_->config().controller_type[port] = key;
-        system_->sio().set_controller_type(port, ParseControllerType(key));
+        const auto type = replug_frames_[port] > 0 ? emulation::psx::Sio::kNone
+                                                   : ParseControllerType(key);
+        system_->sio().set_controller_type(port, type);
         UpdateControllerTypeMenu();
         // Switching to or from kMouse/kNone/kMultitap changes whether this port's own source items
         // (or, for kMultitap, its four players' source items) should be greyed out, so both source

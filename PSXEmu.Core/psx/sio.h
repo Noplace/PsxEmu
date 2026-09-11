@@ -201,6 +201,19 @@ class Sio : public Component {
   void Serialise(StateIO& io);
 
  private:
+  // How far one command exchange with one pad has got: which byte it is on
+  // (1 is the command byte), the command it is carrying out, the one byte it
+  // may have to carry from where it arrives to where it can be acted on (see
+  // exchange_scratch_), and whether the pad acknowledged the byte it was just
+  // given. The bus keeps these in its own registers for the pad it is talking
+  // to directly - see ExchangeBusPad; a multitap reading all four players at
+  // once runs one per player block - see ExchangeMultitap.
+  struct PadExchange {
+    int step = 0;
+    uint8_t command = 0;
+    uint8_t scratch = 0;
+    bool acknowledged = false;
+  };
   // A pad's own state. Polymorphic - not because a pad itself has more
   // than one shape, but so a port can hold a Multitap instead: something
   // that inherits this exact shape and answers for up to four of them.
@@ -286,6 +299,20 @@ class Sio : public Component {
     // all-players response, since that is what psx-spx documents it as
     // always starting from regardless of which byte triggered it.
     int selected_player = 0;
+
+    // Method 1's answers run one transfer behind: each player's eight bytes
+    // in a long transfer carry what that player answered the previous long
+    // transfer's block, kept here as it came back - DuckStation's multitap
+    // does the same. All 0xFF until a long transfer has asked anything,
+    // which is what the first one after plugging in returns: nothing yet.
+    uint8_t replies[32];
+    // The exchange with the player whose block is going past right now, and
+    // whether that player has stopped acknowledging - the rest of its block
+    // is 0xFF from then on.
+    PadExchange block;
+    bool block_done = false;
+
+    Multitap();
 
     void Serialise(StateIO& io) override;
   };
@@ -378,10 +405,15 @@ class Sio : public Component {
   // this takes the Pad and its type directly rather than looking a port
   // up itself. Split out because it is a real state machine in its own
   // right now, not the four-byte reply it used to be.
-  uint8_t ExchangeController(uint8_t data, Pad& pad, ControllerType type);
+  uint8_t ExchangeController(uint8_t data, Pad& pad, ControllerType type,
+                             PadExchange& x);
+  // ExchangeController on the bus's own exchange registers, for the pad the
+  // bus is talking to directly: a port's own, or one multitap player picked
+  // by address.
+  uint8_t ExchangeBusPad(uint8_t data, Pad& pad, ControllerType type);
   uint8_t PadIdByte(const Pad& pad) const;
   uint8_t PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming,
-                          bool rumble_capable);
+                          bool rumble_capable, uint8_t& scratch);
 
   // The mouse side of Exchange() - its own state machine because a mouse's
   // reply shares no structure with a pad's: one fixed length, no command
@@ -399,7 +431,7 @@ class Sio : public Component {
   // Multitap's own reply (the 5A80h id, the long all-players response)
   // shares no structure with an ordinary pad's. Reuses ExchangeController
   // for Method 2 (a plain pad protocol pointed at one player) and
-  // PadIdByte/PollPayloadByte directly for Method 1's per-player bytes,
+  // once per player block for Method 1 - see PadExchange -
   // rather than duplicating either.
   uint8_t ExchangeMultitap(uint8_t data, int port);
 

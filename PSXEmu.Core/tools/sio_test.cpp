@@ -635,6 +635,41 @@ void TestMultitapEscalationAbortsOnWrongCommand(System* system) {
   system->sio().set_controller_type(0, Sio::kDualShock);
 }
 
+// Method 1's player blocks, each a poll. PadHarness::Command sends zeros
+// there, and a zero is not a command any player understands.
+const uint8_t kPollAll[32] = {
+  0x42, 0, 0, 0, 0, 0, 0, 0,   0x42, 0, 0, 0, 0, 0, 0, 0,
+  0x42, 0, 0, 0, 0, 0, 0, 0,   0x42, 0, 0, 0, 0, 0, 0, 0,
+};
+
+// Queues the long response for the next transfer, from an ordinary one.
+void QueueLongResponse(PadHarness& pad) {
+  pad.Begin(0);
+  pad.Exchange(0x01);
+  pad.Exchange(0x42);
+  pad.Exchange(0x01);
+  pad.End();
+}
+
+// A method 1 transfer driven byte by byte: the address, 0x42, the request
+// bit for the transfer after this one, then 32 bytes - four blocks of eight,
+// each one player's command and parameters. Returns how many bytes came
+// back from the id on; `out` must hold 34.
+int LongTransfer(PadHarness& pad, const uint8_t* blocks, bool queue_next,
+                 uint8_t* out) {
+  pad.Begin(0);
+  pad.Exchange(0x01);
+  int n = 0;
+  out[n++] = pad.Exchange(0x42);
+  if (pad.Acknowledged()) {
+    out[n++] = pad.Exchange(queue_next ? 0x01 : 0x00);
+    for (int i = 0; i < 32 && pad.Acknowledged(); ++i)
+      out[n++] = pad.Exchange(blocks[i]);
+  }
+  pad.End();
+  return n;
+}
+
 void TestMultitapMethod1LongResponseShape(System* system) {
   printf("multitap: method 1's long response is 34 bytes, ids and padding per player\n");
   system->sio().set_controller_type(0, Sio::kMultitap);
@@ -648,18 +683,18 @@ void TestMultitapMethod1LongResponseShape(System* system) {
   system->sio().set_buttons(0, Sio::kCross, /*player=*/0);
   system->sio().set_buttons(0, Sio::kSquare, /*player=*/1);
 
-  pad.Begin(0);
-  pad.Exchange(0x01);
-  pad.Exchange(0x42);
-  pad.Exchange(0x01);   // queue the long response
-  pad.End();
-
-  uint8_t reply[40] = {};
-  const int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x01);
+  QueueLongResponse(pad);
+  uint8_t reply[34] = {};
+  int n = LongTransfer(pad, kPollAll, /*queue_next=*/true, reply);
   CheckEqual(n, 34, "the long response is 34 bytes total");
   CheckEqual(reply[0], 0x80, "multitap id low byte");
   CheckEqual(reply[1], 0x5A, "multitap id high byte");
+  // Method 1 answers one transfer behind, and nothing has been asked yet.
+  CheckEqual(reply[2], 0xFF, "the first long response has nothing to answer with yet");
+  CheckEqual(reply[33], 0xFF, "...anywhere in it");
 
+  n = LongTransfer(pad, kPollAll, /*queue_next=*/false, reply);
+  CheckEqual(n, 34, "and the next is 34 bytes too");
   CheckEqual(reply[2], 0x41, "player A (connected) id low");
   CheckEqual(reply[3], 0x5A, "player A id high");
   uint16_t buttons = static_cast<uint16_t>(reply[4] | (reply[5] << 8));
@@ -676,6 +711,46 @@ void TestMultitapMethod1LongResponseShape(System* system) {
   CheckEqual(reply[18], 0xFF, "player C (never connected) pads its id low too");
   CheckEqual(reply[19], 0xFF, "...and its id high");
   CheckEqual(reply[26], 0xFF, "player D (never connected) likewise");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);
+}
+
+// Each block of a long transfer is a whole command exchange with its own
+// player, and its answer comes back in the next long transfer. Bomberman
+// Party Edition takes every player through the DualShock handshake this
+// way; a multitap that answered every block as a plain poll never let one
+// into configuration mode, and the game went on asking for as long as it
+// was plugged in (bug 53).
+void TestMultitapMethod1ForwardsEachBlock(System* system) {
+  printf("multitap: method 1 hands each block to its player, answered a transfer later\n");
+  system->sio().set_controller_type(0, Sio::kMultitap);
+  for (int player = 0; player < 4; ++player)
+    system->sio().set_connected(0, true, player);
+  PadHarness pad(system);
+
+  QueueLongResponse(pad);
+  uint8_t blocks[32];
+  memcpy(blocks, kPollAll, sizeof(blocks));
+  blocks[8] = 0x43;    // player B: enter or leave configuration mode...
+  blocks[10] = 0x01;   // ...enter
+  uint8_t reply[34] = {};
+  LongTransfer(pad, blocks, /*queue_next=*/true, reply);
+
+  LongTransfer(pad, kPollAll, /*queue_next=*/true, reply);
+  CheckEqual(reply[2], 0x41, "player A's poll is answered a transfer later");
+  CheckEqual(reply[10], 0x41,
+             "so is player B's 0x43, under its normal-mode id");
+  CheckEqual(reply[14], 0xFF, "a digital-mode 0x43 is a poll's length, then padding");
+
+  LongTransfer(pad, kPollAll, /*queue_next=*/false, reply);
+  CheckEqual(reply[10], 0xF3,
+             "and the poll after it finds player B in configuration mode");
+  CheckEqual(reply[2], 0x41, "while player A never went");
+
+  uint8_t direct[16] = {};
+  pad.Command(0, 0x42, nullptr, 0, direct, sizeof(direct), 0x02);
+  CheckEqual(direct[0], 0xF3,
+             "addressed on its own, player B answers from configuration mode too");
 
   system->sio().set_controller_type(0, Sio::kDualShock);
 }
@@ -844,6 +919,7 @@ int main() {
   TestMultitapEscalationLatchesForNextTransferOnly(system);
   TestMultitapEscalationAbortsOnWrongCommand(system);
   TestMultitapMethod1LongResponseShape(system);
+  TestMultitapMethod1ForwardsEachBlock(system);
   TestMultitapSurvivesSaveState(system);
   TestDigitalPadRefusesConfigCommands(system);
   TestEnterConfigReplyCarriesTheButtons(system);

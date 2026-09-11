@@ -132,6 +132,10 @@ void Sio::Pad::Serialise(StateIO& io) {
   io.Plain(motor_large);
 }
 
+// Nothing to send back from a long transfer until one has asked something.
+Sio::Multitap::Multitap() {
+  memset(replies, 0xFF, sizeof(replies));
+}
 void Sio::Multitap::Serialise(StateIO& io) {
   // The inherited Pad fields are never actually used by a Multitap itself
   // (see the class comment - the interesting state is players[]), but
@@ -144,6 +148,9 @@ void Sio::Multitap::Serialise(StateIO& io) {
   io.Plain(pending_long_response);
   io.Plain(invalid_long_response);
   io.Plain(selected_player);
+  io.Plain(replies);
+  io.Plain(block);
+  io.Plain(block_done);
 }
 
 void Sio::Serialise(StateIO& io) {
@@ -330,7 +337,7 @@ uint8_t Sio::Exchange(uint8_t data) {
     return 0xFF;
   }
 
-  return ExchangeController(data, *pad_[port], controller_type_[port]);
+  return ExchangeBusPad(data, *pad_[port], controller_type_[port]);
 }
 
 // The ID a pad's reply starts with. It depends only on what the pad
@@ -369,9 +376,10 @@ uint8_t Sio::PadIdByte(const Pad& pad) const {
 // position becomes that motor's new speed. Before any game has ever done
 // that, the pad falls back to the pattern every original one answered to -
 // a fixed two-byte code that only ever turns the small motor fully on or
-// fully off.
+// fully off, whose first byte waits in the exchange's `scratch` for the
+// second.
 uint8_t Sio::PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming,
-                             bool rumble_capable) {
+                             bool rumble_capable, uint8_t& scratch) {
   uint8_t out = 0x00;
   const uint16_t buttons = static_cast<uint16_t>(~pad.buttons);
   switch (payload_index) {
@@ -400,23 +408,24 @@ uint8_t Sio::PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming,
         pad.motor_large = incoming;
     }
   } else if (payload_index == 0) {
-    exchange_scratch_ = incoming;
+    scratch = incoming;
   } else if (payload_index == 1) {
-    const bool on =
-        (exchange_scratch_ & 0xC0) == 0x40 && (incoming & 0x01) != 0;
+    const bool on = (scratch & 0xC0) == 0x40 && (incoming & 0x01) != 0;
     pad.motor_small = on ? 255 : 0;
   }
   return out;
 }
 
 // The controller side of an exchange, from the second byte on - the first
-// was already consumed by Exchange() (or, for a Multitap's Method 2,
-// ExchangeMultitap) to pick the device. Takes the Pad and its type
-// directly rather than a port to look them up from, since a call from
-// ExchangeMultitap is not talking to pad_[port] at all - it is talking to
-// one of that port's Multitap's four players.
-uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type) {
-  const int step = transfer_step_;
+// was already consumed by whoever picked the device: Exchange() for a
+// port's own pad, ExchangeMultitap for one of a Multitap's four players.
+// Takes the Pad, its type and the exchange's progress rather than a port
+// to look them up from, because a multitap reading all four players at once
+// runs four exchanges inside one transfer, none of them on the bus's own
+// registers - ExchangeBusPad is the one that is.
+uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type,
+                                PadExchange& x) {
+  const int step = x.step;
 
   // Step 1 is the command byte itself (0x42 to poll, 0x43 to enter or leave
   // configuration mode, and so on), remembered for the rest of the exchange.
@@ -433,17 +442,17 @@ uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type) {
   // digital pad because it never enters configuration mode - saw the whole
   // pad pressed on two frames out of three.
   if (step == 1) {
-    pad_command_ = data;
-    acknowledge_ = PadUnderstands(type, pad.config_mode, data);
-    ++transfer_step_;
+    x.command = data;
+    x.acknowledged = PadUnderstands(type, pad.config_mode, data);
+    ++x.step;
     return PadIdByte(pad);
   }
 
   // Step 2 is the status byte, which is always this one value everywhere
   // else on this bus already uses for the same purpose.
   if (step == 2) {
-    acknowledge_ = true;
-    ++transfer_step_;
+    x.acknowledged = true;
+    ++x.step;
     return 0x5A;
   }
 
@@ -464,12 +473,12 @@ uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type) {
   // dodge the config-mode watchdog reset) and gets the short four-byte
   // reply instead sees a transfer that ended early, not a normal poll.
   const bool poll_shaped =
-      pad_command_ == 0x42 || (pad_command_ == 0x43 && !pad.config_mode);
+      x.command == 0x42 || (x.command == 0x43 && !pad.config_mode);
   const int total_length =
       poll_shaped ? ((pad.analog_mode || pad.config_mode) ? 8 : 4) : 8;
 
   if (step > total_length) {
-    acknowledge_ = false;
+    x.acknowledged = false;
     return 0xFF;
   }
 
@@ -477,9 +486,10 @@ uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type) {
   uint8_t out = 0x00;
 
   // Only commands this pad acknowledged at step 1 get this far.
-  switch (pad_command_) {
+  switch (x.command) {
     case 0x42:
-      out = PollPayloadByte(pad, payload_index, data, type == kDualShock);
+      out = PollPayloadByte(pad, payload_index, data, type == kDualShock,
+                            x.scratch);
       break;
 
     case 0x43:
@@ -489,7 +499,7 @@ uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type) {
       // the reply is zeros.
       if (!pad.config_mode)
         out = PollPayloadByte(pad, payload_index, data,
-                              /*rumble_capable=*/false);
+                              /*rumble_capable=*/false, x.scratch);
 
       // The only byte that matters is the first: 1 to enter, anything else
       // to leave. It is held until the last byte and applied there - the
@@ -504,9 +514,9 @@ uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type) {
       // config_mode and analog_mode can only ever be set from inside this
       // switch.
       if (payload_index == 0)
-        exchange_scratch_ = data;
+        x.scratch = data;
       if (step == total_length) {
-        pad.config_mode = (exchange_scratch_ == 1);
+        pad.config_mode = (x.scratch == 1);
         if (pad.config_mode)
           pad.dualshock_enabled = true;
       }
@@ -576,38 +586,61 @@ uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type) {
       break;
   }
 
-  ++transfer_step_;
-  acknowledge_ = (transfer_step_ <= total_length);
+  ++x.step;
+  x.acknowledged = (x.step <= total_length);
+  return out;
+}
+
+// A pad the bus is talking to directly - a port's own, or one multitap
+// player picked by address - runs its exchange on the bus's own registers,
+// which are also what a save state records mid-transfer.
+uint8_t Sio::ExchangeBusPad(uint8_t data, Pad& pad, ControllerType type) {
+  PadExchange x;
+  x.step = transfer_step_;
+  x.command = pad_command_;
+  x.scratch = exchange_scratch_;
+  const uint8_t out = ExchangeController(data, pad, type, x);
+  transfer_step_ = x.step;
+  pad_command_ = x.command;
+  exchange_scratch_ = x.scratch;
+  acknowledge_ = x.acknowledged;
   return out;
 }
 
 // The multitap side of an exchange, from the second byte on - the first
 // was already consumed by Exchange() to pick the device and, via
 // Multitap::selected_player, which of its four players 0x01-0x04 asked
-// for (see the class comment there for why it is always reset to A the
-// moment a transfer becomes the long response, regardless of what picked
-// it). Two methods, both from psx-spx:
+// for. Two methods, both from psx-spx, checked against DuckStation's
+// multitap.cpp:
 //
-// Method 2 ("normal reads") is everything below once the id+status pair
-// is done: a pure passthrough to ExchangeController for whichever player
-// was selected - identical to an ordinary single pad, just pointed at one
-// of these four instead of pad_[port] directly. Every multitap player
-// behaves as a full DualShock for now (see the class comment on
-// Multitap) - hence kDualShock passed to ExchangeController everywhere
-// below rather than a per-player type that does not exist yet.
+// Method 2 ("normal reads") is a pure passthrough to the selected player,
+// on the bus's own registers - identical to an ordinary single pad, just
+// pointed at one of these four instead of pad_[port] directly.
 //
 // Method 1 ("read all four", psx-spx: "the more commonly used one") is
-// triggered by bit 0 of the third byte of any transfer - psx-spx: setting
-// it "does NOT affect the current response. Instead, it does request
-// that the NEXT command shall return special data" - so it is latched
-// into Multitap::pending_long_response for the transfer after this one,
-// regardless of whether this one is itself short or long. When a
-// transfer that WAS so queued actually arrives, and its own command byte
-// is 0x42 (psx-spx/DuckStation: anything else aborts the escalation), the
-// id+status pair becomes 5A80h (the multitap's own id) instead of
-// whatever the selected player would have answered, and everything after
-// that is 4 players x 8 bytes (4 halfwords each), 0xFF-padded past
-// whatever a shorter reply (a plain digital pad, say) actually has.
+// requested by bit 0 of the third byte of any transfer, and - psx-spx - it
+// "does NOT affect the current response. Instead, it does request that the
+// NEXT command shall return special data": the bit is latched into
+// Multitap::pending_long_response for the transfer after this one. When a
+// transfer so queued arrives, and its own command byte is 0x42 (anything
+// else aborts it after the id pair), it answers 5A80h - the multitap's own
+// id - and then 32 bytes: four blocks of eight, one per player, A to D.
+//
+// Each block is a whole command exchange with its player. The eight bytes
+// the host sends in it are that player's command and parameters - 0x42 to
+// poll, but just as well 0x43, 0x44 or 0x4D to take one player through the
+// DualShock handshake - and they reach the player's pad as they arrive.
+// What goes back in the block is not the answer to them, though: it is the
+// answer the player gave the previous long transfer's block, kept in
+// Multitap::replies. Method 1 runs one transfer behind. A player that is not
+// there, or stops acknowledging partway through its block, fills the rest
+// of it with 0xFF.
+//
+// Forwarding the host's bytes is the part that matters. Bomberman Party
+// Edition takes every player through the DualShock handshake this way, and
+// a multitap that answered every block as a plain poll - which this one did
+// - never let a single player into configuration mode: the game went on
+// asking, every other frame, for as long as the multitap was plugged in.
 uint8_t Sio::ExchangeMultitap(uint8_t data, int port) {
   Multitap& tap = static_cast<Multitap&>(*pad_[port]);
   const int step = transfer_step_;
@@ -620,7 +653,7 @@ uint8_t Sio::ExchangeMultitap(uint8_t data, int port) {
       ++transfer_step_;
       return 0x80;   // ID low - 5A80h says "multitap".
     }
-    return ExchangeController(data, tap.players[tap.selected_player], kDualShock);
+    return ExchangeBusPad(data, tap.players[tap.selected_player], kDualShock);
   }
 
   if (step == 2) {
@@ -632,46 +665,52 @@ uint8_t Sio::ExchangeMultitap(uint8_t data, int port) {
 
     if (target_ == kTargetMultitapAll) {
       tap.pending_long_response = next_wants_long;
-      tap.selected_player = 0;   // the long response always starts at A
+      // The blocks always start at Player A, whichever address byte opened
+      // the transfer, and each player's exchange starts as if it had just
+      // been addressed.
+      tap.selected_player = 0;
+      tap.block = PadExchange();
+      tap.block.step = 1;
+      tap.block_done = false;
       acknowledge_ = !tap.invalid_long_response;
       ++transfer_step_;
       return 0x5A;   // ID high, same byte every device on this bus uses.
     }
     const uint8_t out =
-        ExchangeController(data, tap.players[tap.selected_player], kDualShock);
+        ExchangeBusPad(data, tap.players[tap.selected_player], kDualShock);
     tap.pending_long_response = next_wants_long;
     return out;
   }
 
   if (target_ == kTargetMultitapAll) {
-    const int overall_index = step - 3;   // 0..31
-    const int player = overall_index / 8;
-    const int local_index = overall_index % 8;
-    Pad& p = tap.players[player];
-    uint8_t out = 0xFF;
-    if (p.connected) {
-      if (local_index == 0) {
-        out = PadIdByte(p);
-      } else if (local_index == 1) {
-        out = 0x5A;
-      } else {
-        // Payload bytes only run as long as this player's own poll reply
-        // actually would - psx-spx: "padded with FFFFh values for devices
-        // like Digital Joypads... which do use less than 4 halfwords".
-        const int payload_index = local_index - 2;
-        const int payload_length = (p.analog_mode || p.config_mode) ? 6 : 2;
-        if (payload_index < payload_length)
-          out = PollPayloadByte(p, payload_index, data, /*rumble_capable=*/true);
-      }
+    const int index = step - 3;   // 0..31, eight per player
+    const uint8_t out = tap.replies[index];
+
+    Pad& player = tap.players[tap.selected_player];
+    uint8_t reply = 0xFF;
+    if (!tap.block_done && player.connected) {
+      reply = ExchangeController(data, player, kDualShock, tap.block);
+      tap.block_done = !tap.block.acknowledged;
+    } else {
+      tap.block_done = true;
     }
+    tap.replies[index] = reply;
+
+    if ((index % 8) == 7 && tap.selected_player < 3) {
+      ++tap.selected_player;
+      tap.block = PadExchange();
+      tap.block.step = 1;
+      tap.block_done = false;
+    }
+
     ++transfer_step_;
-    acknowledge_ = (overall_index + 1 < 32);
+    acknowledge_ = (index + 1 < 32);
     return out;
   }
 
   // Method 2, continuing: still a pure passthrough to whichever player was
   // selected.
-  return ExchangeController(data, tap.players[tap.selected_player], kDualShock);
+  return ExchangeBusPad(data, tap.players[tap.selected_player], kDualShock);
 }
 
 // The byte psx-spx calls the mouse's "switches": bits 8-9 of the halfword
