@@ -1048,14 +1048,15 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       break;
     }
 
-    case 0x10: {  // GetlocL
-      // Returns sector header/subheader: stat, min, sec, frame, mode, file, channel, sm
-      const uint8_t data[8] = {
-        StatusByte(),
-        sector_[12], sector_[13], sector_[14], sector_[15],
-        sector_[16], sector_[17], sector_[18]
-      };
-      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 8);
+    case 0x10: {  // GetlocL - the header and subheader of the last sector read
+      // Eight bytes - minute, second and frame in BCD, the mode, then file,
+      // channel, submode and coding info - and, like GetlocP, no status byte.
+      // One in front shifts every field along by one. Bomberman Party Edition
+      // takes byte 3 of this reply as the drive status: on hardware that is
+      // the mode, 02h, a drive with its motor on. Shifted it was the frame
+      // number, and frame 70h has the shell-open bit set - so the game decided
+      // the lid had been opened and waited for ever for the drive to stop.
+      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, sector_ + 12, 8);
       break;
     }
 

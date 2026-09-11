@@ -973,6 +973,20 @@ void TestControllerWithDisc(emulation::psx::System* system,
   const uint32_t first_word = system->cdrom().ReadDataWord();
   CheckEqual(first_word, 30, "the sector delivered is the one asked for");
 
+  // GetlocL is the header and subheader of that sector - eight bytes, no
+  // status byte, the same as GetlocP. A game that picks the drive status out
+  // of this reply by position gets the mode byte, 02h, from hardware; with a
+  // status in front it got the frame number, and Bomberman Party Edition read
+  // frame 70h as an open lid and never left its logo (bug 51).
+  harness.Command(0x10, nullptr, 0);        // GetlocL
+  CheckEqual(harness.WaitForInterrupt(response, &length, 16),
+             Cdrom::kIntAcknowledge, "GetlocL answers");
+  CheckEqual(length, 8, "GetlocL returns eight bytes");
+  CheckEqual(response[0], 0x00, "the first byte is the minute, not the status");
+  CheckEqual(response[1], 0x02, "then the second");
+  CheckEqual(response[2], 0x30, "then the frame");
+  CheckEqual(response[3], 0x02, "then the mode");
+
   system->EjectDisc();
   Check(!system->cdrom().disc_loaded(), "ejecting unmounts");
   remove(path.c_str());

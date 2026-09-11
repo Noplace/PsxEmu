@@ -2743,3 +2743,84 @@ this game actually think its screen is" had no answer short of a debugger.
 `PSXEmu.Win32.exe` still never reaches its main loop on this machine. The fix
 is verified through `boot_runner` renders of the same save state the report
 came from, not by watching the codec screen in the running emulator.
+
+## 51. GetlocL had a status byte in front of it, and Bomberman took a frame number for an open lid
+
+**Symptom.** Reported directly: Bomberman Party Edition (`SLUS-01189`, a bare
+`.bin`) stops at the Hudson logo and never goes on. Reproduced from a cold
+`--disc` boot: from frame 1300 the picture is the logo, checksum
+`dedbf5071e81061a`, for as long as the run lasts - 3000 frames of it, and
+3000 more from the save state that came with the report. The game is not
+hung. It draws the logo every frame, polls the pads, ticks its sound driver
+and spends the rest of the frame in VSync. What never stops is the drive: a
+`ReadS` of `XA/NORORG2.XA` streams straight on past the end of the file and
+into `OPENING.STR`, and nothing ever pauses it. Not a disc-format problem
+either - the ISO volume covers 280,940 of the image's 280,942 sectors, so a
+bare `.bin` mounted as one data track is the right layout.
+
+**Cause.** The game drives the CD through a small manager of its own, run
+from a VSync callback, and the logo waits for that manager to go idle. After
+starting the logo's jingle with `ReadS`, it asks `GetlocL` for the header of
+the sector under the head. It takes the drive status out of every reply by
+position - a table in the game names the byte for each command - and for
+`GetlocL` the table says byte 3.
+
+On hardware `GetlocL` is eight bytes: minute, second and frame in BCD, the
+mode, then file, channel, submode and coding info, and no status at all.
+Byte 3 is the mode, `02h`, which reads as a drive with its motor on - exactly
+what the game expects. Ours put a status byte in front, the same mistake bug
+35b fixed for `GetlocP`, so byte 3 was the *frame*. The read had started at
+52:05:69, the sector under the head was 52:05:70, and frame `70h` has bit 4
+set: the shell-open bit.
+
+So the game decided the lid had been opened mid-jingle and ran its own
+recovery - Getstat, wait for the motor, GetTN, then wait for the status to
+read exactly `02h`, motor on and nothing else. After a real lid-open that is
+what a drive reports, because opening the lid stops the read. Here nothing had
+stopped it, the status stayed `22h`, and the manager waited for ever. The main
+thread will not queue the `Pause` that ends the jingle until the manager is
+idle, so that never came either.
+
+Whether a boot hangs depends on the frame number at that instant - any BCD
+frame with an odd tens digit has bit 4 set - but the emulator is deterministic,
+so this boot hit it every time.
+
+**How it was found.** Nothing in a trace of the hang itself looks wrong; it is
+a healthy loop waiting for a condition. `--hot` put 85% of the time in VSync
+with the logo drawn every frame. The trace showed a VSync callback sending
+Getstat each frame and a completion handler comparing the answer with `02h`.
+`--dis` against the save state gave the manager's whole state machine, and
+`--watch-ram` did the rest: on its sub-state it showed the recovery beginning,
+on its copy of the status it found the one bad value - `70h`, a status no
+drive reports, seeking and reading with the motor off - and on its command byte
+it gave the order: `Setloc`, `ReadS`, `GetlocL`, then the recovery's `GetTN`.
+
+**Fix.** `GetlocL` answers with the eight bytes of header and subheader of the
+last sector read, `sector_[12..19]`, and nothing in front. That also brings
+back the coding-info byte, which the status had pushed off the end.
+
+**Result.** From a cold boot the logo gives way at frame 1300 and the checksum
+changes at every hundred-frame mark from there to 3000, by which point the
+opening film is playing - 492 MDEC commands, 147,000 macroblocks, none of which
+the hung boot ever reached. The drive does what a working session looks
+like: 2 `ReadS`, 24 `Pause`, 30 `GetlocL`, and a single `GetTN` - the start-up
+disc check, not a recovery. 625 XA sectors are decoded where there had been
+none, so the jingle is heard now.
+
+**Regression check.** `media_test` grows the case that pins it - Setloc and
+ReadN, then GetlocL: eight bytes, minute, second, frame and mode in that order
+- 206 checks, 0 failures, up from 200. Both documented baselines unmoved: BIOS
+boot 400 frames still 97,749,265 instructions and `bd888bab645a63a9`, Air
+Combat 900 frames still `aedac3154f8a0383`. Legend of Mana and Wild Arms at
+1800 frames are byte-identical between `boot_runner` built from `HEAD` and
+with the fix; neither sends `GetlocL` in that window, so neither could move.
+
+**A save state made at the hang does not recover.** It holds the game already
+inside its recovery with the read still running, and loaded into the fixed
+build it sits on the logo exactly as before - 600 frames, same checksum. Boot
+the disc again.
+
+**What could not be checked here.** The live front end, as in bugs 47, 49 and
+50: `PSXEmu.Win32.exe` still never reaches its main loop on this machine, so
+this is verified through `boot_runner` cold boots of the same disc, not by
+playing it.
