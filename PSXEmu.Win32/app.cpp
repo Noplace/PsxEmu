@@ -159,6 +159,7 @@ namespace psxemu {
             1, ParseControllerType(system_->config().controller_type[1]));
         UpdateControllerTypeMenu();
         UpdateInputSourceMenu();
+        UpdateMultitapSourceMenu();
         UpdateFrameLimiterMenu();
         UpdateCdTimingMenu();
         if (current_backend_ == "d3d12") {
@@ -259,7 +260,8 @@ namespace psxemu {
         // polled unconditionally, focused or not, so a controller being unplugged mid-game is
         // noticed straight away rather than only after the window is clicked back into; only the
         // *buttons and axes* are withheld while unfocused, matching what the keyboard already does.
-        const Gamepad::State gamepad_state[2] = { gamepads_[0].Poll(), gamepads_[1].Poll() };
+        const Gamepad::State gamepad_state[4] = { gamepads_[0].Poll(), gamepads_[1].Poll(),
+                                                  gamepads_[2].Poll(), gamepads_[3].Poll() };
         const uint16_t keyboard_buttons = ReadKeyboardPad();
         const Mouse::State mouse_state = mouse_.Poll();
         const bool focused = (GetForegroundWindow() == window_);
@@ -296,6 +298,50 @@ namespace psxemu {
         system_->sio().set_controller_type(0, controller_type[0]);
         system_->sio().set_controller_type(1, controller_type[1]);
 
+        // What one source (keyboard, or one of the four XInput slots) is doing right now, in Sio's
+        // own vocabulary. Shared by the single-pad path below and each of a Multitap's four players
+        // - reading a source is the same operation regardless of which PSX-side slot the result
+        // ends up feeding.
+        struct SourceReading {
+            bool connected = true;   // the keyboard is always "there"
+            uint16_t buttons = 0;
+            uint8_t left_x = 0x80, left_y = 0x80, right_x = 0x80, right_y = 0x80;
+            int rumble_target = -1;   // which gamepads_[] slot feels this reading's motors
+        };
+        auto ReadSource = [&](InputSource source) {
+            SourceReading r;
+            int g = -1;
+            switch (source) {
+                case InputSource::kKeyboard:
+                    r.buttons = focused ? keyboard_buttons : 0;
+                    return r;
+                case InputSource::kGamepad1: g = 0; break;
+                case InputSource::kGamepad2: g = 1; break;
+                case InputSource::kGamepad3: g = 2; break;
+                case InputSource::kGamepad4: g = 3; break;
+            }
+            r.connected = gamepads_[g].connected();
+            r.buttons = focused ? gamepad_state[g].buttons : 0;
+            r.left_x = gamepad_state[g].left_x;
+            r.left_y = gamepad_state[g].left_y;
+            r.right_x = gamepad_state[g].right_x;
+            r.right_y = gamepad_state[g].right_y;
+            r.rumble_target = g;
+            return r;
+        };
+        // Rumble is an output, not an input, so it is not gated on focus - the emulated machine
+        // keeps running in the background (only Pause actually stops it), and a real console would
+        // not silence a controller's motor just because another window has focus. If two sources
+        // are ever mapped to the same physical pad, the later SetRumble call below simply wins for
+        // that frame - a real edge case (mirroring one pad to two slots), not a bug.
+        auto ApplyRumble = [&](int port, int player, const SourceReading& r) {
+            if (r.rumble_target < 0)
+                return;
+            uint8_t motor_small = 0, motor_large = 0;
+            system_->sio().motor_state(port, &motor_small, &motor_large, player);
+            gamepads_[r.rumble_target].SetRumble(motor_small, motor_large);
+        };
+
         for (int port = 0; port < 2; ++port) {
             // A port set to no controller reports nothing at all - Sio already forces connected
             // false itself for a kNone port regardless of what is asked, but there is nothing else
@@ -317,45 +363,28 @@ namespace psxemu {
                 continue;
             }
 
-            const InputSource source = ParseInputSource(system_->config().input_source[port]);
-            bool connected = true;   // the keyboard is always "there"
-            uint16_t buttons = 0;
-            uint8_t left_x = 0x80, left_y = 0x80, right_x = 0x80, right_y = 0x80;
-            int rumble_target = -1;   // which gamepads_[] slot feels this port's motors
-
-            switch (source) {
-                case InputSource::kKeyboard:
-                    buttons = focused ? keyboard_buttons : 0;
-                    break;
-                case InputSource::kGamepad1:
-                case InputSource::kGamepad2: {
-                    const int g = (source == InputSource::kGamepad1) ? 0 : 1;
-                    connected = gamepads_[g].connected();
-                    buttons = focused ? gamepad_state[g].buttons : 0;
-                    left_x = gamepad_state[g].left_x;
-                    left_y = gamepad_state[g].left_y;
-                    right_x = gamepad_state[g].right_x;
-                    right_y = gamepad_state[g].right_y;
-                    rumble_target = g;
-                    break;
+            // A Multitap sources each of its four players independently
+            // (multitap_player_source), rather than the one input_source a plain port uses -
+            // otherwise this is exactly the single-pad path below, run four times.
+            if (controller_type[port] == Sio::kMultitap) {
+                for (int player = 0; player < 4; ++player) {
+                    const InputSource source = ParseInputSource(
+                        system_->config().multitap_player_source[port][player]);
+                    const SourceReading r = ReadSource(source);
+                    system_->sio().set_connected(port, r.connected, player);
+                    system_->sio().set_buttons(port, r.buttons, player);
+                    system_->sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y, player);
+                    ApplyRumble(port, player, r);
                 }
+                continue;
             }
 
-            system_->sio().set_connected(port, connected);
-            system_->sio().set_buttons(port, buttons);
-            system_->sio().set_axes(port, left_x, left_y, right_x, right_y);
-
-            // Rumble is an output, not an input, so it is not gated on focus - the emulated machine
-            // keeps running in the background (only Pause actually stops it), and a real console
-            // would not silence a controller's motor just because another window has focus. If both
-            // ports are ever mapped to the same physical pad, the second port's SetRumble call
-            // below simply wins for that frame - a real edge case (mirroring one pad to both
-            // ports), not a bug.
-            if (rumble_target >= 0) {
-                uint8_t motor_small = 0, motor_large = 0;
-                system_->sio().motor_state(port, &motor_small, &motor_large);
-                gamepads_[rumble_target].SetRumble(motor_small, motor_large);
-            }
+            const InputSource source = ParseInputSource(system_->config().input_source[port]);
+            const SourceReading r = ReadSource(source);
+            system_->sio().set_connected(port, r.connected);
+            system_->sio().set_buttons(port, r.buttons);
+            system_->sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y);
+            ApplyRumble(port, /*player=*/0, r);
         }
     }
 
@@ -559,9 +588,11 @@ namespace psxemu {
         system_->config().controller_type[port] = key;
         system_->sio().set_controller_type(port, ParseControllerType(key));
         UpdateControllerTypeMenu();
-        // Switching to or from kMouse/kNone changes whether this port's source items should be
-        // greyed out, so the source menu needs refreshing too, not just the type menu's own ticks.
+        // Switching to or from kMouse/kNone/kMultitap changes whether this port's own source items
+        // (or, for kMultitap, its four players' source items) should be greyed out, so both source
+        // menus need refreshing too, not just the type menu's own ticks.
         UpdateInputSourceMenu();
+        UpdateMultitapSourceMenu();
         SaveSettingsIfChanged();
     }
 
@@ -577,6 +608,21 @@ namespace psxemu {
             return;
         system_->config().input_source[port] = key;
         UpdateInputSourceMenu();
+        SaveSettingsIfChanged();
+    }
+
+    void App::UpdateMultitapSourceMenu() {
+        if (system_ != nullptr) {
+            TickMultitapSources(window_, system_->config().multitap_player_source,
+                                system_->config().controller_type);
+        }
+    }
+
+    void App::SetMultitapSource(int port, int player, const std::string& key) {
+        if (system_ == nullptr || port < 0 || port >= 2 || player < 0 || player >= 4)
+            return;
+        system_->config().multitap_player_source[port][player] = key;
+        UpdateMultitapSourceMenu();
         SaveSettingsIfChanged();
     }
 
@@ -930,8 +976,20 @@ namespace psxemu {
                                      kControllerTypeChoices[offset % type_count].key);
                 } else if (command >= kCommandInputSourceFirst &&
                            command <= kCommandInputSourceLast) {
+                    const int source_count = static_cast<int>(std::size(kInputSourceChoices));
                     const int offset = command - kCommandInputSourceFirst;
-                    SetInputSource(offset / 3, kInputSourceChoices[offset % 3].key);
+                    SetInputSource(offset / source_count,
+                                   kInputSourceChoices[offset % source_count].key);
+                } else if (command >= kCommandMultitapSourceFirst &&
+                           command <= kCommandMultitapSourceLast) {
+                    // Same offset math as the plain per-port source above, with one more dimension
+                    // (player) folded in - see menu.cpp's CreateMainMenu for how it was built.
+                    const int source_count = static_cast<int>(std::size(kInputSourceChoices));
+                    const int offset = command - kCommandMultitapSourceFirst;
+                    const int port = offset / (4 * source_count);
+                    const int player = (offset / source_count) % 4;
+                    SetMultitapSource(port, player,
+                                      kInputSourceChoices[offset % source_count].key);
                 }
                 break;
         }

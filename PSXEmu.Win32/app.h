@@ -147,6 +147,11 @@ namespace psxemu {
 
         void SetControllerType(int port, const std::string& key);
         void SetInputSource(int port, const std::string& key);
+
+        // Which source feeds one player (0-3 = A-D) of whichever port's controller_type is
+        // "multitap" - meaningless, and never read, otherwise.
+        void SetMultitapSource(int port, int player, const std::string& key);
+
         void SetFrameLimiter(bool on);
 
         // Takes effect on the next command the drive is given, so there is nothing to reset and no
@@ -162,6 +167,7 @@ namespace psxemu {
         void UpdateFilterMenu();
         void UpdateControllerTypeMenu();
         void UpdateInputSourceMenu();
+        void UpdateMultitapSourceMenu();
         void UpdateFrameLimiterMenu();
         void UpdateCdTimingMenu();
 
@@ -293,11 +299,14 @@ namespace psxemu {
         // sound device - see platform/frame_limiter.h.
         utilities::FrameLimiter frame_limiter_;
 
-        // Two fixed XInput slots - "Gamepad 1" and "Gamepad 2" in the Input menu, XInput user index
-        // 0 and 1 respectively. Which PSX port (if either) each one feeds, and whether a port uses a
-        // gamepad at all rather than the keyboard, is decided by EmuConfig::input_source and applied
-        // each frame - see PollInput.
-        std::array<Gamepad, 2> gamepads_{ Gamepad(0), Gamepad(1) };
+        // Four fixed XInput slots - "Gamepad 1".."Gamepad 4" in the Input menu, XInput user index
+        // 0-3 respectively - the most XInput itself ever supports, which is why there are exactly
+        // four and not some other number. Which PSX port (or, for a Multitap, which of its four
+        // players) each one feeds, and whether a source uses a gamepad at all rather than the
+        // keyboard, is decided by EmuConfig::input_source/multitap_player_source and applied each
+        // frame - see PollInput. Two, not four, were ever needed before Multitap existed, since only
+        // two ports exist to assign one to each of.
+        std::array<Gamepad, 4> gamepads_{ Gamepad(0), Gamepad(1), Gamepad(2), Gamepad(3) };
 
         // The real mouse. Unlike gamepads_, there is one of these regardless of how many ports use
         // it - a port's controller_type says whether it is Sio::kMouse at all, not which of several

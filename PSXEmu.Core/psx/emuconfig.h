@@ -71,19 +71,36 @@ struct EmuConfig {
 
   // --- Input --------------------------------------------------------------
   // What is plugged into each SIO0 port - one of the three real PS1
-  // controllers, a mouse, or nothing at all. See Sio::ControllerType.
-  // "dualshock" for both, so an existing game that already negotiates
-  // analog input keeps working exactly as it did before this was choosable.
+  // controllers, a mouse, a multitap, or nothing at all. See
+  // Sio::ControllerType. "dualshock" for both, so an existing game that
+  // already negotiates analog input keeps working exactly as it did before
+  // this was choosable.
   std::array<std::string, 2> controller_type = { "dualshock", "dualshock" };
-  static const std::array<const char*, 5> kValidControllerTypes;
+  static const std::array<const char*, 6> kValidControllerTypes;
 
   // Which physical source drives each PSX port - the keyboard, or one of the
-  // two XInput slots the Input menu labels "Gamepad 1"/"Gamepad 2" (XInput
-  // user index 0 and 1 respectively). Both default to a gamepad: two people
-  // already play this way today, one pad per port with no keyboard fallback
-  // to reason about.
+  // four XInput slots the Input menu labels "Gamepad 1".."Gamepad 4" (XInput
+  // user index 0-3). Both ports default to a gamepad: two people already
+  // play this way today, one pad per port with no keyboard fallback to
+  // reason about. Meaningless, and ignored, for a port whose controller_type
+  // is "mouse" (fixed to the real mouse) or "multitap" (see
+  // multitap_player_source instead) or "none" (nothing to source at all).
   std::array<std::string, 2> input_source = { "gamepad1", "gamepad2" };
-  static const std::array<const char*, 3> kValidInputSources;
+  static const std::array<const char*, 5> kValidInputSources;
+
+  // Which physical source drives each of a multitap's four players
+  // (Player A-D), for whichever port's controller_type is "multitap" -
+  // meaningless, and ignored, otherwise. Indexed [port][player]. Only
+  // Player A defaults to a gamepad (the same one that port's own
+  // input_source already defaulted to, so a game that only ever reads
+  // Player A sees no difference from before multitap existed); B-D default
+  // to "keyboard" rather than a second/third/fourth gamepad no one may
+  // actually have connected, exactly like a real multitap's own extra
+  // sockets start out with nothing plugged into them.
+  std::array<std::array<std::string, 4>, 2> multitap_player_source = {{
+      { "gamepad1", "keyboard", "keyboard", "keyboard" },
+      { "gamepad2", "keyboard", "keyboard", "keyboard" },
+  }};
 
   // --- Timing -------------------------------------------------------------
   // Whether the front end holds the machine to the emulated display's own
@@ -139,13 +156,17 @@ inline const std::array<const char*, 9> EmuConfig::kValidVideoFilters = {
 };
 
 // Order matches PSXEmu.Win32's Input > Controller Port menus and
-// Sio::ControllerType (kDigital, kDualAnalog, kDualShock, kMouse, kNone).
-inline const std::array<const char*, 5> EmuConfig::kValidControllerTypes = {
-    "digital", "dual_analog", "dualshock", "mouse", "none" };
+// Sio::ControllerType (kDigital, kDualAnalog, kDualShock, kMouse, kNone,
+// kMultitap).
+inline const std::array<const char*, 6> EmuConfig::kValidControllerTypes = {
+    "digital", "dual_analog", "dualshock", "mouse", "none", "multitap" };
 
-// Order matches PSXEmu.Win32's Input > Port Source menus.
-inline const std::array<const char*, 3> EmuConfig::kValidInputSources = {
-    "keyboard", "gamepad1", "gamepad2" };
+// Order matches PSXEmu.Win32's Input > Port Source menus. Four gamepad
+// slots, not two, because a single multitap wants up to four independently
+// assignable ones - bounded there rather than open-ended since XInput
+// itself only ever supports four physical controllers.
+inline const std::array<const char*, 5> EmuConfig::kValidInputSources = {
+    "keyboard", "gamepad1", "gamepad2", "gamepad3", "gamepad4" };
 
 }
 }

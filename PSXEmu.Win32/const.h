@@ -71,9 +71,14 @@ namespace psxemu {
         kCommandFrameLimiter,
         kCommandCdMechanicalTiming,
         kCommandControllerTypeFirst,
-        kCommandControllerTypeLast = kCommandControllerTypeFirst + 9,   // 2 ports x 5 types
+        kCommandControllerTypeLast = kCommandControllerTypeFirst + 11,   // 2 ports x 6 types
         kCommandInputSourceFirst,
-        kCommandInputSourceLast = kCommandInputSourceFirst + 5,   // 2 ports x 3 sources
+        kCommandInputSourceLast = kCommandInputSourceFirst + 9,   // 2 ports x 5 sources
+        // Player A-D source for whichever port(s) are set to Multitap - greyed out otherwise. A
+        // separate command-id range from kCommandInputSource* above, since a port's own source and
+        // its four players' sources are ticked/dispatched independently.
+        kCommandMultitapSourceFirst,
+        kCommandMultitapSourceLast = kCommandMultitapSourceFirst + 39,   // 2 ports x 4 players x 5 sources
         kCommandExit,
     };
 
@@ -132,8 +137,8 @@ namespace psxemu {
         { "xbrz",        L"x&BRZ" },
     };
 
-    // What a port can hold - the three real PS1 controllers, a mouse, or nothing at all - in the
-    // order EmuConfig::kValidControllerTypes and Sio::ControllerType both list them.
+    // What a port can hold - the three real PS1 controllers, a mouse, a multitap, or nothing at
+    // all - in the order EmuConfig::kValidControllerTypes and Sio::ControllerType both list them.
     struct ControllerTypeChoice { const char* key; const wchar_t* label; };
 
     inline constexpr ControllerTypeChoice kControllerTypeChoices[] = {
@@ -142,17 +147,20 @@ namespace psxemu {
         { "dualshock",   L"Dual&Shock" },
         { "mouse",       L"&Mouse" },
         { "none",        L"&None (Disconnected)" },
+        { "multitap",    L"Multi&tap (4 players)" },
     };
 
-    // The three sources a PSX port can be mapped to, in the order EmuConfig::kValidInputSources
-    // lists them. Front-end-only - Sio has no notion of where a port's buttons come from, only what
-    // they are.
+    // The sources a PSX port - or, for a Multitap, one of its four players - can be mapped to, in
+    // the order EmuConfig::kValidInputSources lists them. Front-end-only - Sio has no notion of
+    // where a port's buttons come from, only what they are.
     struct InputSourceChoice { const char* key; const wchar_t* label; };
 
     inline constexpr InputSourceChoice kInputSourceChoices[] = {
         { "keyboard", L"&Keyboard" },
         { "gamepad1", L"&Gamepad 1" },
         { "gamepad2", L"Gamepad &2" },
+        { "gamepad3", L"Gamepad &3" },
+        { "gamepad4", L"Gamepad &4" },
     };
 
     // clang-format on

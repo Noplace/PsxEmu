@@ -18,6 +18,8 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <memory>
+
 namespace emulation {
 namespace psx {
 
@@ -99,7 +101,11 @@ class Sio : public Component {
   //                 choice instead of something the front end has to
   //                 remember to keep asserting every frame - see
   //                 set_connected and set_controller_type.
-  enum ControllerType { kDigital, kDualAnalog, kDualShock, kMouse, kNone };
+  //   kMultitap   - the SCPH-1070 multiplayer adaptor (ID 5A80h): four
+  //                 pads (Players A-D) behind one port - see class
+  //                 Multitap and ExchangeMultitap.
+  enum ControllerType { kDigital, kDualAnalog, kDualShock, kMouse, kNone,
+                        kMultitap };
 
   Sio();
   ~Sio();
@@ -115,21 +121,26 @@ class Sio : public Component {
   void Write16(uint32_t address, uint16_t data);
   void Write32(uint32_t address, uint32_t data);
 
-  // Set by a front end. Bit set means pressed.
-  void set_buttons(int slot, uint16_t buttons) {
-    if (slot >= 0 && slot < 2) pad_[slot].buttons = buttons;
+  // Set by a front end. Bit set means pressed. `player` (0-3 = A-D) only
+  // matters when this port currently holds a Multitap - see ResolvePad -
+  // and is otherwise ignored, so an ordinary single-pad port never has to
+  // pass it.
+  void set_buttons(int port, uint16_t buttons, int player = 0) {
+    Pad* pad = ResolvePad(port, player);
+    if (pad != nullptr) pad->buttons = buttons;
   }
 
   // The analog sticks, in the pad's own byte convention: 0x00 is left/up,
   // 0xFF is right/down, 0x80 is centred. Harmless to set even for a pad that
   // never goes into analog mode - the bytes simply never get sent.
-  void set_axes(int slot, uint8_t left_x, uint8_t left_y, uint8_t right_x,
-               uint8_t right_y) {
-    if (slot < 0 || slot >= 2) return;
-    pad_[slot].left_x = left_x;
-    pad_[slot].left_y = left_y;
-    pad_[slot].right_x = right_x;
-    pad_[slot].right_y = right_y;
+  void set_axes(int port, uint8_t left_x, uint8_t left_y, uint8_t right_x,
+               uint8_t right_y, int player = 0) {
+    Pad* pad = ResolvePad(port, player);
+    if (pad == nullptr) return;
+    pad->left_x = left_x;
+    pad->left_y = left_y;
+    pad->right_x = right_x;
+    pad->right_y = right_y;
   }
 
   // A mouse's own two buttons - what the wire calls "switches" rather than
@@ -155,36 +166,50 @@ class Sio : public Component {
 
   // A pad that is freshly connected forgets whatever a previous one had
   // negotiated - defined out of line because that is more than a field
-  // assignment now.
-  void set_connected(int slot, bool connected);
+  // assignment now. `player` - see set_buttons.
+  void set_connected(int port, bool connected, int player = 0);
 
   // Which controller is plugged into a port. Independent of Pad's negotiated
   // state and of set_connected's reset - unlike buttons or analog mode, this
   // is the front end's own standing choice, and a reconnect must not
   // silently forget it. Changing it, though, *is* treated as unplugging one
   // physical controller for a different one: see the .cpp for why.
-  void set_controller_type(int slot, ControllerType type);
-  ControllerType controller_type(int slot) const {
-    return (slot >= 0 && slot < 2) ? controller_type_[slot] : kDualShock;
+  //
+  // This is a per-port choice, not per-player - a Multitap's four players
+  // do not each have their own type yet (see class Multitap), so there is
+  // no `player` parameter here.
+  void set_controller_type(int port, ControllerType type);
+  ControllerType controller_type(int port) const {
+    return (port >= 0 && port < 2) ? controller_type_[port] : kDualShock;
   }
 
   // What the two motors are currently being asked to do: 0 or 255 for the
   // small one, 0-255 for the large one. A front end reads this once a frame
-  // and feeds it to whatever actually vibrates.
-  void motor_state(int slot, uint8_t* small, uint8_t* large) const {
-    if (slot < 0 || slot >= 2) {
+  // and feeds it to whatever actually vibrates. `player` - see set_buttons.
+  void motor_state(int port, uint8_t* small, uint8_t* large,
+                   int player = 0) const {
+    const Pad* pad = ResolvePad(port, player);
+    if (pad == nullptr) {
       if (small != nullptr) *small = 0;
       if (large != nullptr) *large = 0;
       return;
     }
-    if (small != nullptr) *small = pad_[slot].motor_small;
-    if (large != nullptr) *large = pad_[slot].motor_large;
+    if (small != nullptr) *small = pad->motor_small;
+    if (large != nullptr) *large = pad->motor_large;
   }
 
   void Serialise(StateIO& io);
 
  private:
+  // A pad's own state. Polymorphic - not because a pad itself has more
+  // than one shape, but so a port can hold a Multitap instead: something
+  // that inherits this exact shape and answers for up to four of them.
+  // Sio::ExchangeController, PadIdByte and PollPayloadByte all operate on
+  // a Pad& and neither know nor care whether it is standalone or one of a
+  // Multitap's four - see class Multitap below.
   struct Pad {
+    virtual ~Pad() = default;
+
     bool connected = false;
     uint16_t buttons = 0;
 
@@ -217,6 +242,52 @@ class Sio : public Component {
 
     uint8_t motor_small = 0;
     uint8_t motor_large = 0;
+
+    // True only for a Multitap - lets Sio::Exchange() tell the two apart
+    // at the one place it actually matters, without a dynamic_cast.
+    virtual bool is_multitap() const { return false; }
+
+    // Once pad_ can hold a Multitap, it is no longer trivially copyable
+    // (a vtable pointer), so it can no longer be serialised as one blob
+    // the way Sio::Serialise used to. Each concrete type writes its own
+    // fields in a fixed order; see Sio::Serialise for how the right
+    // concrete type gets reconstructed before this runs on load.
+    virtual void Serialise(StateIO& io);
+  };
+
+  // The SCPH-1070 multiplayer adaptor: four ordinary Pads (Players A-D)
+  // behind one port. Everything specific to it lives here -
+  // ExchangeController/PadIdByte/PollPayloadByte are unchanged and unaware
+  // this class exists; see Sio::ExchangeMultitap for how it is driven.
+  class Multitap : public Pad {
+   public:
+    bool is_multitap() const override { return true; }
+
+    Pad players[4];   // A, B, C, D
+
+    // v1: every player behaves as a full DualShock unconditionally -
+    // ExchangeMultitap passes kDualShock for all four rather than reading
+    // a per-player type, because there isn't one yet. Adding
+    // `ControllerType player_type[4]` later, gated the same way
+    // ExchangeController already gates a port's own type, is a small
+    // addition to this class, not a redesign.
+
+    // Method 1's "the next transfer should be the long all-players
+    // response" latch - psx-spx: setting it does NOT change the current
+    // transfer's own reply, only the one after it.
+    bool pending_long_response = false;
+    // Set once escalation is requested (see ExchangeMultitap step 1) and
+    // resolved one byte later (step 2): whether the command byte that
+    // came with it was actually 0x42 - psx-spx/DuckStation: anything else
+    // aborts the escalation rather than producing a long reply.
+    bool invalid_long_response = false;
+    // Which player 0x01-0x04 selected for this transfer - always reset to
+    // 0 (Player A) the moment a transfer actually becomes the long
+    // all-players response, since that is what psx-spx documents it as
+    // always starting from regardless of which byte triggered it.
+    int selected_player = 0;
+
+    void Serialise(StateIO& io) override;
   };
 
   // A mouse's own protocol state. Deliberately not folded into Pad: a mouse
@@ -243,9 +314,18 @@ class Sio : public Component {
   };
 
   // Which device the current exchange is talking to, and how far in it is.
-  enum Target { kTargetNone, kTargetPad, kTargetMemoryCard, kTargetMouse };
+  // kTargetMultitap covers both of a Multitap's two methods until
+  // ExchangeMultitap knows which one this transfer actually is;
+  // kTargetMultitapAll is set only once it has committed to the long
+  // all-players response - see ExchangeMultitap.
+  enum Target { kTargetNone, kTargetPad, kTargetMemoryCard, kTargetMouse,
+               kTargetMultitap, kTargetMultitapAll };
 
-  Pad pad_[2];
+  // Polymorphic so a port can hold either an ordinary Pad or a Multitap -
+  // see the class comment on Pad. Never null after Initialize(); changing
+  // a port's type replaces the pointee rather than mutating it in place,
+  // the same "fresh (un)plug" idea set_controller_type already documents.
+  std::unique_ptr<Pad> pad_[2];
   Mouse mouse_[2];
   ControllerType controller_type_[2] = { kDualShock, kDualShock };
 
@@ -269,12 +349,36 @@ class Sio : public Component {
 
   int selected_slot() const { return (control_ & 0x2000) ? 1 : 0; }
 
+  // Resolves which Pad a setter/getter should actually touch: the port's
+  // own pad normally, or one of a Multitap's four players when it holds
+  // one and `player` is in range (`player` is simply ignored for an
+  // ordinary port, rather than treated as an error, since a caller that
+  // does not know or care whether a port is a Multitap should not have to
+  // check first). Null on anything out of bounds, which every caller
+  // already treats as "nothing to do". Implemented once, on the const
+  // overload, so the two cannot drift apart.
+  const Pad* ResolvePad(int port, int player) const {
+    if (port < 0 || port >= 2 || pad_[port] == nullptr)
+      return nullptr;
+    if (!pad_[port]->is_multitap())
+      return pad_[port].get();
+    if (player < 0 || player >= 4)
+      return nullptr;
+    return &static_cast<const Multitap&>(*pad_[port]).players[player];
+  }
+  Pad* ResolvePad(int port, int player) {
+    return const_cast<Pad*>(static_cast<const Sio*>(this)->ResolvePad(port, player));
+  }
+
   uint8_t Exchange(uint8_t data);
   uint8_t ExchangeMemoryCard(uint8_t data, class MC& mc);
 
-  // The controller side of Exchange(). Split out because it is a real state
-  // machine in its own right now, not the four-byte reply it used to be.
-  uint8_t ExchangeController(uint8_t data, int slot);
+  // The controller side of Exchange() for an ordinary pad - or, from
+  // ExchangeMultitap, for one of a Multitap's four players, which is why
+  // this takes the Pad and its type directly rather than looking a port
+  // up itself. Split out because it is a real state machine in its own
+  // right now, not the four-byte reply it used to be.
+  uint8_t ExchangeController(uint8_t data, Pad& pad, ControllerType type);
   uint8_t PadIdByte(const Pad& pad) const;
   uint8_t PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming,
                           bool rumble_capable);
@@ -289,6 +393,15 @@ class Sio : public Component {
   // clipping it away - see Mouse::accum_dx/accum_dy. Static: it has nothing
   // to do with any other Sio state, only the accumulator it is handed.
   static uint8_t DrainMouseAxis(int32_t& accumulator);
+
+  // The multitap side of Exchange() - a sibling to ExchangeMouse and
+  // ExchangeMemoryCard, not a branch inside ExchangeController, since a
+  // Multitap's own reply (the 5A80h id, the long all-players response)
+  // shares no structure with an ordinary pad's. Reuses ExchangeController
+  // for Method 2 (a plain pad protocol pointed at one player) and
+  // PadIdByte/PollPayloadByte directly for Method 1's per-player bytes,
+  // rather than duplicating either.
+  uint8_t ExchangeMultitap(uint8_t data, int port);
 
   // Which controller command (0x42, 0x43, ...) the current exchange is
   // carrying out - decided by the byte the host sends right after selecting

@@ -51,18 +51,18 @@ Sio::~Sio() {
 }
 
 int Sio::Initialize() {
-  // Pad() gives every field its at-rest default - centred sticks, digital
-  // mode, an unmapped rumble table - which a plain memset would not, since
-  // "every byte zero" is the wrong default for a byte convention where 0x80
-  // means centred and 0xFF means unmapped.
-  pad_[0] = Pad();
-  pad_[1] = Pad();
+  // A fresh Pad gives every field its at-rest default - centred sticks,
+  // digital mode, an unmapped rumble table - which a plain memset would
+  // not, since "every byte zero" is the wrong default for a byte
+  // convention where 0x80 means centred and 0xFF means unmapped.
+  pad_[0] = std::make_unique<Pad>();
+  pad_[1] = std::make_unique<Pad>();
   mouse_[0] = Mouse();
   mouse_[1] = Mouse();
   // Slot 1 has a digital pad in it, slot 2 is empty. A front end overrides
   // this as soon as it knows better.
-  pad_[0].connected = true;
-  pad_[1].connected = false;
+  pad_[0]->connected = true;
+  pad_[1]->connected = false;
 
   // The front end re-asserts its configured choice every frame - the same
   // way it already does for `connected` - so resetting to the power-on
@@ -93,10 +93,57 @@ int Sio::Deinitialize() {
   return S_OK;
 }
 
+// A Pad with a vtable is no longer trivially copyable, so it can no longer
+// ride along as one memset-shaped blob the way io.Plain(pad_) used to
+// serialise it - each field is written out explicitly instead, in a fixed
+// order both directions agree on.
+void Sio::Pad::Serialise(StateIO& io) {
+  io.Plain(connected);
+  io.Plain(buttons);
+  io.Plain(left_x);
+  io.Plain(left_y);
+  io.Plain(right_x);
+  io.Plain(right_y);
+  io.Plain(analog_mode);
+  io.Plain(analog_locked);
+  io.Plain(config_mode);
+  io.Plain(dualshock_enabled);
+  io.Plain(rumble_map);
+  io.Plain(motor_small);
+  io.Plain(motor_large);
+}
+
+void Sio::Multitap::Serialise(StateIO& io) {
+  // The inherited Pad fields are never actually used by a Multitap itself
+  // (see the class comment - the interesting state is players[]), but
+  // round-tripping them anyway keeps every concrete Pad type serialising
+  // itself the same way, rather than Multitap being a special case that
+  // skips its own base.
+  Pad::Serialise(io);
+  for (Pad& player : players)
+    player.Serialise(io);
+  io.Plain(pending_long_response);
+  io.Plain(invalid_long_response);
+  io.Plain(selected_player);
+}
+
 void Sio::Serialise(StateIO& io) {
-  io.Plain(pad_);
-  io.Plain(mouse_);
+  // Read (or write) before pad_ itself, on purpose: which concrete type
+  // each port's Pad actually is has to be known before Serialise can run
+  // on it at all - a Multitap and a plain Pad write different amounts of
+  // data, so on load the right one has to already be sitting there first.
   io.Plain(controller_type_);
+  if (!io.saving()) {
+    for (int port = 0; port < 2; ++port) {
+      if (controller_type_[port] == kMultitap)
+        pad_[port] = std::make_unique<Multitap>();
+      else
+        pad_[port] = std::make_unique<Pad>();
+    }
+  }
+  pad_[0]->Serialise(io);
+  pad_[1]->Serialise(io);
+  io.Plain(mouse_);
   io.Plain(control_);
   io.Plain(mode_);
   io.Plain(baud_);
@@ -118,33 +165,37 @@ void Sio::Serialise(StateIO& io) {
   io.Plain(mc_previous_tx_);
 }
 
-void Sio::set_connected(int slot, bool connected) {
-  if (slot < 0 || slot >= 2)
+void Sio::set_connected(int port, bool connected, int player) {
+  if (port < 0 || port >= 2)
     return;
   // kNone is a standing choice, not something the front end has to
   // remember to keep unplugging every frame - see the class comment on
   // ControllerType - so it overrides whatever a caller still asks for here.
-  if (controller_type_[slot] == kNone)
+  if (controller_type_[port] == kNone)
     connected = false;
-  if (controller_type_[slot] == kMouse) {
-    mouse_[slot].connected = connected;
+  if (controller_type_[port] == kMouse) {
+    mouse_[port].connected = connected;
     return;
   }
-  if (connected && !pad_[slot].connected) {
+  Pad* pad = ResolvePad(port, player);
+  if (pad == nullptr)
+    return;
+  if (connected && !pad->connected) {
     // A freshly connected pad has negotiated nothing yet - a real DualShock
     // that has just been plugged in does not remember being in analog mode
     // on some other console, and neither should this one. What it was doing
     // before this moment (buttons, axes) does not matter and is overwritten
-    // by the next poll regardless.
-    Pad fresh;
-    fresh.connected = true;
-    pad_[slot] = fresh;
+    // by the next poll regardless. Reset in place, not by replacing the
+    // object - `pad` may be one of a Multitap's four players, not
+    // something this call owns to replace wholesale.
+    *pad = Pad();
+    pad->connected = true;
   }
-  pad_[slot].connected = connected;
+  pad->connected = connected;
 }
 
-void Sio::set_controller_type(int slot, ControllerType type) {
-  if (slot < 0 || slot >= 2 || controller_type_[slot] == type)
+void Sio::set_controller_type(int port, ControllerType type) {
+  if (port < 0 || port >= 2 || controller_type_[port] == type)
     return;
   // Changing the physical controller is a fresh connection as far as the
   // protocol is concerned - a real console cannot tell a DualShock swapped
@@ -152,18 +203,28 @@ void Sio::set_controller_type(int slot, ControllerType type) {
   // one: whatever the old one had negotiated (analog mode, rumble mapping)
   // must not carry over to a controller of a different kind. old_type is
   // read before either slot is touched, since it says which of Pad/Mouse
-  // actually held the connection being carried forward.
-  const ControllerType old_type = controller_type_[slot];
-  const bool was_connected = (old_type == kMouse) ? mouse_[slot].connected
+  // actually held the connection being carried forward - a Multitap's own
+  // `connected` (forced true below, the moment one exists) falls out of
+  // the same pad_[port]->connected read as an ordinary pad's.
+  const ControllerType old_type = controller_type_[port];
+  const bool was_connected = (old_type == kMouse) ? mouse_[port].connected
                             : (old_type == kNone)  ? false
-                                                    : pad_[slot].connected;
-  controller_type_[slot] = type;
-  pad_[slot] = Pad();
-  mouse_[slot] = Mouse();
-  if (type == kMouse)
-    mouse_[slot].connected = was_connected;
-  else if (type != kNone)
-    pad_[slot].connected = was_connected;
+                                                    : pad_[port]->connected;
+  controller_type_[port] = type;
+  mouse_[port] = Mouse();
+  if (type == kMultitap) {
+    // The adaptor itself has no "unplugged" state of its own once chosen -
+    // the interesting connected-ness lives per player (players[i].connected),
+    // not here.
+    pad_[port] = std::make_unique<Multitap>();
+    pad_[port]->connected = true;
+  } else {
+    pad_[port] = std::make_unique<Pad>();
+    if (type == kMouse)
+      mouse_[port].connected = was_connected;
+    else if (type != kNone)
+      pad_[port]->connected = was_connected;
+  }
 }
 
 void Sio::Tick(uint32_t cycles) {
@@ -193,26 +254,38 @@ void Sio::Tick(uint32_t cycles) {
 // device that is not there never does - which ends the exchange and is how
 // software discovers an empty slot.
 uint8_t Sio::Exchange(uint8_t data) {
-  const int slot = selected_slot();
-  const Pad& pad = pad_[slot];
+  const int port = selected_slot();
 
   if (transfer_step_ == 0) {
     // First byte selects the device: 0x01 is a controller - whichever kind
     // is actually plugged into this slot, see controller_type_ - 0x81 a
     // memory card. A slot set to kNone never has anything answer 0x01,
-    // exactly like an unplugged pad; that is already true of pad.connected
+    // exactly like an unplugged pad; that is already true of pad->connected
     // by the time this runs (set_controller_type/set_connected enforce it),
     // but the type is checked directly too so a mouse-holding slot answers
-    // as a mouse rather than whatever pad.connected happens to say.
+    // as a mouse rather than whatever pad->connected happens to say.
+    //
+    // 0x02-0x04 only mean anything when a Multitap is actually plugged in -
+    // psx-spx: they select its Players B/C/D the same way 0x01 selects A -
+    // so an ordinary pad's port behaves byte-for-byte as it always has.
     target_ = kTargetNone;
     if (data == 0x01) {
-      if (controller_type_[slot] == kMouse) {
-        if (mouse_[slot].connected)
+      if (controller_type_[port] == kMouse) {
+        if (mouse_[port].connected)
           target_ = kTargetMouse;
-      } else if (pad.connected) {
-        target_ = kTargetPad;
+      } else if (pad_[port]->connected) {
+        if (pad_[port]->is_multitap()) {
+          target_ = kTargetMultitap;
+          static_cast<Multitap&>(*pad_[port]).selected_player = 0;
+        } else {
+          target_ = kTargetPad;
+        }
       }
-    } else if (data == 0x81 && system().mc(slot).connected()) {
+    } else if (data >= 0x02 && data <= 0x04 && pad_[port]->is_multitap() &&
+               pad_[port]->connected) {
+      target_ = kTargetMultitap;
+      static_cast<Multitap&>(*pad_[port]).selected_player = data - 0x01;
+    } else if (data == 0x81 && system().mc(port).connected()) {
       target_ = kTargetMemoryCard;
     }
 
@@ -222,11 +295,15 @@ uint8_t Sio::Exchange(uint8_t data) {
   }
 
   if (target_ == kTargetMemoryCard) {
-    return ExchangeMemoryCard(data, system().mc(selected_slot()));
+    return ExchangeMemoryCard(data, system().mc(port));
   }
 
   if (target_ == kTargetMouse) {
-    return ExchangeMouse(data, slot);
+    return ExchangeMouse(data, port);
+  }
+
+  if (target_ == kTargetMultitap || target_ == kTargetMultitapAll) {
+    return ExchangeMultitap(data, port);
   }
 
   if (target_ != kTargetPad) {
@@ -234,7 +311,7 @@ uint8_t Sio::Exchange(uint8_t data) {
     return 0xFF;
   }
 
-  return ExchangeController(data, slot);
+  return ExchangeController(data, *pad_[port], controller_type_[port]);
 }
 
 // The ID a pad's reply starts with. It depends only on what the pad
@@ -314,9 +391,12 @@ uint8_t Sio::PollPayloadByte(Pad& pad, int payload_index, uint8_t incoming,
 }
 
 // The controller side of an exchange, from the second byte on - the first
-// was already consumed by Exchange() to pick the device.
-uint8_t Sio::ExchangeController(uint8_t data, int slot) {
-  Pad& pad = pad_[slot];
+// was already consumed by Exchange() (or, for a Multitap's Method 2,
+// ExchangeMultitap) to pick the device. Takes the Pad and its type
+// directly rather than a port to look them up from, since a call from
+// ExchangeMultitap is not talking to pad_[port] at all - it is talking to
+// one of that port's Multitap's four players.
+uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type) {
   const int step = transfer_step_;
 
   // Step 1 is the command byte itself (0x42 to poll, 0x43 to enter or leave
@@ -379,8 +459,7 @@ uint8_t Sio::ExchangeController(uint8_t data, int slot) {
   if (recognised) {
     switch (pad_command_) {
       case 0x42:
-        out = PollPayloadByte(pad, payload_index, data,
-                              controller_type_[slot] == kDualShock);
+        out = PollPayloadByte(pad, payload_index, data, type == kDualShock);
         break;
 
       case 0x43:
@@ -394,7 +473,7 @@ uint8_t Sio::ExchangeController(uint8_t data, int slot) {
         // simply not honoured here. That alone is what keeps such a pad's ID
         // at 5A41h forever: config_mode and analog_mode can only ever be set
         // from inside this gate.
-        if (payload_index == 0 && controller_type_[slot] != kDigital) {
+        if (payload_index == 0 && type != kDigital) {
           pad.config_mode = (data == 1);
           if (pad.config_mode)
             pad.dualshock_enabled = true;
@@ -469,6 +548,99 @@ uint8_t Sio::ExchangeController(uint8_t data, int slot) {
   ++transfer_step_;
   acknowledge_ = (transfer_step_ <= total_length);
   return out;
+}
+
+// The multitap side of an exchange, from the second byte on - the first
+// was already consumed by Exchange() to pick the device and, via
+// Multitap::selected_player, which of its four players 0x01-0x04 asked
+// for (see the class comment there for why it is always reset to A the
+// moment a transfer becomes the long response, regardless of what picked
+// it). Two methods, both from psx-spx:
+//
+// Method 2 ("normal reads") is everything below once the id+status pair
+// is done: a pure passthrough to ExchangeController for whichever player
+// was selected - identical to an ordinary single pad, just pointed at one
+// of these four instead of pad_[port] directly. Every multitap player
+// behaves as a full DualShock for now (see the class comment on
+// Multitap) - hence kDualShock passed to ExchangeController everywhere
+// below rather than a per-player type that does not exist yet.
+//
+// Method 1 ("read all four", psx-spx: "the more commonly used one") is
+// triggered by bit 0 of the third byte of any transfer - psx-spx: setting
+// it "does NOT affect the current response. Instead, it does request
+// that the NEXT command shall return special data" - so it is latched
+// into Multitap::pending_long_response for the transfer after this one,
+// regardless of whether this one is itself short or long. When a
+// transfer that WAS so queued actually arrives, and its own command byte
+// is 0x42 (psx-spx/DuckStation: anything else aborts the escalation), the
+// id+status pair becomes 5A80h (the multitap's own id) instead of
+// whatever the selected player would have answered, and everything after
+// that is 4 players x 8 bytes (4 halfwords each), 0xFF-padded past
+// whatever a shorter reply (a plain digital pad, say) actually has.
+uint8_t Sio::ExchangeMultitap(uint8_t data, int port) {
+  Multitap& tap = static_cast<Multitap&>(*pad_[port]);
+  const int step = transfer_step_;
+
+  if (step == 1) {
+    if (tap.pending_long_response) {
+      tap.invalid_long_response = (data != 0x42);
+      target_ = kTargetMultitapAll;
+      acknowledge_ = true;
+      ++transfer_step_;
+      return 0x80;   // ID low - 5A80h says "multitap".
+    }
+    return ExchangeController(data, tap.players[tap.selected_player], kDualShock);
+  }
+
+  if (step == 2) {
+    // Whatever this transfer turns out to be, bit 0 of this byte always
+    // latches what the NEXT one should be - independent of whether this
+    // access is itself short or long, and read before anything below can
+    // end the transfer early.
+    const bool next_wants_long = (data & 0x01) != 0;
+
+    if (target_ == kTargetMultitapAll) {
+      tap.pending_long_response = next_wants_long;
+      tap.selected_player = 0;   // the long response always starts at A
+      acknowledge_ = !tap.invalid_long_response;
+      ++transfer_step_;
+      return 0x5A;   // ID high, same byte every device on this bus uses.
+    }
+    const uint8_t out =
+        ExchangeController(data, tap.players[tap.selected_player], kDualShock);
+    tap.pending_long_response = next_wants_long;
+    return out;
+  }
+
+  if (target_ == kTargetMultitapAll) {
+    const int overall_index = step - 3;   // 0..31
+    const int player = overall_index / 8;
+    const int local_index = overall_index % 8;
+    Pad& p = tap.players[player];
+    uint8_t out = 0xFF;
+    if (p.connected) {
+      if (local_index == 0) {
+        out = PadIdByte(p);
+      } else if (local_index == 1) {
+        out = 0x5A;
+      } else {
+        // Payload bytes only run as long as this player's own poll reply
+        // actually would - psx-spx: "padded with FFFFh values for devices
+        // like Digital Joypads... which do use less than 4 halfwords".
+        const int payload_index = local_index - 2;
+        const int payload_length = (p.analog_mode || p.config_mode) ? 6 : 2;
+        if (payload_index < payload_length)
+          out = PollPayloadByte(p, payload_index, data, /*rumble_capable=*/true);
+      }
+    }
+    ++transfer_step_;
+    acknowledge_ = (overall_index + 1 < 32);
+    return out;
+  }
+
+  // Method 2, continuing: still a pure passthrough to whichever player was
+  // selected.
+  return ExchangeController(data, tap.players[tap.selected_player], kDualShock);
 }
 
 // The byte psx-spx calls the mouse's "switches": bits 8-9 of the halfword

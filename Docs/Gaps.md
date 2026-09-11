@@ -272,7 +272,7 @@ that 64 times, and a crash part-way through leaves a half-written card.
 
 Planned in [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
 
-### Controllers - DualShock, mouse and no-controller now; no multitap or lightgun
+### Controllers - DualShock, mouse, no-controller and multitap now; no lightgun
 
 `Sio` speaks the real DualShock handshake: a pad boots as a plain digital one
 (`5A41h`) and only becomes analog (`5A73h`) if a game actually asks for
@@ -288,8 +288,73 @@ Two things are approximated rather than measured: commands `0x46` and `0x47`
 (capability queries almost nothing exercises) are acknowledged with the right
 shape and zero-filled content, and `0x4C` reports a DualShock rather than a
 DualShock 2 - pressure-sensitive face buttons are not implemented, so nothing
-would read the extra data anyway. Still entirely absent: multitap, and the
-lightgun, which also needs the GPU's scanline position latched on trigger.
+would read the extra data anyway. Still entirely absent: the lightgun, which
+needs the GPU's scanline position latched on trigger.
+
+### Multitap (SCPH-1070) - both real-hardware read methods, memory cards not yet
+
+A port can now be set to `Sio::kMultitap`, giving it four players (A-D)
+instead of one. `Pad` became a small polymorphic hierarchy for this rather
+than a fourth parallel array: `Sio::Multitap` inherits `Pad` and owns four
+ordinary `Pad`s as `players[]`, so `ExchangeController`/`PadIdByte`/
+`PollPayloadByte` - the whole existing digital/analog/DualShock state
+machine - needed no changes at all and are reused verbatim per player. A
+port's own `pad_` slot went from a value to a `std::unique_ptr<Pad>` to make
+that possible, which is also why `kStateVersion` bumped again (4→5) - a
+`Pad` with a vtable can no longer ride along in a save state as one
+trivially-copyable blob, so each concrete type now serialises its own
+fields, and `Sio::Serialise` reads `controller_type_` first on load to know
+which concrete type to reconstruct before asking it to read the rest.
+
+Both of psx-spx's read methods are implemented, checked against its
+documented byte sequences and cross-referenced against DuckStation's actual
+`multitap.cpp` (a proven, actively-maintained reference) rather than
+psx-spx's prose alone, since that prose is largely describing real hardware
+glitches rather than a clean state machine to copy. Method 2 ("normal
+reads", `0n 42 00 00`) is a pure passthrough to whichever player `0x01`-
+`0x04` selected - literally `ExchangeController` again, just handed a
+different `Pad&`. Method 1 ("read all four", psx-spx's own words for the
+one real games mostly use) is triggered by bit 0 of the *third* byte of any
+transfer, which - psx-spx is explicit about this - does not change that
+transfer's own reply, only the next one; the transfer that is actually
+queued this way then answers 5A80h and 34 bytes total (4 players x 4
+halfwords each), 0xFF-padded past whatever a shorter reply (a plain digital
+pad) actually has. `sio_test` checks: independent negotiation on all four
+players; that `0x02`-`0x04` never acknowledge on an ordinary
+(non-multitap) port at all, which is the regression guard on the "purely
+additive, zero change for anyone not using it" claim; the escalation
+latching for the transfer *after* the one that requests it, not that one
+itself; the escalation aborting (falls back to an ordinary reply) if the
+queued transfer's command byte turns out not to be `0x42`; the exact
+34-byte shape and per-player padding; and a save/load round trip that
+checks both the type and which player's buttons ended up where.
+
+`PSXEmu.Win32`'s Controller Port menu offers "Multitap" as a sixth choice,
+same as any other type - no separate enable toggle. Two new popups appear
+directly in the Input menu, "Multitap Port 1"/"Multitap Port 2", each
+listing Player A-D Source (keyboard or one of four XInput slots now,
+not two - `EmuConfig::kValidInputSources` and `App::gamepads_` both grew
+from 2 to 4, since a single multitap wants up to four independently
+assignable physical pads) - greyed out via the same mechanism `TickFilter`
+already uses whenever that port is not actually set to Multitap. Every
+multitap player answers as a full DualShock unconditionally for now; there
+is no per-player type picker yet (deliberately - see the class comment on
+`Sio::Multitap`), only per-player source. `App::PollInput`'s per-port loop
+gained a Multitap branch that is otherwise identical to the single-pad path
+run four times, sharing the same input-reading logic via a local lambda
+rather than duplicating the switch statement.
+
+Not yet done: the four memory-card slots a real multitap also provides
+(`0x81`-`0x84`, address-only - no method duality like the controller side
+has, so no `Multitap`-style class needed for it either). The core-side
+change would be two lines in `Sio::Exchange()`; what actually needs
+redesigning is the Win32 side, where `System::mc_[2]` and the per-disc
+`card1.mcr`/`card2.mcr` auto-load are hand-duplicated per index rather than
+looped, and the Open/Create Memory Card menu commands are four individually
+hand-written constants with no `First`/`Last`-range-plus-table idiom the
+way controller types have - both would need rebuilding, not extending, to
+reach eight slots. Deferred rather than skipped; independent of everything
+above, so it can land without reopening any of it.
 
 A port can also be set to `Sio::kMouse` (the SCPH-1030 mouse, ID `5A12h`) or
 `Sio::kNone` (nothing plugged in at all), alongside the three pad kinds -

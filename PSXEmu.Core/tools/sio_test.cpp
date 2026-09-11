@@ -80,10 +80,13 @@ class PadHarness {
   // One full command: select the slot, send the command byte and however
   // many follow-up bytes the caller wants, capture every reply byte from
   // the ID onward, and end the transaction. Returns how many were captured.
+  // `select_byte` defaults to 0x01 (an ordinary pad, or a Multitap's
+  // Player A); 0x02-0x04 reach a Multitap's Players B-D instead.
   int Command(int slot, uint8_t command, const uint8_t* payload,
-             int payload_count, uint8_t* out, int capacity) {
+             int payload_count, uint8_t* out, int capacity,
+             uint8_t select_byte = 0x01) {
     Begin(slot);
-    Exchange(0x01);   // device select: this is a controller
+    Exchange(select_byte);
     int n = 0;
     if (!Acknowledged()) {
       End();
@@ -548,6 +551,171 @@ void TestSwitchingToMouseStopsThePadAnswering(System* system) {
   FreshPad(system, 0);
 }
 
+void TestMultitapMethod2IndependentPlayers(System* system) {
+  printf("multitap: method 2 addresses four independent players\n");
+  system->sio().set_controller_type(0, Sio::kMultitap);
+  for (int player = 0; player < 4; ++player)
+    system->sio().set_connected(0, true, player);
+  PadHarness pad(system);
+
+  system->sio().set_buttons(0, Sio::kCross, /*player=*/0);
+  system->sio().set_buttons(0, Sio::kSquare, /*player=*/1);
+  system->sio().set_buttons(0, Sio::kTriangle, /*player=*/2);
+  system->sio().set_buttons(0, Sio::kCircle, /*player=*/3);
+
+  uint8_t reply[16] = {};
+  int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x01);
+  CheckEqual(n, 4, "player A's poll reply is an ordinary four bytes");
+  CheckEqual(reply[0], 0x41, "player A id");
+  uint16_t buttons = static_cast<uint16_t>(reply[2] | (reply[3] << 8));
+  CheckEqual(static_cast<uint16_t>(~buttons) & 0xFFFF, Sio::kCross,
+             "player A sees its own buttons");
+
+  n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x03);   // player C
+  CheckEqual(reply[0], 0x41, "player C id");
+  buttons = static_cast<uint16_t>(reply[2] | (reply[3] << 8));
+  CheckEqual(static_cast<uint16_t>(~buttons) & 0xFFFF, Sio::kTriangle,
+             "player C sees its own buttons, not player A's");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);
+}
+
+void TestNonMultitapPortIgnoresExtraSelectBytes(System* system) {
+  printf("multitap: 0x02-0x04 never ack on an ordinary (non-multitap) port\n");
+  FreshPad(system, 1);   // port 2, plain DualShock - never a multitap
+  PadHarness pad(system);
+  uint8_t reply[16] = {};
+  const int n = pad.Command(1, 0x42, nullptr, 0, reply, sizeof(reply), 0x02);
+  CheckEqual(n, 0, "an ordinary pad's port does not answer to 0x02");
+}
+
+void TestMultitapEscalationLatchesForNextTransferOnly(System* system) {
+  printf("multitap: the long-response request affects the NEXT transfer, not this one\n");
+  system->sio().set_controller_type(0, Sio::kMultitap);
+  system->sio().set_connected(0, true, 0);
+  PadHarness pad(system);
+
+  // Manually drive the third byte, since PadHarness::Command always sends
+  // 0x00 there itself - the caller's own payload only starts on the byte
+  // after it, which is one position too late for this.
+  pad.Begin(0);
+  pad.Exchange(0x01);                          // select: player A
+  const uint8_t id0 = pad.Exchange(0x42);      // command byte
+  const uint8_t status0 = pad.Exchange(0x01);  // third byte: request the long response
+  pad.End();
+  CheckEqual(id0, 0x41, "the transfer that itself sets the request still answers as player A");
+  CheckEqual(status0, 0x5A, "and its own status byte is the ordinary one, unaffected yet");
+
+  uint8_t reply[40] = {};
+  const int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x01);
+  CheckEqual(n, 34, "only the transfer AFTER the request becomes the long response");
+  CheckEqual(reply[0], 0x80, "and it answers with the multitap's own id");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);
+}
+
+void TestMultitapEscalationAbortsOnWrongCommand(System* system) {
+  printf("multitap: escalation only completes if the queued transfer's command is 0x42\n");
+  system->sio().set_controller_type(0, Sio::kMultitap);
+  system->sio().set_connected(0, true, 0);
+  PadHarness pad(system);
+
+  pad.Begin(0);
+  pad.Exchange(0x01);
+  pad.Exchange(0x42);
+  pad.Exchange(0x01);   // queue the long response
+  pad.End();
+
+  // The queued transfer arrives, but asks 0x45 instead of 0x42.
+  uint8_t reply[16] = {};
+  const int n = pad.Command(0, 0x45, nullptr, 0, reply, sizeof(reply), 0x01);
+  CheckEqual(n, 2, "the escalation aborts right after the id pair, once the command is wrong");
+  CheckEqual(reply[0], 0x80, "the multitap id is still what committed to answering");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);
+}
+
+void TestMultitapMethod1LongResponseShape(System* system) {
+  printf("multitap: method 1's long response is 34 bytes, ids and padding per player\n");
+  system->sio().set_controller_type(0, Sio::kMultitap);
+  system->sio().set_connected(0, true, 0);
+  system->sio().set_connected(0, true, 1);
+  // Players C and D are left disconnected on purpose - proves an empty
+  // multitap slot pads its whole 8 bytes with 0xFF, same as psx-spx
+  // documents for it.
+  PadHarness pad(system);
+
+  system->sio().set_buttons(0, Sio::kCross, /*player=*/0);
+  system->sio().set_buttons(0, Sio::kSquare, /*player=*/1);
+
+  pad.Begin(0);
+  pad.Exchange(0x01);
+  pad.Exchange(0x42);
+  pad.Exchange(0x01);   // queue the long response
+  pad.End();
+
+  uint8_t reply[40] = {};
+  const int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x01);
+  CheckEqual(n, 34, "the long response is 34 bytes total");
+  CheckEqual(reply[0], 0x80, "multitap id low byte");
+  CheckEqual(reply[1], 0x5A, "multitap id high byte");
+
+  CheckEqual(reply[2], 0x41, "player A (connected) id low");
+  CheckEqual(reply[3], 0x5A, "player A id high");
+  uint16_t buttons = static_cast<uint16_t>(reply[4] | (reply[5] << 8));
+  CheckEqual(static_cast<uint16_t>(~buttons) & 0xFFFF, Sio::kCross,
+             "player A's own buttons");
+  CheckEqual(reply[6], 0xFF, "player A pads its unused 3rd halfword (digital)");
+  CheckEqual(reply[9], 0xFF, "...through its 4th");
+
+  CheckEqual(reply[10], 0x41, "player B (connected) id low");
+  buttons = static_cast<uint16_t>(reply[12] | (reply[13] << 8));
+  CheckEqual(static_cast<uint16_t>(~buttons) & 0xFFFF, Sio::kSquare,
+             "player B's own buttons, not player A's");
+
+  CheckEqual(reply[18], 0xFF, "player C (never connected) pads its id low too");
+  CheckEqual(reply[19], 0xFF, "...and its id high");
+  CheckEqual(reply[26], 0xFF, "player D (never connected) likewise");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);
+}
+
+void TestMultitapSurvivesSaveState(System* system) {
+  printf("multitap state (and which player is which) round-trips through a save state\n");
+  system->sio().set_controller_type(0, Sio::kMultitap);
+  system->sio().set_connected(0, true, 0);
+  system->sio().set_connected(0, true, 2);
+  system->sio().set_buttons(0, Sio::kCross, /*player=*/0);
+  system->sio().set_buttons(0, Sio::kSquare, /*player=*/2);
+
+  const std::string path = "Temp\\tools\\multitap_state_test.sav";
+  const std::string save_error = system->SaveState(path);
+  Check(save_error.empty(), "save succeeds");
+
+  // Disturb the live state so loading actually has to restore something,
+  // not just leave what was already there untouched.
+  system->sio().set_controller_type(0, Sio::kDualShock);
+
+  const std::string load_error = system->LoadState(path);
+  Check(load_error.empty(), "load succeeds");
+  CheckEqual(system->sio().controller_type(0), Sio::kMultitap,
+             "port 0 is a multitap again after loading");
+
+  PadHarness pad(system);
+  uint8_t reply[16] = {};
+  pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x01);   // player A
+  uint16_t buttons = static_cast<uint16_t>(reply[2] | (reply[3] << 8));
+  CheckEqual(static_cast<uint16_t>(~buttons) & 0xFFFF, Sio::kCross,
+             "player A's buttons survived the round trip");
+
+  pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x03);   // player C
+  buttons = static_cast<uint16_t>(reply[2] | (reply[3] << 8));
+  CheckEqual(static_cast<uint16_t>(~buttons) & 0xFFFF, Sio::kSquare,
+             "and so did player C's, at the right player rather than swapped");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);
+}
+
 void TestDualShockControllerTypeDefaultStillRumbles(System* system) {
   printf("the default DualShock type is unaffected by the new gating\n");
   FreshPad(system, 0);
@@ -596,6 +764,12 @@ int main() {
   TestMouseMotionAccumulatesAcrossPolls(system);
   TestNoneControllerNeverAcknowledges(system);
   TestSwitchingToMouseStopsThePadAnswering(system);
+  TestMultitapMethod2IndependentPlayers(system);
+  TestNonMultitapPortIgnoresExtraSelectBytes(system);
+  TestMultitapEscalationLatchesForNextTransferOnly(system);
+  TestMultitapEscalationAbortsOnWrongCommand(system);
+  TestMultitapMethod1LongResponseShape(system);
+  TestMultitapSurvivesSaveState(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

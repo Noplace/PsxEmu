@@ -92,6 +92,7 @@ namespace psxemu {
         HMENU controller_port[2];
         HMENU source_port[2];
         const int type_count = static_cast<int>(std::size(kControllerTypeChoices));
+        const int source_count = static_cast<int>(std::size(kInputSourceChoices));
         for (int port = 0; port < 2; ++port) {
             controller_port[port] = CreatePopupMenu();
             for (size_t i = 0; i < std::size(kControllerTypeChoices); ++i) {
@@ -103,9 +104,30 @@ namespace psxemu {
             source_port[port] = CreatePopupMenu();
             for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
                 AppendMenuW(source_port[port], MF_STRING,
-                            static_cast<UINT_PTR>(kCommandInputSourceFirst + port * 3 +
+                            static_cast<UINT_PTR>(kCommandInputSourceFirst + port * source_count +
                                                   static_cast<int>(i)),
                             kInputSourceChoices[i].label);
+            }
+        }
+
+        // Each port's Multitap sub-menu: which source feeds each of its four players, laid out the
+        // same way source_port above is - one popup per port, greyed out by TickMultitapSources
+        // whenever that port is not actually set to Multitap.
+        static constexpr const wchar_t* kPlayerLabels[4] = {
+            L"Player &A Source", L"Player &B Source", L"Player &C Source", L"Player &D Source" };
+        HMENU multitap_port[2];
+        for (int port = 0; port < 2; ++port) {
+            multitap_port[port] = CreatePopupMenu();
+            for (int player = 0; player < 4; ++player) {
+                HMENU player_source = CreatePopupMenu();
+                for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
+                    const int offset = (port * 4 + player) * source_count + static_cast<int>(i);
+                    AppendMenuW(player_source, MF_STRING,
+                                static_cast<UINT_PTR>(kCommandMultitapSourceFirst + offset),
+                                kInputSourceChoices[i].label);
+                }
+                AppendMenuW(multitap_port[port], MF_POPUP,
+                            reinterpret_cast<UINT_PTR>(player_source), kPlayerLabels[player]);
             }
         }
 
@@ -117,6 +139,11 @@ namespace psxemu {
         AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(source_port[0]), L"Port 1 &Source");
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(source_port[1]), L"Port 2 S&ource");
+        AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(multitap_port[0]),
+                    L"&Multitap Port 1");
+        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(multitap_port[1]),
+                    L"M&ultitap Port 2");
 
         HMENU bar = CreateMenu();
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
@@ -183,21 +210,48 @@ namespace psxemu {
         HMENU bar = GetMenu(window);
         if (bar == nullptr)
             return;
+        const int source_count = static_cast<int>(std::size(kInputSourceChoices));
         for (int port = 0; port < 2; ++port) {
-            // A mouse's mapping is fixed and kNone has no buttons at all, so neither port's source
-            // choice does anything - greyed out for the same reason TickFilter greys out a filter a
-            // renderer cannot use, rather than leaving a clickable item that silently does nothing.
+            // A mouse's mapping is fixed, kNone has no buttons at all, and a Multitap sources each
+            // of its four players separately (see TickMultitapSources) rather than the port as a
+            // whole - none of the three leaves this port's own source choice doing anything, greyed
+            // out for the same reason TickFilter greys out a filter a renderer cannot use, rather
+            // than leaving a clickable item that silently does nothing.
             const emulation::psx::Sio::ControllerType type =
                 ParseControllerType(controller_types[port]);
             const bool has_source = (type != emulation::psx::Sio::kMouse &&
-                                     type != emulation::psx::Sio::kNone);
+                                     type != emulation::psx::Sio::kNone &&
+                                     type != emulation::psx::Sio::kMultitap);
             const std::string& current = sources[port];
             for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
-                const UINT id =
-                    static_cast<UINT>(kCommandInputSourceFirst + port * 3 + static_cast<int>(i));
+                const UINT id = static_cast<UINT>(kCommandInputSourceFirst +
+                                                  port * source_count + static_cast<int>(i));
                 const bool on = has_source && (current == kInputSourceChoices[i].key);
                 CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
                 EnableMenuItem(bar, id, MF_BYCOMMAND | (has_source ? MF_ENABLED : MF_GRAYED));
+            }
+        }
+    }
+
+    void TickMultitapSources(
+        HWND window, const std::array<std::array<std::string, 4>, 2>& sources,
+        const std::array<std::string, 2>& controller_types) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        const int source_count = static_cast<int>(std::size(kInputSourceChoices));
+        for (int port = 0; port < 2; ++port) {
+            const bool is_multitap =
+                ParseControllerType(controller_types[port]) == emulation::psx::Sio::kMultitap;
+            for (int player = 0; player < 4; ++player) {
+                const std::string& current = sources[port][player];
+                for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
+                    const int offset = (port * 4 + player) * source_count + static_cast<int>(i);
+                    const UINT id = static_cast<UINT>(kCommandMultitapSourceFirst + offset);
+                    const bool on = is_multitap && (current == kInputSourceChoices[i].key);
+                    CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+                    EnableMenuItem(bar, id, MF_BYCOMMAND | (is_multitap ? MF_ENABLED : MF_GRAYED));
+                }
             }
         }
     }
@@ -228,6 +282,8 @@ namespace psxemu {
             return Sio::kMouse;
         if (key == "none")
             return Sio::kNone;
+        if (key == "multitap")
+            return Sio::kMultitap;
         return Sio::kDualShock;
     }
 
@@ -236,6 +292,10 @@ namespace psxemu {
             return InputSource::kGamepad1;
         if (key == "gamepad2")
             return InputSource::kGamepad2;
+        if (key == "gamepad3")
+            return InputSource::kGamepad3;
+        if (key == "gamepad4")
+            return InputSource::kGamepad4;
         return InputSource::kKeyboard;
     }
 

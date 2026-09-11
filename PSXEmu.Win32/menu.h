@@ -59,11 +59,20 @@ namespace psxemu {
 
     // The controller type set on each port, and the source each port's buttons come from. A port
     // whose type does not use a source at all - Sio::kMouse's mapping is fixed to the real mouse,
-    // Sio::kNone has no buttons to source - has its source items greyed out rather than removed, the
-    // same treatment TickFilter already gives a filter menu the active renderer cannot use.
+    // Sio::kNone has no buttons to source, Sio::kMultitap sources each of its four players
+    // separately (see TickMultitapSources) rather than the port as a whole - has its source items
+    // greyed out rather than removed, the same treatment TickFilter already gives a filter menu the
+    // active renderer cannot use.
     void TickControllerTypes(HWND window, const std::array<std::string, 2>& types);
     void TickInputSources(HWND window, const std::array<std::string, 2>& sources,
                           const std::array<std::string, 2>& controller_types);
+
+    // The source each of a Multitap's four players comes from, for whichever port(s) are actually
+    // set to Sio::kMultitap - greyed out for a port that is not, the same way TickInputSources
+    // greys out a port's own source for a type that does not use one.
+    void TickMultitapSources(
+        HWND window, const std::array<std::array<std::string, 4>, 2>& sources,
+        const std::array<std::string, 2>& controller_types);
 
     // Whether the machine is being held to the emulated display's frame rate. Ticked is a console;
     // unticked runs at whatever the monitor's refresh rate or the sound device allows, which the
@@ -80,16 +89,16 @@ namespace psxemu {
     // Settings keys
     // ---------------------------------------------------------------------------------------------
 
-    // The settings-file key ("digital", "dual_analog", "dualshock", "mouse", "none") as the type Sio
-    // takes. An unrecognised key gives a DualShock, which is what a pad that was never configured
-    // should be.
+    // The settings-file key ("digital", "dual_analog", "dualshock", "mouse", "none", "multitap") as
+    // the type Sio takes. An unrecognised key gives a DualShock, which is what a pad that was never
+    // configured should be.
     emulation::psx::Sio::ControllerType ParseControllerType(const std::string& key);
 
-    // Where one PSX port's buttons come from. Front-end-only - Sio has no notion of this, only of
-    // what the buttons are.
-    enum class InputSource { kKeyboard, kGamepad1, kGamepad2 };
+    // Where one PSX port's buttons come from - or, for a Multitap, one of its four players.
+    // Front-end-only - Sio has no notion of this, only of what the buttons are.
+    enum class InputSource { kKeyboard, kGamepad1, kGamepad2, kGamepad3, kGamepad4 };
 
-    // The settings-file key ("keyboard", "gamepad1", "gamepad2") as that enum. An unrecognised key
+    // The settings-file key ("keyboard", "gamepad1".."gamepad4") as that enum. An unrecognised key
     // gives the keyboard, which is the source that is always present.
     InputSource ParseInputSource(const std::string& key);
 
