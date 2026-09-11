@@ -739,6 +739,81 @@ void TestDualShockControllerTypeDefaultStillRumbles(System* system) {
              "other two types");
 }
 
+// A command a pad does not understand ends the transfer at the command byte:
+// the id has already gone out with it, but no /ACK follows. These used to be
+// answered in the shape of a poll full of zeros - and with buttons active low,
+// zero is every button held (bug 52).
+void TestDigitalPadRefusesConfigCommands(System* system) {
+  printf("a digital pad does not acknowledge what it does not understand\n");
+  FreshPad(system, 0);
+  system->sio().set_controller_type(0, Sio::kDigital);
+  PadHarness pad(system);
+
+  uint8_t reply[16] = {};
+  const uint8_t enter[1] = { 0x01 };
+  int n = pad.Command(0, 0x43, enter, 1, reply, sizeof(reply));
+  CheckEqual(n, 1, "0x43 ends the transfer at the command byte");
+  CheckEqual(reply[0], 0x41, "with the id already sent");
+
+  n = pad.Command(0, 0x45, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(n, 1, "0x45 likewise");
+
+  n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(n, 4, "and a poll still answers in full");
+
+  system->sio().set_controller_type(0, Sio::kDualShock);
+}
+
+// psx-spx: sent in normal mode, 43h answers with the same joypad data as 42h.
+// It used to answer zeros, so a driver entering configuration mode read the
+// whole pad as held on that frame.
+void TestEnterConfigReplyCarriesTheButtons(System* system) {
+  printf("0x43 outside configuration mode answers with the buttons\n");
+  FreshPad(system, 0);
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  PadHarness pad(system);
+  system->sio().set_buttons(0, Sio::kCircle);
+
+  uint8_t reply[16] = {};
+  const uint8_t enter[1] = { 0x01 };
+  const int n = pad.Command(0, 0x43, enter, 1, reply, sizeof(reply));
+  CheckEqual(n, 4, "a digital-mode pad answers 0x43 in a poll's four bytes");
+  CheckEqual(reply[0], 0x41, "under its normal-mode id");
+  const uint16_t buttons =
+      static_cast<uint16_t>(reply[2] | (reply[3] << 8));
+  CheckEqual(static_cast<uint16_t>(~buttons) & 0xFFFF, Sio::kCircle,
+             "carrying the button actually held, not every button");
+
+  const int m = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[0], 0xF3, "and it is in configuration mode afterwards");
+  CheckEqual(m, 8, "where a poll takes the forced long shape");
+
+  const uint8_t leave[1] = { 0x00 };
+  pad.Command(0, 0x43, leave, 1, nullptr, 0);
+  CheckEqual(pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply)), 4,
+             "and leaving it restores the four-byte poll");
+  system->sio().set_buttons(0, 0);
+}
+
+// The configuration commands are only understood inside configuration mode.
+// Outside it a DualShock does not acknowledge them.
+void TestDualShockRefusesConfigCommandsOutsideConfigMode(System* system) {
+  printf("a DualShock outside configuration mode refuses 0x44-0x4D\n");
+  FreshPad(system, 0);
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  PadHarness pad(system);
+
+  uint8_t reply[16] = {};
+  CheckEqual(pad.Command(0, 0x45, nullptr, 0, reply, sizeof(reply)), 1,
+             "0x45 ends the transfer at the command byte");
+  const uint8_t go_analog[2] = { 0x01, 0x03 };
+  CheckEqual(pad.Command(0, 0x44, go_analog, 2, reply, sizeof(reply)), 1,
+             "0x44 too");
+  CheckEqual(pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply)), 4,
+             "and it changed nothing: still a four-byte digital poll");
+  CheckEqual(reply[0], 0x41, "id still 5A41h");
+}
+
 }  // namespace
 
 int main() {
@@ -770,6 +845,9 @@ int main() {
   TestMultitapEscalationAbortsOnWrongCommand(system);
   TestMultitapMethod1LongResponseShape(system);
   TestMultitapSurvivesSaveState(system);
+  TestDigitalPadRefusesConfigCommands(system);
+  TestEnterConfigReplyCarriesTheButtons(system);
+  TestDualShockRefusesConfigCommandsOutsideConfigMode(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

@@ -408,11 +408,13 @@ class Sio : public Component {
   // the device, and needed for every byte after that.
   uint8_t pad_command_;
 
-  // Scratch for the pre-DualShock two-byte rumble scheme, which needs both
-  // of its bytes at once to decide anything and only gets them one at a
-  // time. Shared rather than per-pad because only one pad is ever mid-
+  // One byte an exchange has to carry from where it arrives to where it can
+  // be acted on: the first of the pre-DualShock rumble scheme's two bytes,
+  // which decides nothing without the second, and 0x43's enter/leave byte,
+  // which is held until that command's last byte. Never both in one
+  // exchange. Shared rather than per-pad because only one pad is ever mid-
   // exchange at a time - the bus has one selected device.
-  uint8_t legacy_rumble_byte2_;
+  uint8_t exchange_scratch_;
 
   uint8_t mc_command_;
   uint16_t mc_sector_;

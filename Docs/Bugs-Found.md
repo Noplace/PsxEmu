@@ -2824,3 +2824,86 @@ the disc again.
 50: `PSXEmu.Win32.exe` still never reaches its main loop on this machine, so
 this is verified through `boot_runner` cold boots of the same disc, not by
 playing it.
+
+## 52. A pad answered commands it did not understand with every button held
+
+**Symptom.** Reported directly, as soon as bug 51 let Bomberman Party Edition
+past its logo: "the input is whacky, the emulator itself is pressing keys."
+Reproduced headlessly with the front end's own port setup - port 1 a digital
+pad, port 2 empty or a DualShock. With nothing pressed, the game skips its
+opening film by itself between frames 1300 and 1400, and by frame 3000 it is
+on the title menu with the cursor moved down to BATTLE GAME. With a DualShock
+in port 1 the same boot plays the film.
+
+**Cause.** Two faults in how a pad answers a command, both in
+`ExchangeController`, both producing the same bytes: a reply shaped like a poll
+whose button bytes are zero. Buttons are active low, so zero is every button
+held.
+
+- A command the pad did not understand was acknowledged anyway and answered
+  "in the shape of an ordinary poll", full of zeros. A plain digital pad
+  (SCPH-1080) understands a poll and nothing else; on hardware - and in
+  DuckStation and Mednafen - anything else ends the transfer at the command
+  byte: the id goes out while the command comes in, and then no /ACK. Ours
+  acknowledged 0x43 and 0x45 from a digital pad, and 0x44-0x4D from a
+  DualShock outside configuration mode.
+- 0x43 sent in normal mode answered zeros as well. psx-spx: there it answers
+  with the same joypad data as 0x42; only inside configuration mode is its
+  reply zeros.
+
+Bomberman's pad driver is its own - it polls the status register rather than
+use the BIOS's - and it tries to put the pad into configuration mode, taking
+its buttons from whatever reply comes back. A digital pad never enters
+configuration mode, so the driver kept trying, on a three-frame cycle - 0x43,
+0x45, 0x42 - and two of every three answered `00 00`. The game saw the whole
+pad held on two frames out of three.
+
+A DualShock was not immune, only luckier: the game's start-up handshake sends
+0x43 in normal mode four times (frames 731-775), and each of those used to
+answer `00 00` too. Nothing on screen reacts that early, which is why a
+DualShock boot looked right.
+
+**Fix.** A pad acknowledges only what it understands (`PadUnderstands`): a
+digital pad, 0x42; the DualShock line, 0x42 and 0x43 always and the
+configuration set only inside configuration mode. Anything else gets the id and
+no /ACK. 0x43 outside configuration mode answers with the pad's buttons (and
+sticks, in analog mode) in a poll's own length, and it now switches
+configuration mode on its last byte rather than its first, because the mode
+decides that very transfer's length - the same point DuckStation applies it.
+The one byte that has to be carried to that point reuses the exchange's
+existing scratch byte, renamed `exchange_scratch_`, so the save-state layout
+does not change.
+
+**Result.** With the front end's setup the driver's 0x43 is refused at the
+command byte, it concludes the pad is digital and polls with 0x42 from then
+on, and the boot is byte-identical to a DualShock boot all the way to frame
+3000 - film and all - whether port 2 is empty or holds a DualShock. The
+DualShock boot's own handshake now answers 0x43 with `FF FF`, and that boot is
+unchanged frame for frame.
+
+**How it was found.** Not with `boot_runner` as it stands: it never sets a
+port's controller type, so it always runs a DualShock in port 1 and nothing in
+port 2, and that is exactly the setup where this bug does not show. A scratch
+copy of the core, built with the port types taken from the environment and
+every SIO transfer logged as sent and received bytes, put the three-frame
+0x43/0x45/0x42 cycle on the first page of its output.
+
+**Regression check.** `sio_test` grows three cases - a digital pad refuses 0x43
+and 0x45 at the command byte and still polls in full; 0x43 in normal mode
+carries the button actually held, enters configuration mode on its last byte
+and leaves it again; a DualShock outside configuration mode refuses 0x44 and
+0x45 and is left unchanged by them - 96 checks, 0 failures, every existing one
+unchanged, bug 46's configuration-mode checks included. BIOS boot 400 frames
+still 97,749,265 instructions and `bd888bab645a63a9`, Air Combat 900 frames
+still `aedac3154f8a0383`. Legend of Mana and Wild Arms at 1800 frames are
+byte-identical between `boot_runner` built from `HEAD` and with the fix, and so
+is Ace Combat 3 - the game bug 46 made use configuration mode on a DualShock -
+with Start pressed on its title screen: `--frames 2100 --press start@1900+60`
+reaches bug 46's own "Select game mode." menu in both, and not pressing gives a
+different frame. Bug 46's recorded press, `start@1755+60`, now ends before the
+title screen accepts input, in both builds alike - the title's timing has moved
+since then, not its input.
+
+**What could not be checked here.** The live front end, as before: this is
+verified through headless boots with the front end's port setup reproduced in a
+scratch build, not by playing.
