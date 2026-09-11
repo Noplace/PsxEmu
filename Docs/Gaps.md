@@ -313,6 +313,19 @@ thing to revisit if the in-game feel is off. A port set to `kMouse` or
 `input_source` - a mouse's mapping is fixed to the real mouse, and there is
 nothing for `kNone` to read from at all.
 
+Motion only counts while the host cursor is actually over the game's client
+area - `App::PollInput` checks `GetCursorPos` against `GetClientRect` every
+frame and drops whatever raw input accumulated otherwise, the same way it is
+already dropped while unfocused. Without that, the emulated mouse would move
+from wherever the physical mouse goes on the whole desktop for as long as
+this window still has focus, which is not what a real mouse plugged into a
+real console could ever do. This is a bounds check on the host cursor, not
+anything on the wire - a real PS1 mouse has no absolute position to report at
+all, only the relative deltas `Sio::Mouse` already models, so there is no
+scaling this against "a PSX range" the way a tablet or a VM's absolute
+pointing device would. The OS cursor itself is neither hidden nor confined
+(no `ClipCursor`), so the window's own menu bar stays reachable.
+
 `PSXEmu.Win32/gamepad.h` is where an XInput pad actually reaches this. The
 polling, slot search-and-latch and deadzone handling are the same generic
 mechanism GBAEmu's `GamepadInputDevice` already used for Windows/XInput,

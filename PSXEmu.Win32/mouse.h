@@ -98,7 +98,7 @@ namespace psxemu {
             // checked against a real one; it is a starting point, not a measurement. The remainder
             // is kept rather than discarded, so a slow, precise movement below the divisor still
             // adds up over several frames instead of being rounded to nothing every single time.
-            constexpr int32_t kSensitivityDivisor = 4;
+            constexpr float kSensitivityDivisor = 2.5f;
             state.dx = accumulated_dx_ / kSensitivityDivisor;
             state.dy = accumulated_dy_ / kSensitivityDivisor;
             accumulated_dx_ -= state.dx * kSensitivityDivisor;

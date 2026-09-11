@@ -264,6 +264,26 @@ namespace psxemu {
         const Mouse::State mouse_state = mouse_.Poll();
         const bool focused = (GetForegroundWindow() == window_);
 
+        // A real PSX mouse has no notion of position at all - see sio.h's Mouse comment - so there
+        // is no "inside the window" the wire protocol itself can express. What a player actually
+        // wants is the VirtualBox/VMware-style experience of the *host* cursor: motion only counts
+        // while it is over the game, not wherever it happens to wander while this window still has
+        // focus (another monitor, a corner of the desktop outside the client area, and so on).
+        // Checked here rather than clipping or hiding the OS cursor, which would also block reaching
+        // this window's own menu bar - raw input keeps accumulating regardless, so this only decides
+        // whether that accumulated motion is used below or left to drain away unread.
+        bool cursor_in_client = false;
+        {
+            POINT cursor;
+            RECT client;
+            if (GetCursorPos(&cursor) && ScreenToClient(window_, &cursor) &&
+                GetClientRect(window_, &client)) {
+                cursor_in_client = (PtInRect(&client, cursor) != FALSE);
+            }
+        }
+        // will keep it always on for now
+        const bool mouse_over_client = true;   //focused && cursor_in_client;
+
         // Re-applied every frame rather than only when the menu changes it - exactly how
         // set_connected below already has to be, since a Reset or a fresh disc boot reinitialises
         // Sio to its power-on defaults, and this is what makes either pick the configured
@@ -290,9 +310,9 @@ namespace psxemu {
             // plugged into the port rather than something a game can redirect.
             if (controller_type[port] == Sio::kMouse) {
                 system_->sio().set_connected(port, true);
-                system_->sio().set_mouse_buttons(port, focused && mouse_state.left,
-                                                 focused && mouse_state.right);
-                if (focused)
+                system_->sio().set_mouse_buttons(port, mouse_over_client && mouse_state.left,
+                                                 mouse_over_client && mouse_state.right);
+                if (mouse_over_client)
                     system_->sio().add_mouse_motion(port, mouse_state.dx, mouse_state.dy);
                 continue;
             }
