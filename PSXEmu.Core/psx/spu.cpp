@@ -143,7 +143,8 @@ int Spu::Initialize() {
   for (int i = 0; i < kVoices; ++i)
     voices_[i].phase = kOff;
 
-  main_volume_left_ = main_volume_right_ = 0;
+  main_volume_left_ = VolumeSweep{0, 0, 0};
+  main_volume_right_ = VolumeSweep{0, 0, 0};
   reverb_volume_left_ = reverb_volume_right_ = 0;
   key_on_ = key_off_ = pitch_modulation_ = noise_mode_ = reverb_mode_ = 0;
   endx_ = 0;
@@ -227,6 +228,8 @@ int Spu::Deinitialize() {
   return 0;
 }
 
+/*
+// [OLD IMPLEMENTATION]
 int16_t Spu::VolumeOf(uint16_t reg) {
   // Bit 15 clear means a plain level in the low 15 bits, as a signed value
   // doubled. Bit 15 set selects a sweep, whose starting level is not stored
@@ -235,6 +238,16 @@ int16_t Spu::VolumeOf(uint16_t reg) {
   if (reg & 0x8000)
     return 0x3FFF;
   return static_cast<int16_t>(static_cast<int16_t>(reg << 1) >> 1);
+}
+*/
+
+// [NEW IMPLEMENTATION]
+int16_t Spu::VolumeOf(const VolumeSweep& sweep) {
+  // If bit 15 is set, it's a sweep, and we return the current running level.
+  // Otherwise, we return the plain level in the low 15 bits, as a signed value doubled.
+  if (sweep.reg & 0x8000)
+    return static_cast<int16_t>(sweep.level);
+  return static_cast<int16_t>(static_cast<int16_t>(sweep.reg << 1) >> 1);
 }
 
 // The CD and external input volumes are not sweep registers - they are plain
@@ -401,6 +414,45 @@ void Spu::StepEnvelope(Voice& voice) {
   voice.adsr_volume = static_cast<uint16_t>(voice.level);
 }
 
+void Spu::StepSweep(VolumeSweep& sweep) {
+  if ((sweep.reg & 0x8000) == 0) {
+    sweep.level = static_cast<int16_t>(static_cast<int16_t>(sweep.reg << 1) >> 1);
+    return;
+  }
+  
+  bool exponential = (sweep.reg & 0x4000) != 0;
+  bool decreasing = (sweep.reg & 0x2000) != 0;
+  int shift = (sweep.reg >> 2) & 0x1F;
+  int step_index = sweep.reg & 3;
+
+  int32_t step = decreasing ? kDecrementStep[step_index] : kIncrementStep[step_index];
+  if (shift < 11) step <<= (11 - shift);
+  int32_t period = (shift > 11) ? (1 << (shift - 11)) : 1;
+
+  if (exponential) {
+    if (!decreasing && abs(sweep.level) > 0x6000) {
+      period *= 4;
+    }
+    if (decreasing) {
+      step = (step * abs(sweep.level)) >> 15;
+    }
+  }
+
+  if (++sweep.counter < static_cast<uint32_t>(period))
+    return;
+  sweep.counter = 0;
+
+  bool phase_negative = (sweep.reg & 0x1000) != 0;
+  if (phase_negative) {
+    sweep.level -= step;
+  } else {
+    sweep.level += step;
+  }
+
+  if (sweep.level > 0x7FFF) sweep.level = 0x7FFF;
+  if (sweep.level < -0x8000) sweep.level = -0x8000;
+}
+
 void Spu::KeyOn(int index) {
   Voice& voice = voices_[index];
   const uint16_t repeat_before = voice.repeat_address;
@@ -440,8 +492,8 @@ void Spu::KeyOn(int index) {
     event.repeat_address = repeat_before;
     event.adsr_low = voice.adsr_low;
     event.adsr_high = voice.adsr_high;
-    event.volume_left = voice.volume_left;
-    event.volume_right = voice.volume_right;
+    event.volume_left = voice.volume_left.reg;
+    event.volume_right = voice.volume_right.reg;
   }
 }
 
@@ -517,6 +569,8 @@ int16_t Spu::StepVoice(Voice& voice, int index, int16_t previous_output) {
 // Reverb
 // ---------------------------------------------------------------------------
 
+/*
+// [OLD IMPLEMENTATION]
 void Spu::ProcessReverb(int32_t input_left, int32_t input_right,
                         int32_t* output_left, int32_t* output_right) {
   *output_left = 0;
@@ -558,6 +612,124 @@ void Spu::ProcessReverb(int32_t input_left, int32_t input_right,
 
   *output_left = delayed_left;
   *output_right = delayed_right;
+}
+*/
+
+// [NEW IMPLEMENTATION]
+void Spu::ProcessReverb(int32_t input_left, int32_t input_right,
+                        int32_t* output_left, int32_t* output_right) {
+  *output_left = 0;
+  *output_right = 0;
+
+  // Reverb is only meaningful once software has given it a work area, and it
+  // is disabled outright by the control register's reverb bit.
+  if ((control_ & 0x0080) == 0 || reverb_base_ >= kRamSize)
+    return;
+
+  const uint32_t area = kRamSize - reverb_base_;
+  if (area < 0x100)
+    return;
+
+  // Reverb advances by 2 samples (L/R) every 22050Hz tick.
+  // GenerateFrame is called at 44100Hz.
+  reverb_left_phase_ = !reverb_left_phase_;
+  if (!reverb_left_phase_) {
+    *output_left = reverb_out_left_;
+    *output_right = reverb_out_right_;
+    return;
+  }
+  
+  auto get_vol = [&](int reg) -> int64_t {
+    return static_cast<int16_t>(reverb_registers_[reg]);
+  };
+  auto get_addr = [&](int reg) -> uint32_t {
+    return static_cast<uint16_t>(reverb_registers_[reg]);
+  };
+
+  auto read_rev = [&](uint16_t reg_index, int byte_offset = 0) -> int32_t {
+    int32_t area = 0x80000 - reverb_base_;
+    if (area <= 0) return 0;
+    int32_t raw_addr = reverb_cursor_ + (get_addr(reg_index) * 8) - byte_offset;
+    int32_t offset = (raw_addr - reverb_base_) % area;
+    if (offset < 0) offset += area;
+    return static_cast<int16_t>(RamHalf((reverb_base_ + offset) & ~1u));
+  };
+  auto write_rev = [&](uint16_t reg_index, int32_t val, int byte_offset = 0) {
+    int32_t area = 0x80000 - reverb_base_;
+    if (area <= 0) return;
+    int32_t raw_addr = reverb_cursor_ + (get_addr(reg_index) * 8) - byte_offset;
+    int32_t offset = (raw_addr - reverb_base_) % area;
+    if (offset < 0) offset += area;
+    WriteRamHalf((reverb_base_ + offset) & ~1u, static_cast<uint16_t>(Clamp16(val)));
+  };
+
+  int32_t Lin = (input_left * get_vol(vLIN)) >> 15;
+  int32_t Rin = (input_right * get_vol(vRIN)) >> 15;
+
+  // SAME
+  int32_t Lsame_out = read_rev(mLSAME, 2);
+  int32_t Lsame = (Lin + (read_rev(dLSAME) * get_vol(vWALL) >> 15) - Lsame_out) * get_vol(vIIR) >> 15;
+  Lsame += Lsame_out;
+  write_rev(mLSAME, Lsame);
+  
+  int32_t Rsame_out = read_rev(mRSAME, 2);
+  int32_t Rsame = (Rin + (read_rev(dRSAME) * get_vol(vWALL) >> 15) - Rsame_out) * get_vol(vIIR) >> 15;
+  Rsame += Rsame_out;
+  write_rev(mRSAME, Rsame);
+
+  // DIFF
+  int32_t Ldiff_out = read_rev(mLDIFF, 2);
+  int32_t Ldiff = (Lin + (read_rev(dRDIFF) * get_vol(vWALL) >> 15) - Ldiff_out) * get_vol(vIIR) >> 15;
+  Ldiff += Ldiff_out;
+  write_rev(mLDIFF, Ldiff);
+
+  int32_t Rdiff_out = read_rev(mRDIFF, 2);
+  int32_t Rdiff = (Rin + (read_rev(dLDIFF) * get_vol(vWALL) >> 15) - Rdiff_out) * get_vol(vIIR) >> 15;
+  Rdiff += Rdiff_out;
+  write_rev(mRDIFF, Rdiff);
+
+  // COMB
+  int32_t Lout = (get_vol(vCOMB1) * read_rev(mLCOMB1) >> 15) +
+                 (get_vol(vCOMB2) * read_rev(mLCOMB2) >> 15) +
+                 (get_vol(vCOMB3) * read_rev(mLCOMB3) >> 15) +
+                 (get_vol(vCOMB4) * read_rev(mLCOMB4) >> 15);
+                 
+  int32_t Rout = (get_vol(vCOMB1) * read_rev(mRCOMB1) >> 15) +
+                 (get_vol(vCOMB2) * read_rev(mRCOMB2) >> 15) +
+                 (get_vol(vCOMB3) * read_rev(mRCOMB3) >> 15) +
+                 (get_vol(vCOMB4) * read_rev(mRCOMB4) >> 15);
+
+  // APF1
+  int32_t Lapf1_out_L = read_rev(mLAPF1, get_addr(dAPF1) * 8);
+  int32_t Lapf1_in = Lout - (get_vol(vAPF1) * Lapf1_out_L >> 15);
+  write_rev(mLAPF1, Lapf1_in);
+  Lout = (Lapf1_in * get_vol(vAPF1) >> 15) + Lapf1_out_L;
+
+  int32_t Rapf1_out_R = read_rev(mRAPF1, get_addr(dAPF1) * 8);
+  int32_t Rapf1_in = Rout - (get_vol(vAPF1) * Rapf1_out_R >> 15);
+  write_rev(mRAPF1, Rapf1_in);
+  Rout = (Rapf1_in * get_vol(vAPF1) >> 15) + Rapf1_out_R;
+
+  // APF2
+  int32_t Lapf2_out_L = read_rev(mLAPF2, get_addr(dAPF2) * 8);
+  int32_t Lapf2_in = Lout - (get_vol(vAPF2) * Lapf2_out_L >> 15);
+  write_rev(mLAPF2, Lapf2_in);
+  Lout = (Lapf2_in * get_vol(vAPF2) >> 15) + Lapf2_out_L;
+
+  int32_t Rapf2_out_R = read_rev(mRAPF2, get_addr(dAPF2) * 8);
+  int32_t Rapf2_in = Rout - (get_vol(vAPF2) * Rapf2_out_R >> 15);
+  write_rev(mRAPF2, Rapf2_in);
+  Rout = (Rapf2_in * get_vol(vAPF2) >> 15) + Rapf2_out_R;
+
+  // Advance cursor
+  reverb_cursor_ = (reverb_cursor_ + 2) & 0x7FFFF;
+  if (reverb_cursor_ < reverb_base_) reverb_cursor_ = reverb_base_;
+
+  reverb_out_left_ = Lout;
+  reverb_out_right_ = Rout;
+
+  *output_left = Lout;
+  *output_right = Rout;
 }
 
 // ---------------------------------------------------------------------------
@@ -702,11 +874,16 @@ void Spu::GenerateFrame() {
     }
   }
 
+  StepSweep(main_volume_left_);
+  StepSweep(main_volume_right_);
+
   uint32_t active = 0;
   int16_t previous = 0;
 
   for (int i = 0; i < kVoices; ++i) {
     Voice& voice = voices_[i];
+    StepSweep(voice.volume_left);
+    StepSweep(voice.volume_right);
     const int16_t sample = StepVoice(voice, i, previous);
     previous = sample;
     if (voice.phase != kOff)
@@ -839,8 +1016,8 @@ uint16_t Spu::Read(uint32_t address) {
     const int index = offset / 0x10;
     const Voice& voice = voices_[index];
     switch (offset & 0x0F) {
-      case 0x0: return voice.volume_left;
-      case 0x2: return voice.volume_right;
+      case 0x0: return voice.volume_left.reg;
+      case 0x2: return voice.volume_right.reg;
       case 0x4: return voice.pitch;
       case 0x6: return voice.start_address;
       case 0x8: return voice.adsr_low;
@@ -851,8 +1028,8 @@ uint16_t Spu::Read(uint32_t address) {
   }
 
   switch (offset) {
-    case 0x180: return main_volume_left_;
-    case 0x182: return main_volume_right_;
+    case 0x180: return main_volume_left_.reg;
+    case 0x182: return main_volume_right_.reg;
     case 0x184: return reverb_volume_left_;
     case 0x186: return reverb_volume_right_;
     case 0x188: return static_cast<uint16_t>(key_on_);
@@ -882,8 +1059,8 @@ uint16_t Spu::Read(uint32_t address) {
     case 0x1B2: return cd_volume_right_;
     case 0x1B4: return external_volume_left_;
     case 0x1B6: return external_volume_right_;
-    case 0x1B8: return main_volume_left_;
-    case 0x1BA: return main_volume_right_;
+    case 0x1B8: return static_cast<uint16_t>(main_volume_left_.level);
+    case 0x1BA: return static_cast<uint16_t>(main_volume_right_.level);
     default:
       if (offset >= 0x1C0 && offset < 0x200)
         return reverb_registers_[(offset - 0x1C0) / 2];
@@ -899,14 +1076,11 @@ void Spu::Write(uint32_t address, uint16_t data) {
     Voice& voice = voices_[index];
     switch (offset & 0x0F) {
       // Bit 15 of a volume register selects a sweep rather than a level.
-      // Sweeps are not implemented - VolumeOf treats one as full scale - so
-      // the count of them is the measure of how much of a game's mix is being
-      // flattened, which nothing on the output side can reveal.
-      case 0x0: voice.volume_left = data;
+      case 0x0: voice.volume_left.reg = data;
                 if (data & 0x8000) ++stats_.volume_sweeps;
                 else ++stats_.volume_levels;
                 return;
-      case 0x2: voice.volume_right = data;
+      case 0x2: voice.volume_right.reg = data;
                 if (data & 0x8000) ++stats_.volume_sweeps;
                 else ++stats_.volume_levels;
                 return;
@@ -935,8 +1109,8 @@ void Spu::Write(uint32_t address, uint16_t data) {
   }
 
   switch (offset) {
-    case 0x180: main_volume_left_ = data; return;
-    case 0x182: main_volume_right_ = data; return;
+    case 0x180: main_volume_left_.reg = data; return;
+    case 0x182: main_volume_right_.reg = data; return;
     case 0x184: reverb_volume_left_ = data; return;
     case 0x186: reverb_volume_right_ = data; return;
 

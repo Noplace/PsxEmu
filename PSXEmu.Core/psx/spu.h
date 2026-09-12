@@ -153,9 +153,22 @@ class Spu : public Component {
  private:
   enum AdsrPhase { kAttack, kDecay, kSustain, kRelease, kOff };
 
+  struct VolumeSweep {
+    uint16_t reg;
+    int32_t level;
+    uint32_t counter;
+  };
+
+  enum ReverbReg {
+    dAPF1 = 0, dAPF2, vIIR, vCOMB1, vCOMB2, vCOMB3, vCOMB4, vWALL,
+    vAPF1, vAPF2, mLSAME, mRSAME, mLCOMB1, mRCOMB1, mLCOMB2, mRCOMB2,
+    dLSAME, dRSAME, mLDIFF, mRDIFF, mLCOMB3, mRCOMB3, mLCOMB4, mRCOMB4,
+    dLDIFF, dRDIFF, mLAPF1, mRAPF1, mLAPF2, mRAPF2, vLIN, vRIN
+  };
+
   struct Voice {
     // Registers, as software sees them.
-    uint16_t volume_left, volume_right;
+    VolumeSweep volume_left, volume_right;
     uint16_t pitch;
     uint16_t start_address;      // in 8-byte units
     uint16_t adsr_low, adsr_high;
@@ -184,7 +197,7 @@ class Spu : public Component {
   uint8_t* ram_;
 
   // Global registers.
-  uint16_t main_volume_left_, main_volume_right_;
+  VolumeSweep main_volume_left_, main_volume_right_;
   uint16_t reverb_volume_left_, reverb_volume_right_;
   uint32_t key_on_, key_off_, pitch_modulation_, noise_mode_, reverb_mode_;
   uint32_t endx_;
@@ -206,6 +219,8 @@ class Spu : public Component {
   uint32_t reverb_base_;         // byte address of the reverb work area
   uint32_t reverb_cursor_;       // offset within it
   bool reverb_left_phase_;
+  int32_t reverb_out_left_;
+  int32_t reverb_out_right_;
 
   uint32_t sample_counter_;      // CPU cycles toward the next frame
   bool irq_pending_;
@@ -253,6 +268,7 @@ class Spu : public Component {
   void DecodeBlock(Voice& voice);
   int16_t StepVoice(Voice& voice, int index, int16_t previous_output);
   void StepEnvelope(Voice& voice);
+  void StepSweep(VolumeSweep& sweep);
   void KeyOn(int index);
   void KeyOff(int index);
   void StepNoise();
@@ -263,7 +279,7 @@ class Spu : public Component {
 
   // Volume registers are either a plain level or a sweep; only the level form
   // is used for mixing here.
-  static int16_t VolumeOf(uint16_t reg);
+  static int16_t VolumeOf(const VolumeSweep& sweep);
   // The CD and external input volumes, which are plain signed 16-bit levels
   // and not sweep registers - a different format from the ones VolumeOf reads.
   static int16_t InputVolumeOf(uint16_t reg);

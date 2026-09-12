@@ -1,0 +1,16 @@
+gpu/bandwidth
+vramToCpu                      dT:   999.5780  ms (hblanks: 15770), speed: 60 MB/s
+cpuToVram                      dT:   772.12840 ms (hblanks: 12195), speed: 77 MB/s
+vramToVram                     dT:  1212.6640  ms (hblanks: 19132), speed: 49 MB/s
+FillScreen GP0(2)              dT:    77.940   ms (hblanks:  1216), speed: 779 MB/s
+Rectangle                      dT:   481.12820 ms (hblanks:  7603), speed: 124 MB/s
+Rectangle (semitransparent)    dT:   725.14500 ms (hblanks: 11455), speed: 82 MB/s
+Rectangle textured             dT:   959.4980  ms (hblanks: 15138), speed: 62 MB/s
+Rectangle textured (semi)      dT:   959.5980  ms (hblanks: 15139), speed: 62 MB/s
+Polygon quad                   dT:   489.10580 ms (hblanks:  7727), speed: 122 MB/s
+Polygon quad (semi)            dT:   738.2360  ms (hblanks: 11648), speed: 81 MB/s
+Polygon quad textured          dT:  2530.14600 ms (hblanks: 39938), speed: 23 MB/s
+Polygon quad textured (semi)   dT:  2530.14600 ms (hblanks: 39938), speed: 23 MB/s
+Polygon quad (1/4 off screen)  dT:   370.6400  ms (hblanks:  5845), speed: 162 MB/s
+Polygon quad (1/2 off screen)  dT:   251.7220  ms (hblanks:  3968), speed: 239 MB/s
+Done
