@@ -981,9 +981,9 @@ void Gpu::RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
   // the wrong neighbour's texture. Silent Hill's hatching was a
   // semi-transparent problem specifically (bug is additive blending twice),
   // so gate the bias on that instead of applying it unconditionally.
-  const int32_t bias0 = state.semi_transparent ? EdgeBias(b.x - a.x, b.y - a.y) : 0;
-  const int32_t bias1 = state.semi_transparent ? EdgeBias(c.x - b.x, c.y - b.y) : 0;
-  const int32_t bias2 = state.semi_transparent ? EdgeBias(a.x - c.x, a.y - c.y) : 0;
+  const int32_t bias0 = EdgeBias(b.x - a.x, b.y - a.y);
+  const int32_t bias1 = EdgeBias(c.x - b.x, c.y - b.y);
+  const int32_t bias2 = EdgeBias(a.x - c.x, a.y - c.y);
 
   for (int32_t y = top; y <= bottom; ++y) {
     for (int32_t x = left; x <= right; ++x) {
