@@ -181,6 +181,16 @@ bool Mdec::HasData() const {
   return output_read_ < output_count_;
 }
 
+bool Mdec::HasBlockReady(uint32_t block_words) const {
+  const uint32_t available = output_count_ - output_read_;
+  if (available >= block_words)
+    return true;
+  // Less than a block is only ever the tail of a decode - a monochrome one
+  // can end partway through a block - and once the command has finished,
+  // nothing more is coming to fill it.
+  return available > 0 && state_ != kDecoding;
+}
+
 uint32_t Mdec::ReadWord() {
   // Draining everything does not reset the buffer: more macroblocks of the
   // same command may still be on their way, and they append behind these.
@@ -501,6 +511,7 @@ void Mdec::EmitMacroblock() {
     ++stats_.overflows;
   output_count_ = writer.count;
   ++stats_.macroblocks;
+  system_->io().dma.MdecOutputReady();
 }
 
 // 4-bit and 8-bit output are luminance only, one 8x8 block at a time.
@@ -521,6 +532,7 @@ void Mdec::EmitMonoBlock(const int16_t* luma) {
     ++stats_.overflows;
   output_count_ = writer.count;
   ++stats_.macroblocks;
+  system_->io().dma.MdecOutputReady();
 }
 
 }

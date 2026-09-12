@@ -52,6 +52,8 @@ class Mdec : public Component {
   uint32_t ReadWord();
   bool WantsData() const;      // channel 0 should run
   bool HasData() const;        // channel 1 should run
+  // Whether channel 1, in request mode, can move a block of this many words.
+  bool HasBlockReady(uint32_t block_words) const;
 
   uint32_t Status() const;
 

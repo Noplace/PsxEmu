@@ -474,6 +474,101 @@ void TestWiredIntoTheBus() {
   delete system;
 }
 
+// Channel 1 started before the decode it is meant to receive - DecDCTout, then
+// DecDCTin, which is the order PsyQ's movie code uses. Area 51 decodes every
+// frame as two halves into two buffers this way, and a channel that drained
+// the decoder the moment it started took what the previous command had left
+// instead of what the next one made, so each half landed in the other's place.
+void TestOutputDmaStartedFirst() {
+  printf("output dma started before its decode\n");
+
+  System* system = new System();
+  system->InitializeWithoutBios();
+  emulation::psx::IOInterface& io = system->io();
+  Mdec& mdec = io.mdec;
+
+  const uint32_t kMadr1 = 0x1F801090;
+  const uint32_t kBcr1 = 0x1F801094;
+  const uint32_t kChcr1 = 0x1F801098;
+  const uint32_t kDpcr = 0x1F8010F0;
+  const uint32_t kBusy = 0x01000000;
+
+  io.Write32(kDpcr, 1u << 7);                    // channel 1 on
+  mdec.Write(kMdecControl, 0x80000000);
+  SetScaleTable(mdec);
+  SetFlatQuantTable(mdec, 1);
+  mdec.Write(kMdecControl, 0x20000000);          // data-out requests on
+
+  // Request mode, into RAM, in 32-word blocks: a 15-bit macroblock is four.
+  auto StartOutput = [&](uint32_t address, uint32_t blocks) {
+    io.Write32(kChcr1, 0);
+    io.Write32(kMadr1, address);
+    io.Write32(kBcr1, (blocks << 16) | 32);
+    io.Write32(kChcr1, 0x01000200);
+  };
+  // One grey macroblock. A luminance DC of +200 comes out at 22 of 31 in
+  // every component and -200 at 9, so the two are told apart by one pixel.
+  auto Decode = [&](int32_t luma) {
+    mdec.Write(kMdecData, DecodeCommand(Mdec::kDepth15, false, false, 6));
+    mdec.Write(kMdecData, FlatBlockWord(0, 0));          // Cr
+    mdec.Write(kMdecData, FlatBlockWord(0, 0));          // Cb
+    for (int i = 0; i < 4; ++i)
+      mdec.Write(kMdecData, FlatBlockWord(0, luma));     // Y
+  };
+  auto Red = [&](uint32_t address) {
+    return io.ram_buffer.u32[address >> 2] & 0x1F;
+  };
+
+  StartOutput(0x10000, 4);
+  Check((io.Read32(kChcr1) & kBusy) != 0,
+        "started with nothing to move, the channel waits");
+  io.Tick(4096);
+  Check((io.Read32(kChcr1) & kBusy) != 0,
+        "and goes on waiting, rather than finishing on a timer");
+
+  Decode(200);
+  io.Tick(4096);
+  Check((io.Read32(kChcr1) & kBusy) == 0,
+        "the decode it was waiting for finishes it");
+
+  StartOutput(0x11000, 4);
+  Decode(-200);
+  io.Tick(4096);
+  CheckEqual(Red(0x10000), 22, "the first transfer holds the first decode");
+  CheckEqual(Red(0x11000), 9, "and the second holds the second");
+
+  // The usual order, decode then transfer, still moves it all at once.
+  Decode(200);
+  StartOutput(0x12000, 4);
+  CheckEqual(Red(0x12000), 22, "a transfer started after its decode moves it");
+  CheckEqual(io.Read32(kBcr1) >> 16, 0, "counting every block off");
+
+  // Stopping a waiting transfer abandons it; the next decode is left for
+  // whatever the game starts next.
+  io.ram_buffer.u32[0x13000 >> 2] = 0xDEADBEEF;
+  StartOutput(0x13000, 4);
+  io.Write32(kChcr1, 0);
+  Decode(-200);
+  CheckEqual(io.ram_buffer.u32[0x13000 >> 2], 0xDEADBEEF,
+             "a stopped transfer takes nothing");
+  Check(mdec.HasData(), "and the decode stays in the decoder");
+  Drain(mdec);
+
+  // A monochrome decode can end partway through a block. Once the command
+  // is done nothing more is coming, so the short tail still finishes it.
+  StartOutput(0x14000, 1);
+  mdec.Write(kMdecData, DecodeCommand(Mdec::kDepth8, false, false, 1));
+  mdec.Write(kMdecData, FlatBlockWord(0, 0));         // one 8x8, 16 words
+  io.Tick(4096);
+  Check((io.Read32(kChcr1) & kBusy) == 0,
+        "a decode ending short of a block still finishes the transfer");
+  CheckEqual(io.ram_buffer.u32[0x14000 >> 2], 0x80808080,
+             "with the block's own pixels in it");
+
+  system->Deinitialize();
+  delete system;
+}
+
 }  // namespace
 
 int main() {

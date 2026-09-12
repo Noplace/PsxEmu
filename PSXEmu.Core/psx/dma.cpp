@@ -115,11 +115,15 @@ void Dma::RunChannel(int channel, bool acknowledge) {
   }
   if (transfer_cycles_ > 0)
     system_->cpu().AccountCycles(transfer_cycles_);
+  channels[channel].busy_acknowledge = acknowledge;
+  // A transfer still waiting on its device has not finished moving its data,
+  // and is armed when the device hands over the rest - not on a timer.
+  if (channels[channel].busy_cycles == DmaChannel::kAwaitingRequest)
+    return;
   // At least one tick's worth, so even a free (zero-word) transfer stays
   // busy for one batch rather than completing before anything could check.
   channels[channel].busy_cycles =
       transfer_cycles_ > 0 ? static_cast<int32_t>(transfer_cycles_) : 1;
-  channels[channel].busy_acknowledge = acknowledge;
 }
 
 // The one place a pending transfer actually finishes: clears the busy bit
@@ -217,6 +221,11 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f801094:   channels[1].bcr = data;  break;
      case 0x1f801098:
       channels[1].chcr = data;
+      // Stopping the channel abandons a transfer still waiting on the MDEC.
+      // PsyQ's DecDCTout writes 0 here before setting up every transfer.
+      if ((data & 0x01000000) == 0 &&
+          channels[1].busy_cycles == DmaChannel::kAwaitingRequest)
+        channels[1].busy_cycles = 0;
       if (ShouldStart(channels[1].chcr, channels[1].enable)) {
         RunChannel(1);
       }
@@ -383,17 +392,40 @@ void Dma::Dma0() {
 }
 
 // MDEC out: decoded pixels back into RAM, for whatever is going to upload them
-// to VRAM. The decoder holds one macroblock at a time, so a transfer longer
-// than that reads zeroes once it runs dry rather than repeating the last one.
+// to VRAM.
+//
+// In request mode - sync 1, which is what games use - the MDEC asks for a
+// block only once it has decoded output to hand over, so a transfer started
+// before its decode waits for it. PsyQ's movie code depends on that: it calls
+// DecDCTout, which starts this channel, and only then DecDCTin, which sends
+// the command. Draining the decoder the moment the channel started took
+// whatever the previous command had left behind instead, and Area 51 - which
+// decodes every frame as a left half and a right half, into two buffers -
+// showed each half in the other one's place.
+//
+// Burst mode still moves everything at once, reading zeroes once the decoder
+// runs dry.
 void Dma::Dma1() {
+  DmaChannel& ch = channels[1];
+  const uint32_t sync = (ch.chcr >> 9) & 3;
+  const uint32_t words = TransferWords(ch.bcr, sync);
+  const int32_t step = (ch.chcr & 0x02) ? -4 : 4;
+  ch.busy_cycles = 0;
+
+  if (sync == 1) {
+    NoteTransfer(1, words,
+                 (ch.madr + static_cast<uint32_t>(step) * words) & 0x1FFFFC);
+    uint32_t moved = 0;
+    const bool finished = MoveMdecOutBlocks(&moved);
+    ChargeWords(moved);
+    if (!finished)
+      ch.busy_cycles = DmaChannel::kAwaitingRequest;
+    return;
+  }
+
   auto& ram = system_->io().ram_buffer;
   auto& mdec = system_->io().mdec;
-
-  const uint32_t words =
-      TransferWords(channels[1].bcr, (channels[1].chcr >> 9) & 3);
-  const int32_t step = (channels[1].chcr & 0x02) ? -4 : 4;
-  uint32_t address = channels[1].madr & 0x1FFFFC;
-
+  uint32_t address = ch.madr & 0x1FFFFC;
   for (uint32_t i = 0; i < words; ++i) {
     const uint32_t word = mdec.ReadWord();
     system_->cpu().NoteExternalWrite(0xD1, address, word);
@@ -402,7 +434,60 @@ void Dma::Dma1() {
   }
   ChargeWords(words);
   NoteTransfer(1, words, address);
-  channels[1].madr = address;
+  ch.madr = address;
+}
+
+// Moves as many of channel 1's blocks as the MDEC has output for. MADR
+// advances and BCR's block count runs down as they go, as on the hardware, so
+// a transfer left waiting is described entirely by its own registers - and so
+// by a save state, with nothing added to it.
+bool Dma::MoveMdecOutBlocks(uint32_t* moved) {
+  DmaChannel& ch = channels[1];
+  auto& ram = system_->io().ram_buffer;
+  auto& mdec = system_->io().mdec;
+
+  uint32_t block_words = ch.bcr & 0xFFFF;
+  if (block_words == 0)
+    block_words = 0x10000;
+  uint32_t blocks = ch.bcr >> 16;
+  if (blocks == 0)
+    blocks = 0x10000;
+  const int32_t step = (ch.chcr & 0x02) ? -4 : 4;
+  uint32_t address = ch.madr & 0x1FFFFC;
+
+  *moved = 0;
+  while (blocks > 0 && mdec.HasBlockReady(block_words)) {
+    for (uint32_t i = 0; i < block_words; ++i) {
+      const uint32_t word = mdec.ReadWord();
+      system_->cpu().NoteExternalWrite(0xD1, address, word);
+      ram.u32[address >> 2] = word;
+      address = (address + step) & 0x1FFFFC;
+    }
+    *moved += block_words;
+    --blocks;
+  }
+
+  ch.madr = address;
+  ch.bcr = (ch.bcr & 0xFFFF) | ((blocks & 0xFFFF) << 16);
+  return blocks == 0;
+}
+
+// The MDEC's data-out request: it has decoded output that a waiting channel 1
+// transfer can take.
+void Dma::MdecOutputReady() {
+  DmaChannel& ch = channels[1];
+  if (ch.busy_cycles != DmaChannel::kAwaitingRequest)
+    return;
+
+  uint32_t moved = 0;
+  const bool finished = MoveMdecOutBlocks(&moved);
+  // Charged here rather than through transfer_cycles_: this usually runs
+  // inside channel 0's transfer, which is accruing its own.
+  const uint32_t cycles = RamCycles(moved);
+  if (cycles > 0)
+    system_->cpu().AccountCycles(cycles);
+  if (finished)
+    ch.busy_cycles = cycles > 0 ? static_cast<int32_t>(cycles) : 1;
 }
 
 void Dma::Dma2() {

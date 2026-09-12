@@ -30,8 +30,13 @@ struct DmaChannel{
  // interrupt - is deferred by this many cycles rather than happening within
  // the same write that triggered it. Zero means nothing pending. See
  // Dma::RunChannel and Dma::Tick.
+ //
+ // kAwaitingRequest means the data has not all moved yet: a request-mode
+ // transfer whose device has nothing more to give it. It finishes when the
+ // device asks, not on a timer - see Dma::MdecOutputReady.
  int32_t busy_cycles = 0;
  bool busy_acknowledge = false;
+ static const int32_t kAwaitingRequest = -1;
 };
 
 class Dma : public Component {
@@ -50,6 +55,9 @@ class Dma : public Component {
   uint32_t Read(uint32_t address);
   void Write(uint32_t address,uint32_t data);
   DmaChannel& channel(int i) { return channels[i]; }
+  // The MDEC's data-out request: it has decoded output to hand over, and a
+  // channel 1 transfer started before there was any takes it now.
+  void MdecOutputReady();
   // The first few transfers on each channel, for working out why one of them
   // landed somewhere it should not have.
   struct Transfer { uint32_t chcr, bcr, madr, words, end, lba, first, pc; };
@@ -136,6 +144,9 @@ class Dma : public Component {
 
   void Dma0();
   void Dma1();
+  // Moves as many of channel 1's blocks as the MDEC has output for, counting
+  // them down in its registers. Returns whether every block has now moved.
+  bool MoveMdecOutBlocks(uint32_t* moved);
   void Dma2();
   void Dma3();
   void Dma4();
