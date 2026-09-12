@@ -920,6 +920,13 @@ void Gpu::PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
     return;
   }
 
+  if (state.dither) {
+    const int8_t offset = kDitherTable[y & 3][x & 3];
+    r = Clamp8(r + offset);
+    g = Clamp8(g + offset);
+    b = Clamp8(b + offset);
+  }
+
   // A textured pixel is only blended when its own mask bit says so; an
   // untextured one follows the primitive's semi-transparency flag.
   const bool blend = state.semi_transparent &&
@@ -1003,13 +1010,6 @@ void Gpu::RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
         r = a.r; g = a.g; bl = a.b;
       }
 
-      if (state.dither) {
-        const int8_t offset = kDitherTable[y & 3][x & 3];
-        r  = Clamp8(r + offset);
-        g  = Clamp8(g + offset);
-        bl = Clamp8(bl + offset);
-      }
-
       if (!state.textured) {
         PlotPixel(x, y, r, g, bl, state, false, false);
         continue;
@@ -1054,12 +1054,6 @@ void Gpu::DrawLineSegment(const Vertex& v0, const Vertex& v1,
       r = Clamp8(v0.r + ((v1.r - v0.r) * i) / steps);
       g = Clamp8(v0.g + ((v1.g - v0.g) * i) / steps);
       b = Clamp8(v0.b + ((v1.b - v0.b) * i) / steps);
-    }
-    if (state.dither) {
-      const int8_t offset = kDitherTable[y & 3][x & 3];
-      r = Clamp8(r + offset);
-      g = Clamp8(g + offset);
-      b = Clamp8(b + offset);
     }
     PlotPixel(x, y, r, g, b, state, false, false);
 
