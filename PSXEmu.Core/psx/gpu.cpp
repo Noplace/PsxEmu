@@ -1109,6 +1109,11 @@ void Gpu::UpdateDisplaySize() {
     if (active > 0 && active < mode_width)
       width = active;
   }
+  
+  if (status_.display_depth == 1) {
+    width = (width * 2) / 3;
+  }
+  
   display_width_ = width;
 
   int lines = static_cast<int>(vertical_display_end_) -
