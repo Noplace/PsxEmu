@@ -216,6 +216,7 @@ void Cdrom::Serialise(StateIO& io) {
   io.Plain(mode_);
   io.Plain(read_timer_);
   io.Plain(scan_rate_);
+  io.Plain(audio_peak_);
   io.Plain(spun_up_);
 
   if (!io.saving()) {
@@ -588,10 +589,14 @@ void Cdrom::GetReport(uint8_t* data, bool relative) {
     data[4] = position[6];
     data[5] = position[7];
   }
-  // The peak level the signal processor would have measured. Nothing here
-  // measures it, and only a VU meter would miss it.
-  data[6] = 0;
-  data[7] = 0;
+  // The peak level from the hardware signal processor, unsigned 15-bit value
+  // split into LSB and MSB. Bit 15 of the full 16-bit word is a left/right
+  // channel flag on hardware, but we expose only the magnitude. The peak is
+  // reset after each Report so the display sees fresh peaks rather than the
+  // highest level ever reached.
+  data[6] = static_cast<uint8_t>(audio_peak_ & 0xFF);
+  data[7] = static_cast<uint8_t>((audio_peak_ >> 8) & 0x7F);
+  audio_peak_ = 0;
 }
 // ---------------------------------------------------------------------------
 // XA-ADPCM
@@ -794,6 +799,27 @@ void Cdrom::StepRead(uint32_t cycles) {
     ++stats_.cdda_sectors;
     system().spu().QueueCdAudio(sector_);
 
+    // Track the audio peak from this sector's PCM samples. The hardware signal
+    // processor maintains a running peak register (unsigned 15-bit) that the
+    // Report response returns. We scan the 588 stereo pairs ourselves. The
+    // absolute value is taken before comparison so the result is always
+    // non-negative, and it is clamped to 15 bits to match the hardware range.
+    {
+      const int kPairs = 588;
+      for (int i = 0; i < kPairs; ++i) {
+        const int off = i * 4;
+        const int16_t l = static_cast<int16_t>(
+            sector_[off] | (static_cast<uint16_t>(sector_[off + 1]) << 8));
+        const int16_t r = static_cast<int16_t>(
+            sector_[off + 2] | (static_cast<uint16_t>(sector_[off + 3]) << 8));
+        const uint16_t al = static_cast<uint16_t>(l < 0 ? -l : l);
+        const uint16_t ar = static_cast<uint16_t>(r < 0 ? -r : r);
+        const uint16_t loudest = al > ar ? al : ar;
+        if (loudest > audio_peak_)
+          audio_peak_ = loudest > 0x7FFF ? 0x7FFF : loudest;
+      }
+    }
+
     // Report mode. The drive does not report on every sector - that would be
     // seventy-five interrupts a second - but on eight of the seventy-five,
     // alternating between the time from the start of the disc and the time
@@ -987,6 +1013,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       reading_ = false;
       playing_ = false;
       scan_rate_ = 0;
+      audio_peak_ = 0;
       status_ = 0;
       // The motor is off now, so whatever starts it again pays to spin it up.
       spun_up_ = false;
@@ -999,6 +1026,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       reading_ = false;
       playing_ = false;
       scan_rate_ = 0;
+      audio_peak_ = 0;
       status_ &= ~(kStatusReading | kStatusPlaying | kStatusSeeking);
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       QueueStatus(kIntComplete, PauseCycles(was_moving));
@@ -1157,13 +1185,84 @@ void Cdrom::ExecuteCommand(uint8_t command) {
 
     case 0x19: {  // Test
       const uint8_t sub = TakeParameter();
-      if (sub == 0x20) {
-        // Controller firmware date and version. This particular set is what a
-        // retail SCPH-1001 reports, and some software checks it.
-        const uint8_t data[4] = { 0x94, 0x09, 0x19, 0xC0 };
-        QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 4);
-      } else {
-        QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      switch (sub) {
+        case 0x03:
+          // Force motor off. The disc stops spinning. A subsequent read or
+          // play will have to spin it back up.
+          reading_ = false;
+          playing_ = false;
+          scan_rate_ = 0;
+          audio_peak_ = 0;
+          status_ &= ~kStatusMotorOn;
+          spun_up_ = false;
+          QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+          break;
+
+        case 0x04:
+          // Force motor on (clockwise, standard speed). Accepted even if the
+          // shell is open. Mirrors what MotorOn does without the second reply.
+          status_ |= kStatusMotorOn;
+          QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+          break;
+
+        case 0x20:
+          // Controller firmware date and version. This particular set is what
+          // a retail SCPH-1001 reports, and some software checks it.
+          {
+            const uint8_t data[4] = { 0x94, 0x09, 0x19, 0xC0 };
+            QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 4);
+          }
+          break;
+
+        case 0x21: {
+          // POS0 / door switch status.
+          //   Bit 0: HeadIsAtPos0 - we never park the head, so 0.
+          //   Bit 1: DoorIsOpen   - reflect the live shell state.
+          const uint8_t flags = shell_open_ ? 0x02 : 0x00;
+          QueueResponse(kIntAcknowledge, kAcknowledgeDelay, &flags, 1);
+          break;
+        }
+
+        case 0x22: {
+          // Region/country string. We model a North American SCPH-1001.
+          static const char kRegion[] = "for U/C";
+          QueueResponse(kIntAcknowledge, kAcknowledgeDelay,
+                        reinterpret_cast<const uint8_t*>(kRegion),
+                        static_cast<uint8_t>(sizeof(kRegion) - 1));
+          break;
+        }
+
+        case 0x23: {
+          // Servo amplifier chip name.
+          static const char kServo[] = "CXD2940Q/CXD1817Q/CXD2545Q/CXA1782BR";
+          QueueResponse(kIntAcknowledge, kAcknowledgeDelay,
+                        reinterpret_cast<const uint8_t*>(kServo),
+                        static_cast<uint8_t>(sizeof(kServo) - 1));
+          break;
+        }
+
+        case 0x24: {
+          // Signal processor chip name.
+          static const char kSignal[] = "CXD2940Q/CXD1817Q/CXD2545Q/CXD2510Q";
+          QueueResponse(kIntAcknowledge, kAcknowledgeDelay,
+                        reinterpret_cast<const uint8_t*>(kSignal),
+                        static_cast<uint8_t>(sizeof(kSignal) - 1));
+          break;
+        }
+
+        case 0x25: {
+          // Decoder / FIFO chip name.
+          static const char kDecoder[] = "CXD2940Q/CXD1817Q/CXD1815Q/CXD1199BQ";
+          QueueResponse(kIntAcknowledge, kAcknowledgeDelay,
+                        reinterpret_cast<const uint8_t*>(kDecoder),
+                        static_cast<uint8_t>(sizeof(kDecoder) - 1));
+          break;
+        }
+
+        default:
+          // Unknown sub-commands still need a reply or software stalls.
+          QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+          break;
       }
       break;
     }
@@ -1243,10 +1342,22 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       break;
     }
 
-    case 0x1E:    // GetTOC
+    case 0x1E: {  // GetTOC
+      // Commands the drive to seek to the disc lead-in and re-read the Table
+      // of Contents into its internal RAM. The result is not returned directly
+      // to software (GetTN / GetTD do that); this just ensures the controller
+      // has a fresh copy before playback or after a disc swap.
+      //
+      // The hardware charges the time it takes to seek from wherever the head
+      // currently is to the lead-in area (sector 0) and then physically read
+      // it. We model that as a seek from the current read position to sector 0,
+      // which is the worst-case of a full-disc stroke on a loaded disc. On an
+      // empty drive the command still succeeds; there is simply nothing to read.
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      QueueStatus(kIntComplete, kInitDelay);
+      const int32_t seek_cost = SeekCycles(read_lba_, 0);
+      QueueStatus(kIntComplete, seek_cost);
       break;
+    }
 
     default:
       // An unknown command still has to answer, or software waits forever.

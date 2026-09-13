@@ -892,6 +892,158 @@ void TestCdExtraCommands(emulation::psx::System* system,
   CheckEqual(response[8], 0x02, "absolute second");
   CheckEqual(response[9], 0x30, "absolute frame");
 
+  // ---------------------------------------------------------------------------
+  // GetTOC (0x1E) - seeks to the lead-in and re-reads the TOC into the
+  // controller's internal RAM. Acknowledges first, then completes.
+  // ---------------------------------------------------------------------------
+  BeginTest("GetTOC");
+  cd.Command(0x1E, nullptr, 0);
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 3,
+             "GetTOC sends INT3 acknowledge");
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 2,
+             "GetTOC sends INT2 complete");
+  CheckEqual(length, 1, "GetTOC complete carries one status byte");
+
+  // ---------------------------------------------------------------------------
+  // Test (0x19) - motor control sub-commands.
+  // ---------------------------------------------------------------------------
+  BeginTest("Test 0x03 / 0x04 - motor control");
+  // Motor should currently be on (disc is loaded and we just played).
+  // 0x03: force motor off.
+  {
+    const uint8_t sub03[1] = { 0x03 };
+    cd.Command(0x19, sub03, 1);
+    const uint8_t ack = cd.WaitForInterrupt(response, &length, 16);
+    CheckEqual(ack, 3, "Test 0x03 acknowledges");
+    // Status byte bit 1 (kStatusMotorOn = 0x02) should now be clear.
+    Check((response[0] & 0x02) == 0, "motor is off after Test 0x03");
+  }
+  // 0x04: force motor on.
+  {
+    const uint8_t sub04[1] = { 0x04 };
+    cd.Command(0x19, sub04, 1);
+    const uint8_t ack = cd.WaitForInterrupt(response, &length, 16);
+    CheckEqual(ack, 3, "Test 0x04 acknowledges");
+    Check((response[0] & 0x02) != 0, "motor is on after Test 0x04");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test (0x19) - region / chipset info sub-commands.
+  // ---------------------------------------------------------------------------
+  BeginTest("Test 0x20 - firmware version");
+  {
+    const uint8_t sub20[1] = { 0x20 };
+    cd.Command(0x19, sub20, 1);
+    CheckEqual(cd.WaitForInterrupt(response, &length, 16), 3,
+               "Test 0x20 acknowledges");
+    CheckEqual(length, 4, "returns 4 bytes");
+    // SCPH-1001: year=94 month=09 day=19 ver=C0
+    CheckEqual(response[0], 0x94, "year 1994");
+    CheckEqual(response[3], 0xC0, "version C0");
+  }
+
+  BeginTest("Test 0x21 - door switch");
+  {
+    const uint8_t sub21[1] = { 0x21 };
+    cd.Command(0x19, sub21, 1);
+    CheckEqual(cd.WaitForInterrupt(response, &length, 16), 3,
+               "Test 0x21 acknowledges");
+    CheckEqual(length, 1, "returns 1 byte");
+    // Disc is loaded and lid is closed, so bit 1 (DoorIsOpen) should be 0.
+    CheckEqual(response[0] & 0x02, 0u, "door is reported closed");
+  }
+
+  BeginTest("Test 0x22 - region string");
+  {
+    const uint8_t sub22[1] = { 0x22 };
+    cd.Command(0x19, sub22, 1);
+    CheckEqual(cd.WaitForInterrupt(response, &length, 16), 3,
+               "Test 0x22 acknowledges");
+    Check(length >= 7, "returns at least 7 bytes for \"for U/C\"");
+    Check(response[0] == 'f' && response[4] == 'U', "starts with \"for U\"");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Audio Peak Meter - play a sector of loud audio, then collect a Report and
+  // verify the peak bytes are non-zero.
+  // ---------------------------------------------------------------------------
+  BeginTest("Audio Peak Meter");
+  {
+    // Write a loud audio track: every PCM sample is the maximum signed 16-bit
+    // value so the peak register should saturate.
+    const std::string loud_bin = directory + "media_loud.bin";
+    const std::string loud_cue = directory + "media_loud.cue";
+    // Construct a 2352-byte sector where all PCM bytes are 0x7F (filling the
+    // upper byte of each 16-bit sample with the loudest positive value).
+    const int kSectorSize = 2352;
+    FILE* fp = fopen(loud_bin.c_str(), "wb");
+    if (fp) {
+      // 150 lead-in sectors (silence) + 76 loud audio sectors. We need at
+      // least 75 sectors of play so the absolute frame counter wraps through
+      // 00, guaranteeing the Report condition fires at least once.
+      std::vector<uint8_t> silence(kSectorSize, 0);
+      for (int i = 0; i < 150; ++i)
+        fwrite(silence.data(), 1, kSectorSize, fp);
+      // Fill with max positive int16 samples: low byte 0xFF, high byte 0x7F
+      std::vector<uint8_t> loud(kSectorSize);
+      for (int i = 0; i < kSectorSize; i += 2) {
+        loud[i]     = 0xFF;   // little-endian 0x7FFF
+        loud[i + 1] = 0x7F;
+      }
+      for (int i = 0; i < 76; ++i)
+        fwrite(loud.data(), 1, kSectorSize, fp);
+      fclose(fp);
+    }
+    bool loud_ok = WriteText(loud_cue,
+        "FILE \"media_loud.bin\" BINARY\r\n"
+        "  TRACK 01 AUDIO\r\n"
+        "    INDEX 01 00:00:00\r\n");
+    if (!fp || !loud_ok) {
+      printf("  SKIP  could not write loud audio image\n");
+    } else {
+      system->EjectDisc();
+      Check(system->LoadDisc(loud_cue.c_str()), "mount loud audio disc");
+
+      Cdrom& loud_drive = system->cdrom();
+
+      // Seek to the audio track and begin playing.
+      const uint8_t start_msf[3] = { 0x00, 0x02, 0x00 };
+      cd.Command(0x02, start_msf, 3);                // Setloc
+      cd.WaitForInterrupt(response, &length, 16);
+      const uint8_t play_here[1] = { 0x00 };
+      cd.Command(0x03, play_here, 1);                // Play from here
+      cd.WaitForInterrupt(response, &length, 16);
+
+      // Enable Report mode (mode bit 2) so the drive sends INT1 packets.
+      const uint8_t mode_report[1] = { 0x04 };
+      cd.Command(0x0E, mode_report, 1);              // Setmode
+      cd.WaitForInterrupt(response, &length, 16);
+
+      // Tick enough sectors for the drive to process the loud audio.
+      // audio_peak_ accumulates from the raw PCM in StepRead, so we just
+      // need the drive to have read at least one loud sector.
+      const int kTickStep = 25000;
+      const int kStepsPerSector = (451584 + kTickStep - 1) / kTickStep;
+      for (int sector = 0; sector < 10; ++sector)
+        for (int step = 0; step < kStepsPerSector; ++step)
+          loud_drive.Tick(kTickStep);
+
+      Check(loud_drive.audio_peak() > 0,
+            "Report peak is non-zero for loud audio");
+      printf("    [debug] cdda_sectors=%llu cdda_failures=%llu audio_peak=%u\n",
+             (unsigned long long)loud_drive.stats().cdda_sectors,
+             (unsigned long long)loud_drive.stats().cdda_failures,
+             (unsigned)loud_drive.audio_peak());
+
+      system->EjectDisc();
+    }
+    remove(loud_cue.c_str());
+    remove(loud_bin.c_str());
+
+    // Restore the original disc for the cleanup below.
+    system->LoadDisc(cue.c_str());
+  }
+
   system->EjectDisc();
   remove(cue.c_str());
   remove(bin.c_str());

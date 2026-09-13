@@ -139,6 +139,8 @@ class Cdrom : public Component {
     uint32_t event_count;
   };
   const Stats& stats() const { return stats_; }
+  // Current running peak level (unsigned 15-bit), updated every CD-DA sector.
+  uint16_t audio_peak() const { return audio_peak_; }
 
   // On load, reopens disc_ from its saved path (empty means no disc) and
   // records an error on `io` if a non-empty path no longer resolves - "the
@@ -216,6 +218,14 @@ class Cdrom : public Component {
   // is how the drive scans faster the longer a button is held. A Play command
   // clears it.
   int scan_rate_;
+
+  // Peak unsigned 15-bit audio level sampled from the last CD-DA sector
+  // handed to the SPU. The hardware signal processor continuously updates a
+  // peak register and the Report response carries it. We scan the raw PCM
+  // samples ourselves rather than asking the SPU, which keeps the coupling
+  // simple. The value is reset when a new Pause or Stop lands so it doesn't
+  // linger across silent gaps.
+  uint16_t audio_peak_ = 0;
 
   Stats stats_;
 
