@@ -868,11 +868,13 @@ uint16_t Gpu::SampleTexture(uint32_t u, uint32_t v, const DrawState& state) {
     case 0: {  // 4 bits per texel, via CLUT
       const uint16_t block = VramAt(state.texpage_x + (u / 4), state.texpage_y + v);
       const uint32_t index = (block >> ((u & 3) * 4)) & 0x0F;
+      if (index == 0) return 0;
       return VramAt(state.clut_x + index, state.clut_y);
     }
     case 1: {  // 8 bits per texel, via CLUT
       const uint16_t block = VramAt(state.texpage_x + (u / 2), state.texpage_y + v);
       const uint32_t index = (block >> ((u & 1) * 8)) & 0xFF;
+      if (index == 0) return 0;
       return VramAt(state.clut_x + index, state.clut_y);
     }
     default:   // 15 bits per texel, direct
@@ -883,26 +885,31 @@ uint16_t Gpu::SampleTexture(uint32_t u, uint32_t v, const DrawState& state) {
 void Gpu::BlendSemiTransparent(uint16_t* dst, uint8_t r, uint8_t g, uint8_t b,
                                uint32_t mode) const {
   const uint16_t back = *dst;
-  const int32_t br = From5Bit(back & 0x1F);
-  const int32_t bg = From5Bit((back >> 5) & 0x1F);
-  const int32_t bb = From5Bit((back >> 10) & 0x1F);
+  const int32_t br = back & 0x1F;
+  const int32_t bg = (back >> 5) & 0x1F;
+  const int32_t bb = (back >> 10) & 0x1F;
+
+  int32_t fr = r >> 3;
+  int32_t fg = g >> 3;
+  int32_t fb = b >> 3;
 
   int32_t nr, ng, nb;
   switch (mode) {
     case 0:  // B/2 + F/2
-      nr = (br + r) / 2; ng = (bg + g) / 2; nb = (bb + b) / 2;
+      nr = (br + fr) / 2; ng = (bg + fg) / 2; nb = (bb + fb) / 2;
       break;
     case 1:  // B + F
-      nr = br + r; ng = bg + g; nb = bb + b;
+      nr = br + fr; ng = bg + fg; nb = bb + fb;
       break;
     case 2:  // B - F
-      nr = br - r; ng = bg - g; nb = bb - b;
+      nr = br - fr; ng = bg - fg; nb = bb - fb;
       break;
     default: // B + F/4
-      nr = br + r / 4; ng = bg + g / 4; nb = bb + b / 4;
+      nr = br + fr / 4; ng = bg + fg / 4; nb = bb + fb / 4;
       break;
   }
-  *dst = To15Bit(Clamp8(nr), Clamp8(ng), Clamp8(nb)) | (back & 0x8000);
+  auto clamp5 = [](int32_t v) { return v < 0 ? 0 : (v > 31 ? 31 : v); };
+  *dst = (clamp5(nr)) | (clamp5(ng) << 5) | (clamp5(nb) << 10) | (back & 0x8000);
 }
 
 void Gpu::PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
@@ -918,6 +925,13 @@ void Gpu::PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
   if (check_mask_ && (target & 0x8000)) {
     ++stats_.mask_rejected;
     return;
+  }
+
+  if (state.dither) {
+    const int8_t offset = kDitherTable[y & 3][x & 3];
+    r = Clamp8(r + offset);
+    g = Clamp8(g + offset);
+    b = Clamp8(b + offset);
   }
 
   // A textured pixel is only blended when its own mask bit says so; an
@@ -981,9 +995,9 @@ void Gpu::RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
   // the wrong neighbour's texture. Silent Hill's hatching was a
   // semi-transparent problem specifically (bug is additive blending twice),
   // so gate the bias on that instead of applying it unconditionally.
-  const int32_t bias0 = state.semi_transparent ? EdgeBias(b.x - a.x, b.y - a.y) : 0;
-  const int32_t bias1 = state.semi_transparent ? EdgeBias(c.x - b.x, c.y - b.y) : 0;
-  const int32_t bias2 = state.semi_transparent ? EdgeBias(a.x - c.x, a.y - c.y) : 0;
+  const int32_t bias0 = EdgeBias(b.x - a.x, b.y - a.y);
+  const int32_t bias1 = EdgeBias(c.x - b.x, c.y - b.y);
+  const int32_t bias2 = EdgeBias(a.x - c.x, a.y - c.y);
 
   for (int32_t y = top; y <= bottom; ++y) {
     for (int32_t x = left; x <= right; ++x) {
@@ -1001,13 +1015,6 @@ void Gpu::RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
         bl = Clamp8((w1 * a.b + w2 * b.b + w0 * c.b) / double_area);
       } else {
         r = a.r; g = a.g; bl = a.b;
-      }
-
-      if (state.dither) {
-        const int8_t offset = kDitherTable[y & 3][x & 3];
-        r  = Clamp8(r + offset);
-        g  = Clamp8(g + offset);
-        bl = Clamp8(bl + offset);
       }
 
       if (!state.textured) {
@@ -1054,12 +1061,6 @@ void Gpu::DrawLineSegment(const Vertex& v0, const Vertex& v1,
       r = Clamp8(v0.r + ((v1.r - v0.r) * i) / steps);
       g = Clamp8(v0.g + ((v1.g - v0.g) * i) / steps);
       b = Clamp8(v0.b + ((v1.b - v0.b) * i) / steps);
-    }
-    if (state.dither) {
-      const int8_t offset = kDitherTable[y & 3][x & 3];
-      r = Clamp8(r + offset);
-      g = Clamp8(g + offset);
-      b = Clamp8(b + offset);
     }
     PlotPixel(x, y, r, g, b, state, false, false);
 
@@ -1109,6 +1110,11 @@ void Gpu::UpdateDisplaySize() {
     if (active > 0 && active < mode_width)
       width = active;
   }
+  
+  if (status_.display_depth == 1) {
+    //width = (width * 2) / 3;
+  }
+  
   display_width_ = width;
 
   int lines = static_cast<int>(vertical_display_end_) -
