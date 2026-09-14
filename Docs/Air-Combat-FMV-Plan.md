@@ -1,5 +1,12 @@
 # Air Combat: the intro film decodes one cycle and then never again
 
+> **Status: fixed by bug 55** (`Docs/Bugs-Found.md`). A stale DMA channel 3
+> flag fired the stream library's sector callback as soon as the film
+> started. That produced a phantom empty frame and the block-count-0 MDEC
+> transfer described below. With DICR bit 31 no longer masked by the
+> per-channel enables, the film decodes continuously (243,400 macroblocks by
+> frame 3000). The investigation below is kept as it was written.
+
 `Air Combat [SLUS-00001]` boots, reads its disc, and issues real GTE and MDEC
 work - this is not a crash, not an unimplemented path, not a black screen from
 a disabled display. The machine runs for as long as it is given (tested to

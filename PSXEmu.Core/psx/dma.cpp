@@ -47,23 +47,35 @@ void Dma::Serialise(StateIO& io) {
   io.Plain(master_flag_);
 }
 
-// A channel finished. Its flag latches only if that channel's interrupt is
-// enabled; the master flag then follows from the flags and the master enable.
+// A channel finished. Its flag latches only if that channel's interrupt and
+// the master enable are both on; the master flag then follows.
 void Dma::SetInterrupt(int channel) {
-  if (interrupt_control.raw & (1u << (16 + channel)))
+  if ((interrupt_control.raw & (1u << (16 + channel))) != 0 &&
+      (interrupt_control.raw & 0x00800000) != 0)
     interrupt_control.raw |= (1u << (24 + channel));
   UpdateMasterFlag();
 }
 
 // Bit 31 is read-only and derived: the bus-error flag, or the master enable
-// together with any latched channel flag that is also enabled.
+// together with any latched channel flag - enabled or not.
+//
+// The per-channel enables gate a flag latching, not a latched flag raising
+// bit 31. Masking by them as well let a flag outlive its enable unseen:
+// Captain Tsubasa J's CD library claims every DMA interrupt and acknowledges
+// only channel 3, so a GPU flag stuck, bit 31 stayed high, and the BIOS's
+// later CD reads left channel 3 flags nobody acknowledged. The movie player
+// then turns the master enable on with only channel 4 enabled - which, with
+// the flags visible, raises the interrupt and its dispatcher clears them -
+// but masked, nothing fired, and the stale channel 3 flag reached the
+// stream callback the moment it was installed. It marked an empty frame
+// complete, the decode of it sent a zero-length MDEC block, and the crash
+// took the screen black after the PS logo. This is DuckStation's rule too.
 void Dma::UpdateMasterFlag() {
-  const uint32_t enabled = (interrupt_control.raw >> 16) & 0x7F;
   const uint32_t flagged = (interrupt_control.raw >> 24) & 0x7F;
   const bool master_enable = (interrupt_control.raw & 0x00800000) != 0;
   const bool bus_error = (interrupt_control.raw & 0x00008000) != 0;
 
-  const bool flag = bus_error || (master_enable && (enabled & flagged) != 0);
+  const bool flag = bus_error || (master_enable && flagged != 0);
   if (flag)
     interrupt_control.raw |= 0x80000000u;
   else

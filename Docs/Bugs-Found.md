@@ -3006,3 +3006,70 @@ flags word.
 itself has not been run. What was verified is the sequence it produces - a
 multitap, then nothing for 60 frames, then a pad - driven through a scratch
 `boot_runner`, where Start then opens the menu as it should.
+
+## 55. A DMA flag outlived its enable, and two intro films went black on their first frame
+
+`psx/dma.cpp`
+
+**Symptom.** Captain Tsubasa J - Get in the Tomorrow `[SLPS-00310]`: "after
+ps logo, no output just black screen". Cold boot, frame ~640: the display
+goes to 256x240 and is disabled, MDEC decodes one burst and stops, and the
+CPU ends in an endless bus-error loop at `81081084`. Air Combat
+`[SLUS-00001]` showed the same thing at the same point - the open question in
+[Air-Combat-FMV-Plan.md](Air-Combat-FMV-Plan.md).
+
+**Cause.** DICR bit 31 was derived as the master enable AND a latched flag
+*whose channel was also enabled*. The per-channel enables decide whether a
+flag latches. They do not hide a flag that has already latched.
+DuckStation's `UpdateMasterFlag` has the same rule. The chain in Captain
+Tsubasa, traced with a scratch `boot_runner` logging every DICR write and
+flag latch:
+
+1. Frame ~380: the game's CD library puts a DMA handler (`80058628`) at the
+   head of the kernel's interrupt chain. It claims every DMA interrupt,
+   acknowledges only channel 3, and ends the chain with ReturnFromException.
+   The libetc dispatcher that had been acknowledging GPU (channel 2)
+   completions never runs again. A channel 2 flag stays latched and bit 31
+   stays high, so there are no more rising edges.
+2. Frame ~560: the BIOS loads the second executable. Every sector latches a
+   channel 3 flag that nothing acknowledges.
+3. The movie player's setup writes DICR `00900000` - master enable, channel 4
+   only. Masked by the enables, bit 31 dropped to 0 and nothing fired. The
+   stale flags survived.
+4. The player installs its channel 3 callback (`8014D1FC`, "sector landed in
+   the ring") and enables channel 3. The stale flag fires it before a single
+   stream sector has been read. It marks ring slot 0 complete with an
+   all-zero header.
+5. `StGetNext` hands over that empty "frame". `DecDCTvlc` prints
+   `MDEC_vlec: invalid VLC ID`, and `DecDCTin` sends a BCR of `00000020` -
+   block count 0, which is 65536 blocks. `Dma0` pushes 2,097,152 words (all of
+   RAM, four times) through the MDEC in one go. The garbage decodes, and
+   channel 1 writes it from `801BEAD0` through the stack and around into
+   kernel RAM.
+
+**Fix.** Bit 31 is `bus error || (master enable && any flag)`. A flag latches
+only when both its channel enable and the master enable are set, which is
+DuckStation's `ShouldSetIRQFlag`. With the flags visible, the `00900000`
+write in step 3 raises the interrupt, the player's dispatcher acknowledges
+the stale flags (no callback is installed yet), and the stream starts clean.
+
+**Verified.** Captain Tsubasa: the film plays (59,100 macroblocks) and the
+title screen is up at frame 3000. Air Combat: the film decodes continuously
+(243,400 macroblocks by frame 3000, display enabled). Air Combat's chain was
+not traced step by step, but the same zero-block-count MDEC transfer shows in
+the old run, and this change alone clears it. A/B over 3000 frames on the
+same sources with and without the change: identical checksums at every
+100-frame mark for the BIOS boot, Wild Arms, Wild Arms 2, Vandal Hearts,
+Legend of Mana, Ridge Racer, Bomberman Party Edition, Area 51, Final Fantasy
+VII and Ace Combat 3. Six of those move by a handful of instructions and at
+most two interrupts. `cpu`, `gte`, `timer`, `sio`, `spu` and `mdec` tests
+pass. `gpu_test` (shared edge column) and `media_test` (audio peak meter)
+each have one failure, identical without this change.
+
+**Still open.** `Dma0` still moves a block-count-0 transfer in one
+synchronous burst. The hardware is request-paced. This change removes the
+way these two games reached that path, not the path, so the next game to
+decode a bad frame will wreck RAM the same way. Also, the Captain Tsubasa
+`.bin` on the share has zeroed XA subheaders (the `.mdf` beside it does not),
+so the film's audio sectors reach the CPU as data and the film plays silent
+from that image.
