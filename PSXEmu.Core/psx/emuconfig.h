@@ -138,6 +138,20 @@ struct EmuConfig {
   // every disc-dependent timing baseline in Docs/Test-Suite.md - which is why
   // it is opt-in rather than the default.
   bool cdrom_mechanical_timing = false;
+
+  // --- Boot -----------------------------------------------------------
+  // Whether booting a disc arms System::set_auto_boot instead of letting the
+  // BIOS run all the way through on its own - see the comment there for what
+  // that actually does (it still runs real BIOS init, just hands off to the
+  // game at the address the shell's own GUI code would otherwise start
+  // running from, so the logo and the disc-check screen never execute).
+  //
+  // Off - the default, matching how a disc boot has always behaved here -
+  // shows both. A bare PS-EXE has no shell path to skip in the first place:
+  // System::set_auto_boot_exe uses the same hand-off unconditionally, since
+  // a raw side-load without it never clears BEV or Isolate Cache in the
+  // first place, so this setting has nothing to add there.
+  bool skip_bios_intro = false;
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer

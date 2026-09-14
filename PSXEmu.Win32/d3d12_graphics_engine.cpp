@@ -226,12 +226,13 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
             return;
     }
 
-    if (!fb_texture_ || !fb_upload_heap_)
+    ID3D12Resource* const upload_heap = fb_upload_heap_[frame_index_].Get();
+    if (!fb_texture_ || !upload_heap)
         return;
 
     void* mapped_data = nullptr;
     D3D12_RANGE read_range = { 0, 0 };
-    if (SUCCEEDED(fb_upload_heap_->Map(0, &read_range, &mapped_data))) {
+    if (SUCCEEDED(upload_heap->Map(0, &read_range, &mapped_data))) {
         const uint8_t* src_data = static_cast<const uint8_t*>(data);
         uint8_t* dest_data = static_cast<uint8_t*>(mapped_data) + fb_placed_footprint_.Offset;
 
@@ -240,7 +241,7 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
             memcpy(dest_data + y * fb_placed_footprint_.Footprint.RowPitch,
                    src_data + y * src_pitch, src_pitch);
         }
-        fb_upload_heap_->Unmap(0, nullptr);
+        upload_heap->Unmap(0, nullptr);
     }
 
     D3D12_RESOURCE_BARRIER barrier = {};
@@ -252,7 +253,7 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
     command_list_->ResourceBarrier(1, &barrier);
 
     CD3DX12_TEXTURE_COPY_LOCATION dest_loc(fb_texture_.Get(), 0);
-    CD3DX12_TEXTURE_COPY_LOCATION src_loc(fb_upload_heap_.Get(), fb_placed_footprint_);
+    CD3DX12_TEXTURE_COPY_LOCATION src_loc(upload_heap, fb_placed_footprint_);
     command_list_->CopyTextureRegion(&dest_loc, 0, 0, 0, &src_loc, nullptr);
 
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
@@ -270,7 +271,39 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
     // registers, both sampling the same physical ~4:3 frame real hardware
     // always drives. Reuses the same headless-tested helper D3D11Presenter
     // uses, so both engines agree on where the picture goes.
-    const LetterboxRect rect = ComputeLetterboxRect(width_, height_, 4.0f / 3.0f);
+    LetterboxRect rect = ComputeLetterboxRect(width_, height_, 4.0f / 3.0f);
+
+    // Point sampling (Nearest Neighbor, and the built-in default when no
+    // filter is selected) maps source texel columns onto destination pixels
+    // through the rasterizer's own fractional interpolation. When the
+    // letterboxed rect isn't an exact whole multiple of the source frame,
+    // some texel columns land under more destination pixels than their
+    // neighbours - the picture is still the right overall size, but
+    // individual columns/rows are uneven. That reads as "extra width" on
+    // anything with fine vertical detail (foliage, dithered shadow edges)
+    // while flat ground and walls hide it completely, which is why it looks
+    // like specific sprites are glitched rather than the whole screen.
+    // Snapping the displayed size down to the nearest whole multiple of the
+    // frame keeps every source pixel the same size on screen; the pixels
+    // freed up just widen the letterbox border. Shaders that already handle
+    // fractional scale correctly (Sharp Bilinear and friends) don't need
+    // this and are left alone.
+    /*
+    const bool point_filtered = current_pipeline_state_ == nullptr ||
+        current_pipeline_state_ == default_pipeline_state_.Get();
+    if (point_filtered && width > 0 && height > 0) {
+        const int scale_x = static_cast<int>(rect.width) / width;
+        const int scale_y = static_cast<int>(rect.height) / height;
+        int scale = (scale_x < scale_y) ? scale_x : scale_y;
+        if (scale < 1)
+            scale = 1;
+        const float snapped_width = static_cast<float>(width * scale);
+        const float snapped_height = static_cast<float>(height * scale);
+        rect.x += (rect.width - snapped_width) * 0.5f;
+        rect.y += (rect.height - snapped_height) * 0.5f;
+        rect.width = snapped_width;
+        rect.height = snapped_height;
+    }*/
 
     // outW/outH are the letterboxed viewport size, not the full window size -
     // Sharp Bilinear (legacy_shaders.h[1]) computes its texel scale directly
@@ -493,12 +526,16 @@ bool D3D12GraphicsEngine::CreateFramebufferResources(int fb_width, int fb_height
     device_->GetCopyableFootprints(&tex_desc, 0, 1, 0, &fb_placed_footprint_, &fb_num_rows_,
                                    &fb_row_size_in_bytes_, &fb_upload_buffer_size_);
 
+    // A separate heap per swap-chain slot - see the member comment in the
+    // header for why one shared heap is a CPU/GPU race.
     const CD3DX12_HEAP_PROPERTIES upload_heap_props(D3D12_HEAP_TYPE_UPLOAD);
     const CD3DX12_RESOURCE_DESC upload_desc = CD3DX12_RESOURCE_DESC::Buffer(fb_upload_buffer_size_);
-    if (FAILED(device_->CreateCommittedResource(&upload_heap_props, D3D12_HEAP_FLAG_NONE,
-                                                &upload_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                nullptr, IID_PPV_ARGS(&fb_upload_heap_))))
-        return false;
+    for (UINT n = 0; n < kFrameCount; ++n) {
+        if (FAILED(device_->CreateCommittedResource(&upload_heap_props, D3D12_HEAP_FLAG_NONE,
+                                                    &upload_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                    nullptr, IID_PPV_ARGS(&fb_upload_heap_[n]))))
+            return false;
+    }
 
     D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
     srv_heap_desc.NumDescriptors = 1;   // just the framebuffer - no ImGui here

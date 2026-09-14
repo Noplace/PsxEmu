@@ -53,6 +53,8 @@ namespace psxemu {
                     L"&Frame Limiter");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandCdMechanicalTiming),
                     L"CD-ROM &Mechanical Timing");
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandSkipBiosIntro),
+                    L"S&kip BIOS Intro");
 
         // Volume. The labels carry a literal percent sign, so they are built with the doubled form
         // the table stores rather than passed through a formatter.
@@ -269,6 +271,14 @@ namespace psxemu {
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandCdMechanicalTiming),
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickSkipBiosIntro(HWND window, bool on) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandSkipBiosIntro),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
     }
 

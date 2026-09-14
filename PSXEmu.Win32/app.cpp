@@ -162,6 +162,7 @@ namespace psxemu {
         UpdateMultitapSourceMenu();
         UpdateFrameLimiterMenu();
         UpdateCdTimingMenu();
+        UpdateSkipBiosIntroMenu();
         if (current_backend_ == "d3d12") {
             LoadAllFilters(*graphics_);
             SetFilter(system_->config().video_filter);
@@ -673,6 +674,19 @@ namespace psxemu {
         SaveSettingsIfChanged();
     }
 
+    void App::UpdateSkipBiosIntroMenu() {
+        if (system_ != nullptr)
+            TickSkipBiosIntro(window_, system_->config().skip_bios_intro);
+    }
+
+    void App::SetSkipBiosIntro(bool on) {
+        if (system_ == nullptr)
+            return;
+        system_->config().skip_bios_intro = on;
+        UpdateSkipBiosIntroMenu();
+        SaveSettingsIfChanged();
+    }
+
     // ---------------------------------------------------------------------------------------------
     // The machine
     // ---------------------------------------------------------------------------------------------
@@ -700,6 +714,11 @@ namespace psxemu {
                         L".mdf), .bin, .img, .iso.");
             return false;
         }
+        // The disc is already mounted, so there is nothing left for the hand-off to load itself -
+        // just arm it before the machine starts running.
+        if (system_->config().skip_bios_intro)
+            system_->set_auto_boot(true);
+
         // Each disc gets its own pair of memory cards - a real console has none of this, of course,
         // but "which card was in when I saved" is otherwise a question the player has to answer by
         // hand.
@@ -966,6 +985,11 @@ namespace psxemu {
             case kCommandCdMechanicalTiming:
                 if (system_ != nullptr)
                     SetCdMechanicalTiming(!system_->config().cdrom_mechanical_timing);
+                break;
+
+            case kCommandSkipBiosIntro:
+                if (system_ != nullptr)
+                    SetSkipBiosIntro(!system_->config().skip_bios_intro);
                 break;
 
             case kCommandExit:

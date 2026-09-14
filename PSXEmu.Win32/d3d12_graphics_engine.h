@@ -117,7 +117,16 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     // horizontal sample rate than gameplay); the GBA this engine was written
     // for never does, so the original always called this once.
     ComPtr<ID3D12Resource> fb_texture_;
-    ComPtr<ID3D12Resource> fb_upload_heap_;
+    // One upload heap per frame-in-flight, not a single shared one: the CPU
+    // runs ahead of the GPU by design (MoveToNextFrame only waits on the
+    // fence for the back-buffer slot it is about to reuse, which is stale by
+    // kFrameCount-1 frames), so a single heap would have the CPU's Map+memcpy
+    // for frame N+1 racing the GPU's CopyTextureRegion still reading frame
+    // N's data out of that same heap - a write-after-read hazard invisible
+    // to anything that doesn't run the real D3D12 pipeline (boot_runner's
+    // headless PPM dumps included), and visible on screen as blocky, torn
+    // pixel blocks wherever the race lands, worst on fine detail.
+    ComPtr<ID3D12Resource> fb_upload_heap_[kFrameCount];
     ComPtr<ID3D12DescriptorHeap> srv_heap_;
 
     int fb_width_ = 0;

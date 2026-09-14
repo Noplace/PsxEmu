@@ -85,6 +85,11 @@ namespace psxemu {
     // exactly as long as the drive takes, and nothing else.
     void TickCdTiming(HWND window, bool on);
 
+    // Whether a disc boot arms the BIOS hand-off that skips its logo and disc-check screens - see
+    // EmuConfig::skip_bios_intro. Has no separate tick of its own for a PS-EXE boot: that path
+    // already always uses the same hand-off, regardless of this setting.
+    void TickSkipBiosIntro(HWND window, bool on);
+
     // ---------------------------------------------------------------------------------------------
     // Settings keys
     // ---------------------------------------------------------------------------------------------

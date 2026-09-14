@@ -159,6 +159,12 @@ namespace psxemu {
         // will not replay it.
         void SetCdMechanicalTiming(bool on);
 
+        // Whether booting a disc arms System::set_auto_boot so the BIOS's logo and disc-check
+        // screens never run - see EmuConfig::skip_bios_intro. Booting a PS-EXE already always uses
+        // that same hand-off regardless of this, so there is nothing here for BootPsExeFromFile to
+        // read.
+        void SetSkipBiosIntro(bool on);
+
         // This half of the tick functions in menu.h: each reads what is currently set and hands it
         // over. The machine is checked here because these are the call sites that know whether
         // there is one yet.
@@ -170,6 +176,7 @@ namespace psxemu {
         void UpdateMultitapSourceMenu();
         void UpdateFrameLimiterMenu();
         void UpdateCdTimingMenu();
+        void UpdateSkipBiosIntroMenu();
 
         // ---------------------------------------------------------------------------------------
         // The machine
@@ -182,7 +189,9 @@ namespace psxemu {
         // Puts a disc in the drive and starts the machine from cold, which is what switching a
         // console on with a game in it does: the BIOS runs its intro, checks the disc, reads
         // SYSTEM.CNF, loads the executable it names and jumps to it. Nothing here understands the
-        // disc - the BIOS does all of it.
+        // disc - the BIOS does all of it. Unless EmuConfig::skip_bios_intro is set, in which case
+        // System::set_auto_boot is armed instead: the BIOS still runs for real, just hands off to
+        // the game before its logo and disc-check screens would otherwise start.
         bool BootDiscFromFile(const std::string& path);
 
         // Starts with an empty drive, which lands in the BIOS shell.

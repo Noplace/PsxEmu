@@ -70,6 +70,7 @@ namespace psxemu {
         kCommandViewVram,
         kCommandFrameLimiter,
         kCommandCdMechanicalTiming,
+        kCommandSkipBiosIntro,
         kCommandControllerTypeFirst,
         kCommandControllerTypeLast = kCommandControllerTypeFirst + 11,   // 2 ports x 6 types
         kCommandInputSourceFirst,

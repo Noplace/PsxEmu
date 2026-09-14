@@ -950,11 +950,16 @@ namespace emulation {
             if (max_x - min_x >= 1024 || max_y - min_y >= 512)
                 return;
 
+            // right/bottom feed the half-open [left,right) x [top,bottom) pixel loop
+            // below, but draw_area_right_/bottom_ are inclusive corners (PlotPixel's own
+            // clip test accepts x == draw_area_right_) - so when the draw area is the
+            // actual clamp, rather than the triangle's own shape, it needs +1 to keep its
+            // last column/row reachable by an exclusive loop.
             const int32_t left = std::max(min_x, draw_area_left_);
-            const int32_t right = std::min(max_x, draw_area_right_);
+            const int32_t right = std::min(max_x, draw_area_right_ + 1);
             const int32_t top = std::max(min_y, draw_area_top_);
-            const int32_t bottom = std::min(max_y, draw_area_bottom_);
-            if (left > right || top > bottom)
+            const int32_t bottom = std::min(max_y, draw_area_bottom_ + 1);
+            if (left >= right || top >= bottom)
                 return;
 
             const int32_t area = (v1.x - v0.x) * (v2.y - v0.y) -
@@ -986,6 +991,15 @@ namespace emulation {
             const int32_t bias1 = state.semi_transparent ? EdgeBias(c.x - b.x, c.y - b.y) : 0;
             const int32_t bias2 = state.semi_transparent ? EdgeBias(a.x - c.x, a.y - c.y) : 0;
 
+            // Half-open: a quad's own two triangles each own exactly their own pixel
+            // columns/rows, so the far (right/bottom) vertex coordinate of one triangle
+            // is never re-tested as if it were inside it - that column belongs to
+            // whatever sits next to it instead. With <=, that far column's edge test
+            // could still accept it (an opaque, unbiased top-left edge does), and it
+            // would then sample UV one texel past this triangle's own texture region -
+            // into whatever the atlas holds next to it, which reads as a wrong-content
+            // sliver "bleeding" in at every tile edge in a mosaic built from many small
+            // quads (exactly what a ground/foliage tile grid is).
             for (int32_t y = top; y < bottom; ++y) {
                 for (int32_t x = left; x < right; ++x) {
                     const int32_t w0 = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
