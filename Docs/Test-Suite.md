@@ -15,7 +15,7 @@ Each test assembles a handful of MIPS instructions into RAM, runs them through
 the real CPU, and checks what came out - the same path a game takes. No BIOS,
 no window. A group name runs only that group.
 
-**Current: 239 checks, 0 failures.**
+**Current: 251 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -118,7 +118,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 206 checks, 0 failures.**
+**Current: 251 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -168,7 +168,7 @@ Unit tests for the sound unit. No BIOS, no window, no audio device. Sample
 data is written into sound RAM, voices are keyed on through their real
 registers, and the frames that come out are checked.
 
-**Current: 107 checks, 0 failures.**
+**Current: 108 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -307,18 +307,28 @@ enough that only a real regression should cross them.
 Check these after any change to the CPU, timing, or the renderer - not just the
 part being worked on.
 
-**These numbers are stale as of bug 43** (predating it, not caused by it):
-running the exact commands below on this branch before bug 43's changes
-landed already gave `bd888bab645a63a9` / 115,547,800 instructions for the
-BIOS boot, not the `d357591479cbd199` / 185,794,454 on record, and
-`media_test` already reported 175 checks, not 103 - both from unrelated
-fixes (SPU, CD-ROM audio) made since this table was last refreshed. Bug 43
-itself moved the BIOS boot's instruction count further, to 97,749,265, for
-an understood reason (see bug 43: not-taken branches and mult/div now
-correctly cost more than one cycle, so fewer instructions fit in the same
-400 frames) - everything else in the row below, including the checksum,
-did not move. This whole table is worth a dedicated refresh pass rather than
-patching one row at a time.
+**Measured 2026-09-16 at `8c7c694`**, which is what every number below is: one
+run each, on this machine, with the build that commit produces. The table this
+replaces had been stale since before bug 43 and said so; it is not kept, because
+a baseline nobody can reproduce is worse than none - the progression it recorded
+is in the "earlier baselines" table further down.
+
+`boot_runner` is deterministic: three runs of one binary on one disc agree to
+the instruction. A number here that does not reproduce means the build, the
+BIOS or the disc image differs - see the note on the disc table below, since
+the most likely answer is the network share rather than the emulator.
+
+### The harnesses, at a glance
+
+| Harness | Checks | | Harness | Checks |
+|---|---|---|---|---|
+| `cpu_test` | 251 | | `gpu_test` | 31 |
+| `gte_test` | 99 | | `mdec_test` | 85 |
+| `timer_test` | 70 | | `media_test` | 251 |
+| `sio_test` | 105 | | `spu_test` | 108 |
+
+**1,000 checks, 0 failures**, all eight green as of the same commit. Each
+harness's own section above says what its groups cover.
 
 ### BIOS boot, SCPH1001
 
@@ -326,19 +336,42 @@ patching one row at a time.
 
 | Measure | Value |
 |---|---|
-| instructions | 185,794,454 |
+| instructions | 97,749,265 |
 | resolution | 640x478 |
-| framebuffer checksum | `d357591479cbd199` |
-| non-black (visible) | 305,920 of 305,920 |
+| framebuffer checksum | `38302fe2da74987f` |
+| non-black (visible) | 304,803 of 305,920 |
 | unimplemented paths | 0 |
 | GTE commands | 0 - the shell menu is entirely 2D |
-| RFEs executed | 1,023 |
-| interrupts taken | 1,009 |
-| final I_STAT / I_MASK / SR | `00000001` / `0000004D` / `40000401` |
-| GP0 words / GP1 words | 38,320 / 2,694 |
-| primitives / pixels | 2,234 / 106,401,520 |
-| texels 4-bit / 15-bit | 3,945,208 / 2,139,264 |
+| RFEs executed | 919 |
+| interrupts taken | 907 (vblank 339, dma 508, cdrom 3, timer2 57) |
+| final I_STAT / I_MASK / SR | `00000001` / `0000000D` / `40000401` |
+| GP0 words / GP1 words | 16,955 / 2,325 |
+| primitives / pixels | 1,157 / 84,365,334 |
+| texels 4-bit / 15-bit | 3,159,000 / 0 |
 | CD-ROM commands | 3 |
+| SPU | 297,483 frames, 64 key-ons, peak 28,461/23,222 |
+
+**What moved since the last refresh, and why.** The instruction count is bug
+43's, unchanged. The checksum is not: building `535949b` - the commit before
+the September 12-14 GPU work - and running the same command gives
+`bd888bab645a63a9`, the same 97,749,265 instructions, the same 16,955 GP0
+words and the same 1,157 primitives, but **84,715,353 pixels plotted against
+84,365,334 and a full 305,920 non-black against 304,803**. So the CPU side did
+not move at all and the rasteriser did: those commits made the raster loops
+half-open (`x < right`), and DuckStation's own rasteriser agrees with that.
+
+Diffing the two frames pixel by pixel, 1,117 pixels went from coloured to black
+and none the other way, and 478 of them - every row - are the single column at
+**x=639**, the right-hand edge of the screen. The BIOS draws its background to
+an inclusive right edge, so a half-open rule stops one column short of it. One
+interior column (x=330, 118 rows) changed too, which is **not** explained yet:
+it may be two primitives that used to overlap by a column now tiling exactly,
+or it may be a seam. Worth a look before trusting the edge story completely.
+
+The SPU peak is bug 57's: the mix was coming out at a quarter and
+`audio_volume` defaulted to 2.0 to cover it. Both are corrected, so a peak of
+28,461 here is the hardware's own level rather than a number to compare against
+anything recorded before that bug.
 
 **These are baselines, not targets.** The BIOS boots and draws its intro: the
 blue radial gradient fills the frame correctly. The logo geometry on top of it
@@ -358,19 +391,86 @@ sensitive to a renderer change; the checksum is sensitive to everything.
 | After bug 14 (DMA block mode) | 640x478, `e9ea0b3d07bd3b89`, 16 unimplemented paths - the full intro renders |
 | After the GTE (Phase 2) | the table above; the 16 unimplemented paths were COP2 register moves, now handled |
 
+### Real games
+
+What the BIOS boot cannot show: the CD-ROM under a real game's own driver, the
+MDEC decoding film, the SPU mixing, and the parts of the GPU a shell menu never
+reaches. Twelve discs, 3,000 frames each from cold with no input:
+
+    boot_runner bios/SCPH1001.BIN --frames 3000 --frame-log 1000 --quiet --disc <image>
+
+Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
+
+| Disc | f1000 | f2000 | f3000 | non-black | res | macroblocks | sectors |
+|---|---|---|---|---|---|---|---|
+| Air Combat | `a1e228e8a2ee662c` | `db59eb682fe9985e` | `12a6284c62657ea5` | 51,200 | 320x240 | 243,200 | 5,293 |
+| Wild Arms | `7daf7515b034bb74` | `9ecc3caaf8731ea6` | `01b3d7eb25290632` | 61,440 | 320x240 | 93,120 | 3,747 |
+| Wild Arms 2 (cd1) | `00d5e173b295085a` | `c7a39acab8a692fb` | `22da9010e1a6bfbe` | 76,800 | 320x240 | 0 | 100 |
+| Vandal Hearts | `bcb8fe295f5b70db` | `7e2959681f0a6aec` | `94ae6edd29a35858` | 52,652 | 320x240 | 128,400 | 5,260 |
+| Legend of Mana | `ec6fe2e3bdb4fd30` | `baf825dc27742faa` | `bbc7cecc82310cd8` | 76,064 | 320x240 | 155,400 | 5,345 |
+| Ridge Racer | `2e63ac3574a2a3c3` | `d2b232324e1bb427` | `1ff58690bfff3b4a` | 76,415 | 320x240 | 0 | 1,578 |
+| Bomberman Party Ed. | `4a31d7a6c52734a4` | `717a1bbe80c75439` | `ba27f3e0e9823174` | 76,224 | 320x240 | 147,000 | 4,686 |
+| Area 51 | `085daca5fb878fff` | `8706d714ea09fec7` | `c20fec6d8f189e8d` | 51,855 | 256x240 | 100,080 | 5,511 |
+| Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `44eccfde5b859174` | 75,911 | 320x240 | 0 | 668 |
+| Final Fantasy VIII | `aedac3154f8a0383` | `f3ee4d06bf3e0383` | `24cffdf4fad5568e` | 3,790 | 640x480 | 0 | 1,187 |
+| Ace Combat 3 | `3121874ad83b9ef4` | `afa843f1f90957a1` | `1e2454a46003d966` | 61,189 | 320x240 | 82,992 | 2,291 |
+| Captain Tsubasa J | `f0779890ee9b1bb0` | `816d516f2ba1d3f8` | `add4d55f3196ad03` | 76,800 | 320x240 | 59,100 | 3,776 |
+
+Images are the ones under `\\superserverx\D\Games\Sony\PSX\ISO`; Area 51 and
+Wild Arms 2 are mounted from their `.ccd`, which gives byte-identical results to
+their `.img`. Instruction counts are in the run's own output and are not
+tabulated - they move for any timing change and say nothing a checksum does not.
+
+**What each one is here for**, since a checksum that moves is only useful if
+something says where to look:
+
+- **Air Combat** and **Captain Tsubasa J** - the stream/MDEC path. Both were
+  black screens until bug 55; a film that stops decoding shows up here as the
+  macroblock count freezing rather than as a wrong checksum.
+- **Area 51** - MDEC output ordering (bug: each frame decodes as two halves
+  into two buffers).
+- **Bomberman Party Edition** - GetlocL and the CD state machine (bug 51), and
+  the multitap/SIO work (bugs 52-54).
+- **Final Fantasy VII** - the SPU: its prelude is where bug 39's pitch bug and
+  bug 57's halved mix both showed. Its frame 3000 is a title screen, so the
+  checksum is stable but says nothing about audio; the run's `spu` line does.
+- **Wild Arms** - XA audio, and the overworld tile seams of bug 59's gate.
+- **Ridge Racer**, **Vandal Hearts**, **Legend of Mana**, **Ace Combat 3** -
+  ordinary 2D/3D rendering under real drivers, at three points each.
+- **Final Fantasy VIII** - newly bootable once `.ccd` was read. Its frame 3000
+  is a near-black publisher screen (3,790 non-black), so it is a weak signal
+  and mostly proves the disc still mounts and runs.
+
+**Two traps, both of which have cost time here.**
+
+*Run at most three of these at once.* The images live on a network share, and
+under eight concurrent `boot_runner`s it starves: a run simply stops getting
+sectors partway through, ends early, and produces a different checksum for a
+binary that did not change. Before believing any difference, compare the
+`cdrom ... N sectors` line against the table above - equal sector counts mean
+both runs actually read the disc.
+
+*Clear the save files first.* A game that finds a memory card boots
+differently, reproducibly. `boot_runner` creates none of its own, but the front
+end's cards under `Documents\My Games\PSXEmu\memcards\<disc>\` are the same
+files if anything has played that disc.
+
 ### Register access, same run
 
 | Register | Meaning | Expected |
 |---|---|---|
 | `1F801000-1020` | memory control | 1 write each |
-| `1F801040/44/4A` | controller port | polled, ~728 reads |
-| `1F801070` | I_STAT | 39,509 reads, 2,429 acknowledges |
-| `1F801074` | I_MASK | 25,196 reads, 13 writes |
-| `1F801100-1128` | root counters | written |
+| `1F801040/44/4A` | controller port | 288 / 288 / 216 reads |
+| `1F801070` | I_STAT | 26,500 reads, 1,974 acknowledges |
+| `1F801074` | I_MASK | 24,065 reads, 11 writes |
+| `1F801100-1128` | root counters | written; `1F801110` read 512 times |
 | `1F801800-1803` | CD-ROM | 3 commands issued |
-| `1F801810/14` | GP0 / GPUSTAT | 18,224 / 2,694 writes |
-| `1F801D80-DFE` | SPU register file | written |
-| `1F802041` | POST (boot progress) | 15 writes |
+| `1F801810/14` | GP0 / GPUSTAT | 824 / 2,325 writes, 446,156 GPUSTAT reads |
+| `1F801D80-DFE` | SPU register file | 112 registers written |
+| `1F802041` | POST (boot progress) | 18 writes |
+
+Most GP0 traffic never touches `1F801810`: it arrives by DMA, which is why the
+port's 824 writes and the GPU's own 16,955 GP0 words are both right.
 
 Every device is now reached. A device dropping off this list is a regression
 even when the checksum has not moved.

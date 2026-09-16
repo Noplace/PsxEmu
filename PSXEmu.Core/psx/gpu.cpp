@@ -966,10 +966,22 @@ namespace emulation {
             if (max_x - min_x >= 1024 || max_y - min_y >= 512)
                 return;
 
+            // Two different kinds of bound, and treating them alike loses a column and a row.
+            //
+            // A primitive's own extent is half-open: a quad given x=0 and x=640 covers columns 0 to
+            // 639, which is why max_x and max_y give up their last pixel here rather than in the
+            // loop. The drawing area is not - GP0(E4) states an *inclusive* bottom-right corner,
+            // which is how the per-pixel clip in Plot() has always read it (`x > draw_area_right_`
+            // rejects, so right itself is inside).
+            //
+            // Clipping with an exclusive bound against an inclusive limit threw away the last
+            // column and row of the drawing area whenever a primitive reached them - which the
+            // BIOS's own background does, drawn as (0,0)-(640,480) against an area of 639x479. The
+            // whole of column 639 and row 479 went unpainted, 1,117 pixels of a 640x478 screen.
             const int32_t left = std::max(min_x, draw_area_left_);
-            const int32_t right = std::min(max_x, draw_area_right_);
+            const int32_t right = std::min(max_x - 1, draw_area_right_);
             const int32_t top = std::max(min_y, draw_area_top_);
-            const int32_t bottom = std::min(max_y, draw_area_bottom_);
+            const int32_t bottom = std::min(max_y - 1, draw_area_bottom_);
             if (left > right || top > bottom)
                 return;
 
@@ -1002,8 +1014,9 @@ namespace emulation {
             const int32_t bias1 = state.semi_transparent ? EdgeBias(c.x - b.x, c.y - b.y) : 0;
             const int32_t bias2 = state.semi_transparent ? EdgeBias(a.x - c.x, a.y - c.y) : 0;
 
-            for (int32_t y = top; y < bottom; ++y) {
-                for (int32_t x = left; x < right; ++x) {
+            // Inclusive now: `right` and `bottom` are the last pixel to draw, not one past it.
+            for (int32_t y = top; y <= bottom; ++y) {
+                for (int32_t x = left; x <= right; ++x) {
                     const int32_t w0 = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
                     const int32_t w1 = (c.x - b.x) * (y - b.y) - (c.y - b.y) * (x - b.x);
                     const int32_t w2 = (a.x - c.x) * (y - c.y) - (a.y - c.y) * (x - c.x);
