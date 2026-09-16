@@ -70,6 +70,12 @@ class Machine {
  public:
   Machine() : system_(new emulation::psx::System()) {
     system_->InitializeWithoutBios();
+    // The front end's own gain sits on top of the hardware's main volume, and
+    // what is under test here is the hardware. Left at its default these
+    // checks measure that default as much as the mixer - which is how the
+    // main volume coming out at half went unseen: the default was 2x, and the
+    // two cancelled exactly.
+    system_->config().audio_volume = 1.0f;
   }
   ~Machine() {
     system_->Deinitialize();
@@ -691,6 +697,14 @@ void TestCdInputVolume(Machine& m) {
   QueueTone(8000);
   const int32_t loud = PeakOf(m.Run(300));
   Check(loud > 3000, "a full CD volume of 7FFFh is audible, not silent");
+
+  // Both stages at unity, so what goes in comes out: 7FFFh is unity on a
+  // plain input level and 3FFFh is unity on a sweep-format main volume, whose
+  // bits 14-0 are the level halved. Decoding that without the doubling - the
+  // (reg << 1) >> 1 that cancels itself - put this at 4000, half of what the
+  // hardware mixes, everywhere a voice or the main volume was involved.
+  Check(loud > 7800 && loud < 8200,
+        "a tone of 8000 at unity comes out at 8000, not halved");
 
   // Zero volume really is silence.
   m.Reset();

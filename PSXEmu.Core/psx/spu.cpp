@@ -244,10 +244,18 @@ int16_t Spu::VolumeOf(uint16_t reg) {
 // [NEW IMPLEMENTATION]
 int16_t Spu::VolumeOf(const VolumeSweep& sweep) {
   // If bit 15 is set, it's a sweep, and we return the current running level.
-  // Otherwise, we return the plain level in the low 15 bits, as a signed value doubled.
+  //
+  // Otherwise bits 14-0 are the level *halved* - -4000h..+3FFFh standing for
+  // -100%..+100% - so the register is doubled into the -8000h..+7FFEh range
+  // every mix site multiplies by and shifts 15 back out of. This used to
+  // shift the doubling straight back out again ((reg << 1) >> 1), which
+  // cancels: a game asking for unity, 3FFFh, mixed at half. Both the voice
+  // and the main volume went through it, so everything came out at a quarter
+  // of amplitude - consistently, which is why nothing sounded wrong relative
+  // to anything else and the front end just carried a 2x master gain.
   if (sweep.reg & 0x8000)
     return static_cast<int16_t>(sweep.level);
-  return static_cast<int16_t>(static_cast<int16_t>(sweep.reg << 1) >> 1);
+  return static_cast<int16_t>(sweep.reg << 1);
 }
 
 // The CD and external input volumes are not sweep registers - they are plain
@@ -416,7 +424,9 @@ void Spu::StepEnvelope(Voice& voice) {
 
 void Spu::StepSweep(VolumeSweep& sweep) {
   if ((sweep.reg & 0x8000) == 0) {
-    sweep.level = static_cast<int16_t>(static_cast<int16_t>(sweep.reg << 1) >> 1);
+    // A fixed level, doubled into the full range the sweep below ramps over -
+    // see VolumeOf for why the doubling is not shifted back out.
+    sweep.level = static_cast<int16_t>(sweep.reg << 1);
     return;
   }
   

@@ -49,7 +49,14 @@ struct EmuConfig {
   //
   // 1.0 is the hardware level. The mix is clamped afterwards, so a high value
   // distorts loud passages rather than wrapping them.
-  float audio_volume = 2.0f;
+  //
+  // It defaulted to 2.0 while the SPU decoded a fixed-level volume register
+  // without doubling it, which put every voice and the main volume at half.
+  // The two cancelled, so this read as taste rather than as the correction it
+  // was. The mix is right now, so the default is the hardware's own level -
+  // a setting already in a psxemu.ini still says 2.0 and will now be twice as
+  // loud as before, which the Audio menu changes.
+  float audio_volume = 1.0f;
 
   static const float kMinAudioVolume;
   static const float kMaxAudioVolume;

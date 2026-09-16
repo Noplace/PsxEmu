@@ -3073,3 +3073,114 @@ decode a bad frame will wreck RAM the same way. Also, the Captain Tsubasa
 `.bin` on the share has zeroed XA subheaders (the `.mdf` beside it does not),
 so the film's audio sectors reach the CPU as data and the film plays silent
 from that image.
+
+## 56. An MDEC transfer moved every word inside the CHCR write, and a decode that ended short of a block was never handed over
+
+`psx/dma.cpp`, `psx/mdec.cpp`
+
+**Symptom.** None on its own - this is the crash *path* bug 55 left open. A
+`DecDCTin` given an empty frame writes a BCR of `00000020`: 32-word blocks,
+block count 0, which means 65,536 of them. `Dma0` looped over all 2,097,152
+words before the CPU's next instruction, so the whole of RAM went through the
+decoder four times over and channel 1 wrote what it decoded from `801BEAD0`
+through the stack and round into kernel RAM.
+
+**Cause.** Channel 0 was the last DMA path that still moved its data eagerly.
+On hardware the MDEC takes a block only when it has room, and drains its input
+at decode speed, so the CPU keeps running and the game's own next `DecDCTin` or
+`DecDCTout` restarts the channel long before that much RAM is touched.
+
+**Fix.** In request mode channel 0 moves one block, then waits: the block's bus
+time (charged to the CPU, which the bus really does stop) plus 2,688 cycles for
+each macroblock the block completed - DuckStation's `TICKS_PER_BLOCK * 6`,
+which the CPU is *not* stopped for. `Dma::Tick` moves the next when that runs
+out, MADR and BCR run down as they go the way channel 1's already did, and a
+CHCR write that clears the start bit abandons the rest. Burst mode is
+unchanged. `mdec_in_wait_` is the only new state, so `kStateVersion` is 7.
+
+**A second bug, found by wiring up a test nobody called.**
+`TestOutputDmaStartedFirst` went in with `535949b` (the Area 51 fix) and was
+never added to `main()`. Called at last, its last two checks failed: a decode
+that ends with less than a block of output - a monochrome one ending partway -
+finished without telling channel 1, because `Mdec::WriteWord` only pokes it
+from `EmitMacroblock`, and `HasBlockReady` refuses a short tail while the
+command is still running. So the tail sat in the decoder and the transfer
+waited for ever. `WriteWord` now pokes channel 1 again when a decode command
+goes idle with output still in hand.
+
+**Verified.** `mdec_test` is 85 checks, up from 60: the two DMA tests now run,
+and a new `TestInputDmaIsPaced` checks that the CHCR write moves nothing
+itself, that one tick moves one block, that the whole transfer still completes
+given the time, that a zero block count moves a few thousand words in a
+4,096-cycle tick rather than two million, and that stopping the channel
+abandons it. Against the old `Dma0` that test fails five of its checks.
+
+Test-Suite.md's save-state procedure passes on the new version, BIOS-only and
+with a disc, plus a fourth case for this change specifically: a state taken at
+frame 750 of Air Combat - mid-film, with channel 0 part way through feeding the
+MDEC - resumed to frame 900 gives a byte-identical frame to a straight run.
+
+A/B over 3,000 frames, HEAD against this change (with bugs 55 and 57): the BIOS
+boot, Wild Arms 2, Ridge Racer and Final Fantasy VII are identical at every
+100-frame mark; Wild Arms, Bomberman, Legend of Mana and Area 51 end on the
+same checksum with a few frames of film shifted in between; Air Combat and
+Captain Tsubasa J are bug 55's two fixes. Vandal Hearts and Ace Combat 3 end on
+a different checksum, both mid-film, with the same CD sector count and within
+1.5% of the same macroblock count - their films are a fraction of a frame out
+of phase, which the final frames confirm: the same picture, one film frame
+apart. That shift is the point of the change, not a side effect of it: a decode
+that used to complete inside one CHCR write now finishes when the decoder would
+have finished it.
+
+**A methodology note that cost half an hour.** The first A/B run of this had
+Vandal Hearts, Legend of Mana and Ridge Racer changing under a *binary that had
+not changed*. Not non-determinism - three runs of one binary agree to the
+instruction - but the network share the discs live on starving under eight
+concurrent `boot_runner`s: the run stopped getting sectors at frame ~900 and
+its log ended early. Keep the concurrency low, and compare the `cdrom ...
+sectors` line between the two builds before believing any checksum.
+
+## 57. A fixed-level volume was doubled and then halved again, so the whole mix came out at a quarter
+
+`psx/spu.cpp`
+
+**Symptom.** Quiet output, with nothing wrong relative to anything else - the
+reason the front end shipped a 2x master gain and this document's own Gaps.md
+claimed "a PlayStation is quiet by modern standards: the mix peaks at about a
+fifth of full scale".
+
+**Cause.** A sweep-capable volume register in fixed-level mode stores the level
+*halved*: bits 14-0 hold `volume / 2`, -4000h..+3FFFh standing for
+-100%..+100%. To use it the field is sign-extended and doubled into the
+-8000h..+7FFEh range that every mix site multiplies by and shifts 15 back out
+of. `Spu::VolumeOf` did the doubling and then shifted it straight back out:
+
+```cpp
+return static_cast<int16_t>(static_cast<int16_t>(sweep.reg << 1) >> 1);
+```
+
+The two cancel. A game asking for unity, 3FFFh, mixed at half - and both the
+voice volume and the main volume go through this, so a full-scale game came out
+at a quarter of amplitude, about -12 dB. `Spu::StepSweep`'s fixed-level branch
+had the same expression. The CD and external *input* volumes are a different,
+plain-signed format and were already right (bug 36).
+
+**Why it survived.** `EmuConfig::audio_volume` defaulted to 2.0, applied after
+the main volume inside `GenerateFrame`, which cancelled exactly one of the two
+halvings. `spu_test` measured through that default, so its "a full CD volume of
+7FFFh is audible" check saw 8000 for a tone of 8000 and read as correct: the
+bug and the compensation agreed at the one point being measured.
+
+**Fix.** `VolumeOf` and `StepSweep` return `(int16_t)(reg << 1)`, and
+`audio_volume` defaults to 1.0 - the hardware's own level. **A `psxemu.ini`
+that already says 2.0 keeps it and will be twice as loud as before**; the Audio
+menu changes it.
+
+**Verified.** `spu_test` sets `audio_volume` to 1.0 in its harness now, so it
+measures the mixer rather than the front end's taste, and a new check reads the
+absolute level: a CD tone of 8000 with both stages at unity comes out at 8000
+(7,998), where before the fix it was 3,999. 108 checks, no failures. On real
+discs, at `--volume 1` on both builds, the SPU's peak over 2,400 frames goes
+7,114/5,803 to 28,461/23,222 - exactly the 4x of two stages - with no clipping
+(28,461 of 32,767). FF7 and Wild Arms report the same peak because the loudest
+thing in either run is the BIOS's own boot chime.

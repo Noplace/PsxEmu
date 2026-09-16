@@ -12,25 +12,27 @@ previous audit (which predated bug 39 and the September 12-14 commits).
 
 ## Can crash a game
 
-No game is known to be blocked right now. Air Combat and Captain Tsubasa J,
-the last two, were both bug 55. What is listed here is a path that is known to
-end in a crash when a game reaches it.
+Nothing known. No game is blocked, and the one path that ended in a crash
+regardless of the game - an MDEC-in transfer that moved every word inside the
+CHCR write - is bug 56.
 
-### An MDEC-in transfer moves all its words the moment it starts
+### The MDEC's own timing is the DMA channel's, not a decode model
 
-`Dma::Dma0` loops over the whole transfer inside the CHCR write. In request
-mode (sync 1) that is BCR's block size times its block count, and a block
-count of 0 means 65,536 - so a `DecDCTin` handed an empty frame (size field 0,
-BCR `00000020`) pushes 2,097,152 words, all of RAM four times over, through the
-MDEC before the CPU runs another instruction. The garbage decodes, the waiting
-channel 1 transfer (also 65,536 blocks) takes the output, and it lands from the
-output buffer through the stack and round into kernel RAM.
+Channel 0 now feeds the decoder one block at a time (bug 56), waiting the
+block's bus time plus 2,688 cycles for each macroblock it completed -
+DuckStation's figure for six 8x8 blocks, not a measurement, and charged as a
+delay before the next block rather than modelled inside the MDEC. The decoder
+itself still decodes a whole macroblock the instant its last word arrives and
+holds its output in a buffer of its own rather than a 768-word FIFO, so:
 
-On hardware channel 0 moves a block only when the MDEC's data-in request says
-it has room, and the MDEC drains its input at decode speed, so the CPU keeps
-running and the game's next `DecDCTin` restarts the channel long before RAM is
-touched. Captain Tsubasa J and Air Combat reached this path through bug 55's
-stale flag; that route is closed, the path is not.
+- **The data-in request is not modelled.** Real hardware asserts it while the
+  input FIFO has room; here the channel's own pacing stands in for it, and
+  MDEC control bit 30 (DMA-in enable) does not gate the channel at all.
+- **Output appears all at once** when a macroblock finishes, where hardware
+  copies it out over the same 2,688 cycles.
+
+Games that stream film see the right throughput and the right ordering. A game
+that watches STAT's request bits closely rather than using DMA would not.
 
 ## Test health
 
@@ -62,7 +64,15 @@ twelve discs).
 
 The September 12-14 commits have no Bugs-Found entries. The SPU commit
 replaced the reverb and added volume sweeps (see below) without adding a
-`spu_test` check - it is still 107.
+`spu_test` check.
+
+### A written test nobody called
+
+`mdec_test`'s `TestOutputDmaStartedFirst` - the Area 51 regression, written
+with commit `535949b` - was never added to `main()`, so its checks had never
+run. Wiring it in (bug 56) found a real bug in the first two of them. Worth a
+sweep of the other harnesses for the same thing: a test is only a test if
+something calls it.
 
 ## Silently wrong rather than absent
 
@@ -70,18 +80,19 @@ These do not stop anything, which is what makes them worth listing: a game
 runs at the wrong speed or sounds or draws slightly wrong and nothing reports
 an error.
 
-### Voice and main volumes come out at half
+### Voice and main volumes came out at half - fixed
 
-`Spu::VolumeOf` decodes a fixed-level volume as `(int16_t)(reg << 1) >> 1`,
-which doubles the level and shifts it straight back out - a voice or main
-volume of 3FFFh, which should be about unity, mixes at about half. It is
-consistent across every voice and the main output, so nothing sounds wrong
-relative to anything else; it is just quiet, which is part of why the front
-end defaults `audio_volume` to 2.0. Fixing it doubles every game's audio and
-wants that default dropped to match, so it needs measuring on its own.
+Bug 57. `Spu::VolumeOf` doubled a fixed-level volume into the range the mixer
+multiplies by and shifted the doubling straight back out again, so 3FFFh -
+unity - mixed at half, at both the voice and the main stage. `audio_volume`
+defaulted to 2.0 and cancelled one of the two, which is why it read as taste
+rather than as a correction; the default is now 1.0, the hardware's own level.
+An existing `psxemu.ini` still says 2.0 and will be twice as loud until it is
+changed in the menu.
 
-The CD and external input volumes are a different, plain-signed format and go
-through `InputVolumeOf` (bug 36).
+What is left here is the same question one level up: with the mix right, FF7
+peaks at 87% of full scale rather than the 22% this document used to cite as
+"a PlayStation is quiet by modern standards". That claim was the bug talking.
 
 ### Reverb and volume sweeps - implemented, not verified
 
@@ -283,7 +294,8 @@ Things that look missing and are not, so they are not re-investigated:
   18,900 Hz with filter history across sectors, honouring `Setfilter`; Wild Arms'
   opening film decodes to 50 seconds of clean audio. Silence from a particular
   image is more likely zeroed subheaders (disc images above).
-- **The MDEC.** Implemented, `mdec_test` 60 checks; films and their audio play.
+- **The MDEC.** Implemented, `mdec_test` 85 checks - including both DMA
+  channels' behaviour, which is where bugs 55 and 56 landed; films play.
 - **The SPU voice path.** 24 ADPCM voices, ADSR, the Gaussian table, noise,
   pitch modulation, CD input, and loop addresses surviving key-on (bug 39).
   The quirks left are the entries above.
