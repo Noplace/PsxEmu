@@ -3223,3 +3223,68 @@ level.
 
 **Verified.** Full scale reports 32,767 and half scale 16,384. `media_test` is
 246 checks, 0 failures - the first time it has been green since `535949b`.
+
+## 59. The top-left rule had its vertical test inverted, and half-open raster loops turned that into a gap
+
+`psx/gpu.cpp`
+
+**Symptom.** `gpu_test`: *the shared edge column blended exactly once, not
+twice: got 00000000 want 00000008*. Two semi-transparent quads sharing a
+vertical edge, and the shared column came out **unblended** - not blended
+twice, which is what that test was written for (Silent Hill's hatching), but
+not drawn at all.
+
+**Cause, in two halves that were each survivable alone.**
+
+*The rule was upside down.* `RasterTriangle` normalises every triangle to a
+positive signed area, y growing downwards. Work the edge function out for a
+vertical edge under that winding: an edge running *up* the screen (`dy < 0`)
+has the interior to its right - a left edge, which the top-left rule keeps -
+and one running down (`dy > 0`) is a right edge, which it drops. `EdgeBias`
+tested `dy > 0`, so it kept right edges and dropped left ones. Horizontal
+edges were the right way round, which is why the quad-diagonal case the rule
+was written for still worked: for the two triangles either side of a shared
+edge the direction reverses, so exactly one of them claims it whichever way
+the test points. All the inversion did on its own was hand a shared column to
+the left-hand neighbour instead of the right-hand one.
+
+*Then the loops became half-open.* The September GPU commits changed
+`for (y = top; y <= bottom)` / `x <= right` to `<`. That is the right
+convention - a quad from x=400 to x=416 covers sixteen columns, and
+DuckStation's own rasterizer walks spans with the bound exclusive - but it
+means the left-hand primitive can no longer paint its rightmost column at all.
+With the inverted rule the right-hand primitive was refusing that same column
+as "not a left edge", so between them nobody drew it.
+
+Opaque draws were unaffected because the bias is gated on
+`state.semi_transparent`, which is why only one check failed.
+
+**Fix.** `EdgeBias` tests `dy < 0` for the vertical case. A left edge is kept,
+a right edge dropped, which with the half-open loops gives each shared column
+exactly one owner - the right-hand primitive, as on hardware.
+
+**Verified.** `gpu_test` 31/31. Every harness is green: cpu 251, gte 99,
+timer 70, sio 105, spu 108, gpu 31, mdec 85, media 246 - 995 checks, no
+failures.
+
+On discs, 3,000 frames each, ten of twelve are byte-identical at every
+100-frame mark. The two that move are the two the rule can move, and both move
+the right way:
+
+- **Final Fantasy VII**, title screen: 478 pixels change, all of them inside
+  exactly **two columns** (x=0 and x=255), each changed down 239 of its 240
+  rows. 471 of them go from black to coloured and **none** go the other way -
+  two full-height seams, filled in. The GP0 word count is identical, so this is
+  the same drawing landing in pixels that were being left blank.
+- **Ridge Racer**: three pixels, none of them black either before or after -
+  ownership of a boundary shifting by a column on a few semi-transparent
+  edges, which is what correcting the rule is *supposed* to do.
+
+**Left alone deliberately.** The bias is still gated on semi-transparency.
+That gate was bug-fix scaffolding from when the rule was inverted: applying an
+upside-down rule to opaque draws gave the shared column to the wrong tile and
+put seams through Wild Arms' overworld. With the polarity corrected and the
+loops half-open the gate should be unnecessary - hardware's fill rule does not
+know what blending is - but un-gating it changes which texel wins on every
+adjacent opaque tile edge in the game that showed the seams, and that wants
+checking against the game rather than against a unit test.

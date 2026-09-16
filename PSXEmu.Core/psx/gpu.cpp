@@ -77,8 +77,24 @@ namespace emulation {
             // non-top-left edge's test by -1 (integer coordinates only, so w is always a
             // whole number) makes exactly one of the two triangles that share an edge
             // claim it, matching the rule real GPUs use for the same reason.
+            // Which way round "left" is depends on the winding, and
+            // RasterTriangle normalises every triangle to a positive signed area
+            // with y growing downwards. Under that, work the edge function out for a
+            // vertical edge: an edge running *up* the screen (dy < 0) has the interior
+            // to its right, which is a left edge and is kept; one running down
+            // (dy > 0) is a right edge and is dropped. Horizontal edges are the
+            // familiar way round - a top edge runs right (dx > 0).
+            //
+            // This had the vertical test the wrong way round, so it kept right edges
+            // and dropped left ones. On its own that only moved which of two
+            // neighbours owned a shared column. Once the raster loops became
+            // half-open (`x < right`), though, the left-hand primitive could no
+            // longer draw its rightmost column at all, and the right-hand one was
+            // refusing the same column as "not a left edge" - so a shared column
+            // between two semi-transparent primitives was drawn by neither and came
+            // out as an unblended gap.
             inline int32_t EdgeBias(int32_t dx, int32_t dy) {
-                const bool top_left = (dy > 0) || (dy == 0 && dx > 0);
+                const bool top_left = (dy < 0) || (dy == 0 && dx > 0);
                 return top_left ? 0 : -1;
             }
 

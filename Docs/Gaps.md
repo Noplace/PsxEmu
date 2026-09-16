@@ -36,15 +36,22 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ## Test health
 
-### One harness failure on HEAD, new since 2026-09-12
+### Every harness is green
 
-`gpu_test`: *the shared edge column blended exactly once, not twice: got
-00000000 want 00000008* (1 of 31). It passes at `535949b` (31/31), so it came
-in with the GPU series (`0a9ed25`..`2450594`, one of them titled "gpu fixes nt
-working") or `3690db2`. Not yet bisected to one commit.
+cpu 251, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 246 - 995
+checks, no failures. The two that were failing when this document was last
+audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
+top-left rule's vertical test was inverted, which the half-open raster loops
+turned from a wrong owner into a gap).
 
-`media_test`'s Audio Peak Meter failure was the other one, and it was the test
-rather than the meter - bug 58.
+### The fill rule is still gated on semi-transparency
+
+`RasterTriangle` applies the top-left bias only when `state.semi_transparent`
+is set. Hardware's fill rule does not know what blending is, and with bug 59's
+polarity fix the gate should be unnecessary - but un-gating it moves which
+texel wins on every adjacent opaque tile edge, which is what put seams through
+Wild Arms' overworld when the rule was upside down. It wants checking against
+that game, not against a unit test.
 
 ### Baselines are stale
 
