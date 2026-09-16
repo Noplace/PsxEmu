@@ -3184,3 +3184,42 @@ discs, at `--volume 1` on both builds, the SPU's peak over 2,400 frames goes
 7,114/5,803 to 28,461/23,222 - exactly the 4x of two stages - with no clipping
 (28,461 of 32,767). FF7 and Wild Arms report the same peak because the loudest
 thing in either run is the BIOS's own boot chime.
+
+## 58. The CD audio peak meter's own test played silence, and blamed the meter
+
+`tools/media_test.cpp`
+
+**Symptom.** `media_test`: *Audio Peak Meter / Report peak is non-zero for loud
+audio*, with `cdda_sectors=76 cdda_failures=0 audio_peak=0`. Sectors read, none
+of them failing, and a peak of zero - which reads as a drive that plays audio
+without measuring it.
+
+**Not a regression, and not the drive.** The peak meter and this test went in
+together with `209943e`, so it had never passed; `535949b` is green only
+because neither existed yet. The meter works.
+
+**Two things wrong with the test.**
+
+*It played silence.* The image was written as 150 sectors of silence - an
+imagined lead-in - followed by 76 loud ones, and then played from 00:02:00.
+But an image file does not contain the lead-in: the cue sheet's
+`INDEX 01 00:00:00` says its first sector *is* the first sector of track 1,
+which the drive addresses as 00:02:00. So the loud audio actually sat at
+00:04:00 and the drive dutifully played the silence in front of it. This is
+the off-by-150 that `TestIsoImage` a few hundred lines above warns about in
+as many words.
+
+*It read the wrong side of the interface.* It sampled `Cdrom::audio_peak()`,
+the register the drive accumulates into, after a fixed number of ticks. That
+register is reset by every Report - "the peak since the last report" is what it
+means - so what it holds depends on where between two reports the clock
+stopped. The Report packet is what a CD player reads.
+
+**Fix.** The test writes a track of one constant sample from its first sector,
+plays it, and reads bytes 6 and 7 out of the first Report packet. It also plays
+a second track at half scale: *"non-zero for loud audio"* passes on a meter
+that latches any constant, and the point of a meter is that it follows the
+level.
+
+**Verified.** Full scale reports 32,767 and half scale 16,384. `media_test` is
+246 checks, 0 failures - the first time it has been green since `535949b`.

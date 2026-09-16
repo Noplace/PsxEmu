@@ -36,19 +36,15 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ## Test health
 
-### Two harness failures on HEAD, both new since 2026-09-12
+### One harness failure on HEAD, new since 2026-09-12
 
-- `gpu_test`: *the shared edge column blended exactly once, not twice: got
-  00000000 want 00000008* (1 of 31).
-- `media_test`: *Audio Peak Meter / Report peak is non-zero for loud audio*,
-  `cdda_sectors=76 cdda_failures=0 audio_peak=0` (1 of 225).
+`gpu_test`: *the shared edge column blended exactly once, not twice: got
+00000000 want 00000008* (1 of 31). It passes at `535949b` (31/31), so it came
+in with the GPU series (`0a9ed25`..`2450594`, one of them titled "gpu fixes nt
+working") or `3690db2`. Not yet bisected to one commit.
 
-Both pass at `535949b` (31/31 and 206/206), so both came in with the September
-12-14 commits - the GPU series (`0a9ed25`..`2450594`, one titled "gpu fixes nt
-working"), the SPU reverb/sweep commit `1419d78`, the CD-ROM commit `209943e`
-or `3690db2`. Not yet bisected to one commit. The CD-DA peak reading zero is
-the one to look at first: CD music reaching the mixer at all was bug 36's
-whole point.
+`media_test`'s Audio Peak Meter failure was the other one, and it was the test
+rather than the meter - bug 58.
 
 ### Baselines are stale
 
@@ -65,6 +61,14 @@ twelve discs).
 The September 12-14 commits have no Bugs-Found entries. The SPU commit
 replaced the reverb and added volume sweeps (see below) without adding a
 `spu_test` check.
+
+### Tests written with the feature they check, and never run against it
+
+Two of these now: `mdec_test`'s `TestOutputDmaStartedFirst`, below, and the CD
+Audio Peak Meter test, which shipped with the meter in `209943e` and failed
+from the first run - it played silence and asserted a zero peak was a bug in
+the drive (bug 58). A test committed alongside its feature is worth running
+once before it is believed.
 
 ### A written test nobody called
 

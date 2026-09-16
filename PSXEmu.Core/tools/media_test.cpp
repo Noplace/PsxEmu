@@ -1094,76 +1094,87 @@ void TestCdExtraCommands(emulation::psx::System* system,
   // ---------------------------------------------------------------------------
   BeginTest("Audio Peak Meter");
   {
-    // Write a loud audio track: every PCM sample is the maximum signed 16-bit
-    // value so the peak register should saturate.
-    const std::string loud_bin = directory + "media_loud.bin";
-    const std::string loud_cue = directory + "media_loud.cue";
-    // Construct a 2352-byte sector where all PCM bytes are 0x7F (filling the
-    // upper byte of each 16-bit sample with the loudest positive value).
-    const int kSectorSize = 2352;
-    FILE* fp = fopen(loud_bin.c_str(), "wb");
-    if (fp) {
-      // 150 lead-in sectors (silence) + 76 loud audio sectors. We need at
-      // least 75 sectors of play so the absolute frame counter wraps through
-      // 00, guaranteeing the Report condition fires at least once.
-      std::vector<uint8_t> silence(kSectorSize, 0);
-      for (int i = 0; i < 150; ++i)
-        fwrite(silence.data(), 1, kSectorSize, fp);
-      // Fill with max positive int16 samples: low byte 0xFF, high byte 0x7F
-      std::vector<uint8_t> loud(kSectorSize);
+    const std::string peak_bin = directory + "media_loud.bin";
+    const std::string peak_cue = directory + "media_loud.cue";
+
+    // Plays a whole track of one constant sample value and returns the peak
+    // out of the first Report packet the drive sends, or -1 if none came.
+    //
+    // The peak comes out of the packet rather than out of the register behind
+    // it: that register is what the drive accumulates into and it is reset
+    // every time a report is sent, so what it holds at any given moment
+    // depends on where between two reports the clock stopped. The packet is
+    // what a CD player reads, and bytes 6 and 7 are the peak.
+    auto PlayAndReadPeak = [&](int16_t sample) -> int {
+      const int kSectorSize = 2352;
+      FILE* fp = fopen(peak_bin.c_str(), "wb");
+      if (fp == nullptr)
+        return -2;
+      // The audio starts at the first sector of the file. An image does not
+      // contain the lead-in - the cue sheet's INDEX 01 00:00:00 says its first
+      // sector *is* the first sector of track 1, which the drive addresses as
+      // 00:02:00. Writing 150 silent sectors in front of it (the off-by-150
+      // TestIsoImage warns about) put the audio two seconds further in than
+      // the play command below reaches, so the drive read silence and reported
+      // a peak of zero - which was the test failing, not the meter.
+      std::vector<uint8_t> pcm(kSectorSize);
       for (int i = 0; i < kSectorSize; i += 2) {
-        loud[i]     = 0xFF;   // little-endian 0x7FFF
-        loud[i + 1] = 0x7F;
+        pcm[i]     = static_cast<uint8_t>(sample & 0xFF);
+        pcm[i + 1] = static_cast<uint8_t>((sample >> 8) & 0xFF);
       }
-      for (int i = 0; i < 76; ++i)
-        fwrite(loud.data(), 1, kSectorSize, fp);
+      for (int i = 0; i < 226; ++i)
+        fwrite(pcm.data(), 1, kSectorSize, fp);
       fclose(fp);
-    }
-    bool loud_ok = WriteText(loud_cue,
-        "FILE \"media_loud.bin\" BINARY\r\n"
-        "  TRACK 01 AUDIO\r\n"
-        "    INDEX 01 00:00:00\r\n");
-    if (!fp || !loud_ok) {
-      printf("  SKIP  could not write loud audio image\n");
-    } else {
+      if (!WriteText(peak_cue,
+                     "FILE \"media_loud.bin\" BINARY\r\n"
+                     "  TRACK 01 AUDIO\r\n"
+                     "    INDEX 01 00:00:00\r\n"))
+        return -2;
+
       system->EjectDisc();
-      Check(system->LoadDisc(loud_cue.c_str()), "mount loud audio disc");
+      if (!system->LoadDisc(peak_cue.c_str()))
+        return -2;
 
-      Cdrom& loud_drive = system->cdrom();
-
-      // Seek to the audio track and begin playing.
       const uint8_t start_msf[3] = { 0x00, 0x02, 0x00 };
       cd.Command(0x02, start_msf, 3);                // Setloc
       cd.WaitForInterrupt(response, &length, 16);
       const uint8_t play_here[1] = { 0x00 };
       cd.Command(0x03, play_here, 1);                // Play from here
       cd.WaitForInterrupt(response, &length, 16);
-
-      // Enable Report mode (mode bit 2) so the drive sends INT1 packets.
       const uint8_t mode_report[1] = { 0x04 };
-      cd.Command(0x0E, mode_report, 1);              // Setmode
+      cd.Command(0x0E, mode_report, 1);              // Setmode: report on
       cd.WaitForInterrupt(response, &length, 16);
 
-      // Tick enough sectors for the drive to process the loud audio.
-      // audio_peak_ accumulates from the raw PCM in StepRead, so we just
-      // need the drive to have read at least one loud sector.
-      const int kTickStep = 25000;
-      const int kStepsPerSector = (451584 + kTickStep - 1) / kTickStep;
-      for (int sector = 0; sector < 10; ++sector)
-        for (int step = 0; step < kStepsPerSector; ++step)
-          loud_drive.Tick(kTickStep);
+      for (int tries = 0; tries < 16; ++tries) {
+        const uint8_t interrupt = cd.WaitForInterrupt(response, &length, 16);
+        if (interrupt == 0)
+          break;
+        if (interrupt == 1 && length >= 8)
+          return response[6] | ((response[7] & 0x7F) << 8);
+      }
+      return -1;
+    };
 
-      Check(loud_drive.audio_peak() > 0,
-            "Report peak is non-zero for loud audio");
-      printf("    [debug] cdda_sectors=%llu cdda_failures=%llu audio_peak=%u\n",
-             (unsigned long long)loud_drive.stats().cdda_sectors,
-             (unsigned long long)loud_drive.stats().cdda_failures,
-             (unsigned)loud_drive.audio_peak());
+    const uint64_t sectors_before = system->cdrom().stats().cdda_sectors;
+    const int loud = PlayAndReadPeak(0x7FFF);
+    Check(loud > 0, "Report peak is non-zero for loud audio");
+    CheckEqual(static_cast<uint32_t>(loud), 0x7FFF,
+               "and saturates on full-scale samples");
+    Check(system->cdrom().stats().cdda_sectors > sectors_before,
+          "the drive really played the audio track");
 
-      system->EjectDisc();
-    }
-    remove(loud_cue.c_str());
-    remove(loud_bin.c_str());
+    // Half scale has to report half, or the meter is a light rather than a
+    // meter - "non-zero for loud audio" alone would pass on a constant.
+    const int quiet = PlayAndReadPeak(0x4000);
+    CheckEqual(static_cast<uint32_t>(quiet), 0x4000,
+               "and follows the level rather than just latching");
+    printf("    [debug] cdda_sectors=%llu peak loud=%d quiet=%d\n",
+           (unsigned long long)system->cdrom().stats().cdda_sectors, loud,
+           quiet);
+
+    system->EjectDisc();
+    remove(peak_cue.c_str());
+    remove(peak_bin.c_str());
 
     // Restore the original disc for the cleanup below.
     system->LoadDisc(cue.c_str());
