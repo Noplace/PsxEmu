@@ -25,6 +25,52 @@ code is only part of it:
 So: dynamic. The interesting question is not that, it is what to invalidate on
 and how much of the interpreter to keep.
 
+## Correction, 2026-09-16: RecCore is x64-capable, and step 0 has now run
+
+Two things in the sections below are out of date. They are kept because the
+reasoning around them still holds, but read this first.
+
+**RecCore is not IA32-only.** The repository is
+`https://github.com/Noplace/RecCore`, and `Lib/intel/intel.h` defines
+`Reg64 = RAX,RCX,RDX,RBX,RSP,RBP,RSI,RDI,R8..R15` alongside `Reg32`, plus
+`Reg_xmm`/`Reg_ymm`. `Lib/intel/ia32.h` carries `Reg64` overloads
+(`MOV(Reg64, uint64_t)`, `ADD(Reg64, uint32_t)`, `IDIV(Reg64)`) and an
+`emitREX(Emitter*, EA)` that encodes the high register bits into the prefix -
+and there is VEX encoding in there too. The class is *called* `IA32`; it emits
+x86-64. The objection below - "a 32-bit emitter cannot emit code that runs in a
+64-bit process" - is simply wrong, and it was the main argument against using
+it. The rest of the layout: `Lib/{reccore.h, emitter.h/.cpp, instructionset.h,
+mem_mgr.h, types.h}` and `Lib/intel/{intel.h, ia32.h, addressing.h, IS.h,
+ia32_a.cpp .. ia32_z.cpp}`, with a `Test/` project beside it.
+
+**It is to be copied, not depended on.** Vendor it into
+`PSXEmu.Core/lib/reccore/`, keep its `reccore::intel` namespace, and record the
+upstream commit in a short `README` beside it so a later re-sync is a diff
+rather than an archaeology exercise. No submodule, no include path pointing off
+this tree - which is what made it unbuildable here in the first place.
+
+**Step 0 has run, and the answer is "yes, but not urgently".** Wall-clock speed
+is measured now, by `boot_runner`'s own summary and the front end's title bar:
+
+| Run | Wall-clock |
+|---|---|
+| BIOS boot, 400 frames | 1.57x real time |
+| Captain Tsubasa J, 3000 frames | 0.94x |
+| Air Combat, Wild Arms, Vandal Hearts, 3000 frames | roughly 1.0-1.2x |
+
+So the interpreter is at or a little above real time on this machine: games are
+playable, and a recompiler is **not** needed for them to run. What it is needed
+for is headroom - and there is now a concrete consumer of that headroom, since
+[Emulation-Speed-Plan.md](Emulation-Speed-Plan.md)'s 200% setting cannot be
+reached on real games at 1.0x. That is a much better justification than "faster
+is better", and it also sets the bar: **2x on the discs above, or the feature it
+exists for does not work.**
+
+Before committing to the JIT, spend the afternoon the section below already
+asks for on the two obvious scalar hot spots - the rasteriser plotting ~84
+million pixels a run, and the SPU generating one sample at a time. If either is
+a third of the time, it is far cheaper to fix than a JIT is to write.
+
 ## The honest problem with RecCore
 
 The old Game Boy recompiler at `GBEmu/archive/emulation/gb/cpu_recompiler.cpp`
@@ -154,11 +200,13 @@ interpreted and not compiled.
 The harness already answers this, and it is the strongest argument for doing
 this project here rather than anywhere else:
 
-- **The framebuffer checksum must not move.** `bd888bab645a63a9` for the BIOS
-  shell at 400 frames. A recompiler that changes it has changed behaviour, and
-  the checksum says so immediately.
-- **All 533 checks must pass** with the recompiler on, and `cpu_test` should be
-  run in both modes - it is 181 checks aimed at exactly the semantics a
+- **The framebuffer checksum must not move.** `c7c8db90c5984798` for the BIOS
+  shell at 400 frames, and the twelve-disc table in
+  [Test-Suite.md](Test-Suite.md) for real games - which did not exist when this
+  was written and is the better instrument: a JIT that breaks one game's timing
+  and nothing else shows up there and nowhere else.
+- **All 1,000 checks must pass** with the recompiler on, and `cpu_test` should
+  be run in both modes - it is 251 checks aimed at exactly the semantics a
   compiler is most likely to get subtly wrong.
 - **A per-block differential mode**, worth building early: run a block
   compiled, run it interpreted from the same state, compare every register. Any
@@ -166,17 +214,74 @@ this project here rather than anywhere else:
   the difference between a recompiler that takes a month and one that takes a
   year.
 
-## Recommendation
+## The order to build it in
 
-1. **Measure the speed.** One afternoon, and it may end the discussion.
-2. **If it is slow, profile before assuming it is the CPU.** The software
-   rasteriser is the other candidate and is much cheaper to improve.
-3. **Settle the RecCore question** - find it, establish whether it can emit
-   x64 - before designing around it.
-4. Only then, and only if the answer is still yes, build the block cache with
-   the interpreter as the fallback and the differential mode from day one.
+Steps 0 and 3 of the old recommendation are done: speed is measured, and
+RecCore emits x64. What follows assumes the profiling pass came back saying the
+CPU really is the cost.
 
-The honest summary: this is the most expensive item on any of these lists, and
-it is the only one where nobody has yet shown there is a problem to solve. The
-last several sessions have each turned a broken game into a working one for a
-few hours' work. That rate is unlikely to be beaten by a JIT.
+**1. Vendor and prove the emitter.** Copy the repository into
+`PSXEmu.Core/lib/reccore/`, add it to the solution and to
+`tools/build_tools.bat`, and write a `rec_test` harness whose first check is:
+emit a function that returns 42, mark the page executable, call it, get 42.
+Then one that adds two arguments, to pin the calling convention down - Windows
+x64 passes in RCX/RDX/R8/R9 and the callee owns RBX/RBP/RSI/RDI/R12-R15, and
+getting that wrong produces corruption that looks like a CPU bug. `mem_mgr.h`
+is where RecCore keeps its block allocation; check what it does about
+`VirtualAlloc` and W^X before trusting it.
+
+**2. A block decoder with no compiler behind it.** Walk from a PC to the next
+branch plus its delay slot, record the instructions, the cycle total and the
+registers touched - and then *interpret* it. No code generated yet. This is
+where the block boundary rules, the delay-slot handling and the cycle
+accounting get debugged, against an interpreter that is already right, with
+`cpu_test` as the judge.
+
+**3. Compile the easy third.** The register-to-register ALU forms and the
+immediate forms: ADDU/ADDIU/AND/OR/XOR/SLT/shifts. Guest registers stay in
+`CpuContext` in memory, loaded and stored around each operation. Anything else
+in the block ends the block and falls back. This is the point at which numbers
+appear, and the point at which the differential mode below earns its keep.
+
+**4. Memory and branches.** Loads and stores call the existing `Cpu::Load` /
+`Cpu::Store` as C functions first - correctness before speed, and it keeps the
+region decode, the timing and the store-invalidation check in one place.
+Branches end blocks; block linking (patching a compiled block to jump straight
+to the next) comes after, and only with a measurement behind it.
+
+**5. Invalidation and the cache-control write**, as described above.
+
+**6. Then, and only then, register allocation**, if the measurements say the
+load/store traffic is what is left to win.
+
+## The differential harness, built first
+
+Build this before step 3, not after. A `boot_runner --recompiler-diff` mode
+that, for every block: snapshots the `CpuContext`, runs the block compiled,
+snapshots again, restores, runs it interpreted, and compares all 32 registers
+plus HI/LO/PC. On the first mismatch it prints the block's address, its
+instructions and the register that diverged, and stops.
+
+This is the difference between a month and a year. It also composes with
+everything already here: run it over the twelve baseline discs and it covers
+far more instruction combinations than any test suite anyone would write by
+hand.
+
+## Where the risk actually is
+
+- **Timing, not correctness.** The semantics are testable and the tests exist.
+  What a JIT quietly changes is *when* interrupts land, and this project's whole
+  timing story - bugs 16, 42, 43, 48 - depends on per-instruction accounting.
+  Charging a block's cycles in one lump at the end is the standard trick, and
+  the twelve-disc table is what will say whether a particular game noticed.
+- **Save states.** A state must never contain compiled code or a pointer into
+  it. Flush the block cache on load, and keep the JIT entirely out of
+  `Serialise` - `kStateVersion` should not move for this at all.
+- **The diagnostic tooling is interpreter-shaped.** `--trace`, `--trace-at`,
+  `--watch-ram` and the boot-runner statistics all assume instruction-at-a-time
+  execution. Keep an interpreter-only switch permanently, and expect to use it
+  every time something goes wrong.
+- **It is still the most expensive item on any of these lists.** The sessions
+  that produced bugs 55-60 each cost hours and each fixed something a player
+  would see. A JIT is weeks, and at 1.0x real time nobody is currently waiting
+  on it - except the 200% speed setting, which is a real but modest prize.

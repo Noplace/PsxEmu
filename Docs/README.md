@@ -10,6 +10,9 @@ Working notes for anything spanning more than one sitting. Status per document.
 | [Test-Suite.md](Test-Suite.md) | live | The three harnesses, and the baselines to check after any change |
 | [Gaps.md](Gaps.md) | live | Hardware and features still missing, ordered by impact. Also what is deliberately not done |
 | [Bugs-Found.md](Bugs-Found.md) | live | Bugs fixed in the revived code, with the symptom each produced |
+| [Threading-Plan.md](Threading-Plan.md) | proposed | Moving the machine off the message thread, in three stages |
+| [Emulation-Speed-Plan.md](Emulation-Speed-Plan.md) | proposed | 50/100/150/200% speed, and why the audio path is the whole job |
+| [Recompiler-Plan.md](Recompiler-Plan.md) | proposed | Dynamic recompilation, now that RecCore is known to emit x64 |
 
 ## Where things stand
 
