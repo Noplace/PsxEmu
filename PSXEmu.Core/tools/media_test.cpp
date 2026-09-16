@@ -286,6 +286,131 @@ void TestBareImageTrackLayout(const std::string& directory) {
   remove(bin.c_str());
 }
 
+// Builds a CloneCD table of contents: the three lead-in points a real one
+// carries, then a track apiece. `data_sectors` becomes track 1 and whatever
+// follows it track 2, as audio, so the layout is one a scan could not have
+// worked out on its own.
+std::string MakeCcd(uint32_t data_sectors, uint32_t audio_sectors,
+                    bool scrambled) {
+  char text[2048];
+  snprintf(text, sizeof(text),
+           "[CloneCD]\r\nVersion=3\r\n\r\n"
+           "[Disc]\r\nTocEntries=5\r\nSessions=1\r\n"
+           "DataTracksScrambled=%d\r\nCDTextLength=0\r\n\r\n"
+           "[Session 1]\r\nPreGapMode=2\r\nPreGapSubC=1\r\n\r\n"
+           // A0/A1/A2: first track, last track, lead-out.
+           "[Entry 0]\r\nSession=1\r\nPoint=0xa0\r\nADR=0x01\r\nControl=0x04\r\n"
+           "TrackNo=0\r\nALBA=-150\r\nPMin=1\r\nPSec=32\r\nPFrame=0\r\nPLBA=6750\r\n\r\n"
+           "[Entry 1]\r\nSession=1\r\nPoint=0xa1\r\nADR=0x01\r\nControl=0x04\r\n"
+           "TrackNo=0\r\nALBA=-150\r\nPMin=2\r\nPSec=0\r\nPFrame=0\r\nPLBA=8850\r\n\r\n"
+           "[Entry 2]\r\nSession=1\r\nPoint=0xa2\r\nADR=0x01\r\nControl=0x04\r\n"
+           "TrackNo=0\r\nALBA=-150\r\nPLBA=%u\r\n\r\n"
+           // The tracks. Control bit 2 is what separates data from audio.
+           "[Entry 3]\r\nSession=1\r\nPoint=0x01\r\nADR=0x01\r\nControl=0x04\r\n"
+           "TrackNo=0\r\nALBA=-150\r\nPLBA=0\r\n\r\n"
+           "[Entry 4]\r\nSession=1\r\nPoint=0x02\r\nADR=0x01\r\nControl=0x00\r\n"
+           "TrackNo=0\r\nALBA=-150\r\nPLBA=%u\r\n\r\n"
+           "[TRACK 1]\r\nMODE=2\r\nINDEX 1=0\r\n\r\n"
+           "[TRACK 2]\r\nMODE=0\r\nINDEX 1=%u\r\n",
+           scrambled ? 1 : 0, data_sectors + audio_sectors, data_sectors,
+           data_sectors);
+  return std::string(text);
+}
+
+// CloneCD writes the table of contents to a .ccd beside a .img of raw
+// sectors. Without it the .img mounts as one data track and whatever a scan
+// can infer, which loses every music track on the disc - and the .ccd itself
+// would not open at all, so pointing at one was a mount failure.
+void TestCloneCd(const std::string& directory) {
+  printf("clonecd descriptor\n");
+
+  const std::string img = directory + "media_clone.img";
+  const std::string ccd = directory + "media_clone.ccd";
+  if (!WriteMixedImage(img, 60, 40) ||
+      !WriteText(ccd, MakeCcd(60, 40, false).c_str())) {
+    printf("  FAIL  could not write the pair\n");
+    ++g_failures;
+    return;
+  }
+
+  Disc disc;
+  Check(disc.Open(ccd.c_str()), "open the descriptor");
+  CheckEqual(disc.track_count(), 2, "track count");
+
+  CheckEqual(disc.track(0).start_lba, Disc::kLeadInSectors, "track 1 start");
+  CheckEqual(disc.track(0).length, 60, "track 1 length");
+  Check(disc.track(0).type == Disc::kTrackData, "track 1 is data");
+
+  // PLBA counts from the first sector of track 1, not from the lead-in, so
+  // reading it as an absolute address would put this track 150 sectors early.
+  CheckEqual(disc.track(1).start_lba, Disc::kLeadInSectors + 60,
+             "track 2 start");
+  CheckEqual(disc.track(1).length, 40, "track 2 length");
+  Check(disc.track(1).type == Disc::kTrackAudio,
+        "track 2 is audio, from Control");
+
+  CheckEqual(disc.total_sectors(), Disc::kLeadInSectors + 100, "total sectors");
+
+  uint8_t sector[Disc::kRawSectorSize];
+  Check(disc.ReadSector(Disc::kLeadInSectors + 65, sector),
+        "read a sector in track 2");
+  CheckEqual(UserWordOf(sector), 65, "and it is the right sector");
+  disc.Close();
+
+  // The image on its own has to find the descriptor beside it, the way it
+  // already does for a .cue or an .mds.
+  Disc sibling;
+  Check(sibling.Open(img.c_str()), "open the image, not the descriptor");
+  CheckEqual(sibling.track_count(), 2, "the layout came from the .ccd");
+  Check(sibling.track(1).type == Disc::kTrackAudio, "including the audio track");
+  sibling.Close();
+
+  // Two descriptors of the same disc have to describe the same disc.
+  // Disc-Formats-Plan.md asks for exactly this, and it is the check that
+  // catches PLBA being read as an absolute address: every track would come out
+  // 150 sectors early against the cue sheet's own numbers.
+  const std::string cue = directory + "media_clone.cue";
+  if (WriteText(cue,
+                "FILE \"media_clone.img\" BINARY\r\n"
+                "  TRACK 01 MODE2/2352\r\n"
+                "    INDEX 01 00:00:00\r\n"
+                "  TRACK 02 AUDIO\r\n"
+                "    INDEX 01 00:00:60\r\n")) {
+    Disc from_cue;
+    Disc from_ccd;
+    if (from_cue.Open(cue.c_str()) && from_ccd.Open(ccd.c_str())) {
+      CheckEqual(from_ccd.track_count(), from_cue.track_count(),
+                 "a .ccd and a .cue of one disc agree on the track count");
+      bool same = from_ccd.track_count() == from_cue.track_count();
+      for (int i = 0; same && i < from_cue.track_count(); ++i) {
+        same = from_ccd.track(i).start_lba == from_cue.track(i).start_lba &&
+               from_ccd.track(i).length == from_cue.track(i).length &&
+               from_ccd.track(i).type == from_cue.track(i).type;
+      }
+      Check(same, "and on every track's start, length and type");
+      CheckEqual(from_ccd.total_sectors(), from_cue.total_sectors(),
+                 "and on where the disc ends");
+    } else {
+      Check(false, "could not open both descriptors of the same image");
+    }
+    remove(cue.c_str());
+  }
+
+  // A scrambled image is the raw channel, not sectors. Mounting it would hand
+  // the controller noise shaped like a disc, so both the descriptor and the
+  // image beside it have to be refused - the image especially, since it opens
+  // perfectly well and reads as gibberish.
+  if (WriteText(ccd, MakeCcd(60, 40, true).c_str())) {
+    Disc scrambled;
+    Check(!scrambled.Open(ccd.c_str()), "a scrambled descriptor is refused");
+    Check(!scrambled.Open(img.c_str()),
+          "and so is its image, rather than mounting noise");
+  }
+
+  remove(ccd.c_str());
+  RemoveImage(img);
+}
+
 // Picking the image when the cue sheet is sitting right next to it is an easy
 // thing for someone to do, and used to cost them every music track on the
 // disc: the sheet is the only place the track layout exists.
@@ -1563,6 +1688,7 @@ int main(int argc, char** argv) {
   TestRawImageAndCue(directory);
   TestBareImageTrackLayout(directory);
   TestSiblingCueIsAdopted(directory);
+  TestCloneCd(directory);
   TestMdsDescriptor(directory);
   TestIso9660(directory);
   TestSystemCnf();

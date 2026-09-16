@@ -31,7 +31,26 @@ Both are covered by `media_test`, which builds a two-track 2448-byte pair with
 an unwritten pregap and checks the stride, the offset, the silence and the
 sibling lookup.
 
-`.ccd` is still unread; the `.mds` work did not touch it.
+## Done since this was written: `.ccd` / `.img`
+
+CloneCD's descriptor is read too, by `Disc::OpenCcd` - steps 1 and 2 below,
+both done. A `.ccd` opens directly and an `.img` finds one beside it, after
+the `.cue` and `.mds` lookups it already made. It is the small parser this
+plan expected: an INI file, `[Entry n]` blocks, points A0/A1/A2 for the
+lead-in and 1-99 for the tracks, `Control` bit 2 for data against audio.
+
+One thing the plan did not say, and the only part that could have been got
+wrong quietly: **`PLBA` counts from the first sector of track 1, not from the
+lead-in.** Each of the three dumps to hand confirms it - the lead-out's PLBA is
+its image's sector count exactly (Area 51: 263,990 of both) - so PLBA is a file
+offset as it stands and the disc address is that plus 150. Read as an absolute
+address instead, every track lands 150 sectors early, which is the mistake this
+document's own acceptance list was written to catch: `media_test` now builds a
+`.ccd` and a `.cue` for one image and requires the same tracks from both.
+
+Not done: the `.sub` beside them is still ignored, and a scrambled image
+(`DataTracksScrambled=1`) is refused rather than descrambled - along with its
+`.img`, which would otherwise mount as noise.
 
 ## First, a correction worth making before any work starts
 
@@ -90,7 +109,7 @@ When given `game.img`, look for `game.cue` and then `game.ccd` beside it and use
 whichever exists. This alone probably fixes the user's case and is perhaps
 thirty lines.
 
-*Done for `.cue` and `.mds`, in `Disc::FindSibling`; `.ccd` still to do.*
+*Done, in `Disc::FindSibling`: `.cue`, then `.mds`, then `.ccd`.*
 
 ### Step 2: read `.ccd`
 
@@ -102,6 +121,9 @@ or audio.
 
 It is a smaller parser than the cue reader already written, and it maps onto
 the same `Track` list.
+
+*Done, in `Disc::OpenCcd` - see the top of this document for what the plan
+missed about `PLBA`.*
 
 ### Step 3: guess a layout when there is no sidecar at all
 

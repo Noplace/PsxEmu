@@ -33,6 +33,7 @@ namespace psx {
 
     .cue          a sheet naming one or more binary files and their tracks
     .mds .mdf     Alcohol 120%'s descriptor and the sectors it describes
+    .ccd .img     CloneCD's table of contents and the sectors it describes
     .bin .img     raw sectors, sector size detected from the file length
     .iso          usually 2048-byte cooked sectors, also detected
     D: \\.\D:     a physical drive (data tracks only)
@@ -117,6 +118,10 @@ class Disc {
 
   bool OpenCue(const char* path);
   bool OpenMds(const char* path);
+  // `scrambled` comes back true for an image this cannot mount at all - the
+  // raw channel rather than sectors - as against an ordinary parse failure,
+  // where the image beside the descriptor is still worth opening on its own.
+  bool OpenCcd(const char* path, bool* scrambled = nullptr);
   bool OpenImage(const char* path);
   // Where the data track ends in a raw image, found from the sectors
   // themselves when no cue sheet says.

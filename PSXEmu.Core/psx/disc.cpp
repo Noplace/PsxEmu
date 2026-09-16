@@ -316,6 +316,19 @@ bool Disc::Open(const char* path) {
       if (!image.empty())
         ok = OpenImage(image.c_str());
     }
+  } else if (extension == ".ccd") {
+    bool scrambled = false;
+    ok = OpenCcd(path, &scrambled);
+    if (!ok && !scrambled) {
+      // As for an .mds: the image beside it is an ordinary one and mounts on
+      // its own, minus the track list. Not for a scrambled image, though -
+      // that one is refused here and stays refused, because its sectors are
+      // not sectors yet and a bare mount would read noise as a disc.
+      Close();
+      const std::string image = FindSibling(text, "img");
+      if (!image.empty())
+        ok = OpenImage(image.c_str());
+    }
   } else if (text.size() <= 3 && text.size() >= 2 && text[1] == ':')
     ok = OpenDevice(path);            // "D:" or "D:\"
   else if (text.compare(0, 4, "\\\\.\\") == 0)
@@ -335,7 +348,16 @@ bool Disc::Open(const char* path) {
       if (!mds.empty())
         ok = OpenMds(mds.c_str());
     }
+    bool scrambled = false;
     if (!ok) {
+      Close();
+      const std::string ccd = FindSibling(text, "ccd");
+      if (!ccd.empty())
+        ok = OpenCcd(ccd.c_str(), &scrambled);
+    }
+    // A scrambled image is not sectors at all, so opening it bare would mount
+    // noise rather than lose a track list.
+    if (!ok && !scrambled) {
       Close();
       ok = OpenImage(path);
     }
@@ -635,6 +657,140 @@ bool Disc::OpenMds(const char* path) {
 
   if (tracks_.empty() || sources_.empty())
     return false;
+
+  FinishTrackLayout();
+  return true;
+}
+
+// CloneCD's .ccd: the disc's table of contents, written out as an INI file,
+// beside a .img of raw 2352-byte sectors (and a .sub of subchannel this does
+// not read).
+//
+// The TOC is the same set of points a real lead-in carries, one [Entry] each:
+// A0 names the first track, A1 the last and A2 the lead-out, and points 1 to
+// 99 are the tracks themselves. What each entry gives that matters here is
+// PLBA - where the track starts - and Control, whose bit 2 separates a data
+// track from an audio one, exactly as in an .mds.
+//
+// PLBA is image-relative, not absolute: it counts from the first sector of
+// track 1 rather than from the lead-in, which is what the three discs to hand
+// confirm - each one's lead-out PLBA is its image's sector count exactly
+// (Area 51, 263,990 of them). So it is a file offset as it stands, and the
+// absolute address is that plus the lead-in.
+bool Disc::OpenCcd(const char* path, bool* scrambled_out) {
+  if (scrambled_out != nullptr)
+    *scrambled_out = false;
+
+  FILE* fp = fopen(path, "r");
+  if (fp == nullptr)
+    return false;
+
+  struct Entry {
+    int point = -1;
+    int control = 0;
+    int64_t plba = 0;
+  };
+  std::vector<Entry> entries;
+  bool in_entry = false;
+  bool scrambled = false;
+
+  char line[1024];
+  while (fgets(line, sizeof(line), fp) != nullptr) {
+    const std::string trimmed = Trim(line);
+    if (trimmed.empty())
+      continue;
+
+    if (trimmed[0] == '[') {
+      // Only [Entry n] carries a TOC point. [TRACK n] restates the track's
+      // mode, which Control already says, and [Session n] nothing needed here.
+      in_entry = ToLower(trimmed).compare(0, 6, "[entry") == 0;
+      if (in_entry)
+        entries.push_back(Entry());
+      continue;
+    }
+
+    const size_t equals = trimmed.find('=');
+    if (equals == std::string::npos)
+      continue;
+    const std::string key = ToLower(Trim(trimmed.substr(0, equals)));
+    const std::string value = Trim(trimmed.substr(equals + 1));
+
+    if (!in_entry) {
+      if (key == "datatracksscrambled")
+        scrambled = strtol(value.c_str(), nullptr, 0) != 0;
+      continue;
+    }
+
+    // Written as 0x01 for the points and plain decimal for the addresses, so
+    // base 0 rather than 10 - strtol reads the prefix either way.
+    Entry& entry = entries.back();
+    if (key == "point")
+      entry.point = static_cast<int>(strtol(value.c_str(), nullptr, 0));
+    else if (key == "control")
+      entry.control = static_cast<int>(strtol(value.c_str(), nullptr, 0));
+    else if (key == "plba")
+      entry.plba = strtoll(value.c_str(), nullptr, 0);
+  }
+  fclose(fp);
+
+  // A scrambled image is the raw channel before descrambling, not sectors.
+  // Nothing here unscrambles one, and mounting it would hand the controller
+  // noise that looks like a disc, so it is refused rather than half-read -
+  // and the caller is told, so it does not go on to mount the image bare.
+  if (scrambled) {
+    if (scrambled_out != nullptr)
+      *scrambled_out = true;
+    return false;
+  }
+
+  const std::string image = FindSibling(path, "img");
+  if (image.empty())
+    return false;
+
+  Source source;
+  // CloneCD always writes whole sectors, so the stride is known rather than
+  // worked out from the length - the .img of a Mode 2 disc divides by 2352
+  // and by 2336 alike, and guessing wrong shifts every sector.
+  if (!AddFileSource(image, &source, kRawSectorSize))
+    return false;
+  sources_.push_back(source);
+
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const Entry& entry = entries[i];
+    // A0/A1/A2 describe the lead-in and lead-out; the tracks are 1 to 99.
+    if (entry.point < 1 || entry.point > 99)
+      continue;
+    if (entry.plba < 0)
+      continue;
+    const uint32_t file_lba = static_cast<uint32_t>(entry.plba);
+    if (file_lba >= source.sector_count)
+      continue;
+
+    Track track;
+    track.number = entry.point;
+    track.type = (entry.control & 0x04) ? kTrackData : kTrackAudio;
+    track.start_lba = kLeadInSectors + file_lba;
+    track.length = 0;                 // filled in once the next track is known
+    tracks_.push_back(track);
+
+    TrackSource track_source;
+    track_source.source = 0;
+    track_source.file_lba = file_lba;
+    track_sources_.push_back(track_source);
+  }
+
+  if (tracks_.empty())
+    return false;
+
+  // The entries are written in TOC order, which is track order on every
+  // descriptor seen - but the layout arithmetic depends on it, so make sure
+  // rather than assume, and keep each track with its own source row.
+  for (size_t i = 1; i < tracks_.size(); ++i) {
+    for (size_t j = i; j > 0 && tracks_[j - 1].number > tracks_[j].number; --j) {
+      std::swap(tracks_[j - 1], tracks_[j]);
+      std::swap(track_sources_[j - 1], track_sources_[j]);
+    }
+  }
 
   FinishTrackLayout();
   return true;

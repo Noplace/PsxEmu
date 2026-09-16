@@ -186,12 +186,18 @@ TIMING group is the cycle-timing entry above.
 
 ### Disc images
 
-- **`.ccd` is not read.** `Disc::Open` handles `.cue` and `.mds`; a `.ccd` path
-  falls through to the raw-image opener and fails. Pointing at the `.img`
-  beside it works but loses the table of contents the `.ccd` carries. Area 51,
-  Wild Arms 2 and Final Fantasy VIII on the share are all `.ccd`/`.img`/`.sub`.
 - **No compressed containers** (CHD, ECM, PBP). Planned in
   [Disc-Formats-Plan.md](Disc-Formats-Plan.md).
+- **A CloneCD `.sub` is ignored.** `.ccd` is read now - the table of contents,
+  and the `.img` beside it - but the 96 bytes of subchannel per sector that
+  the third file holds are not. Nothing asks for them yet: GetQ synthesises
+  its answer from the track table (see CD-ROM above), and that is where a real
+  subchannel would go if anything ever needed one.
+- **A scrambled `.ccd` is refused rather than descrambled.**
+  `DataTracksScrambled=1` means the image holds the raw channel, not sectors.
+  Both the descriptor and its image are refused, deliberately - mounting one
+  would feed the controller noise shaped like a disc. None of the dumps here
+  are scrambled.
 - **A bare image cannot know its music track boundaries.** Data sectors carry
   a sync pattern and audio does not, so `OpenImage` finds the end of the data
   track and calls everything after it one audio track; a game asking for track
@@ -306,7 +312,10 @@ Things that look missing and are not, so they are not re-investigated:
 - **`System::BootDisc` and auto-boot.** The BIOS boots discs itself and the
   front end lets it; `BootDisc` and `--auto-boot` remain for the harness (bug
   19).
-- **A bare `.img`, `.mds`/`.mdf`.** All mount; the gaps are track layout and
-  `.ccd`, above.
+- **A bare `.img`, `.mds`/`.mdf`, `.ccd`/`.img`.** All mount. CloneCD's
+  descriptor is read for its table of contents, and an `.img` opened on its
+  own finds the `.ccd` beside it the way it already found a `.cue` or an
+  `.mds`. The gap left is the track layout a bare image with no descriptor at
+  all cannot know, above.
 - **`psx/emu.h`/`emu.cpp`** are superseded by `system.*` and built by nothing;
   **`utilities/cdrom/cdrom.cpp`** is superseded by `psx/disc.cpp`.
