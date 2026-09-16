@@ -3288,3 +3288,60 @@ loops half-open the gate should be unnecessary - hardware's fill rule does not
 know what blending is - but un-gating it changes which texel wins on every
 adjacent opaque tile edge in the game that showed the seams, and that wants
 checking against the game rather than against a unit test.
+
+## 60. A half-open loop against an inclusive clip, and the screen lost its last column and row
+
+`psx/gpu.cpp`
+
+**Symptom.** None that anyone reported - it is one column and one row at the
+edge of the picture. It was found by refreshing Test-Suite.md's baselines: the
+BIOS boot drew 304,803 of 305,920 non-black pixels where the build from before
+the September GPU commits drew all 305,920.
+
+**Cause.** `RasterTriangle` clips a primitive's bounding box to the drawing
+area, and the two are not the same kind of bound.
+
+A primitive's extent is half-open: the BIOS's background is the quad
+`(0,0)-(640,0)-(0,480)-(640,480)`, and 0 to 640 means columns 0 to 639 - 640 of
+them, the width of the screen. The drawing area is inclusive: `GP0(E4)` states
+the bottom-right *corner*, and the BIOS sets 639 x 479 for that same screen.
+`Plot()` has always read it that way (`x > draw_area_right_` rejects, so 639 is
+inside).
+
+The September commits made the raster loops half-open - correct for the
+primitive, and what DuckStation's own span walk does - but left the clip
+expression as it was:
+
+```cpp
+const int32_t right = std::min(max_x, draw_area_right_);   // 639
+for (int32_t x = left; x < right; ++x)                     // stops at 638
+```
+
+So the drawing area's last column and row were discarded whenever a primitive
+reached them, which a full-screen background does every frame.
+
+**Fix.** Take the primitive's last pixel and clip it inclusively:
+
+```cpp
+const int32_t right = std::min(max_x - 1, draw_area_right_);
+for (int32_t x = left; x <= right; ++x)
+```
+
+**Verified.** The BIOS boot is back to 305,920 of 305,920. Diffed against
+`535949b` pixel by pixel there are now **no** missing pixels at all - 131
+interior pixels differ, none black in either build, which is bug 59's corrected
+fill rule handing shared columns to the right-hand primitive as intended.
+Diffed against the broken build, 1,117 pixels went black to coloured and none
+the other way: exactly column x=639 (478 rows) plus row y=477 (639 more), which
+is `width + height - 1`, and nothing else moved.
+
+`gpu_test` stays 31/31 - the shared-edge tests are unaffected, since they turn
+on which of two primitives owns a column rather than on where the clip ends.
+All eight harnesses green, 1,000 checks. Across the twelve baseline discs only
+**Ridge Racer** moved (frames 2000 and 3000): its primitives reach the drawing
+area's edge where the other eleven do not.
+
+**Worth remembering.** This is what a refreshed baseline is *for*. The bug was
+in every frame of every game for four days, invisible in a checksum nobody had
+a reference for, and it took comparing against a build from before the change
+to see it at all.

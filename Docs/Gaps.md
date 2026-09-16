@@ -44,6 +44,11 @@ audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
 
+None of them caught bug 60, which was live in every frame of every game at the
+time: the harnesses test what a unit test can reach, and "the screen is one
+column narrower than it should be" is not that. The per-game table in
+Test-Suite.md is - it moved Ridge Racer and nothing else.
+
 ### The fill rule is still gated on semi-transparency
 
 `RasterTriangle` applies the top-left bias only when `state.semi_transparent`
@@ -59,14 +64,11 @@ Measured at `8c7c694` on 2026-09-16: the BIOS boot row, the register-access
 row, and a new per-game table of twelve discs at 3,000 frames with checksums at
 frames 1000/2000/3000. See [Test-Suite.md](Test-Suite.md).
 
-What the refresh turned up, and what is still open: the September GPU commits
-moved the BIOS boot checksum without touching a single instruction, and the
-1,117 pixels that changed are **1,117 fewer** - 478 of them the whole of column
-x=639, the screen's right-hand edge, which a half-open raster rule stops one
-column short of. That much is explained. One interior column (x=330, 118 rows)
-also went dark and is **not** explained: it is either two primitives that used
-to overlap by a column now tiling exactly, or a one-pixel seam. Worth settling
-before the new numbers are treated as correct rather than merely current.
+The refresh paid for itself immediately: the BIOS boot was drawing 304,803 of
+305,920 non-black pixels where the pre-September build drew all of them, which
+turned out to be **bug 60** - the drawing area's last column and row discarded
+by a half-open loop clipping an inclusive bound. Four days in every frame of
+every game, invisible without a reference to compare against.
 
 ### Recent SPU and GPU work is unrecorded and untested
 

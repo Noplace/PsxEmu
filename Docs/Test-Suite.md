@@ -338,35 +338,34 @@ harness's own section above says what its groups cover.
 |---|---|
 | instructions | 97,749,265 |
 | resolution | 640x478 |
-| framebuffer checksum | `38302fe2da74987f` |
-| non-black (visible) | 304,803 of 305,920 |
+| framebuffer checksum | `c7c8db90c5984798` |
+| non-black (visible) | 305,920 of 305,920 |
 | unimplemented paths | 0 |
 | GTE commands | 0 - the shell menu is entirely 2D |
 | RFEs executed | 919 |
 | interrupts taken | 907 (vblank 339, dma 508, cdrom 3, timer2 57) |
 | final I_STAT / I_MASK / SR | `00000001` / `0000000D` / `40000401` |
 | GP0 words / GP1 words | 16,955 / 2,325 |
-| primitives / pixels | 1,157 / 84,365,334 |
+| primitives / pixels | 1,157 / 84,641,245 |
 | texels 4-bit / 15-bit | 3,159,000 / 0 |
 | CD-ROM commands | 3 |
 | SPU | 297,483 frames, 64 key-ons, peak 28,461/23,222 |
 
 **What moved since the last refresh, and why.** The instruction count is bug
-43's, unchanged. The checksum is not: building `535949b` - the commit before
-the September 12-14 GPU work - and running the same command gives
-`bd888bab645a63a9`, the same 97,749,265 instructions, the same 16,955 GP0
-words and the same 1,157 primitives, but **84,715,353 pixels plotted against
-84,365,334 and a full 305,920 non-black against 304,803**. So the CPU side did
-not move at all and the rasteriser did: those commits made the raster loops
-half-open (`x < right`), and DuckStation's own rasteriser agrees with that.
+43's, unchanged - the CPU side has not moved at all. The checksum has, and
+building `535949b` (the commit before the September 12-14 GPU work) to compare
+against is what turned up bug 60: those commits made the raster loops half-open
+without noticing that a primitive's extent and the drawing area are different
+kinds of bound, and the drawing area's last column and row stopped being drawn.
+Refreshing this table is what found it - 304,803 non-black where the older
+build had all 305,920, which is the sort of thing a stale baseline hides.
 
-Diffing the two frames pixel by pixel, 1,117 pixels went from coloured to black
-and none the other way, and 478 of them - every row - are the single column at
-**x=639**, the right-hand edge of the screen. The BIOS draws its background to
-an inclusive right edge, so a half-open rule stops one column short of it. One
-interior column (x=330, 118 rows) changed too, which is **not** explained yet:
-it may be two primitives that used to overlap by a column now tiling exactly,
-or it may be a seam. Worth a look before trusting the edge story completely.
+With bug 60 fixed the frame is full again, and against `535949b` there are now
+no missing pixels at all: 131 interior pixels differ, none of them black in
+either build. Those are shared columns changing owner under bug 59's corrected
+fill rule, which is the intended difference. The remaining pixel-count gap
+(84,641,245 plotted against 84,715,353) is the same thing seen from the other
+side - a shared column is now covered once rather than twice.
 
 The SPU peak is bug 57's: the mix was coming out at a quarter and
 `audio_volume` defaulted to 2.0 to cover it. Both are corrected, so a peak of
@@ -408,7 +407,7 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 | Wild Arms 2 (cd1) | `00d5e173b295085a` | `c7a39acab8a692fb` | `22da9010e1a6bfbe` | 76,800 | 320x240 | 0 | 100 |
 | Vandal Hearts | `bcb8fe295f5b70db` | `7e2959681f0a6aec` | `94ae6edd29a35858` | 52,652 | 320x240 | 128,400 | 5,260 |
 | Legend of Mana | `ec6fe2e3bdb4fd30` | `baf825dc27742faa` | `bbc7cecc82310cd8` | 76,064 | 320x240 | 155,400 | 5,345 |
-| Ridge Racer | `2e63ac3574a2a3c3` | `d2b232324e1bb427` | `1ff58690bfff3b4a` | 76,415 | 320x240 | 0 | 1,578 |
+| Ridge Racer | `2e63ac3574a2a3c3` | `dc337b3bf868b8d8` | `e363f0b4ab4b87eb` | 76,415 | 320x240 | 0 | 1,578 |
 | Bomberman Party Ed. | `4a31d7a6c52734a4` | `717a1bbe80c75439` | `ba27f3e0e9823174` | 76,224 | 320x240 | 147,000 | 4,686 |
 | Area 51 | `085daca5fb878fff` | `8706d714ea09fec7` | `c20fec6d8f189e8d` | 51,855 | 256x240 | 100,080 | 5,511 |
 | Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `44eccfde5b859174` | 75,911 | 320x240 | 0 | 668 |
@@ -418,7 +417,10 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 
 Images are the ones under `\\superserverx\D\Games\Sony\PSX\ISO`; Area 51 and
 Wild Arms 2 are mounted from their `.ccd`, which gives byte-identical results to
-their `.img`. Instruction counts are in the run's own output and are not
+their `.img`. Bug 60 moved Ridge Racer's frames 2000 and 3000 and nothing else
+in this table - its primitives reach the drawing area's edge where the other
+eleven discs' do not, which is a fair warning about how little a checksum table
+proves on its own. Instruction counts are in the run's own output and are not
 tabulated - they move for any timing change and say nothing a checksum does not.
 
 **What each one is here for**, since a checksum that moves is only useful if
