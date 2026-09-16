@@ -58,6 +58,11 @@ namespace psxemu {
     // The step matching the current volume, so the menu shows what is set.
     void TickVolume(HWND window, float current);
 
+    // Which speed the machine is paced to. Never greyed: a speed needs the frame
+    // limiter, and App::SetSpeed turns it on rather than leaving the menu
+    // looking broken when it is off.
+    void TickSpeed(HWND window, float current);
+
     // The renderer actually running, which is not necessarily the persisted preference - creating
     // the preferred one can fall back to the other.
     void TickRenderer(HWND window, const std::string& backend);

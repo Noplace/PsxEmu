@@ -37,6 +37,7 @@
 #include "platform/util.h"
 #include "platform/timer.h"
 #include "platform/frame_limiter.h"
+#include "platform/speed_resampler.h"
 
 #include "psx/types.h"
 #include "psx/state.h"

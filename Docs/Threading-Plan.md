@@ -67,7 +67,23 @@ a consistent snapshot per frame, not a half-updated one.
 **Nothing in `PSXEmu.Core` is thread-aware**, and it should stay that way. The
 core is owned by `App`; the threading belongs entirely to the front end.
 
-## Stage 1: stop the audio brake (no threads)
+## Stage 1: stop the audio brake (no threads) - **done, 2026-09-16**
+
+Implemented as described below. `IAudioEngine::QueueAudio` now returns how many
+samples it took and never waits: WASAPI writes what fits in the device buffer,
+DirectSound writes whole frames up to its safety margin, and both report the
+count. `App::PumpAudio` keeps the remainder in `audio_pending_` and offers it
+again next frame, capped at half a second so a device that has stopped draining
+cannot grow it without bound.
+
+Baselines unchanged: BIOS boot `c7c8db90c5984798` / 97,749,265 instructions,
+Wild Arms and Captain Tsubasa J identical at all three checkpoints, 1,000
+checks green. Which is the expected result - none of this touches emulated
+time - but it is the assertion worth making.
+
+What is *not* verified is the thing it was done for: that the window stays
+responsive while the sound card is behind. That needs the front end, which
+cannot be run from an agent session.
 
 Make `QueueAudio` never block: write what fits, and either drop the rest or
 keep a small ring of its own. Today's blocking wait exists because dropping

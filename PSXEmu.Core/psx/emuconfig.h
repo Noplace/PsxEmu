@@ -172,6 +172,20 @@ struct EmuConfig {
   // who never opens the menu. A name that is no longer in the folder falls
   // back the same way rather than refusing to boot.
   std::string bios_file = "";
+
+  // --- Speed --------------------------------------------------------------
+  // How fast to run the machine against the wall clock: 1.0 is a console, 2.0
+  // is twice as fast. Nothing about the emulated machine changes - it is still
+  // 33.8688 MHz and 59.29 Hz, and no baseline in Docs/Test-Suite.md moves -
+  // this only scales the rate the frame limiter paces to, and the rate the
+  // audio is resampled at on its way to a device that consumes 44,100 samples
+  // per *real* second however many the SPU made in an emulated one.
+  //
+  // Means nothing with frame_limiter off, which is already "as fast as
+  // whatever blocks first"; the menu greys the choices out there.
+  float emulation_speed = 1.0f;
+
+  static const std::array<float, 4> kValidSpeeds;
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer
@@ -187,6 +201,11 @@ inline const std::array<const char*, 2>
 inline const std::array<const char*, 9> EmuConfig::kValidVideoFilters = {
     "",         "nearest",    "bilinear", "crt",   "eagle",
     "hq2x",     "xbrz_legacy", "scanline", "xbrz",
+};
+
+// In the same order PSXEmu.Win32's Emulation > Speed menu offers them.
+inline const std::array<float, 4> EmuConfig::kValidSpeeds = {
+    0.5f, 1.0f, 1.5f, 2.0f,
 };
 
 // Order matches PSXEmu.Win32's Input > Controller Port menus and

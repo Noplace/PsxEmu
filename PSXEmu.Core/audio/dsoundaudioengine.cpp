@@ -125,11 +125,11 @@ void DirectSoundAudioEngine::Pause() {
     }
 }
 
-void DirectSoundAudioEngine::QueueAudio(const int16_t* samples, int sampleCount) {
-    if (!m_initialized || !m_playing) return;
+int DirectSoundAudioEngine::QueueAudio(const int16_t* samples, int sampleCount) {
+    if (!m_initialized || !m_playing) return 0;
 
     DWORD bytesToWrite = sampleCount * sizeof(int16_t);
-    if (bytesToWrite == 0) return;
+    if (bytesToWrite == 0) return 0;
 
     DWORD playCursor = 0;
     m_buffer->GetCurrentPosition(&playCursor, NULL);
@@ -152,26 +152,21 @@ void DirectSoundAudioEngine::QueueAudio(const int16_t* samples, int sampleCount)
     }
 
     // Leave a small 10ms safety gap to avoid hitting the play cursor
-    DWORD maxAllowedQueuedBytes = m_bufferSize - (m_sampleRate * m_channels * sizeof(int16_t) / 100); 
+    DWORD maxAllowedQueuedBytes = m_bufferSize - (m_sampleRate * m_channels * sizeof(int16_t) / 100);
 
-    while (m_queuedBytes + bytesToWrite > maxAllowedQueuedBytes && m_playing) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        
-        m_buffer->GetCurrentPosition(&playCursor, NULL);
-        if (playCursor >= m_lastPlayCursor) {
-            playedSinceLast = playCursor - m_lastPlayCursor;
-        } else {
-            playedSinceLast = m_bufferSize - m_lastPlayCursor + playCursor;
-        }
-        m_lastPlayCursor = playCursor;
-
-        if (m_queuedBytes >= playedSinceLast) {
-            m_queuedBytes -= playedSinceLast;
-        } else {
-            m_queuedBytes = 0;
-            m_writeOffset = (playCursor + 4410) % m_bufferSize; 
-            break; // Exit loop, we have plenty of space now
-        }
+    // Write what fits and say so, rather than sleeping until the buffer drains:
+    // the caller is the thread running the machine, and it must not be stopped
+    // by a sound card that is a few milliseconds behind. See IAudioEngine.
+    if (m_queuedBytes >= maxAllowedQueuedBytes)
+        return 0;
+    const DWORD roomBytes = maxAllowedQueuedBytes - m_queuedBytes;
+    if (bytesToWrite > roomBytes) {
+        // Whole frames only - half a frame would swap the channels of every
+        // sample after it.
+        const DWORD frameBytes = m_channels * sizeof(int16_t);
+        bytesToWrite = (roomBytes / frameBytes) * frameBytes;
+        if (bytesToWrite == 0)
+            return 0;
     }
 
     void* ptr1 = nullptr;
@@ -191,6 +186,7 @@ void DirectSoundAudioEngine::QueueAudio(const int16_t* samples, int sampleCount)
 
     m_writeOffset = (m_writeOffset + bytesToWrite) % m_bufferSize;
     m_queuedBytes += bytesToWrite;
+    return static_cast<int>(bytesToWrite / sizeof(int16_t));
 }
 
 int DirectSoundAudioEngine::GetQueuedSampleCount() const {

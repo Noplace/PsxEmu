@@ -159,6 +159,12 @@ namespace psxemu {
 
         void SetFrameLimiter(bool on);
 
+        // How fast to run the machine against the wall clock - 0.5, 1.0, 1.5 or 2.0. Only the
+        // pacing and the audio resampling change; the emulated machine is a PlayStation at every
+        // setting. Means nothing while the frame limiter is off, which is why the menu greys the
+        // choices out there.
+        void SetSpeed(float speed);
+
         // Takes effect on the next command the drive is given, so there is nothing to reset and no
         // reason to make it a cold-boot-only choice - though a boot already past its logo screen
         // will not replay it.
@@ -190,6 +196,7 @@ namespace psxemu {
         void UpdateInputSourceMenu();
         void UpdateMultitapSourceMenu();
         void UpdateFrameLimiterMenu();
+        void UpdateSpeedMenu();
         void UpdateCdTimingMenu();
         void UpdateSkipBiosIntroMenu();
 
@@ -314,6 +321,13 @@ namespace psxemu {
         // Scratch for one frame of audio, sized for the worst case at 30 fps. A member rather than
         // a function-local static so there is one per application rather than one per process.
         std::array<int16_t, emulation::psx::Spu::kSampleRate / 30 * 2> audio_scratch_ = {};
+
+        // What the SPU produced, resampled for the speed the machine is running at, waiting for
+        // room on the device. QueueAudio takes what fits and no longer blocks for the rest, so
+        // this is where the remainder lives until next frame - a few frames' worth at most, and
+        // capped in PumpAudio so a stopped device cannot grow it without bound.
+        utilities::SpeedResampler speed_resampler_;
+        std::vector<int16_t> audio_pending_;
 
         // Speed. title_base_ is what the window would be called with no readout on it - kept so the
         // readout can be re-appended without re-deriving the name from the disc path every time it

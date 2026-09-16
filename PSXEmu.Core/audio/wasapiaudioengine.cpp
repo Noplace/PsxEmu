@@ -105,31 +105,32 @@ void WASAPIAudioEngine::Pause() {
     }
 }
 
-void WASAPIAudioEngine::QueueAudio(const int16_t* samples, int sampleCount) {
-    if (!m_initialized || !m_playing) return;
+int WASAPIAudioEngine::QueueAudio(const int16_t* samples, int sampleCount) {
+    if (!m_initialized || !m_playing) return 0;
 
     // sampleCount represents total 16-bit ints. A frame is typically 2 channels (left/right).
     int frameCount = sampleCount / m_channels;
+    if (frameCount <= 0) return 0;
 
     UINT32 padding = 0;
-    if (FAILED(m_audioClient->GetCurrentPadding(&padding))) return;
+    if (FAILED(m_audioClient->GetCurrentPadding(&padding))) return 0;
 
-    UINT32 availableFrames = m_bufferFrameCount - padding;
-    
-    // Block and wait if buffer is full instead of dropping samples
-    while (availableFrames < frameCount && m_playing) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        if (FAILED(m_audioClient->GetCurrentPadding(&padding))) return;
-        availableFrames = m_bufferFrameCount - padding;
-    }
+    const UINT32 availableFrames = m_bufferFrameCount - padding;
 
-    UINT32 framesToWrite = frameCount;
+    // Write what fits and say so. This used to sleep in a loop until the device
+    // drained, which stopped the machine - and with it the message pump, so the
+    // window stopped responding - for as long as the sound card was behind.
+    // Whatever does not fit is the caller's to keep; see IAudioEngine.
+    const UINT32 framesToWrite = (availableFrames < static_cast<UINT32>(frameCount))
+                                     ? availableFrames
+                                     : static_cast<UINT32>(frameCount);
+    if (framesToWrite == 0) return 0;
 
     BYTE* pData = nullptr;
-    if (SUCCEEDED(m_renderClient->GetBuffer(framesToWrite, &pData))) {
-        memcpy(pData, samples, framesToWrite * m_channels * sizeof(int16_t));
-        m_renderClient->ReleaseBuffer(framesToWrite, 0);
-    }
+    if (FAILED(m_renderClient->GetBuffer(framesToWrite, &pData))) return 0;
+    memcpy(pData, samples, framesToWrite * m_channels * sizeof(int16_t));
+    m_renderClient->ReleaseBuffer(framesToWrite, 0);
+    return static_cast<int>(framesToWrite) * m_channels;
 }
 
 int WASAPIAudioEngine::GetQueuedSampleCount() const {

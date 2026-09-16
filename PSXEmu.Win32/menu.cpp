@@ -52,6 +52,23 @@ namespace psxemu {
         AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandFrameLimiter),
                     L"&Frame Limiter");
+
+        // Speed sits with the frame limiter because it is the same control: the
+        // limiter decides whether the machine is paced at all, this decides what
+        // it is paced to. The percent signs are stored doubled, as the volume
+        // labels are, and collapsed the same way.
+        HMENU speed = CreatePopupMenu();
+        for (size_t i = 0; i < std::size(kSpeedChoices); ++i) {
+            std::wstring label = kSpeedChoices[i].label;
+            size_t percent = label.find(L"%%");
+            while (percent != std::wstring::npos) {
+                label.erase(percent, 1);
+                percent = label.find(L"%%", percent + 1);
+            }
+            AppendMenuW(speed, MF_STRING, static_cast<UINT_PTR>(kCommandSpeedFirst + i),
+                        label.c_str());
+        }
+        AppendMenuW(emulation, MF_POPUP, reinterpret_cast<UINT_PTR>(speed), L"&Speed");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandCdMechanicalTiming),
                     L"CD-ROM &Mechanical Timing");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandSkipBiosIntro),
@@ -218,6 +235,22 @@ namespace psxemu {
         for (size_t i = 0; i < std::size(kVolumeSteps); ++i) {
             const bool on = (current == kVolumeSteps[i].value);
             CheckMenuItem(bar, static_cast<UINT>(kCommandVolumeFirst + i),
+                          MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+        }
+    }
+
+    void TickSpeed(HWND window, float current) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        // Never greyed. A speed does need the frame limiter - with it off the
+        // machine runs at whatever blocks first - but greying the choices out
+        // makes the menu look broken to someone whose settings happen to have
+        // the limiter off, which is what happened. Choosing a speed turns the
+        // limiter on instead: "run at 150%" is a request to be paced.
+        for (size_t i = 0; i < std::size(kSpeedChoices); ++i) {
+            const bool on = (current == kSpeedChoices[i].value);
+            CheckMenuItem(bar, static_cast<UINT>(kCommandSpeedFirst + i),
                           MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
         }
     }

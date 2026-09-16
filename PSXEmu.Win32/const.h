@@ -87,6 +87,8 @@ namespace psxemu {
         kCommandBiosLast = kCommandBiosFirst + 31,   // kMaxBiosEntries
         kCommandRescanBios,
         kCommandOpenBiosFolder,
+        kCommandSpeedFirst,
+        kCommandSpeedLast = kCommandSpeedFirst + 3,   // 50, 100, 150, 200%
         kCommandExit,
     };
 
@@ -117,6 +119,19 @@ namespace psxemu {
         { 4.0f, L"4&00%%" },
         { 6.0f, L"&600%%" },
         { 8.0f, L"&800%%" },
+    };
+
+    // How fast the machine runs against the wall clock, in the order the
+    // Emulation > Speed menu and EmuConfig::kValidSpeeds both list them. The
+    // labels carry a literal percent sign, stored doubled, the same way the
+    // volume steps above do.
+    struct SpeedChoice { float value; const wchar_t* label; };
+
+    inline constexpr SpeedChoice kSpeedChoices[] = {
+        { 0.5f, L"&50%% (half)" },
+        { 1.0f, L"&100%% (console)" },
+        { 1.5f, L"1&50%%" },
+        { 2.0f, L"&200%% (double)" },
     };
 
     // The two renderer choices, in the order the Video > Renderer menu and
@@ -267,5 +282,12 @@ namespace psxemu {
     // constant - a machine that has stopped producing frames at all would otherwise hang the
     // window, and this is what makes that show up as a frozen picture rather than a hung process.
     inline constexpr uint64_t kMaxInstructionsPerFrame = 8000000;
+
+    // How much audio to keep sitting in the sound device, in samples (both
+    // channels together), as the level App::PumpAudio trims the resampler
+    // towards. The device buffer is 50 ms; this is about half of it, which is
+    // slack enough to ride out a frame that runs long without adding latency
+    // anyone would notice.
+    inline constexpr int kAudioTargetSamples = 44100 / 40 * 2;
 
 }   // namespace psxemu

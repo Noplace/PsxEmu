@@ -21,6 +21,7 @@
 #include "psx/emuconfig.h"
 
 #include <array>
+#include <cmath>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -173,6 +174,7 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("cdrom_mechanical_timing", c.cdrom_mechanical_timing);
   f.SetBool("skip_bios_intro", c.skip_bios_intro);
   f.SetString("bios_file", c.bios_file);
+  f.SetFloat("emulation_speed", c.emulation_speed);
 }
 
 inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
@@ -228,6 +230,17 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   // No list to validate against - what is valid is whatever is in the folder,
   // which only the front end can see. It checks before using it.
   c.bios_file = f.GetString("bios_file", c.bios_file);
+
+  // Snapped to one of the offered speeds rather than clamped to a range: the
+  // menu has four entries and can only tick one of them, so a hand-edited 1.23
+  // would leave nothing ticked and no way to tell what was set.
+  const float speed = f.GetFloat("emulation_speed", c.emulation_speed);
+  float nearest = EmuConfig::kValidSpeeds[0];
+  for (float candidate : EmuConfig::kValidSpeeds) {
+    if (std::fabs(candidate - speed) < std::fabs(nearest - speed))
+      nearest = candidate;
+  }
+  c.emulation_speed = nearest;
 }
 
 }

@@ -1,5 +1,55 @@
 # Emulation speed: 50%, 100%, 150%, 200%
 
+## Built, 2026-09-16
+
+All of the below is implemented, in the shape it describes:
+
+- **Emulation > Speed** offers 50/100/150/200%, ticks what is set, and greys
+  out while the frame limiter is off.
+- `EmuConfig::emulation_speed` persists as `emulation_speed`, snapped on load
+  to one of `kValidSpeeds` rather than clamped - a hand-edited 1.23 would leave
+  nothing ticked.
+- `LimitFrameRate` paces to `refresh_hz * emulation_speed`.
+- `platform/speed_resampler.h` resamples the SPU's output by the speed factor
+  on the way to the device, carrying its fractional position across frames.
+  100% is a bit-for-bit copy, so the ordinary case cannot be degraded by this
+  existing. `speed_resampler_test`: 11 checks.
+- The audio device no longer blocks the machine
+  ([Threading-Plan.md](Threading-Plan.md) stage 1), which this needed.
+
+### What the first build got wrong
+
+Reported immediately, and all one cause: **the Speed menu was greyed out, the
+sound was choppy, and the machine ran at about 70 fps with 100% selected.**
+
+The settings file had `frame_limiter = 0`. With the limiter off the machine
+runs at whatever blocks first - and what had been blocking first was the audio
+device, whose wait stage 1 had just removed. So it ran uncapped at ~117% of a
+console, the SPU produced ~51,450 samples a second into a device draining
+44,100, and the excess was dropped every frame. That is what choppy was. The
+greyed menu was the same fact from the other side: the items grey out when the
+limiter is off, which is exactly when someone wants to reach for them.
+
+Three changes:
+
+1. **The Speed items are never greyed**, and choosing one turns the frame
+   limiter on. "Run at 150%" is a request to be paced; refusing it silently
+   because pacing is off is a menu that looks broken.
+2. **Dynamic rate control.** The frame limiter paces off the host's
+   `steady_clock` and the sound card consumes off its own; the two are never
+   equal, so the device buffer drifts to full or empty every few minutes
+   whatever the speed is. `PumpAudio` now trims the resampling ratio by at most
+   half a percent - about eight cents, inaudible - to hold the buffer at
+   `kAudioTargetSamples`. This is the part GBAEmu does not need: its audio call
+   blocks, so its sound card *is* its clock. With the limiter as the clock
+   instead, something has to close the loop.
+3. Turning the limiter off clears the resampler and the pending audio, since
+   both describe a rate that has just stopped applying.
+
+Baselines unchanged, as they must be - the emulated machine is a PlayStation at
+every setting. What has not been checked is how it sounds and whether the host
+holds 150% or 200% on a real game; both need the front end.
+
 ## The conclusion first
 
 The video half is nearly free - one multiplier where the frame limiter is

@@ -330,6 +330,13 @@ the most likely answer is the network share rather than the emulator.
 **1,000 checks, 0 failures**, all eight green as of the same commit. Each
 harness's own section above says what its groups cover.
 
+Three smaller harnesses cover the `platform/` headers the front end leans on
+and are not counted above, since they test no emulation: `letterbox_test`
+(aspect ratio), `frame_limiter_test` (6 checks, pacing) and
+`speed_resampler_test` (11 checks, the audio arithmetic behind 50-200% speed -
+the frame counts, that a minute at 150% does not drift, and that blocks join
+continuously).
+
 ### BIOS boot, SCPH1001
 
     boot_runner bios/SCPH1001.BIN --frames 400 --quiet

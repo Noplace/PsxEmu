@@ -15,7 +15,7 @@ public:
     virtual void Play() override;
     virtual void Pause() override;
 
-    virtual void QueueAudio(const int16_t* samples, int sampleCount) override;
+    virtual int QueueAudio(const int16_t* samples, int sampleCount) override;
     virtual int GetQueuedSampleCount() const override;
 
 private:

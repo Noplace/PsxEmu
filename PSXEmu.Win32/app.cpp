@@ -170,6 +170,7 @@ namespace psxemu {
         UpdateInputSourceMenu();
         UpdateMultitapSourceMenu();
         UpdateFrameLimiterMenu();
+        UpdateSpeedMenu();
         UpdateCdTimingMenu();
         UpdateSkipBiosIntroMenu();
         if (current_backend_ == "d3d12") {
@@ -258,8 +259,11 @@ namespace psxemu {
                 Sleep(16);
                 // Nothing to catch up on when the machine starts again. The limiter would work this
                 // out for itself on the first frame back, but saying so here is cheaper than
-                // relying on that.
+                // relying on that. The resampler is reset for the same reason: the sound it was
+                // interpolating from stopped however long ago the pause began.
                 frame_limiter_.Reset();
+                speed_resampler_.Reset();
+                audio_pending_.clear();
                 continue;
             }
 
@@ -468,10 +472,62 @@ namespace psxemu {
     void App::PumpAudio() {
         if (audio_ == nullptr)
             return;
+
         const int frames = system_->spu().ReadSamples(audio_scratch_.data(),
                                                       static_cast<int>(audio_scratch_.size() / 2));
-        if (frames > 0)
-            audio_->QueueAudio(audio_scratch_.data(), frames * 2);
+        // The SPU makes 44,100 samples per *emulated* second and the device
+        // drains 44,100 per real one, so anything but 100% has to be resampled
+        // on the way out or the device backs up (fast) or starves (slow).
+        //
+        // On top of the speed, a trim of at most half a percent to hold the
+        // device's buffer at kAudioTargetSamples. Two clocks are involved - the
+        // frame limiter paces the machine off the host's steady_clock, the
+        // sound card consumes off its own - and they are never exactly equal.
+        // Left alone, that difference accumulates until the buffer is either
+        // full (samples dropped) or empty (a click), every few minutes,
+        // forever. GBAEmu does not need this because its audio call blocks, so
+        // the sound card is its clock; here the frame limiter is, and this is
+        // what keeps the two in step. Half a percent is about eight cents,
+        // which is inaudible, and it is clamped so a real shortfall - a host
+        // that cannot keep up - shows up as a shortfall rather than as pitch.
+        if (frames > 0) {
+            double speed = system_->config().emulation_speed;
+            if (audio_ != nullptr) {
+                const int queued = audio_->GetQueuedSampleCount();
+                const double error = static_cast<double>(queued - kAudioTargetSamples) /
+                                     static_cast<double>(kAudioTargetSamples);
+                double trim = 1.0 + 0.005 * error;
+                if (trim < 0.995) trim = 0.995;
+                if (trim > 1.005) trim = 1.005;
+                speed *= trim;
+            }
+            speed_resampler_.Append(audio_scratch_.data(), frames, speed, &audio_pending_);
+        }
+        if (audio_pending_.empty())
+            return;
+
+        // QueueAudio takes what fits and no longer waits for room - waiting
+        // stopped the machine, and with it the message pump, whenever the sound
+        // card was a few milliseconds behind. Whatever it did not take is
+        // offered again next frame.
+        const int queued = audio_->QueueAudio(audio_pending_.data(),
+                                              static_cast<int>(audio_pending_.size()));
+        if (queued >= static_cast<int>(audio_pending_.size())) {
+            audio_pending_.clear();
+            return;
+        }
+        if (queued > 0)
+            audio_pending_.erase(audio_pending_.begin(), audio_pending_.begin() + queued);
+
+        // A device that has stopped draining entirely - paused, or gone - must
+        // not turn this into a memory leak. A quarter second is far more than
+        // the few frames of slack this exists to absorb, and dropping the
+        // oldest is what a real one does when it underruns anyway.
+        const size_t kMaxPending = emulation::psx::Spu::kSampleRate / 2;
+        if (audio_pending_.size() > kMaxPending) {
+            audio_pending_.erase(audio_pending_.begin(),
+                                 audio_pending_.end() - kMaxPending);
+        }
     }
 
     void App::PresentFrame() {
@@ -517,8 +573,11 @@ namespace psxemu {
         // whatever blocks first - useful to get through a load or to read the host's real headroom
         // off the title bar, and wrong for playing. Reset while it is off so re-enabling starts a
         // fresh deadline rather than owing however long it ran unpaced.
+        // Times the speed the machine is being run at: 2.0 waits for half as
+        // long, so twice as many emulated frames fit in a real second. Nothing
+        // about the emulated machine changes - see EmuConfig::emulation_speed.
         if (system_->config().frame_limiter)
-            frame_limiter_.Wait(system_->gpu().refresh_hz());
+            frame_limiter_.Wait(system_->gpu().refresh_hz() * system_->config().emulation_speed);
         else
             frame_limiter_.Reset();
     }
@@ -711,6 +770,33 @@ namespace psxemu {
             TickFrameLimiter(window_, system_->config().frame_limiter);
     }
 
+    void App::UpdateSpeedMenu() {
+        if (system_ != nullptr)
+            TickSpeed(window_, system_->config().emulation_speed);
+    }
+
+    void App::SetSpeed(float speed) {
+        if (system_ == nullptr)
+            return;
+        system_->config().emulation_speed = speed;
+
+        // A speed is only meaningful if something is pacing the machine, so
+        // asking for one asks for the limiter. Without this, choosing a speed
+        // with the limiter off does nothing at all and gives no hint why - and
+        // the machine keeps running at whatever the host manages, which since
+        // the audio device stopped blocking is "faster than a PlayStation".
+        if (!system_->config().frame_limiter) {
+            system_->config().frame_limiter = true;
+            UpdateFrameLimiterMenu();
+        }
+        // The deadline was being paced to the old rate and the resampler carries
+        // a fractional position from the old one; both are stale.
+        frame_limiter_.Reset();
+        speed_resampler_.Reset();
+        UpdateSpeedMenu();
+        SaveSettingsIfChanged();
+    }
+
     void App::SetFrameLimiter(bool on) {
         if (system_ == nullptr)
             return;
@@ -719,6 +805,11 @@ namespace psxemu {
         // stopped being used or has not been used for a while. Starting clean stops the first frame
         // back from being asked to make up the gap.
         frame_limiter_.Reset();
+        // The audio the resampler was interpolating from was produced at a rate
+        // that is about to change; carrying its position across the change is a
+        // click.
+        speed_resampler_.Reset();
+        audio_pending_.clear();
         UpdateFrameLimiterMenu();
         SaveSettingsIfChanged();
     }
@@ -1104,6 +1195,10 @@ namespace psxemu {
                     const int player = (offset / source_count) % 4;
                     SetMultitapSource(port, player,
                                       kInputSourceChoices[offset % source_count].key);
+                } else if (command >= kCommandSpeedFirst &&
+                           command < kCommandSpeedFirst +
+                                         static_cast<int>(std::size(kSpeedChoices))) {
+                    SetSpeed(kSpeedChoices[command - kCommandSpeedFirst].value);
                 } else if (command >= kCommandBiosFirst && command <= kCommandBiosLast) {
                     // The only run here whose entries are not a table in const.h: the nth id is
                     // the nth image the last scan found, which SelectBios bounds-checks against

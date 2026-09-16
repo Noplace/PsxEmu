@@ -281,9 +281,9 @@ Missing or unproven:
 
 `psxemu.ini` holds `audio_volume`, `graphics_backend` (D3D11 or D3D12),
 `video_filter`, controller type and input source per port, the multitap player
-sources, `frame_limiter`, `cdrom_mechanical_timing`, `skip_bios_intro` and
-`bios_file`. The last disc and the key bindings are not remembered; the
-bindings are a compiled-in table in `const.h`.
+sources, `frame_limiter`, `cdrom_mechanical_timing`, `skip_bios_intro`,
+`bios_file` and `emulation_speed`. The last disc and the key bindings are not
+remembered; the bindings are a compiled-in table in `const.h`.
 
 `bios_file` is a filename rather than a path: the images live in
 `Documents\My Games\PSXEmu\bios`, which Settings > BIOS lists (anything in it
@@ -294,11 +294,16 @@ to boot.
 
 ### The front end is minimal
 
-A window, menus for disc, reset, pause, volume, video filter, controllers and
-which BIOS to boot, D3D11 and D3D12 presenters, keyboard/XInput/mouse input,
-and a speed readout in the title bar (bug 49). No binding editor, no debugger,
-no settings dialog. It cannot be run from an agent session, so front-end
-changes are verified by hand.
+A window, menus for disc, reset, pause, volume, video filter, controllers,
+which BIOS to boot and how fast to run (50-200%), D3D11 and D3D12 presenters,
+keyboard/XInput/mouse input, and a speed readout in the title bar (bug 49). No
+binding editor, no debugger, no settings dialog. It cannot be run from an agent
+session, so front-end changes are verified by hand.
+
+**It is still single-threaded**, and the machine still shares a thread with the
+message pump: a long frame or a blocking present stops the window responding.
+The audio device no longer does - that was [Threading-Plan.md](Threading-Plan.md)
+stage 1, and stages 2 and 3 are what is left.
 
 ### Never run against the reference
 
