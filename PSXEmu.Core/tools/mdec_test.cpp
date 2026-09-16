@@ -569,6 +569,105 @@ void TestOutputDmaStartedFirst() {
   delete system;
 }
 
+// Channel 0 feeds the decoder a block at a time, at the rate it decodes, with
+// the CPU running in between - not every word inside the CHCR write. Captain
+// Tsubasa J's movie player once sent DecDCTin a zero block count, which is
+// 65,536 blocks: moved at once, that was all of RAM through the decoder four
+// times, and the output wrote over the stack and the kernel (bug 55).
+void TestInputDmaIsPaced() {
+  printf("input dma is paced\n");
+
+  System* system = new System();
+  system->InitializeWithoutBios();
+  emulation::psx::IOInterface& io = system->io();
+  Mdec& mdec = io.mdec;
+
+  const uint32_t kMadr0 = 0x1F801080;
+  const uint32_t kBcr0 = 0x1F801084;
+  const uint32_t kChcr0 = 0x1F801088;
+  const uint32_t kMadr1 = 0x1F801090;
+  const uint32_t kBcr1 = 0x1F801094;
+  const uint32_t kChcr1 = 0x1F801098;
+  const uint32_t kDpcr = 0x1F8010F0;
+  const uint32_t kBusy = 0x01000000;
+
+  io.Write32(kDpcr, (1u << 3) | (1u << 7));      // channels 0 and 1 on
+  mdec.Write(kMdecControl, 0x80000000);
+  SetScaleTable(mdec);
+  SetFlatQuantTable(mdec, 1);
+  mdec.Write(kMdecControl, 0x60000000);          // data-in and data-out on
+
+  // Twenty grey 15-bit macroblocks - a command word and six block words each,
+  // 121 words, padded out to four 32-word blocks - in RAM at 20000h.
+  const uint32_t kMacroblocks = 20;
+  const uint32_t kIn = 0x20000;
+  uint32_t* ram = io.ram_buffer.u32;
+  uint32_t at = kIn >> 2;
+  ram[at++] = DecodeCommand(Mdec::kDepth15, false, false, 6 * kMacroblocks);
+  for (uint32_t m = 0; m < kMacroblocks; ++m)
+    for (int b = 0; b < 6; ++b)
+      ram[at++] = FlatBlockWord(0, (b < 2) ? 0 : 200);
+  while (at < (kIn >> 2) + 4 * 32)
+    ram[at++] = 0xFE00FE00;
+
+  // The output goes to 40000h: four 32-word blocks a macroblock.
+  io.Write32(kChcr1, 0);
+  io.Write32(kMadr1, 0x40000);
+  io.Write32(kBcr1, ((4 * kMacroblocks) << 16) | 32);
+  io.Write32(kChcr1, 0x01000200);
+
+  const uint64_t words_before = mdec.stats().words_in;
+  io.Write32(kMadr0, kIn);
+  io.Write32(kBcr0, (4u << 16) | 32);
+  io.Write32(kChcr0, 0x01000201);
+  CheckEqual(static_cast<uint32_t>(mdec.stats().words_in - words_before), 0,
+             "the CHCR write moves nothing itself");
+  Check((io.Read32(kChcr0) & kBusy) != 0, "the channel is busy");
+
+  io.Tick(64);
+  CheckEqual(io.Read32(kBcr0) >> 16, 3, "one tick moves one block");
+  CheckEqual(io.Read32(kMadr0), kIn + 32 * 4, "and advances MADR past it");
+  Check((io.Read32(kChcr0) & kBusy) != 0,
+        "with three still to go, the channel stays busy");
+
+  // Each block completed about five macroblocks, each of which the decoder
+  // takes 2,688 cycles over; well within a frame the whole of it is through.
+  for (int i = 0; i < 100 && (io.Read32(kChcr0) & kBusy) != 0; ++i)
+    io.Tick(4096);
+  Check((io.Read32(kChcr0) & kBusy) == 0, "given the time, it finishes");
+  CheckEqual(io.Read32(kBcr0) >> 16, 0, "counting every block off");
+  CheckEqual(static_cast<uint32_t>(mdec.stats().macroblocks), kMacroblocks,
+             "every macroblock decoded");
+  CheckEqual(io.ram_buffer.u32[0x40000 >> 2] & 0x1F, 22,
+             "and reached channel 1's buffer");
+
+  // The zero block count. With nothing but zeroes behind it the decoder sees
+  // only no-op commands, so only the bus time paces it - and even so, a
+  // 4,096-cycle tick moves a hundred-odd blocks, not 65,536 of them.
+  mdec.Write(kMdecControl, 0x80000000);
+  mdec.Write(kMdecControl, 0x60000000);
+  memset(io.ram_buffer.u32 + (0x60000 >> 2), 0, 0x10000);
+  io.Write32(kMadr0, 0x60000);
+  io.Write32(kBcr0, 32);                         // 32-word blocks, count 0
+  io.Write32(kChcr0, 0x01000201);
+  io.Tick(4096);
+  const uint32_t moved = (io.Read32(kMadr0) - 0x60000) / 4;   // words
+  Check(moved > 0, "a zero block count starts moving");
+  Check(moved <= 4096, "but only as fast as the bus allows");
+  Check((io.Read32(kChcr0) & kBusy) != 0, "and is still going");
+
+  // Stopping it abandons the rest - what the game's next DecDCTin does.
+  io.Write32(kChcr0, 0);
+  const uint32_t stopped_at = io.Read32(kMadr0);
+  io.Tick(4096);
+  io.Tick(4096);
+  CheckEqual(io.Read32(kMadr0), stopped_at, "a stopped transfer moves no more");
+  Check((io.Read32(kChcr0) & kBusy) == 0, "and is not busy");
+
+  system->Deinitialize();
+  delete system;
+}
+
 }  // namespace
 
 int main() {
@@ -587,6 +686,8 @@ int main() {
   TestRunLevelWalk(mdec);
   TestPaddingIsIgnored(mdec);
   TestWiredIntoTheBus();
+  TestOutputDmaStartedFirst();
+  TestInputDmaIsPaced();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

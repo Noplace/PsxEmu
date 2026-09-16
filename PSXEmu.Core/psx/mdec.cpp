@@ -283,7 +283,13 @@ void Mdec::WriteWord(uint32_t word) {
     memcpy(scale_table_, table_words_, sizeof(scale_table_));
   }
 
+  const bool was_decoding = state_ == kDecoding;
   state_ = kIdle;
+  // A decode can finish with less than a block of output left - a monochrome
+  // one ending partway through - which a waiting channel 1 could not take
+  // while more might follow. Nothing more will now, so tell it again.
+  if (was_decoding && HasData())
+    system_->io().dma.MdecOutputReady();
 }
 
 // ---------------------------------------------------------------------------

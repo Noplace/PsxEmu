@@ -143,6 +143,16 @@ class Dma : public Component {
   bool master_flag_;
 
   void Dma0();
+  // Moves the next of channel 0's blocks into the MDEC, counting it down in
+  // the registers, and schedules the one after it - or, for the last, the
+  // transfer's completion. Only called while a request-mode transfer is
+  // feeding: see Dma0 and Tick.
+  void FeedMdecIn();
+  // Cycles until channel 0 moves its next block. Zero when it is not feeding.
+  int32_t mdec_in_wait_ = 0;
+  // How long the MDEC takes over one macroblock, input to output - six 8x8
+  // blocks at 448 cycles each. DuckStation's figure, not a measurement.
+  static const int32_t kMdecCyclesPerMacroblock = 6 * 448;
   void Dma1();
   // Moves as many of channel 1's blocks as the MDEC has output for, counting
   // them down in its registers. Returns whether every block has now moved.

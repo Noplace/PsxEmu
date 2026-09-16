@@ -36,6 +36,7 @@ int Dma::Initialize() {
   dma_enable.raw = 0;
   interrupt_control.raw = 0;
   master_flag_ = false;
+  mdec_in_wait_ = 0;
   return 0;
 }
 
@@ -45,6 +46,7 @@ void Dma::Serialise(StateIO& io) {
   io.Plain(dma_enable.raw);
   io.Plain(interrupt_control.raw);
   io.Plain(master_flag_);
+  io.Plain(mdec_in_wait_);
 }
 
 // A channel finished. Its flag latches only if that channel's interrupt and
@@ -155,6 +157,15 @@ void Dma::Tick(uint32_t cycles) {
     if (channels[channel].busy_cycles <= 0)
       CompletePending(channel);
   }
+
+  // Channel 0 feeding the MDEC. After the loop above, so the countdown a last
+  // block arms starts with the next batch rather than this one.
+  if (mdec_in_wait_ > 0) {
+    mdec_in_wait_ -= static_cast<int32_t>(cycles);
+    while (mdec_in_wait_ <= 0 &&
+           channels[0].busy_cycles == DmaChannel::kAwaitingRequest)
+      FeedMdecIn();
+  }
 }
 
 uint32_t Dma::Read(uint32_t address) {
@@ -224,6 +235,13 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f801084:   channels[0].bcr=data;  break;
      case 0x1f801088:
       channels[0].chcr = data;
+      // Stopping the channel abandons a transfer still feeding the MDEC, as
+      // for channel 1 below.
+      if ((data & 0x01000000) == 0 &&
+          channels[0].busy_cycles == DmaChannel::kAwaitingRequest) {
+        channels[0].busy_cycles = 0;
+        mdec_in_wait_ = 0;
+      }
       if (ShouldStart(channels[0].chcr, channels[0].enable)) {
         RunChannel(0);
       }
@@ -385,14 +403,35 @@ uint32_t TransferWords(uint32_t bcr, uint32_t sync) {
 }
 
 // MDEC in: compressed macroblocks out of RAM and into the decoder.
+//
+// In request mode - sync 1, which is what games use - the MDEC takes a block
+// only as fast as it decodes, so the transfer feeds it one block at a time
+// from Tick while the CPU goes on running, and moves nothing at all inside
+// the CHCR write. It used to move every word right there. A zero block count
+// means 65,536 blocks, and a DecDCTin handed an empty frame asks for exactly
+// that: 2,097,152 words, all of RAM four times over, went through the decoder
+// before the next instruction, and channel 1 wrote the garbage it decoded
+// through the stack and on round into kernel RAM (bug 55's crash). Paced, the
+// game's next DecDCTin or DecDCTout stops the channel long before then, as on
+// the hardware.
+//
+// Burst mode still moves everything at once.
 void Dma::Dma0() {
   auto& ram = system_->io().ram_buffer;
   auto& mdec = system_->io().mdec;
 
-  const uint32_t words =
-      TransferWords(channels[0].bcr, (channels[0].chcr >> 9) & 3);
+  const uint32_t sync = (channels[0].chcr >> 9) & 3;
+  const uint32_t words = TransferWords(channels[0].bcr, sync);
   const int32_t step = (channels[0].chcr & 0x02) ? -4 : 4;
   uint32_t address = channels[0].madr & 0x1FFFFC;
+
+  if (sync == 1) {
+    NoteTransfer(0, words,
+                 (address + static_cast<uint32_t>(step) * words) & 0x1FFFFC);
+    channels[0].busy_cycles = DmaChannel::kAwaitingRequest;
+    mdec_in_wait_ = 1;
+    return;
+  }
 
   for (uint32_t i = 0; i < words; ++i) {
     mdec.WriteWord(ram.u32[address >> 2]);
@@ -401,6 +440,47 @@ void Dma::Dma0() {
   ChargeWords(words);
   NoteTransfer(0, words, address);
   channels[0].madr = address;
+}
+
+// One block of channel 0's request-mode transfer. The next waits for the bus
+// time this one took - the CPU is stopped for that part - plus the MDEC's time
+// over every macroblock this block completed, which the CPU is not stopped
+// for. MADR and BCR run down as they go, as for channel 1.
+void Dma::FeedMdecIn() {
+  DmaChannel& ch = channels[0];
+  auto& ram = system_->io().ram_buffer;
+  auto& mdec = system_->io().mdec;
+
+  uint32_t block_words = ch.bcr & 0xFFFF;
+  if (block_words == 0)
+    block_words = 0x10000;
+  uint32_t blocks = ch.bcr >> 16;
+  if (blocks == 0)
+    blocks = 0x10000;
+  const int32_t step = (ch.chcr & 0x02) ? -4 : 4;
+  uint32_t address = ch.madr & 0x1FFFFC;
+
+  const uint64_t macroblocks_before = mdec.stats().macroblocks;
+  for (uint32_t i = 0; i < block_words; ++i) {
+    mdec.WriteWord(ram.u32[address >> 2]);
+    address = (address + step) & 0x1FFFFC;
+  }
+  --blocks;
+  ch.madr = address;
+  ch.bcr = (ch.bcr & 0xFFFF) | ((blocks & 0xFFFF) << 16);
+
+  const uint32_t bus_cycles = RamCycles(block_words);
+  system_->cpu().AccountCycles(bus_cycles);
+  const uint64_t decoded = mdec.stats().macroblocks - macroblocks_before;
+  const int32_t cycles = static_cast<int32_t>(
+      bus_cycles + decoded * static_cast<uint64_t>(kMdecCyclesPerMacroblock));
+
+  if (blocks == 0) {
+    mdec_in_wait_ = 0;
+    ch.busy_cycles = cycles > 0 ? cycles : 1;
+    return;
+  }
+  mdec_in_wait_ += cycles;
 }
 
 // MDEC out: decoded pixels back into RAM, for whatever is going to upload them

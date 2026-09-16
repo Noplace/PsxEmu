@@ -4,644 +4,297 @@ Hardware and features still missing, ordered by how likely each is to stop a
 game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 [Bugs-Found.md](Bugs-Found.md) for what has already been fixed.
 
-Last audited after the DMA busy-bit pacing fix (bug 38).
+Last audited 2026-09-15, after bug 55 (DICR master flag). Every entry below
+was checked against the code at that point, not carried forward from the
+previous audit (which predated bug 39 and the September 12-14 commits).
 
 ---
 
-## Blocking a game right now
+## Can crash a game
 
-### Air Combat freezes during its intro FMV
+No game is known to be blocked right now. Air Combat and Captain Tsubasa J,
+the last two, were both bug 55. What is listed here is a path that is known to
+end in a crash when a game reaches it.
 
-Air Combat (SLUS-00001) reaches its intro film, decodes at least one frame,
-and then stops with a black screen - the GP0 word count stops moving around
-frame 620 and never resumes. It is stuck in a wait-and-consume function
-(`8002933C`, reached through `800242B4`) spinning on a single-slot "frame
-ready" flag at `0x800A2BB8` that nothing ever sets again.
+### An MDEC-in transfer moves all its words the moment it starts
 
-This is not the XA/CD audio path (checked against bug 36 - the silence is in
-MDEC's video output, not the SPU mix) and it is not DMA busy-bit
-observability either: bug 38 was written for exactly this shape of problem,
-is a real fix, and the freeze is unchanged by it.
+`Dma::Dma0` loops over the whole transfer inside the CHCR write. In request
+mode (sync 1) that is BCR's block size times its block count, and a block
+count of 0 means 65,536 - so a `DecDCTin` handed an empty frame (size field 0,
+BCR `00000020`) pushes 2,097,152 words, all of RAM four times over, through the
+MDEC before the CPU runs another instruction. The garbage decodes, the waiting
+channel 1 transfer (also 65,536 blocks) takes the output, and it lands from the
+output buffer through the stack and round into kernel RAM.
 
-What produces that flag is now known: it is the game's **DMA channel 3
-(CD-ROM) completion handler**, and it runs exactly once. The game starts its
-FMV correctly (`ReadS` at lba 32501, mode C0) and the drive streams 341 data
-sectors to the end of the run, but **DMA3 never runs again after the first
-one**, so nothing is ever fetched into RAM and the BIOS's own decoder reports
-`MDEC_vlec: invalid VLC ID`. Ruled out on this side: DICR write-one-to-clear,
-the halfword I_STAT acknowledge, CD interrupt gating, data-FIFO re-arming,
-the drive status byte, and any `ShouldStart` rejection (measured: zero, on
-every channel).
+On hardware channel 0 moves a block only when the MDEC's data-in request says
+it has room, and the MDEC drains its input at decode speed, so the CPU keeps
+running and the game's next `DecDCTin` restarts the channel long before RAM is
+touched. Captain Tsubasa J and Air Combat reached this path through bug 55's
+stale flag; that route is closed, the path is not.
 
-The sharpened finding: the film never sets up a CD DMA at all - channel 3's
-MADR and BCR are written exactly 161 times each, every one during file
-loading. The single channel-3 "completion" that starts the game's frame
-pipeline is a **ghost**: DICR's flag bits are write-one-to-clear, so
-completions latched during BIOS-era loading survive the film's
-`DICR <- 00000000`, and the moment it enables channel 3 the stale flag raises
-an interrupt for a transfer that never happened. The producer marks a frame
-ready with nothing behind it and the ring is desynchronised from then on.
-Interrupt delivery itself is healthy (537 delivered, 147 swallowed). Whether
-the stale flags are faithful - psx-spx suggests they might be - is the open
-question.
+## Test health
 
-Investigated in detail, including several ruled-out hypotheses, in
-[Air-Combat-FMV-Plan.md](Air-Combat-FMV-Plan.md). It is the only game known
-to be blocked; the previous entry here was XA-ADPCM, which is implemented -
-see below.
+### Two harness failures on HEAD, both new since 2026-09-12
+
+- `gpu_test`: *the shared edge column blended exactly once, not twice: got
+  00000000 want 00000008* (1 of 31).
+- `media_test`: *Audio Peak Meter / Report peak is non-zero for loud audio*,
+  `cdda_sectors=76 cdda_failures=0 audio_peak=0` (1 of 225).
+
+Both pass at `535949b` (31/31 and 206/206), so both came in with the September
+12-14 commits - the GPU series (`0a9ed25`..`2450594`, one titled "gpu fixes nt
+working"), the SPU reverb/sweep commit `1419d78`, the CD-ROM commit `209943e`
+or `3690db2`. Not yet bisected to one commit. The CD-DA peak reading zero is
+the one to look at first: CD music reaching the mixer at all was bug 36's
+whole point.
+
+### Baselines are stale
+
+`Test-Suite.md`'s BIOS boot table says so itself, and no per-game checksum
+table exists. Bomberman Party Edition's frame-1300 logo, recorded as
+`dedbf5071e81061a` for bug 51, is `757f6dd8b459a0ef` on HEAD with the picture
+unchanged - moved by the GPU commits. Until there is a refreshed table the
+only trustworthy regression check is an A/B: the same sources built with and
+without a change, compared every 100 frames (how bug 55 was checked, over
+twelve discs).
+
+### Recent SPU and GPU work is unrecorded and untested
+
+The September 12-14 commits have no Bugs-Found entries. The SPU commit
+replaced the reverb and added volume sweeps (see below) without adding a
+`spu_test` check - it is still 107.
 
 ## Silently wrong rather than absent
 
 These do not stop anything, which is what makes them worth listing: a game
-runs at the wrong speed or draws slightly wrong and nothing reports an error.
-
-### Root counters - implemented properly, timing still quantised
-
-The three counters count their real clock sources, honour their sync modes,
-and match their targets the way the hardware does. `timer_test` covers this in
-70 checks. What used to be here - sync modes decoded and ignored, a target of
-zero silently never matching, the dot clock divided out of CPU cycles by a
-hardcoded 10, a counter that could only wrap once however long the step - is
-all gone. See bugs 27-31.
-
-Three things about the counters are still approximate rather than wrong:
-
-- **Interrupts can be up to 32 CPU cycles late.** `IOInterface::Tick` is
-  called once per cycle and batches to 32 before advancing the world, so an
-  interrupt lands at the end of the batch it happened in. Counter *reads* are
-  exact - `RunPending()` runs the batch early whenever software reads or
-  writes a counter register - so a game timing something short measures it
-  correctly; only the interrupt edge is coarse.
-- **Hblanks are counted per completed scanline**, which is the right number
-  but attributes them to the end of the line rather than to the moment the
-  beam leaves the display window. The gate counter 0 pauses on uses the real
-  within-line position, so only the count is phase-approximate.
-- **`Gpu::Tick` still advances a whole scanline at a time.** Nothing between
-  scanlines can be observed, which is why the hblank gate can only change at
-  batch granularity.
-
-### Cycle timing - partly measured now, memory regions still modelled
-
-[CPU-Timing-Plan.md](CPU-Timing-Plan.md) tracks this gap CPU-wide; phases 1
-and 2 are done (bug 43): `MULT`/`MULTU`/`DIV`/`DIVU` charge psx-spx's
-measured 6/9/13/36-cycle table instead of the flat one cycle `ADD` gets, with
-the same busy-wait hazard as the GTE if HI/LO is read too soon, and a
-not-taken branch now charges the same uniform 1 cycle every other
-instruction does (it charged 0 before - a real bug, not part of the uniform
-model). The branch/loop-overhead question bug 42's own SQR-loop arithmetic
-raised is answered too: measuring that exact loop in `cpu_test` (`sqrloop`)
-gives exactly 9 cycles/iteration, matching bug 42's hardware-recovered value,
-because the GTE busy-wait stall already absorbs a register read's cost into
-the command's window and a taken branch already costs nothing beyond its
-delay slot - both already correct, now confirmed rather than assumed.
-
-`Cpu::Load` still charges a region-dependent stall (3 cycles for RAM, 0 for
-the scratchpad, 3 for a hardware register, 5 for the BIOS ROM) on top of the
-per-instruction cost. That was enough to stop the BIOS giving up on VSync -
-see bug 16 - but it is still a model, not a measurement (CPU-Timing-Plan.md
-phase 3, not attempted yet). A primary-source fetch done for phase 1 found
-real hardware's figures are further off than this project's own prior
-search-result summary suggested - scratchpad 1 cycle, on-die I/O 5, RAM 7,
-and BIOS ROM a *programmable* 27-33 depending on a memory-control register
-this core doesn't model as a timing input yet - and that a loaded register's
-cost partly overlaps with independent instructions that follow it ("Load
-Shadow"), which a single flat per-region stall can't represent. Getting this
-region right is bug 16's fix revisited with a real instrument, but it is
-also the riskiest of the four phases to get wrong for exactly the reason bug
-16 exists, so it stays a modelled number until it gets that same measured
-treatment, deliberately, in its own pass.
-
-DMA transfers now take time rather than completing instantaneously: a channel
-bills the machine roughly one cycle per word, plus one per sixteen for the
-DRAM page boundary, plus 8 cycles per linked-list node and 5 more for a node
-that carries data. The rate is DuckStation's model rather than a measurement
-of real silicon.
-
-That billed time is also now observable (bug 38): a channel's busy bit stays
-set, and its completion interrupt waits, until that many of the machine's
-cycles have actually gone by through the CPU's own ordinary
-instruction-by-instruction ticking - not the whole amount resolved
-synchronously inside the register write that triggered it. Software that
-starts a transfer and then polls to find out when it is done now sometimes
-finds it still running, the way real software does. The data itself still
-moves eagerly, all at once, the moment the transfer is triggered; only the
-*signal* that it is done is paced against the billed cycles. That is a
-deliberately smaller change than modelling a real block-by-block bus request -
-DuckStation actually transfers each block only as its device asks for it - so
-a device whose readiness genuinely depends on partial progress mid-transfer is
-still not modelled here.
-
-The GTE now bills real per-command time too (bug 42): each of its 22 commands
-charges its own documented cycle cost (5 to 44) rather than the flat one cycle
-a plain register move takes, and a command or register access issued before
-the previous one finishes stalls the CPU the way hardware does. Unlike the
-figures above, this one has actually been run against a timing test suite -
-amidog's `psxtest_gte` - and measuring this core's own numbers from inside
-that test's loop (bug 42) shows the fix is exactly right: recovered per-opcode
-costs match the documented table for every opcode reached, with no exceptions.
-The suite still fails every one of the 22 opcodes it times regardless,
-because its loop repeats each measurement 501 times to average out noise -
-but reconstructing that exact loop directly (bug 43, `cpu_test`'s `sqrloop`
-group) and measuring this core's own cycles now shows the *other*
-instructions in it - `CFC2`, a `nop`, an accumulate, the branch, its delay
-slot - already sum to exactly the hardware-measured 9 cycles/iteration, not
-a wrong uniform total. The suite's TIMING column staying red is not yet
-explained by this alone; see [CPU-Timing-Plan.md](CPU-Timing-Plan.md)'s
-phase 0 (pixel-sampling the column itself, not yet done) and phase 3 (memory
-region costs, the piece of "everywhere else" still genuinely modelled rather
-than measured).
-
-What is still missing is a comparison against hardware for memory-region
-timing specifically - phases 1 and 2 above closed the multiply/divide and
-branch pieces of it. Amidog's GTE and CPU suites remain the right instrument
-for what's left; until phase 3 gets the same treatment, `Cpu::Load`'s region
-costs are a plausible shape, not a fact.
-
-The emulator's own speed is at least measured now: `boot_runner` reports
-emulated seconds against wall-clock seconds at the end of a run. See
-[Recompiler-Plan.md](Recompiler-Plan.md), which argues measurement should come
-before any optimisation work - that measurement now exists.
-
-### CD audio is resampled linearly
-
-The SPU's *voice* path uses the hardware's Gaussian table (`kGauss`). The
-CD-audio path, which resamples a 44100 Hz track to the output rate, uses linear
-interpolation rather than the hardware's seven-point filter. The code says so
-where it does it. The difference is a slight softening of the top end, not a
-wrong pitch or a click.
-
+runs at the wrong speed or sounds or draws slightly wrong and nothing reports
+an error.
 
 ### Voice and main volumes come out at half
 
-`Spu::VolumeOf` decodes the sweep-capable volume registers. In fixed-level
-mode the stored level is meant to be doubled into the full signed range, and
-the code's `(int16_t)(reg << 1) >> 1` does the doubling and then shifts it
-straight back out - so a voice or main volume of 3FFFh, which should be about
-unity, mixes at about half. It is consistent across every voice and the main
-output, so nothing sounds wrong relative to anything else; it is just quiet,
-which is part of why the front end defaults its master gain to 2x.
+`Spu::VolumeOf` decodes a fixed-level volume as `(int16_t)(reg << 1) >> 1`,
+which doubles the level and shifts it straight back out - a voice or main
+volume of 3FFFh, which should be about unity, mixes at about half. It is
+consistent across every voice and the main output, so nothing sounds wrong
+relative to anything else; it is just quiet, which is part of why the front
+end defaults `audio_volume` to 2.0. Fixing it doubles every game's audio and
+wants that default dropped to match, so it needs measuring on its own.
 
-The CD and external *input* volumes were on the wrong side of this entirely -
-run through `VolumeOf` when they are a different, plain-signed format - which
-silenced CD-DA and XA outright until bug 36. Those now use `InputVolumeOf`.
-Fixing the voice/main halving is a separate pass: it doubles every game's
-audio and would want the master-gain default dropped to match, so it needs
-measuring on its own rather than riding along here.
+The CD and external input volumes are a different, plain-signed format and go
+through `InputVolumeOf` (bug 36).
 
-### Volume sweeps are not implemented
+### Reverb and volume sweeps - implemented, not verified
 
-Bit 15 of a voice or main volume register selects a sweep - a ramp, linear or
-exponential, up or down, at one of 128 rates - instead of a fixed level.
-`Spu::VolumeOf` reads any such register as 3FFFh, full scale, because the
-sweep's starting level is not stored in the register and nothing tracks one.
+Both used to be listed as missing. Commit `1419d78` implemented them:
 
-A sequencer uses sweeps for note attack shaping, tremolo and cross-fades
-between layered voices, so a game that uses them has its dynamics flattened:
-every part plays at the level of the loudest. Nothing about pitch changes,
-which makes it hard to hear as a fault rather than as a mix.
+- **Sweeps:** `Spu::StepSweep` ramps a voice or main volume with bit 15 set -
+  linear or exponential, up or down, at the register's rate - and `VolumeOf`
+  returns the running level instead of full scale.
+- **Reverb:** `Spu::ProcessReverb` now runs the documented network - input
+  volumes, same- and different-side reflections with the wall and IIR
+  coefficients, the comb and all-pass stages - off the 32 reverb registers at
+  22,050 Hz, where it used to be a two-tap delay using two of them.
 
-`boot_runner`'s `spu requests` line counts sweep writes against level writes,
-so whether a given game is affected is now one run rather than a guess. Final
-Fantasy VII is not: 0 sweeps against 4006 plain levels over 3600 frames, its
-panning done by rewriting levels note by note. That was worth knowing during
-bug 39, and it is worth checking before blaming this for anything.
+Neither has a `spu_test` check, and neither has been compared against
+hardware or another emulator's output. `boot_runner`'s `spu requests` and
+`spu modes` lines show whether a game uses them: Final Fantasy VII routes all
+24 voices through the reverb (`reverb FFFFFF`) and uses no sweeps.
 
-### The reverb is a two-tap delay, not the hardware's network
+### CD audio is resampled linearly
 
-`Spu::ProcessReverb` runs a two-tap delay out of the reverb work area, with a
-single feedback term off the two master reverb volumes. The hardware runs a
-comb-and-all-pass network out of the same buffer, driven by the 32 reverb
-registers (`1F801DC0h..`) - the all-pass and comb delays, their feedback and
-filter coefficients, and the input filters. All 32 are stored and none but the
-first two are used.
-
-The shape of the effect is there - a decaying echo at some depth - but not its
-response, and the delay length is not even a fixed room: it is derived from
-however much sound RAM sits above `reverb_base_`, so a game that allocates a
-large work area gets a long slapback rather than a large hall.
-
-This is not academic. Final Fantasy VII routes **all 24 voices** through the
-reverb with the master enable set (`reverb FFFFFF`, `control C0B5`, measured by
-`boot_runner`'s `spu modes` line), so every note of its music passes through
-it. Bug 39 fixed that music's pitch and its waveform; what it sounds like is
-still partly this.
-
-Doing it properly means implementing the documented network against the real
-register set, which is a pass of its own with `spu_test` coverage to match -
-the reverb has none today, and it is the only major SPU path in that position.
-
-### The instruction and data caches are not modelled
-
-`ICache`/`ICache2` exist in `cpu.h` and every call site is commented out,
-deliberately: routing data loads through an *instruction* cache corrupted every
-read once the BIOS enabled it, and a cache modelled wrongly is worse than no
-cache at all.
-
-The cost is timing fidelity. It would also matter to a recompiler, which wants
-the cache-control write at `0xFFFE0130` as its signal that code has changed -
-see [Recompiler-Plan.md](Recompiler-Plan.md).
+The voice path uses the hardware's Gaussian table (`kGauss`); the CD-audio
+path, which resamples 44,100 Hz to the output rate, interpolates linearly
+rather than with the hardware's seven-point filter. The code says so where it
+does it. A slight softening of the top end, not a wrong pitch or a click.
 
 ### Cause's interrupt-pending bits are faked
 
-`RaiseException` sets `Cause` bits 8-15 from `SR`'s interrupt mask rather than
-from the actual pending lines. The BIOS's handler computes `cause & sr & 0xFF00`
-and gets a non-zero answer, which is why it works - but software that reads
-`Cause` to find out *which* line is pending gets the mask instead.
+`Cpu::RaiseException` sets `Cause` bits 8-15 from `SR`'s interrupt mask
+(`cause |= sr & 0xFF00`) rather than from the lines actually pending. The
+BIOS's handler computes `cause & sr & 0xFF00`, gets a non-zero answer, and
+works - but software reading `Cause` to find out *which* line is pending gets
+the mask instead.
+
+### Cycle timing - partly measured, memory regions still modelled
+
+[CPU-Timing-Plan.md](CPU-Timing-Plan.md) tracks this. Done: multiply and
+divide charge psx-spx's measured 6/9/13/36 cycles, a not-taken branch costs a
+cycle (bug 43), and every GTE command charges its documented cost with the
+hardware's stall when the next one comes too soon (bug 42) - recovered from
+inside amidog's own test loop, matching the table for every opcode.
+
+Still modelled: `Cpu::Load`'s per-region stall (3 cycles RAM, 0 scratchpad, 3
+I/O, 5 BIOS ROM). Primary sources put hardware at 1 / 5 / 7 and a
+*programmable* 27-33 for the ROM, set by a memory-control register this core
+does not use as a timing input, with a load's cost partly overlapping the
+instructions after it. That is phase 3, deliberately left for its own pass
+because bug 16 is what a wrong number here does. amidog's GTE suite's TIMING
+column stays red until phase 0 (sampling the column itself) and phase 3 are
+done.
+
+### DMA data moves eagerly; only the completion is paced
+
+A transfer bills about one cycle per word (plus page and linked-list node
+costs, DuckStation's model rather than a measurement), and since bug 38 its
+busy bit and interrupt wait for that many cycles of ordinary execution. The
+data itself still moves all at once when the transfer starts - except channel
+1 in request mode, which waits for MDEC output (the Area 51 fix). A device
+whose readiness depends on partial progress mid-transfer is otherwise not
+modelled; channel 0's version of this is the crash path at the top.
+
+### Root counters - correct, with coarse edges
+
+The three counters count their real clock sources, honour their sync modes and
+match targets as the hardware does (`timer_test`, 70 checks; bugs 27-31).
+Approximate rather than wrong:
+
+- **Interrupts can be up to 32 CPU cycles late.** `IOInterface::Tick` batches
+  32 cycles before advancing the world. Counter *reads* are exact -
+  `RunPending()` runs the batch early on any counter register access.
+- **Hblanks are counted per completed scanline**, the right number attributed
+  to the end of the line rather than the moment the beam leaves the window.
+- **`Gpu::Tick` advances a whole scanline at a time**, so nothing between
+  scanlines is observable and the hblank gate changes at batch granularity.
+
+### The instruction and data caches are not modelled
+
+`ICache`/`ICache2` exist in `cpu.h` with every call site commented out,
+deliberately: routing data loads through an *instruction* cache corrupted every
+read once the BIOS enabled it. The cost is timing fidelity, and a future
+recompiler would want the cache-control write at `0xFFFE0130` as its signal
+that code changed - see [Recompiler-Plan.md](Recompiler-Plan.md).
+
+### GTE - values and flags agree with hardware; one matrix is guessed
+
+All 22 commands pass amidog's `psxtest_gte` REG and COMPLEX groups, and games
+issue tens of thousands of commands with none unrecognised. The MVMVA garbage
+matrix (matrix select 3) is written from the description, not measured. Its
+TIMING group is the cycle-timing entry above.
 
 ## Present but incomplete
 
-### Memory cards - the format is declared, nothing understands it
+### Disc images
 
-`MC` loads and creates 128 KB files, reads and writes 128-byte sectors, and
-carries the `flag_` byte the SIO layer reports. Games save and load.
-
-The front end now gives each disc its own pair, automatically: booting a disc
-loads or creates `card1.mcr` and `card2.mcr` in
-`Documents\My Games\PSXEmu\memcards\<disc filename>\`, named after the disc
-image rather than anything read off it, so it works for discs with no
-SYSTEM.CNF too. Swapping a disc mid-session leaves the cards alone, which
-matches hardware - the memory card slots have nothing to do with the drive.
-
-What is still missing is any comprehension of what is *on* a card: nothing
-walks the directory, follows a block chain, decodes a Shift-JIS title or an
-icon, or computes a frame checksum. There is still no in-emulator eject for a
-running machine - only a cold boot disconnects a card, which is what makes the
-auto-load above safe to do unconditionally. And `WriteSector` opens, seeks,
-writes and closes the file for every 128 bytes - a game saving one block does
-that 64 times, and a crash part-way through leaves a half-written card.
-
-Planned in [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
-
-### Controllers - DualShock, mouse, no-controller and multitap now; no lightgun
-
-`Sio` speaks the real DualShock handshake: a pad boots as a plain digital one
-(`5A41h`) and only becomes analog (`5A73h`) if a game actually asks for
-it, through the same commands a real one answers to - `0x43` to enter
-configuration mode, `0x44` to switch modes and optionally lock the switch,
-`0x45` to report which mode it is in, `0x4D` to say which bytes of a poll
-reply the two vibration motors listen on. A game that never negotiates any of
-this never sees anything different from the plain pad this always was, which
-is why every game tested so far - none of which ask for analog input -
-produced an identical result before and after this was added.
-
-Two things are approximated rather than measured: commands `0x46` and `0x47`
-(capability queries almost nothing exercises) are acknowledged with the right
-shape and zero-filled content, and `0x4C` reports a DualShock rather than a
-DualShock 2 - pressure-sensitive face buttons are not implemented, so nothing
-would read the extra data anyway. Still entirely absent: the lightgun, which
-needs the GPU's scanline position latched on trigger.
-
-### Multitap (SCPH-1070) - both real-hardware read methods, memory cards not yet
-
-A port can now be set to `Sio::kMultitap`, giving it four players (A-D)
-instead of one. `Pad` became a small polymorphic hierarchy for this rather
-than a fourth parallel array: `Sio::Multitap` inherits `Pad` and owns four
-ordinary `Pad`s as `players[]`, so `ExchangeController`/`PadIdByte`/
-`PollPayloadByte` - the whole existing digital/analog/DualShock state
-machine - needed no changes at all and are reused verbatim per player. A
-port's own `pad_` slot went from a value to a `std::unique_ptr<Pad>` to make
-that possible, which is also why `kStateVersion` bumped again (4→5) - a
-`Pad` with a vtable can no longer ride along in a save state as one
-trivially-copyable blob, so each concrete type now serialises its own
-fields, and `Sio::Serialise` reads `controller_type_` first on load to know
-which concrete type to reconstruct before asking it to read the rest.
-
-Both of psx-spx's read methods are implemented, checked against its
-documented byte sequences and cross-referenced against DuckStation's actual
-`multitap.cpp` (a proven, actively-maintained reference) rather than
-psx-spx's prose alone, since that prose is largely describing real hardware
-glitches rather than a clean state machine to copy. Method 2 ("normal
-reads", `0n 42 00 00`) is a pure passthrough to whichever player `0x01`-
-`0x04` selected - literally `ExchangeController` again, just handed a
-different `Pad&`. Method 1 ("read all four", psx-spx's own words for the
-one real games mostly use) is triggered by bit 0 of the *third* byte of any
-transfer, which - psx-spx is explicit about this - does not change that
-transfer's own reply, only the next one; the transfer that is actually
-queued this way then answers 5A80h and 34 bytes total (4 players x 4
-halfwords each), 0xFF-padded past whatever a shorter reply (a plain digital
-pad) actually has. Each player's eight bytes are a whole command exchange
-with that player: what the host sends in them reaches the player's pad - so
-0x43, 0x44 and 0x4D work per player - and what comes back is that player's
-answer to the previous long transfer's block, which is how DuckStation does
-it. The first version answered every block as a plain poll on the spot and
-dropped what the host sent, and Bomberman Party Edition's per-player
-DualShock handshake never got past its first step (bug 53). `sio_test`
-checks: independent negotiation on all four players; that `0x02`-`0x04`
-never acknowledge on an ordinary (non-multitap) port at all, which is the
-regression guard on the "purely additive, zero change for anyone not using
-it" claim; the escalation latching for the transfer *after* the one that
-requests it, not that one itself; the escalation aborting (falls back to an
-ordinary reply) if the queued transfer's command byte turns out not to be
-`0x42`; the exact 34-byte shape and per-player padding, one transfer
-behind; a block's command reaching its own player; and a save/load round
-trip that checks both the type and which player's buttons ended up where.
-
-`PSXEmu.Win32`'s Controller Port menu offers "Multitap" as a sixth choice,
-same as any other type - no separate enable toggle. Two new popups appear
-directly in the Input menu, "Multitap Port 1"/"Multitap Port 2", each
-listing Player A-D Source (keyboard or one of four XInput slots now,
-not two - `EmuConfig::kValidInputSources` and `App::gamepads_` both grew
-from 2 to 4, since a single multitap wants up to four independently
-assignable physical pads) - greyed out via the same mechanism `TickFilter`
-already uses whenever that port is not actually set to Multitap. Every
-multitap player answers as a full DualShock unconditionally for now; there
-is no per-player type picker yet (deliberately - see the class comment on
-`Sio::Multitap`), only per-player source. `App::PollInput`'s per-port loop
-gained a Multitap branch that is otherwise identical to the single-pad path
-run four times, sharing the same input-reading logic via a local lambda
-rather than duplicating the switch statement. Changing a port's type in the
-menu leaves the port empty for about a second first
-(`kControllerReplugFrames`), as unplugging one controller and plugging in
-another would: a game that never sees the port empty can go on reading the
-old device's layout (bug 54).
-
-Which port a game wants a multitap in is the game's business. Bomberman Party
-Edition reads one only in port 2 - its five-player setup is a pad in port 1
-and four more on a multitap in port 2 - and with one in port 1 it takes no
-input from anything.
-
-Not yet done: the four memory-card slots a real multitap also provides
-(`0x81`-`0x84`, address-only - no method duality like the controller side
-has, so no `Multitap`-style class needed for it either). The core-side
-change would be two lines in `Sio::Exchange()`; what actually needs
-redesigning is the Win32 side, where `System::mc_[2]` and the per-disc
-`card1.mcr`/`card2.mcr` auto-load are hand-duplicated per index rather than
-looped, and the Open/Create Memory Card menu commands are four individually
-hand-written constants with no `First`/`Last`-range-plus-table idiom the
-way controller types have - both would need rebuilding, not extending, to
-reach eight slots. Deferred rather than skipped; independent of everything
-above, so it can land without reopening any of it.
-
-A port can also be set to `Sio::kMouse` (the SCPH-1030 mouse, ID `5A12h`) or
-`Sio::kNone` (nothing plugged in at all), alongside the three pad kinds -
-`PSXEmu.Win32`'s Controller Port menu offers all five per port. The mouse's
-six-byte poll reply (ID, a fixed filler byte, the two buttons, then two
-signed relative motion bytes) was built against psx-spx's documented bit
-layout rather than guessed, and `sio_test` checks the exact reply bytes for a
-known button/motion state, that a movement bigger than one signed byte drains
-across as many polls as it takes rather than being clipped and losing the
-remainder, and that `kNone` never acknowledges even if something still calls
-`set_connected(slot, true)` on it by mistake. What none of that proves is
-that a real mouse-aware game actually recognises this as a mouse - no disc
-that uses one has been tried, since nocash's own notes are the only reference
-this was checked against. `PSXEmu.Win32/mouse.h` reads the real mouse via raw
-input (`WM_INPUT`) rather than cursor position, so movement is not lost at a
-screen edge, and divides the raw delta by a fixed 4 before it reaches `Sio`
-since a modern mouse's sensor resolution is well above a PS1 mouse's and
-nothing scales that automatically - guessed, not measured, and the first
-thing to revisit if the in-game feel is off. A port set to `kMouse` or
-`kNone` has its Port Source menu greyed out, since neither one reads from
-`input_source` - a mouse's mapping is fixed to the real mouse, and there is
-nothing for `kNone` to read from at all.
-
-Motion only counts while the host cursor is actually over the game's client
-area - `App::PollInput` checks `GetCursorPos` against `GetClientRect` every
-frame and drops whatever raw input accumulated otherwise, the same way it is
-already dropped while unfocused. Without that, the emulated mouse would move
-from wherever the physical mouse goes on the whole desktop for as long as
-this window still has focus, which is not what a real mouse plugged into a
-real console could ever do. This is a bounds check on the host cursor, not
-anything on the wire - a real PS1 mouse has no absolute position to report at
-all, only the relative deltas `Sio::Mouse` already models, so there is no
-scaling this against "a PSX range" the way a tablet or a VM's absolute
-pointing device would. The OS cursor itself is neither hidden nor confined
-(no `ClipCursor`), so the window's own menu bar stays reachable.
-
-`PSXEmu.Win32/gamepad.h` is where an XInput pad actually reaches this. The
-polling, slot search-and-latch and deadzone handling are the same generic
-mechanism GBAEmu's `GamepadInputDevice` already used for Windows/XInput,
-nothing GBA-specific about it; the mapping differs because PSX has four face
-buttons to GBA's two, so Xbox's four map across by position (A at the bottom
-to Cross, and round from there) rather than GBA's compromise of doubling two
-Xbox buttons onto one. The triggers become L2/R2, both sticks feed the analog
-axes once a game asks for them, and the stick clicks become L3/R3. Port 1
-takes the keyboard or a pad, whichever is pressed; port 2 takes a second pad
-if one is present, with no keyboard fallback - two controllers need two
-physical pads, matching the console. Rumble is read back from `Sio`'s
-per-port motor state once a frame and fed to `XInputSetState`.
-
-Mode switching is entirely the game's doing, not the player's - there is no
-emulated ANALOG button, and no keyboard or pad shortcut standing in for one.
-A real DualShock lets the player force the switch when a game does not ask
-for it; this does not. Every real game that wants analog input negotiates it
-itself at startup, so this has not yet mattered, but a homebrew disc or a
-utility that expects the player to press the button would find nothing does.
-
-Covered by `sio_test` - the handshake, the axis byte order, the pre-DualShock
-legacy rumble pattern and the `0x4D`-configured one, that the two ports do
-not leak state into each other, the mouse's reply shape and motion draining,
-and that `kNone` never answers.
-
-### CD-ROM - all 28 commands answer
-
-Every command the drive controller accepts is now handled. The last five went
-in together (bug 37): `04` Forward and `05` Backward scan the disc during
-CD-DA play, skipping a block of sectors per sector time and scanning faster
-the more often the command is repeated, ending in ordinary play on a new
-`03` Play; `12` SetSession seeks to a session, succeeding for session 1 and
-failing for any other on these single-session images; `1C` Reset reboots the
-controller to its power-on state; and `1D` GetQ returns one subchannel-Q entry
-from the track table. Covered by `media_test`.
-
-What is approximate rather than absent: the scan geometry (how many sectors a
-level skips) is a plausible rate, not a measured one; SetSession assumes one
-session because the disc formats read here carry only one; and GetQ synthesises
-its Q bytes from the track table rather than from a real subchannel, which is
-all the track layout it has to work with. Nothing tested needs more than that.
-### Disc images - a bare image can only work out so much
-
-A cue sheet gives the full track layout and everything works from it, CD music
-included. Without one the layout has to be inferred, and only part of it can
-be: a data sector is recognisable by its twelve byte sync pattern and audio is
-not, so `OpenImage` finds where the data track ends by binary search and calls
-everything after it one audio track. Where one music track ends and the next
-begins is recorded nowhere in the data area - it lived in the lead-in, which a
-dump does not include - so a disc with twelve music tracks still mounts as two,
-and a game that asks for track 5 by number still gets nothing. That needs a
-descriptor, and if a `.cue` or a `.mds` is sitting beside the image it is now
-used automatically.
-
-Alcohol's `.mds` is read and gives the same complete layout a cue sheet does.
-It also settles something a cue sheet never raises: these dumps keep the 96
-bytes of subchannel after each sector, so the stride is 2448, which no file
-length can reveal - a `.mdf` opened without its descriptor is not a quiet disc
-but an unreadable one. The descriptor states the stride, and 2448 and 2368 are
-now recognised from the length as a fallback.
-
-Still missing: `.ccd` is not read at all, though it carries a real table of
-contents and would give a complete layout; and no compressed container is
-supported.
-
-Planned in [Disc-Formats-Plan.md](Disc-Formats-Plan.md).
+- **`.ccd` is not read.** `Disc::Open` handles `.cue` and `.mds`; a `.ccd` path
+  falls through to the raw-image opener and fails. Pointing at the `.img`
+  beside it works but loses the table of contents the `.ccd` carries. Area 51,
+  Wild Arms 2 and Final Fantasy VIII on the share are all `.ccd`/`.img`/`.sub`.
+- **No compressed containers** (CHD, ECM, PBP). Planned in
+  [Disc-Formats-Plan.md](Disc-Formats-Plan.md).
+- **A bare image cannot know its music track boundaries.** Data sectors carry
+  a sync pattern and audio does not, so `OpenImage` finds the end of the data
+  track and calls everything after it one audio track; a game asking for track
+  5 gets nothing. A `.cue` or `.mds` beside the image is used automatically.
+- **Rips with zeroed XA subheaders** play their films silent. The Captain
+  Tsubasa J `.bin` on the share has all eight subheader bytes zero on every
+  stream sector (its `.mdf` does not), so XA audio sectors are not recognised as
+  audio and reach the CPU as data. Nothing detects this or offers the
+  descriptor-backed image instead.
 
 ### Physical drives - data tracks only
 
-A mounted drive letter reads data sectors. Audio tracks are not read through
-the drive, and no subchannel data is available, so a physical disc cannot play
-its music.
+A mounted drive letter reads data sectors. Audio tracks are not read and no
+subchannel is available, so a physical disc cannot play its music.
 
-### GTE - validated for value and flags; timing still fails amidog's suite
+### CD-ROM - every command answers, some approximately
 
-All 22 commands, the register file, saturation, the FLAG register and the
-Newton-Raphson divide are implemented, and `gte_test` covers them with 99
-checks. Real software now uses it heavily - a game run issues about 60,000
-commands with none unrecognised.
+All 28 commands are handled (bug 37). Approximate: the Forward/Backward scan
+rate is plausible rather than measured, SetSession assumes one session, and
+GetQ synthesises its Q bytes from the track table rather than a real
+subchannel.
 
-amidog's GTE test suite (`test/psxtest_gte/` - see bug 41 for how to reach it)
-has now actually run, which used to be the missing comparison against hardware
-output rather than against the description. The result is split cleanly in
-two:
+### Memory cards - the format is declared, nothing understands it
 
-- **REG and COMPLEX - every register and value/flag check passes.** These
-  cover the register file's packing and read-back quirks, and every command's
-  computed result and FLAG bits, against amidog's own reference rather than
-  this project's. That is a real, independent confirmation that "passing
-  `gte_test`" and "agreeing with hardware" are the same thing here - not just
-  a description read twice.
-- **TIMING - every one of the 22 opcodes still fails, uniformly, but the GTE
-  is no longer why.** This was a real bug: every GTE command charged the CPU
-  the same one cycle a plain register move takes, whether it was `SQR` (5
-  cycles on hardware) or `NCCT` (39). Bug 42 fixed that to the documented
-  per-command figures, and separately added two related, real hardware
-  hazards this core had never modelled at all: a GTE command or register
-  access issued before the previous command finishes stalls the CPU, and
-  CFC2/MFC2 have the same one-instruction load delay as an ordinary memory
-  load (undocumented cost: Tekken 2's geometry breaks without it). All three
-  are verified in isolation - a new `gtedelay` group in `cpu_test`, 5 checks
-  - and independently confirmed by measuring this core's own numbers from
-  inside the failing test itself: recovered per-opcode costs match the
-  documented table exactly, every opcode, no exceptions. The column is still
-  all red despite that: its loop repeats each measurement 501 times to
-  cancel out noise, and bug 43 (see [CPU-Timing-Plan.md](CPU-Timing-Plan.md))
-  reconstructed that exact loop and confirmed the *other* instructions in it
-  - `CFC2`, a `nop`, an accumulate, the branch, its delay slot - already sum
-  to the correct hardware-measured total, not a wrong uniform one. Why the
-  column still reads red is therefore not this loop; it needs the plan's
-  phase 0 (pixel-sampling the column itself) and phase 3 (memory region
-  costs, still modelled rather than measured) before it's a closed question
-  rather than an open one. See bugs 42 and 43.
+Games save and load, and the front end gives each disc its own
+`card1.mcr`/`card2.mcr` under `Documents\My Games\PSXEmu\memcards\<disc>\`.
+Missing: anything that walks the directory, follows a block chain, decodes a
+title or icon, or checks a frame checksum; an eject for a running machine
+(only a cold boot disconnects a card); and a sane write path - `WriteSector`
+opens, seeks, writes and closes the file for every 128 bytes, so a one-block
+save does that 64 times and a crash part-way leaves a half-written card.
+Planned in [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
 
-The MVMVA garbage matrix (matrix select 3) is written from the description
-rather than from measurement.
+### Controllers
+
+Digital pad, DualShock (with the real analog/rumble negotiation), mouse,
+multitap and "nothing plugged in" are implemented and covered by `sio_test`.
+Missing or unproven:
+
+- **No lightgun.** It needs the GPU's beam position latched on the trigger.
+- **No ANALOG button.** Mode switching is only ever the game's doing; a disc
+  that expects the player to press it finds nothing does.
+- **The multitap's four memory card slots** (`0x81`-`0x84`). The core side is
+  small; the Win32 side hand-duplicates two card slots and would need
+  rebuilding for eight.
+- **Every multitap player is a DualShock**; there is a per-player source but
+  no per-player type.
+- **`0x46`/`0x47`** answer with the right shape and zero content, and `0x4C`
+  reports a DualShock, not a DualShock 2 (no pressure-sensitive buttons).
+- **The mouse has never met a mouse-aware game.** Its reply follows psx-spx,
+  and its divide-by-4 on raw input is a guess.
 
 ## Barely started
 
-### Serial port (SIO1)
-
-`0x1F801050`-`0x1F80105F` is not decoded at all. Link-cable only; nothing has
-ever touched it.
-
-### Parallel / expansion port
-
-A buffer exists and is readable. Nothing is behind it.
-
-### DMA channel 5 (PIO)
-
-Accepts register writes and raises its interrupt. Transfers nothing.
+- **Serial port (SIO1)** - `1F801050`-`1F80105F` is not decoded at all.
+- **Parallel / expansion port** - a readable buffer with nothing behind it.
+- **DMA channel 5 (PIO)** - accepts register writes and raises its interrupt;
+  transfers nothing.
 
 ## Blocking use rather than correctness
 
-### Settings exist but cover almost nothing
+### Settings cover little
 
-`psx/emuconfig.h` holds the runtime settings and `psx/settings.h` reads and
-writes them as a plain `key = value` file, following GBAEmu's design: unknown
-keys are preserved, and every getter takes the current value as its default.
-`System::config()` is how a component reaches them, and the front end keeps
-`psxemu.ini` beside the executable, written as settings change rather than only
-at exit.
-
-Eight settings are in it now: `audio_volume`, `graphics_backend`,
-`video_filter`, the controller type and input source for each port,
-`frame_limiter` and `cdrom_mechanical_timing`. The BIOS path, the disc path,
-the key bindings and everything else are still command-line arguments, menu
-choices or hardcoded, and are not remembered between runs.
+`psxemu.ini` holds `audio_volume`, `graphics_backend` (D3D11 or D3D12),
+`video_filter`, controller type and input source per port, the multitap player
+sources, `frame_limiter`, `cdrom_mechanical_timing` and `skip_bios_intro`. The
+BIOS path, the last disc and the key bindings are not remembered; the bindings
+are a compiled-in table in `const.h`.
 
 ### The front end is minimal
 
-A window, a menu with disc, reset and volume commands, a D3D11 presenter and
-keyboard input. No configurable bindings, no debugger, no settings UI beyond
-the volume menu, no pause indicator.
+A window, menus for disc, reset, pause, volume, video filter and controllers,
+D3D11 and D3D12 presenters, keyboard/XInput/mouse input, and a speed readout in
+the title bar (bug 49). No binding editor, no debugger, no settings dialog. It
+cannot be run from an agent session, so front-end changes are verified by hand.
 
-There **is** a speed display now, in the window title: emulated frames per
-second of wall clock and that as a percentage of what the emulated display is
-producing them at. This entry used to list its absence and say it mattered
-more than it sounded, and it did - the front end turned out to have no frame
-limiter at all, so it ran at the monitor's refresh rate, which on a 165 Hz
-display is 2.8x. Nothing could see that without a number. See bug 49, and
-[Recompiler-Plan.md](Recompiler-Plan.md), which argues that measurement should
-come before any optimisation work.
+### Never run against the reference
+
+- **amidog's CPU suite** (`test/psxtest_cpu/`) runs to its results screen; the
+  results have not been read.
+- **A dynamic recompiler** is a plan only - [Recompiler-Plan.md](Recompiler-Plan.md).
 
 ## Not gaps
 
 Things that look missing and are not, so they are not re-investigated:
 
-- **The colourful "noise" behind MEMORY CARD and CD PLAYER.** Not a bug: it is
-  the shell's own paint-splatter decoration. A reference screenshot of real
-  SCPH1001 hardware (`playstation-scph1001-menu.png`, from a BIOS-revision
-  survey at drew1440.com) shows the identical composition - a coloured
-  splatter behind each of the two labels, the same pair of floating blue
-  spheres, the same MAIN MENU box - confirming this render is correct rather
-  than a fill reading from the wrong place. `--vram` at frame 700 shows the
-  source art sitting in VRAM at (896,0)-(956,59): a self-contained blob
-  texture, not the black of an untouched page, uploaded whole by a plain
-  CPU-to-VRAM command (3600 of 3600 pixels, nothing short). Adjacent to it at
-  (832,0) is a second, unrelated texture - a warped "MAIN MENU" pattern with a
-  stray glyph - that never appears on screen; ordinary unused shell art
-  sitting in the same texture atlas, not evidence of anything wrong either.
-  Previously listed here as unfixed and "the only known case of the GPU
-  drawing something visibly wrong"; it was never re-examined against a real
-  console because nothing had looked at these screens until the harness could
-  write a PNG, and the assumption that a plain menu should have a flat
-  background behind its text turned out to be wrong about the original,
-  not about this GPU.
-- **CD audio (CD-DA) playback, and the BIOS CD player.** Both work. `Play`
-  seeks, the drive hands raw 2352-byte sectors to the SPU once a sector time,
-  and they are mixed through the same CD input XA-ADPCM uses. The BIOS CD
-  player lists a disc's tracks, seeks to the one chosen and counts the time up
-  while it plays - which needs three things games never touch: the shell-open
-  latch that says a disc was swapped, GetlocP's exact eight-byte subchannel
-  reply, and `Play` treating a track number of zero as "carry on from here".
-  It also needs the CD input volume applied as a plain signed level rather than
-  through the voice/main sweep decode, which was silencing it at the mixer -
-  see bug 36. The audio reaches the output, verified at the *mixed* peak and
-  not just the sector count. See bugs 34, 35 and 36. When CD music appears not
-  to work the cause is usually the track layout - see disc images above.
-- **Load delay slots.** Modelled. A load reaches its register one instruction
-  later than the instruction that issued it, a register write in that slot
-  beats the load rather than being overwritten by it, and lwl/lwr forward to
-  each other so the usual back-to-back pair works with no gap. Covered by
-  `cpu_test`'s `loaddelay` group. See bug 32.
-- **`System::BootDisc` and auto-boot.** The BIOS boots discs itself, correctly,
-  and that is what the front end does. `BootDisc` remains for the harness's
-  `--boot-disc`, and auto-boot for `--auto-boot`, but bug 19 measured the HLE
-  shortcut as much worse than letting the BIOS do it and the front end no
-  longer uses it.
-- **A bare `.img` not loading.** It loads and boots. The gap is the track
-  layout above, not the file.
-- **`.mds`/`.mdf` not loading.** Both halves mount, the descriptor supplying
-  the track list and the sector stride. See disc images above.
-- **XA-ADPCM.** Implemented: `Cdrom::DecodeXaAdpcm` handles 4- and 8-bit, mono
-  and stereo, at 37800 or 18900 Hz, with the filter history carried across
-  sectors. `LoadSector` routes an audio sector to it and raises no data-ready
-  interrupt, so software never sees it in its data stream, and `Setfilter`'s
-  file and channel are honoured when the filter bit is set. Covered by
-  `spu_test`; verified against Wild Arms, whose opening film decodes to 50
-  seconds of audio with a lag-1 autocorrelation of 0.997 and no clipping.
-- **The MDEC.** Implemented, with `mdec_test` covering it in 59 checks. Video
-  and its audio both work.
-- **The SPU.** 24 ADPCM voices, ADSR, the hardware Gaussian table, noise, pitch
-  modulation and CD-audio input, with `spu_test` covering it in 107 checks. The
-  CD input volume is a plain signed level, distinct from the voice/main sweep
-  format (bug 36). Where a voice loops back to now follows the hardware: a
-  repeat address written by software survives the key-on that follows it, which
-  is what Final Fantasy VII's music depends on (bug 39). Two known quirks
-  remain, both gaps above: the voice and main volumes come out at half, and
-  **volume sweeps are not implemented at all** - `VolumeOf` reads any sweep
-  register as full scale. FF7 turns out not to use them (0 sweeps against 4006
-  plain levels, measured), but a game that does will have its dynamics
-  flattened. The reverb is its own gap, above.
-- **`psx/emu.h` and `psx/emu.cpp`** are an earlier iteration superseded by
-  `system.*`. They are kept in the tree but built by neither the solution nor
-  the harnesses.
-- **`utilities/cdrom/cdrom.cpp`** is the old host-CD read, superseded by
-  `psx/disc.cpp`.
+- **Air Combat's and Captain Tsubasa J's intro films.** Both play. They went
+  black on their first frame because a DMA flag that outlived its enable fired
+  the stream library's sector callback early - bug 55. DICR bit 31 is now the
+  master enable with *any* flag, not only enabled ones, as DuckStation has it.
+- **The colourful "noise" behind MEMORY CARD and CD PLAYER.** The shell's own
+  paint-splatter art, identical on a real SCPH1001
+  (`playstation-scph1001-menu.png`, drew1440.com BIOS survey), uploaded whole
+  from VRAM (896,0)-(956,59).
+- **CD audio (CD-DA) playback and the BIOS CD player.** Both work - bugs 34-36.
+  When CD music seems missing the cause is usually the track layout (disc
+  images above). The `media_test` peak-meter failure above is new and is not
+  this.
+- **XA-ADPCM.** `Cdrom::DecodeXaAdpcm` handles 4/8-bit, mono/stereo, 37,800 and
+  18,900 Hz with filter history across sectors, honouring `Setfilter`; Wild Arms'
+  opening film decodes to 50 seconds of clean audio. Silence from a particular
+  image is more likely zeroed subheaders (disc images above).
+- **The MDEC.** Implemented, `mdec_test` 60 checks; films and their audio play.
+- **The SPU voice path.** 24 ADPCM voices, ADSR, the Gaussian table, noise,
+  pitch modulation, CD input, and loop addresses surviving key-on (bug 39).
+  The quirks left are the entries above.
+- **Load delay slots.** Modelled, including a write in the slot beating the load
+  and lwl/lwr forwarding (`cpu_test` `loaddelay`, bug 32).
+- **Ace Combat 3 input and Wild Arms after "press start".** Fixed (bug 46; bugs
+  25-26). Their plan documents predate the fixes.
+- **`System::BootDisc` and auto-boot.** The BIOS boots discs itself and the
+  front end lets it; `BootDisc` and `--auto-boot` remain for the harness (bug
+  19).
+- **A bare `.img`, `.mds`/`.mdf`.** All mount; the gaps are track layout and
+  `.ccd`, above.
+- **`psx/emu.h`/`emu.cpp`** are superseded by `system.*` and built by nothing;
+  **`utilities/cdrom/cdrom.cpp`** is superseded by `psx/disc.cpp`.
