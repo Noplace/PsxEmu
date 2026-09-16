@@ -23,6 +23,8 @@
 #include <shlobj.h>   // SHGetFolderPathA
 #include <shellapi.h>   // CommandLineToArgvW
 
+#include <algorithm>   // sort, for the BIOS folder listing
+
 #pragma comment(lib, "shell32.lib")
 
 namespace psxemu {
@@ -51,6 +53,17 @@ namespace psxemu {
         std::string narrow(static_cast<size_t>(size - 1), '\0');
         WideCharToMultiByte(CP_ACP, 0, wide.c_str(), -1, &narrow[0], size, nullptr, nullptr);
         return narrow;
+    }
+
+    std::wstring Widen(const std::string& narrow) {
+        if (narrow.empty())
+            return std::wstring();
+        const int size = MultiByteToWideChar(CP_ACP, 0, narrow.c_str(), -1, nullptr, 0);
+        if (size <= 1)
+            return std::wstring();
+        std::wstring wide(static_cast<size_t>(size - 1), L'\0');
+        MultiByteToWideChar(CP_ACP, 0, narrow.c_str(), -1, &wide[0], size);
+        return wide;
     }
 
     bool EnsureDirectory(const std::string& path) {
@@ -104,6 +117,37 @@ namespace psxemu {
             }
         }
         return std::string();
+    }
+
+    std::vector<std::string> ScanBiosFolder(const std::string& folder) {
+        std::vector<std::string> found;
+        if (folder.empty())
+            return found;
+
+        WIN32_FIND_DATAA entry = {};
+        HANDLE search = FindFirstFileA((folder + "\\*").c_str(), &entry);
+        if (search == INVALID_HANDLE_VALUE)
+            return found;
+        do {
+            if ((entry.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+                continue;
+            // Only the low word is looked at: a BIOS is half a megabyte, so anything with a high
+            // word at all is far too big to be one and is rejected by the size test anyway.
+            if (entry.nFileSizeHigh != 0 || entry.nFileSizeLow != kBiosImageBytes)
+                continue;
+            found.push_back(entry.cFileName);
+        } while (FindNextFileA(search, &entry) != 0);
+        FindClose(search);
+
+        std::sort(found.begin(), found.end(), [](const std::string& a, const std::string& b) {
+            return _stricmp(a.c_str(), b.c_str()) < 0;
+        });
+        return found;
+    }
+
+    std::string FileNameOf(const std::string& path) {
+        const size_t slash = path.find_last_of("/\\");
+        return (slash == std::string::npos) ? path : path.substr(slash + 1);
     }
 
     std::string DiscIdentifier(const std::string& disc_path) {

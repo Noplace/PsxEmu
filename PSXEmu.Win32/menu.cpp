@@ -19,6 +19,7 @@
 #include "menu.h"
 
 #include "const.h"
+#include "win32_paths.h"   // Widen, for a filename read off disk into a wide menu label
 
 namespace psxemu {
 
@@ -147,13 +148,67 @@ namespace psxemu {
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(multitap_port[1]),
                     L"M&ultitap Port 2");
 
+        // The BIOS list is the one menu whose contents are not a table in const.h - it is whatever
+        // is in the data folder. Built empty here and filled by PopulateBiosMenu once that folder
+        // has been scanned, so the bar exists before any of it is known.
+        HMENU bios = CreatePopupMenu();
+        HMENU settings = CreatePopupMenu();
+        AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(bios), L"&BIOS");
+
         HMENU bar = CreateMenu();
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(emulation), L"&Emulation");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(input), L"&Input");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(volume), L"&Audio");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(video), L"&Video");
+        AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(settings), L"&Settings");
         return bar;
+    }
+
+    void PopulateBiosMenu(HWND window, const std::vector<std::string>& files,
+                          const std::string& current) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        HMENU settings = GetSubMenu(bar, kMenuBarSettingsIndex);
+        if (settings == nullptr)
+            return;
+        HMENU bios = GetSubMenu(settings, kSettingsMenuBiosIndex);
+        if (bios == nullptr)
+            return;
+
+        // Emptied and refilled rather than updated in place: the folder can have gained or lost
+        // files since the last time, and the ids are positional.
+        while (DeleteMenu(bios, 0, MF_BYPOSITION) != 0) {
+        }
+
+        const int count = std::min(static_cast<int>(files.size()), kMaxBiosEntries);
+        for (int i = 0; i < count; ++i) {
+            // Shown as the filename alone - the folder is the same for all of them, and it is the
+            // one thing the person choosing already knows.
+            const std::wstring label = Widen(files[i]);
+            AppendMenuW(bios, MF_STRING, static_cast<UINT_PTR>(kCommandBiosFirst + i),
+                        label.c_str());
+            if (_stricmp(files[i].c_str(), current.c_str()) == 0) {
+                CheckMenuItem(bios, static_cast<UINT>(kCommandBiosFirst + i),
+                              MF_BYCOMMAND | MF_CHECKED);
+            }
+        }
+
+        if (files.empty()) {
+            // An empty folder is the ordinary first-run state, so it says what to do about it
+            // rather than showing a menu with nothing in it.
+            AppendMenuW(bios, MF_STRING | MF_GRAYED, 0,
+                        L"(no BIOS images found - put dumps in the folder below)");
+        } else if (static_cast<int>(files.size()) > count) {
+            AppendMenuW(bios, MF_STRING | MF_GRAYED, 0, L"(more found than can be listed)");
+        }
+
+        AppendMenuW(bios, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(bios, MF_STRING, static_cast<UINT_PTR>(kCommandRescanBios), L"&Rescan folder");
+        AppendMenuW(bios, MF_STRING, static_cast<UINT_PTR>(kCommandOpenBiosFolder),
+                    L"&Open folder...");
+        DrawMenuBar(window);
     }
 
     void TickVolume(HWND window, float current) {

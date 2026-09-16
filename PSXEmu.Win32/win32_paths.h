@@ -43,6 +43,10 @@ namespace psxemu {
     // codepage, so UTF-8 bytes would name the wrong file the moment a path stopped being ASCII.
     std::string Narrow(const std::wstring& wide);
 
+    // The other direction, for putting a filename read off disk into a menu, which is wide. Same
+    // codepage as Narrow for the same reason: these two have to round-trip.
+    std::wstring Widen(const std::string& narrow);
+
     // Creates one directory level, treating "it is already there" as success rather than an error -
     // the common case on every run after the first.
     bool EnsureDirectory(const std::string& path);
@@ -63,6 +67,20 @@ namespace psxemu {
     // Works out where the BIOS is. A command line wins; otherwise the candidates in const.h are
     // tried in order, relative to the executable. Empty if none of them is there.
     std::string FindBios(const std::string& from_command_line);
+
+    // The BIOS images sitting in a folder, by filename alone - sorted, case-insensitively, so the
+    // menu built from them keeps a stable order between runs.
+    //
+    // What counts as one is its size: exactly 512 KB, which is what the core requires and refuses
+    // anything else for. That is a better filter than the extension, since dumps are named
+    // SCPH1001.BIN, scph5500.bin, ps-22a.rom and every other way, and it keeps a readme or a
+    // stray .zip in the same folder out of the list without having to guess at names.
+    std::vector<std::string> ScanBiosFolder(const std::string& folder);
+
+    // Just the filename out of a path, extension and all - what a menu shows for a file whose
+    // folder is already known, and what a settings file stores when the folder is not its business.
+    // The path as given if there is no separator in it.
+    std::string FileNameOf(const std::string& path);
 
     // The per-disc identifier used to name its memory card folder: the image's own filename,
     // directory and extension stripped. Two copies of the same game under different filenames get

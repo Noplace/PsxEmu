@@ -1529,6 +1529,34 @@ void TestSettingsFile(const std::string& directory) {
                "the volume survived the round trip");
   }
 
+  // The chosen BIOS is a filename, not a path - the front end owns the folder,
+  // so a settings file still points at the right dump after that folder moves.
+  // Empty is the ordinary state and has to survive as empty, since that is what
+  // means "whichever the front end would have found on its own".
+  {
+    EmuConfig config;
+    Check(config.bios_file.empty(), "no BIOS is chosen by default");
+    config.bios_file = "SCPH5502.BIN";
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    Check(out.Save(path), "the chosen BIOS was written");
+
+    SettingsFile in;
+    Check(in.Load(path), "and read back");
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(in, loaded);
+    Check(loaded.bios_file == "SCPH5502.BIN", "the chosen BIOS survived the round trip");
+
+    EmuConfig cleared;
+    cleared.bios_file.clear();
+    SettingsFile empty_out;
+    emulation::psx::StoreConfig(empty_out, cleared);
+    EmuConfig empty_loaded;
+    empty_loaded.bios_file = "leftover";
+    emulation::psx::LoadConfig(empty_out, empty_loaded);
+    Check(empty_loaded.bios_file.empty(), "and an empty choice stays empty");
+  }
+
   // A key this build does not know about is preserved rather than dropped, so
   // a file written by a newer build survives being loaded and saved by an
   // older one.

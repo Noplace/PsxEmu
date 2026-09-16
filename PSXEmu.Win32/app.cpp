@@ -23,6 +23,8 @@
 #include "win32_dialogs.h"
 #include "win32_paths.h"
 
+#include <shellapi.h>   // ShellExecuteA, to open the BIOS folder from its menu
+
 namespace psxemu {
 
     using emulation::psx::System;
@@ -46,15 +48,6 @@ namespace psxemu {
 
     bool App::Initialize(HINSTANCE instance, int show_command) {
         const CommandLine command_line = ParseCommandLine();
-        bios_path_ = FindBios(command_line.bios);
-        if (bios_path_.empty()) {
-            ShowError(nullptr,
-                      L"No BIOS image found.\n\n"
-                      L"A PlayStation BIOS dump is required. Put SCPH1001.BIN in a "
-                      L"'bios' folder beside the executable, or pass its path as the "
-                      L"first argument.");
-            return false;
-        }
 
         // Loaded early, before the graphics engine exists to hold the choice - the rest of the
         // settings (audio_volume and friends, which live on System::config()) are read back later
@@ -63,6 +56,21 @@ namespace psxemu {
         // through the normal LoadConfig path to end up in the same place either way.
         settings_path_ = Narrow(SettingsPathBesideExecutable());
         settings_.Load(settings_path_);
+
+        // Before the machine, because the machine is built around a BIOS: the folder has to exist
+        // and be scanned to know whether the one the settings file names is still in it.
+        SetUpDataDirectories();
+        bios_files_ = ScanBiosFolder(bios_root_);
+        bios_path_ = ResolveBiosPath(command_line.bios);
+        if (bios_path_.empty()) {
+            ShowError(nullptr,
+                      L"No BIOS image found.\n\n"
+                      L"A PlayStation BIOS dump is required. Put one in\n"
+                      L"Documents\\My Games\\PSXEmu\\bios, or in a 'bios' folder beside "
+                      L"the executable, or pass its path as the first argument.\n\n"
+                      L"A dump is exactly 512 KB.");
+            return false;
+        }
 
         if (!CreateAppWindow(instance))
             return false;
@@ -77,9 +85,10 @@ namespace psxemu {
             return false;
 
         ApplySettings();
-
-        // Per-disc data, under Documents\My Games\PSXEmu.
-        SetUpDataDirectories();
+        // After ApplySettings, which is what puts the settings file's own choice on the config. At
+        // startup the ticked image and the running one are the same; they part company the moment
+        // a different one is chosen, which only takes effect at the next cold boot.
+        RefreshBiosMenu();
 
         if (!command_line.disc.empty() && system_->LoadDisc(command_line.disc.c_str())) {
             SetWindowTitleForPath(command_line.disc);
@@ -177,8 +186,61 @@ namespace psxemu {
             return;
         memcards_root_ = data_root_ + "\\memcards";
         savestates_root_ = data_root_ + "\\savestates";
+        // Created whether or not anything is in it: an empty folder is where to put a dump, which
+        // is a better answer to "where do BIOS images go" than a folder that only appears once one
+        // is already there.
+        bios_root_ = data_root_ + "\\bios";
         EnsureDirectory(memcards_root_);
         EnsureDirectory(savestates_root_);
+        EnsureDirectory(bios_root_);
+    }
+
+    // Which image to boot, in the order the answers are allowed to win: the command line, then the
+    // one the settings file names if it is still in the folder, then whatever FindBios turns up
+    // beside the executable. A name that has since been deleted falls through to the last of those
+    // rather than refusing to start.
+    std::string App::ResolveBiosPath(const std::string& from_command_line) {
+        if (!from_command_line.empty())
+            return FindBios(from_command_line);
+
+        const std::string chosen = settings_.GetString("bios_file", std::string());
+        if (!chosen.empty() && !bios_root_.empty()) {
+            for (const std::string& file : bios_files_) {
+                if (_stricmp(file.c_str(), chosen.c_str()) == 0)
+                    return bios_root_ + "\\" + file;
+            }
+        }
+
+        // Nothing chosen, or what was chosen is gone. A folder with exactly one dump in it is not
+        // ambiguous, so use it rather than making the first run a trip through the menu.
+        if (bios_files_.size() == 1 && !bios_root_.empty())
+            return bios_root_ + "\\" + bios_files_[0];
+
+        return FindBios(std::string());
+    }
+
+    void App::RefreshBiosMenu() {
+        bios_files_ = ScanBiosFolder(bios_root_);
+        PopulateBiosMenu(window_, bios_files_, FileNameOf(bios_path_));
+    }
+
+    void App::SelectBios(int index) {
+        if (index < 0 || index >= static_cast<int>(bios_files_.size()) || bios_root_.empty())
+            return;
+
+        // Chosen, not applied. A BIOS is only read at power-on, so this is what the *next* cold
+        // boot will use - Reset, Boot disc, Boot BIOS, or the next time the emulator starts. The
+        // machine that is running keeps the image it was built with, because the alternative is a
+        // menu click that restarts a game without being asked to.
+        bios_path_ = bios_root_ + "\\" + bios_files_[index];
+
+        if (system_ != nullptr) {
+            system_->config().bios_file = bios_files_[index];
+            SaveSettingsIfChanged();
+        }
+        // The tick follows the choice rather than the running machine, so it shows what is set -
+        // which is the only feedback there is that the click did anything.
+        RefreshBiosMenu();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -992,6 +1054,17 @@ namespace psxemu {
                     SetSkipBiosIntro(!system_->config().skip_bios_intro);
                 break;
 
+            case kCommandRescanBios:
+                RefreshBiosMenu();
+                break;
+
+            case kCommandOpenBiosFolder:
+                // Where to put a dump is the question an empty list raises, so answer it by
+                // opening the folder rather than naming it in a message box.
+                if (!bios_root_.empty())
+                    ShellExecuteA(window_, "open", bios_root_.c_str(), nullptr, nullptr, SW_SHOW);
+                break;
+
             case kCommandExit:
                 PostMessageW(window_, WM_CLOSE, 0, 0);
                 break;
@@ -1031,6 +1104,11 @@ namespace psxemu {
                     const int player = (offset / source_count) % 4;
                     SetMultitapSource(port, player,
                                       kInputSourceChoices[offset % source_count].key);
+                } else if (command >= kCommandBiosFirst && command <= kCommandBiosLast) {
+                    // The only run here whose entries are not a table in const.h: the nth id is
+                    // the nth image the last scan found, which SelectBios bounds-checks against
+                    // the list it holds - the folder can have changed since the menu was filled.
+                    SelectBios(command - kCommandBiosFirst);
                 }
                 break;
         }

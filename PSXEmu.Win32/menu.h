@@ -34,6 +34,16 @@ namespace psxemu {
     // CreateWindowExW and letting the window own it from then on.
     HMENU CreateMainMenu();
 
+    // Fills in Settings > BIOS from the images actually found in the data folder, ticking whichever
+    // one is in use, and appends the rescan and open-folder items under them. The only menu whose
+    // contents are not a table in const.h, so the only one that has to be built after startup - and
+    // rebuilt whenever the folder is rescanned.
+    //
+    // `current` is a filename, not a path: what is ticked is the entry naming the same file, so a
+    // BIOS chosen from somewhere else entirely (the command line) ticks nothing, which is right.
+    void PopulateBiosMenu(HWND window, const std::vector<std::string>& files,
+                          const std::string& current);
+
     // ---------------------------------------------------------------------------------------------
     // Ticks
     // ---------------------------------------------------------------------------------------------

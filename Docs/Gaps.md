@@ -274,16 +274,24 @@ Missing or unproven:
 
 `psxemu.ini` holds `audio_volume`, `graphics_backend` (D3D11 or D3D12),
 `video_filter`, controller type and input source per port, the multitap player
-sources, `frame_limiter`, `cdrom_mechanical_timing` and `skip_bios_intro`. The
-BIOS path, the last disc and the key bindings are not remembered; the bindings
-are a compiled-in table in `const.h`.
+sources, `frame_limiter`, `cdrom_mechanical_timing`, `skip_bios_intro` and
+`bios_file`. The last disc and the key bindings are not remembered; the
+bindings are a compiled-in table in `const.h`.
+
+`bios_file` is a filename rather than a path: the images live in
+`Documents\My Games\PSXEmu\bios`, which Settings > BIOS lists (anything in it
+of exactly 512 KB, which is what the core accepts) and the front end creates on
+first run. The command line still wins over it, and a name that has since been
+deleted falls back to the old search beside the executable rather than refusing
+to boot.
 
 ### The front end is minimal
 
-A window, menus for disc, reset, pause, volume, video filter and controllers,
-D3D11 and D3D12 presenters, keyboard/XInput/mouse input, and a speed readout in
-the title bar (bug 49). No binding editor, no debugger, no settings dialog. It
-cannot be run from an agent session, so front-end changes are verified by hand.
+A window, menus for disc, reset, pause, volume, video filter, controllers and
+which BIOS to boot, D3D11 and D3D12 presenters, keyboard/XInput/mouse input,
+and a speed readout in the title bar (bug 49). No binding editor, no debugger,
+no settings dialog. It cannot be run from an agent session, so front-end
+changes are verified by hand.
 
 ### Never run against the reference
 

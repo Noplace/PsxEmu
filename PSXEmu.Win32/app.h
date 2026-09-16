@@ -82,6 +82,11 @@ namespace psxemu {
         // would be protecting against.
         void SetUpDataDirectories();
 
+        // Which BIOS image to boot: the command line, else the settings file's choice if it is
+        // still in the folder, else whatever FindBios turns up beside the executable. Needs the
+        // folder already scanned, so it runs after SetUpDataDirectories and not before.
+        std::string ResolveBiosPath(const std::string& from_command_line);
+
         // ---------------------------------------------------------------------------------------
         // The loop
         // ---------------------------------------------------------------------------------------
@@ -164,6 +169,16 @@ namespace psxemu {
         // that same hand-off regardless of this, so there is nothing here for BootPsExeFromFile to
         // read.
         void SetSkipBiosIntro(bool on);
+
+        // Rescans the BIOS folder and refills Settings > BIOS from what is in it. Called at
+        // startup and whenever the menu's own Rescan item is used, which is what makes dropping a
+        // dump in while the emulator is running work without restarting it.
+        void RefreshBiosMenu();
+
+        // Chooses the nth image the last scan found, for the next cold boot - Reset, Boot disc,
+        // Boot BIOS, or the next run. A BIOS is only read at power-on, and applying one on the spot
+        // would mean a menu click restarting whatever was playing.
+        void SelectBios(int index);
 
         // This half of the tick functions in menu.h: each reads what is currently set and hands it
         // over. The machine is checked here because these are the call sites that know whether
@@ -266,7 +281,13 @@ namespace psxemu {
         std::unique_ptr<IAudioEngine> audio_;
         std::unique_ptr<emulation::psx::System> system_;
 
+        // The BIOS in use, as a full path, and the images the last scan of the folder found, as
+        // filenames. The menu's ids are positions in that list, so it and the menu are refilled
+        // together - see RefreshBiosMenu.
+        // bios_path_ is what the next cold boot will use, which is not necessarily what the running
+        // machine was built with: choosing from the menu sets this and nothing else.
         std::string bios_path_;
+        std::vector<std::string> bios_files_;
 
         // User settings, and where they are kept. Written as they are changed rather than only at
         // exit, so a crash or a kill does not lose them.
@@ -278,6 +299,7 @@ namespace psxemu {
         std::string data_root_;
         std::string memcards_root_;   // data_root_\memcards
         std::string savestates_root_;   // data_root_\savestates
+        std::string bios_root_;   // data_root_\bios - the images Settings > BIOS offers
         std::string settings_path_;
         bool running_ = false;
         bool paused_ = true;

@@ -159,6 +159,19 @@ struct EmuConfig {
   // a raw side-load without it never clears BEV or Isolate Cache in the
   // first place, so this setting has nothing to add there.
   bool skip_bios_intro = false;
+
+  // --- BIOS ---------------------------------------------------------------
+  // Which image in the front end's BIOS folder to boot, by filename alone -
+  // "SCPH1001.BIN", not a path. The folder is the front end's to know
+  // (Documents\My Games\PSXEmu\bios), and keeping only the name here means a
+  // settings file still points at the right dump after that folder moves,
+  // which is the whole reason it is not stored as a path.
+  //
+  // Empty - the default, and what a first run has - means "whichever the
+  // front end would have found on its own", so nothing changes for someone
+  // who never opens the menu. A name that is no longer in the folder falls
+  // back the same way rather than refusing to boot.
+  std::string bios_file = "";
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer

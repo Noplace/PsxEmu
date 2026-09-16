@@ -80,6 +80,13 @@ namespace psxemu {
         // its four players' sources are ticked/dispatched independently.
         kCommandMultitapSourceFirst,
         kCommandMultitapSourceLast = kCommandMultitapSourceFirst + 39,   // 2 ports x 4 players x 5 sources
+        // The BIOS images found in the data folder. Unlike every other run here, what these ids
+        // mean is not a table in this file but whatever is on disk when the menu was last filled -
+        // see App::RefreshBiosMenu, which holds the list the nth id resolves through.
+        kCommandBiosFirst,
+        kCommandBiosLast = kCommandBiosFirst + 31,   // kMaxBiosEntries
+        kCommandRescanBios,
+        kCommandOpenBiosFolder,
         kCommandExit,
     };
 
@@ -197,6 +204,23 @@ namespace psxemu {
         "..\\..\\..\\bios\\SCPH1001.BIN",
     };
     // clang-format on
+
+    // How big a PlayStation BIOS image is, and what ScanBiosFolder recognises one by. The core
+    // requires exactly this and refuses anything else, so a file of this size is the honest
+    // definition of "a BIOS the user could pick" - dumps are named every way imaginable.
+    inline constexpr uint32_t kBiosImageBytes = 512 * 1024;
+
+    // How many BIOS images the Settings > BIOS menu can list. A command id run has to be fixed at
+    // compile time, and anyone with more than this many dumps in one folder has a different
+    // problem; the list is truncated rather than overflowing into the next run's ids.
+    inline constexpr int kMaxBiosEntries = 32;
+
+    // Where the BIOS list lives in the bar, for the one function that has to find it again at
+    // runtime to refill it - CreateMainMenu builds the whole bar, but only this menu's contents
+    // depend on what is on disk. Kept next to the builder they describe: reordering the bar or the
+    // Settings menu without changing these silently refills the wrong popup.
+    inline constexpr int kMenuBarSettingsIndex = 5;   // File, Emulation, Input, Audio, Video, Settings
+    inline constexpr int kSettingsMenuBiosIndex = 0;
 
     // ---------------------------------------------------------------------------------------------
     // Input
