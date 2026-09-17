@@ -173,6 +173,7 @@ namespace psxemu {
         UpdateSpeedMenu();
         UpdateCdTimingMenu();
         UpdateSkipBiosIntroMenu();
+        UpdateRecompilerMenu();
         if (current_backend_ == "d3d12") {
             LoadAllFilters(*graphics_);
             SetFilter(system_->config().video_filter);
@@ -840,6 +841,24 @@ namespace psxemu {
         SaveSettingsIfChanged();
     }
 
+    void App::UpdateRecompilerMenu() {
+        if (system_ != nullptr)
+            TickRecompiler(window_, system_->config().recompiler);
+    }
+
+    // Changing CPU while a game is running is allowed, and this is all it takes
+    // from here: the setting is read by the machine's own thread between
+    // instructions, which is the only place it is safe to act on. Doing the
+    // switch here instead would free compiled code out from under whatever is
+    // executing it.
+    void App::SetRecompiler(bool on) {
+        if (system_ == nullptr)
+            return;
+        system_->config().recompiler = on;
+        UpdateRecompilerMenu();
+        SaveSettingsIfChanged();
+    }
+
     // ---------------------------------------------------------------------------------------------
     // The machine
     // ---------------------------------------------------------------------------------------------
@@ -1143,6 +1162,11 @@ namespace psxemu {
             case kCommandSkipBiosIntro:
                 if (system_ != nullptr)
                     SetSkipBiosIntro(!system_->config().skip_bios_intro);
+                break;
+
+            case kCommandRecompiler:
+                if (system_ != nullptr)
+                    SetRecompiler(!system_->config().recompiler);
                 break;
 
             case kCommandRescanBios:

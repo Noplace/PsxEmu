@@ -47,6 +47,7 @@
 // for a fixed frame number needs explaining.
 
 #include "psx/psx.h"
+#include "psx/recompiler_bridge.h"
 #include "tools/disasm.h"
 
 #include <cstdio>
@@ -184,6 +185,8 @@ struct Options {
   bool auto_boot;
   bool cd_mechanical;
   bool quiet;
+  bool recompiler;
+  int recompiler_toggle;
   int frame_log;
   float volume;
   std::vector<Press> presses;
@@ -567,6 +570,13 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->cd_mechanical = true;
     } else if (strcmp(arg, "--quiet") == 0) {
       options->quiet = true;
+    } else if (strcmp(arg, "--recompiler") == 0) {
+      options->recompiler = true;
+    } else if (strcmp(arg, "--recompiler-toggle") == 0 && i + 1 < argc) {
+      // Switch CPU every N frames, mid-run. The front end offers this from its
+      // Emulation menu, and the menu cannot be clicked from a headless harness -
+      // so this is how "safe to change at any time" gets tested at all.
+      options->recompiler_toggle = atoi(argv[++i]);
     } else if (arg[0] == '-') {
       fprintf(stderr, "unknown option: %s\n", arg);
       return false;
@@ -599,6 +609,13 @@ int main(int argc, char** argv) {
   if (system->Initialize(options.bios) != 0) {
     fprintf(stderr, "failed to initialise the core (bios: %s)\n", options.bios);
     return 1;
+  }
+
+  // Before the machine executes a single instruction, so the whole run is one
+  // way or the other and comparing it against the baselines means something.
+  if (options.recompiler) {
+    system->EnableRecompiler(true);
+    printf("cpu            recompiler (compiled blocks, interpreter fallback)\n");
   }
 
   // Before anything mounts a disc or restores a state, so the drive is under
@@ -765,6 +782,13 @@ int main(int argc, char** argv) {
     if (now != last_frame) {
       last_frame = now;
       ++frames;
+      // Switching CPU under a running machine, which is what the front end's
+      // menu does. The setting is all this touches: System::StepInstruction
+      // acts on it between instructions, which is the only place it is safe.
+      if (options.recompiler_toggle > 0 &&
+          (frames % options.recompiler_toggle) == 0) {
+        system->config().recompiler = !system->config().recompiler;
+      }
       // Put the disc in while the machine runs, which is how someone reaches
       // the CD player: the BIOS boots the game on any disc that is already
       // there, so the tray has to start empty.
@@ -834,6 +858,20 @@ int main(int argc, char** argv) {
   printf("\n");
   printf("instructions   %llu\n", static_cast<unsigned long long>(instructions));
   printf("frames         %d\n", frames);
+  if (system->recompiler_enabled()) {
+    const emulation::rec::Recompiler::Stats& rec = system->recompiler()->stats();
+    printf("rec blocks     %llu compiled, %llu entries, %llu invalidated\n",
+           static_cast<unsigned long long>(rec.blocks_compiled),
+           static_cast<unsigned long long>(rec.blocks_executed),
+           static_cast<unsigned long long>(rec.blocks_invalidated));
+    printf("rec inst       %llu compiled, %llu interpreted, %llu faults\n",
+           static_cast<unsigned long long>(rec.instructions_compiled),
+           static_cast<unsigned long long>(rec.instructions_interpreted),
+           static_cast<unsigned long long>(rec.faults));
+    printf("rec links      %llu made, %llu broken\n",
+           static_cast<unsigned long long>(rec.links_made),
+           static_cast<unsigned long long>(rec.links_broken));
+  }
   {
     const double seconds =
         static_cast<double>(clock() - wall_start) / CLOCKS_PER_SEC;

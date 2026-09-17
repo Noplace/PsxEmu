@@ -330,6 +330,36 @@ class Cpu : public Component {
   void ExecuteInstruction();
   void RaiseException(uint32_t address, Exceptions exception, ExceptionCodes code);
 
+  // ---- what the recompiler needs from the interpreter ---------------------
+  //
+  // Two hooks, and nothing else in this class knows the recompiler exists.
+  // Both are inert until something registers itself, which is what keeps the
+  // interpreter exactly the code it was when the recompiler is switched off.
+  //
+  // `exceptions_raised` is how a compiled memory access finds out that the
+  // access it just made raised one. Compiled code has no pc of its own to
+  // check and cannot unwind, so it asks afterwards: if the count moved, the
+  // block stops where it is. See rec/runtime.h.
+  uint64_t exceptions_raised() const { return exceptions_raised_; }
+
+  // Whether a load's value is still on its way to a register. Compiled code
+  // resolves the load delay slot when it is compiled, so a block cannot be
+  // entered while one is outstanding - it has no way of being told.
+  bool LoadInFlight() const {
+    return pending_load_.active || armed_load_.active;
+  }
+
+  // Called after every store the interpreter performs, so that compiled code
+  // built from those words can be thrown away. Only some of a program's stores
+  // go through compiled code, so this cannot live in the recompiler - a game
+  // that loads an overlay with the interpreter would otherwise go on running
+  // the code it replaced.
+  typedef void (*StoreObserver)(void* context, uint32_t address);
+  void set_store_observer(StoreObserver observer, void* context) {
+    store_observer_ = observer;
+    store_observer_context_ = context;
+  }
+
   // True when the pc is sitting on a GTE command. System::StepInstruction has
   // to let one of those run before it delivers an interrupt.
   bool NextIsGteCommand();
@@ -509,6 +539,11 @@ class Cpu : public Component {
   // its own documented duration (see gte.cpp) - and stalls the CPU if a later
   // instruction touches a GTE register or issues another command before that
   // time. Zero-initialised, so the very first GTE access is never stalled.
+  // See exceptions_raised() and set_store_observer().
+  uint64_t exceptions_raised_ = 0;
+  StoreObserver store_observer_ = nullptr;
+  void* store_observer_context_ = nullptr;
+
   uint64_t gte_busy_until_cycles_ = 0;
 
   // Same hazard, for HI/LO: "the mul/div opcodes are starting the

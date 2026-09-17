@@ -222,7 +222,261 @@ this project here rather than anywhere else:
   the difference between a recompiler that takes a month and one that takes a
   year.
 
-## Started, 2026-09-16: steps 1 to 5 are done
+## Wired into the core, 2026-09-17
+
+The recompiler now runs the machine, behind `System::EnableRecompiler` and
+`boot_runner --recompiler`. **Off by default**: with it off, `StepInstruction`
+is the code it always was, and the BIOS baseline below proves it.
+
+`PSXEmu.Core/psx/recompiler_bridge.h` is the only file that knows about both
+sides. It fills in the `HostInterface` the engine asks for out of `Cpu` -
+memory access, an instruction fetch, the interpreter itself - and everything in
+`rec/` still includes nothing from `psx/`.
+
+### What it does
+
+| Run | Interpreter | Recompiler |
+|---|---|---|
+| BIOS boot, 400 frames | 1.54x real time, 90 fps | **3.02x, 178 fps** |
+| Wild Arms, 1500 frames | 1.69x real time, 99 fps | **3.89x, 229 fps** |
+
+The BIOS run is **identical**: checksum `c7c8db90c5984798`, 305,920 of 305,920
+non-black pixels, 1,157 primitives, 84,641,245 pixels plotted, the same
+emulated seconds. Wild Arms draws the identical 13,099 primitives and
+115,733,783 pixels with the same non-black count, but its final framebuffer
+checksum differs - see the timing note below. 98% of its instructions ran
+compiled, with no faults.
+
+That answers the question this document opened with. The old measurement said
+1.7x and "200% is not reachable, and that is now the entire concrete
+justification for this project". It is reachable now.
+
+### Switching it on and off
+
+**Emulation > Recompiler**, and it can be changed while a game is running.
+
+The setting is all the menu touches. `System::StepInstruction` compares it
+against what is actually attached and acts on the difference - between
+instructions, on the thread that runs the machine. That placement is the whole
+of it: switching the recompiler off frees the compiled code, and doing that
+from the message thread could free the block the machine is executing. Turning
+it off mid-game simply leaves the interpreter to carry on from the current pc,
+which is always valid because a block never returns without setting it.
+
+Verified the only way it can be, since a menu cannot be clicked from a headless
+harness: `boot_runner --recompiler-toggle N` switches CPU every N frames. Over a
+400-frame BIOS boot, switching every 25 frames and again every 2 frames - 200
+switches - the run is byte-identical to both pure runs: checksum
+`c7c8db90c5984798`, 1,157 primitives, 84,641,245 pixels, no faults.
+
+The setting persists as `recompiler` in the ini, and stays off by default.
+
+### Three things the core had to grow, and no more
+
+1. `Cpu::exceptions_raised()` - a counter. Compiled code has no pc of its own
+   to check and cannot unwind, so a memory access asks afterwards whether the
+   access it just made raised an exception.
+2. `Cpu::set_store_observer` - called after every store the interpreter
+   performs, so compiled code built from those words is thrown away. This is
+   the hook that cannot live in the recompiler, as step 5 predicted.
+3. `Cpu::LoadInFlight()` - so a block is never entered while a load is still on
+   its way to a register.
+
+### The bug that took the longest, and how it was found
+
+Wired up, the BIOS booted to a black screen with zero interrupts. Rather than
+read the compiler again, the search was narrowed by switching parts off:
+
+- **Everything interpreted through the engine**: byte-identical to the
+  baseline. So the bridge, the pc handling, the store observer and the ticking
+  were all correct.
+- **ALU and branches compiled, memory interpreted**: also identical, with 6.3
+  million instructions running compiled. So allocation, linking and the
+  compiled control flow were correct against real code.
+
+That left compiled memory access, and the cause was not in the recompiler at
+all. `Cpu::Load` and `Cpu::Store` test `IsBusError()` on the way in, and that
+flag holds whatever the *last* address translation left behind. Every one of
+the interpreter's memory instructions translates the address it is about to use
+first - `Cpu::LW` opens with `AddressTranslation(virtual_address)` - so the flag
+`Load` reads is about that access. Compiled code skipped that step, so the flag
+described some unrelated earlier address and loads raised bus errors that never
+happened. Two lines in the bridge.
+
+The lesson is the one the whole project keeps relearning: the interpreter
+carries state between its stages that is invisible until something runs without
+those stages.
+
+### Timing: the known gap
+
+Compiled code does not tick as it goes. What a chain ran is charged afterwards
+with `Cpu::TickCycles`, at **one cycle an instruction, flat**.
+
+That is a measurement, not an assumption. The obvious refinement is wrong:
+`Cpu::LW` calls `Tick()` twice where `Cpu::ADDU` calls it once, so charging
+loads two looks more faithful - and tried, it runs the machine visibly fast,
+with the BIOS shell drawing 435 primitives in 400 frames instead of 1,157. Flat
+reproduces the interpreter's pacing on that run exactly. Which means the
+interpreter's real per-instruction cost is not the number of `Tick()` calls in
+its handler, and finding out what it actually is - rather than guessing a third
+time - is the next piece of work.
+
+Wild Arms is where that shows: same primitives, same pixels, different final
+framebuffer, which is what a sub-frame timing difference looks like. Two other
+differences of the same family, both bounded by the budget of 64 instructions:
+an interrupt raised inside a chain is not seen until the chain ends, and the
+machine advances in bursts rather than one instruction at a time.
+
+**So: correct enough to run, not yet proven equivalent.** The baselines are the
+place to keep checking it, and the twelve-disc table is what should be run
+against it next.
+
+## Started, 2026-09-16: steps 1 to 6 are done, and block linking with them
+
+### Step 7: block linking
+
+Step 6 ended by saying the next thing was block linking rather than a cleverer
+allocator, because blocks were too short for anything to amortise over. This is
+that, and it is the largest single gain so far.
+
+**The trick that makes it cheap.** A block already balances its own frame, so
+its tail can restore the frame and then *jump* to the next block rather than
+returning. At the jump the stack is exactly as it was on entry, with the
+caller's return address still on top - so the next block's prologue sees what it
+expects, and whichever block eventually executes `ret` returns to the dispatcher
+that called the first of them. It is a tail call. No trampoline, no shared
+frame, no change to how a block is entered.
+
+**What gets linked.** A block's tail carries a `jmp rel32` per possible
+successor, whose displacement the engine rewrites once that successor is
+compiled. Until then it points at the block's own `ret`, so an unlinked slot
+costs one predictable jump. A block that fell off its end or ended in `j`/`jal`
+has one successor; a conditional branch has two, and the tail compares the
+address the branch chose against the taken target to pick between them. That
+second case is the one that matters - the back edge of a loop is a conditional
+branch, and a loop that cannot link returns to the dispatcher every iteration.
+`jr` and `jalr` go somewhere only they know, so they are not linked.
+
+**What it bought**, best of three rounds:
+
+| Program | no linking | linked | linking |
+|---|---|---|---|
+| nine-instruction arithmetic loop | 1212 M inst/s | 2562 M inst/s | **2.11x** |
+| eleven-instruction loop with a load and a store | 506 M inst/s | 797 M inst/s | **1.58x** |
+| fifty-instruction straight-line body | 2085 M inst/s | 2509 M inst/s | 1.20x |
+
+The pattern is the mirror image of step 6's: linking helps *most* where blocks
+are shortest, because that is where the dispatcher was the largest share of the
+work. Short blocks were exactly the case the allocator could do nothing for.
+
+**And it changed the allocator's verdict.** With linking on, allocation on the
+long block goes from 1.35x to **1.57x**, and the sweep's crossover sharpens -
+1.24x at fifteen instructions, 1.59x at sixty-three. Chained blocks spend less
+time in dispatch, so register traffic is a larger share of what is left. The two
+steps compound rather than overlap.
+
+**Two things linking makes newly dangerous**, both of which the engine handles:
+
+1. **A link into an invalidated block is worse than a stale block.** Dropping
+   the cache entry is not enough: the host code is still there and still
+   runnable, so a jump straight into it does not crash - it quietly runs the
+   guest instructions the game has just replaced. Links are therefore indexed by
+   the address they point *at*, and every one is sent back to its own block's
+   `ret` before the block it targets is discarded. Verified by disabling it: the
+   self-modifying tests then produce the pre-patch answer, and only with linking
+   on - the unlinked passes stay clean.
+2. **A chain would never come back.** A guest loop living entirely in compiled
+   code would jump around inside itself forever and the emulator would never
+   take an interrupt or draw a frame. Every block now charges its length to
+   `BlockState::budget` on the way out and returns when it runs out. The host
+   sets the budget to however long it can afford not to hear from the CPU - in
+   the emulator, the cycles until the next scheduled event. It doubles as the
+   instruction accounting, since what was set minus what is left is what ran.
+
+That second one is worth noting as a *gain* and not only a hazard: the plan's
+"Where the risk actually is" section says timing is the real danger, and the
+budget is the hook that lets the host decide exactly how coarse the CPU's
+timing is allowed to get.
+
+**Verified** by running the whole differential suite over both switches in
+every combination - linking off/on against allocation off/on, four passes, 452
+checks - plus tests that a linked loop dispatches far less often than an
+unlinked one, that the budget bounds an endless loop to its budget plus at most
+one block, and that a store into a linked block takes the jumps into it apart.
+
+### Step 6: register allocation, and what the measurement said
+
+The plan made this step conditional - "then, and only then, register
+allocation, if the measurements say the load/store traffic is what is left to
+win" - so it starts with the measurement. `PSXEmu.Core/tools/rec_bench.cpp` is
+that measurement, and it changed the answer.
+
+**What was built.** Up to four guest registers per block live in host registers
+for the block's duration instead of being loaded and stored around every
+operation. They have to be callee-saved, because a block calls out for every
+load and store: R12-R15, since RBX, RSI and RDI are already the state pointer,
+the register file and the load in flight. The busiest registers win, a register
+used once is never cached, only registers actually written are written back,
+and an odd number of extra pushes is absorbed by the shadow space so the stack
+stays aligned.
+
+**What the measurement said**, on this machine, best of three rounds:
+
+| Program | compiled | allocated | allocation |
+|---|---|---|---|
+| nine-instruction arithmetic loop | 1249 M inst/s | 1247 M inst/s | 1.00x |
+| eleven-instruction loop with a load and a store | 545 M inst/s | 543 M inst/s | 1.00x |
+| fifty-instruction straight-line body | 2068 M inst/s | 2785 M inst/s | **1.35x** |
+
+So allocation does nothing for short blocks and a great deal for long ones.
+Sweeping the block length says exactly where that turns over:
+
+| Block | in memory | allocated | ratio |
+|---|---|---|---|
+| 7 instructions | 829 M/s | 733 M/s | **0.88x** |
+| 11 | 1087 M/s | 1109 M/s | 1.02x |
+| 15 | 1183 M/s | 1385 M/s | 1.17x |
+| 27 | 1676 M/s | 2059 M/s | 1.23x |
+| 51 | 2079 M/s | 2833 M/s | 1.36x |
+| 63 | 2237 M/s | 3061 M/s | 1.37x |
+
+**The finding, and it is the useful part of this step: allocation's cost is per
+block *entry* and its saving is per *instruction*.** The pushes, the loads that
+fill the cached registers and the write-backs are paid every time the block is
+entered, and a seven-instruction block has nothing to amortise them over - it
+runs at 0.88x, a real loss. So the allocator now refuses blocks shorter than
+twelve instructions, which is the first length past break-even, and the two
+short benchmarks go to exactly 1.00x while the long one keeps its 1.35x.
+
+**Which means the next thing to do is block linking, not a better allocator.**
+Real MIPS code branches every handful of instructions, so most blocks will sit
+below the threshold and allocation will decline to do anything at all. Making
+blocks longer - by linking them so control passes from one to the next without
+returning to the dispatcher, or by following unconditional jumps while
+decoding - is what would put them in the range where this pays. A cleverer
+allocation policy cannot fix a block that is seven instructions long.
+
+**The other numbers**, worth recording though they prove less: the compiled
+code runs 7.7x the reference interpreter on register-only work, 3.3x when every
+iteration has a load and a store, and 16-22x on a long straight-line body. That
+reference interpreter is a small one written for the tests, not this project's
+`Cpu`, which does more per instruction - timing, the load pipeline, interrupt
+checks - so these are not predictions for the emulator. What they do say
+honestly is that the emitted code's own throughput is in the range that makes
+the exercise worth continuing.
+
+**Verified** by running the entire differential suite twice, once with the
+allocator off and once on - 254 checks each way. For that second pass to mean
+anything the length threshold is lowered to one instruction in the tests, since
+almost every test block is shorter than twelve and the pass would otherwise
+compile exactly what the first one did. Checked for teeth by removing the
+write-back: the second pass fails in eleven places and the first in none,
+including every load-delay test, which is where an allocator bug would hide.
+
+**One constraint this creates**, and it matters at wiring time: a load or store
+callback must not modify the guest register file. It would be overwritten by
+the block's write-back. `Cpu::Load` and `Cpu::Store` do not, but nothing
+enforces it, so it is written down here and in `rec/runtime.h`.
 
 ### Step 5: the engine, and invalidation
 

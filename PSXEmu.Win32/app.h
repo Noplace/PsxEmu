@@ -175,6 +175,7 @@ namespace psxemu {
         // that same hand-off regardless of this, so there is nothing here for BootPsExeFromFile to
         // read.
         void SetSkipBiosIntro(bool on);
+        void SetRecompiler(bool on);
 
         // Rescans the BIOS folder and refills Settings > BIOS from what is in it. Called at
         // startup and whenever the menu's own Rescan item is used, which is what makes dropping a
@@ -199,6 +200,7 @@ namespace psxemu {
         void UpdateSpeedMenu();
         void UpdateCdTimingMenu();
         void UpdateSkipBiosIntroMenu();
+        void UpdateRecompilerMenu();
 
         // ---------------------------------------------------------------------------------------
         // The machine

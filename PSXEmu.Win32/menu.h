@@ -104,6 +104,7 @@ namespace psxemu {
     // EmuConfig::skip_bios_intro. Has no separate tick of its own for a PS-EXE boot: that path
     // already always uses the same hand-off, regardless of this setting.
     void TickSkipBiosIntro(HWND window, bool on);
+    void TickRecompiler(HWND window, bool on);
 
     // ---------------------------------------------------------------------------------------------
     // Settings keys

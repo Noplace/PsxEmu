@@ -337,7 +337,7 @@ and are not counted above, since they test no emulation: `letterbox_test`
 the frame counts, that a minute at 150% does not drift, and that blocks join
 continuously).
 
-`rec_test` (157 checks) is not counted either, and for a different reason: it
+`rec_test` (452 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which is being built beside the
 interpreter rather than into it. Nothing in `psx/` includes it and the emulator
 does not link it. Its compiler checks are differential - a block is compiled,
@@ -346,7 +346,24 @@ continue at are compared against a reference interpreter written from the
 instruction set rather than from the compiler. Its engine checks do the same
 thing to whole programs: a loop, code that rewrites itself, and a load left in
 flight across a block boundary are each run interpreted and then recompiled,
-and the two machines compared. See `Docs/Recompiler-Plan.md`.
+and the two machines compared. Everything that compiles or runs guest code runs
+twice, once with the register allocator off and once on. See
+`Docs/Recompiler-Plan.md`.
+
+`boot_runner --recompiler` runs the machine on the recompiler instead of the
+interpreter, which is how the baselines below get checked against it, and
+`--recompiler-toggle N` switches between the two every N frames - the headless
+stand-in for the front end's **Emulation > Recompiler** item, which can be
+changed while a game is running. The BIOS
+boot is identical either way; a game's framebuffer checksum is not yet, because
+the cycle model is approximate - see the timing section of
+`Docs/Recompiler-Plan.md`. Without the flag nothing about the run changes.
+
+`rec_bench` is a benchmark rather than a test, and it asserts nothing:
+recompiled against interpreted, the register allocator on against off, and a
+sweep of the block length that shows where allocation starts to pay. It takes
+an iteration count and a repeat count, both optional. The numbers it produced,
+and what they decided, are in the plan's step 6.
 
 ### BIOS boot, SCPH1001
 

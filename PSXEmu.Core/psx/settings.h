@@ -173,6 +173,7 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("frame_limiter", c.frame_limiter);
   f.SetBool("cdrom_mechanical_timing", c.cdrom_mechanical_timing);
   f.SetBool("skip_bios_intro", c.skip_bios_intro);
+  f.SetBool("recompiler", c.recompiler);
   f.SetString("bios_file", c.bios_file);
   f.SetFloat("emulation_speed", c.emulation_speed);
 }
@@ -227,6 +228,7 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   c.cdrom_mechanical_timing =
       f.GetBool("cdrom_mechanical_timing", c.cdrom_mechanical_timing);
   c.skip_bios_intro = f.GetBool("skip_bios_intro", c.skip_bios_intro);
+  c.recompiler = f.GetBool("recompiler", c.recompiler);
   // No list to validate against - what is valid is whatever is in the folder,
   // which only the front end can see. It checks before using it.
   c.bios_file = f.GetString("bios_file", c.bios_file);

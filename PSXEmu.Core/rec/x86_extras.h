@@ -99,6 +99,12 @@ inline void MovMemReg(reccore::Emitter* e, uint8_t reg, uint8_t base,
   EmitRegMem8(e, 0x89, reg, base, displacement);
 }
 
+// mov r32, r32 - what a guest register kept in a host register costs to read
+// or write, instead of the memory access it replaces.
+inline void MovRegReg(reccore::Emitter* e, uint8_t dest, uint8_t src) {
+  EmitRegReg(e, 0x8B, dest, src);
+}
+
 // mov r32, imm32
 inline void MovRegImm(reccore::Emitter* e, uint8_t reg, uint32_t value) {
   EmitRex(e, false, 0, reg);
@@ -293,6 +299,54 @@ inline void AddRspImm8(reccore::Emitter* e, uint8_t bytes) {
   e->emit8(0x83);
   e->emit8(ModRM(3, 0, 4));   // /0 = add
   e->emit8(bytes);
+}
+
+// cmp dword [base + disp8], imm8 - testing a flag in the block's state without
+// spending a register on it.
+inline void CmpMemImm8(reccore::Emitter* e, uint8_t base, int8_t displacement,
+                       uint8_t value) {
+  EmitRex(e, false, 0, base);
+  e->emit8(0x83);
+  e->emit8(ModRM(1, 7, base));   // /7 = cmp
+  e->emit8(static_cast<uint8_t>(displacement));
+  e->emit8(value);
+}
+
+// add dword [base + disp8], imm8 - a block adding its cycle cost to the
+// running total on its way out.
+inline void AddMemImm8(reccore::Emitter* e, uint8_t base, int8_t displacement,
+                       uint8_t value) {
+  EmitRex(e, false, 0, base);
+  e->emit8(0x83);
+  e->emit8(ModRM(1, 0, base));   // /0 = add
+  e->emit8(static_cast<uint8_t>(displacement));
+  e->emit8(value);
+}
+
+// sub dword [base + disp8], imm8 - the block's budget decrement, and the only
+// instruction here that both reads and writes memory. The immediate is a byte
+// because a block is at most 64 instructions long.
+inline void SubMemImm8(reccore::Emitter* e, uint8_t base, int8_t displacement,
+                       uint8_t value) {
+  EmitRex(e, false, 0, base);
+  e->emit8(0x83);
+  e->emit8(ModRM(1, 5, base));   // /5 = sub
+  e->emit8(static_cast<uint8_t>(displacement));
+  e->emit8(value);
+}
+
+// The jumps that make linking possible. Displacements are from the end of the
+// instruction, and the rel32 ones are written as zero and filled in afterwards:
+// a link's target is not known when the block that jumps to it is compiled,
+// and may change when a store throws that target away.
+inline void JccRel8(reccore::Emitter* e, Cc condition, int8_t displacement) {
+  e->emit8(static_cast<uint8_t>(0x70 + static_cast<uint8_t>(condition)));
+  e->emit8(static_cast<uint8_t>(displacement));
+}
+
+inline void JmpRel32(reccore::Emitter* e, int32_t displacement) {
+  e->emit8(0xE9);
+  e->emit32(static_cast<uint32_t>(displacement));
 }
 
 inline void Ret(reccore::Emitter* e) { e->emit8(0xC3); }

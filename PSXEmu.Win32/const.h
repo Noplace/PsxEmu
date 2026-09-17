@@ -71,6 +71,7 @@ namespace psxemu {
         kCommandFrameLimiter,
         kCommandCdMechanicalTiming,
         kCommandSkipBiosIntro,
+        kCommandRecompiler,
         kCommandControllerTypeFirst,
         kCommandControllerTypeLast = kCommandControllerTypeFirst + 11,   // 2 ports x 6 types
         kCommandInputSourceFirst,

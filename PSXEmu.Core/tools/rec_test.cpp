@@ -554,18 +554,28 @@ class FakeBus {
   // The callbacks, in the shape rec/runtime.h asks for. The intrinsic has to
   // be written in the function that was actually called, not in a helper, so
   // that it names that function's own frame.
-  static uint32_t Load32(void* c, uint32_t a) {
+  // When this is set, an unaligned word access is treated as a guest exception
+  // the way Cpu::Load treats one: the access does not happen, and the block is
+  // told to stop where it is.
+  emulation::rec::Recompiler* faults_on_unaligned = nullptr;
+
+  static uint32_t Load32(void* c, uint32_t a, uint32_t) {
     Bus(c)->NoteStackAlignment(_AddressOfReturnAddress());
-    return Bus(c)->DoRead(a, 4);
+    FakeBus* bus = Bus(c);
+    if (bus->faults_on_unaligned != nullptr && (a & 3) != 0) {
+      bus->faults_on_unaligned->SetFault();
+      return 0;
+    }
+    return bus->DoRead(a, 4);
   }
-  static uint32_t Load16(void* c, uint32_t a) { return Bus(c)->DoRead(a, 2); }
-  static uint32_t Load8(void* c, uint32_t a) { return Bus(c)->DoRead(a, 1); }
-  static void Store32(void* c, uint32_t a, uint32_t v) {
+  static uint32_t Load16(void* c, uint32_t a, uint32_t) { return Bus(c)->DoRead(a, 2); }
+  static uint32_t Load8(void* c, uint32_t a, uint32_t) { return Bus(c)->DoRead(a, 1); }
+  static void Store32(void* c, uint32_t a, uint32_t v, uint32_t) {
     Bus(c)->NoteStackAlignment(_AddressOfReturnAddress());
     Bus(c)->DoWrite(a, 4, v);
   }
-  static void Store16(void* c, uint32_t a, uint32_t v) { Bus(c)->DoWrite(a, 2, v); }
-  static void Store8(void* c, uint32_t a, uint32_t v) { Bus(c)->DoWrite(a, 1, v); }
+  static void Store16(void* c, uint32_t a, uint32_t v, uint32_t) { Bus(c)->DoWrite(a, 2, v); }
+  static void Store8(void* c, uint32_t a, uint32_t v, uint32_t) { Bus(c)->DoWrite(a, 1, v); }
 
  private:
   static FakeBus* Bus(void* context) { return static_cast<FakeBus*>(context); }
@@ -600,6 +610,24 @@ emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
 
 void RunBlock(reccore::CodeBlock* code, emulation::rec::BlockState* state) {
   reinterpret_cast<void (*)(emulation::rec::BlockState*)>(code->address)(state);
+}
+
+// Step 6's register allocator is a switch, and every test below runs with it
+// both ways: an allocator that changes an answer is the whole risk of the
+// step, and running the suite twice is what makes the claim that it does not.
+bool g_allocate_registers = true;
+bool g_link_blocks = true;
+
+emulation::rec::BlockCompiler MakeCompiler(reccore::Emitter* emitter) {
+  emulation::rec::BlockCompiler compiler(emitter);
+  compiler.set_allocate_registers(g_allocate_registers);
+  compiler.set_link_blocks(g_link_blocks);
+  // Allocate however short the block is. In the emulator a block has to be
+  // long enough for allocation to pay; here it has to happen at all, or the
+  // second pass over the suite would compile the same thing as the first and
+  // prove nothing. Almost every test block below is shorter than the threshold.
+  compiler.set_minimum_block_instructions(1);
+  return compiler;
 }
 
 // What the compiled code is measured against. Written from the instruction set
@@ -847,7 +875,7 @@ bool RunBothWays(const std::vector<uint32_t>& program,
 
   reccore::Emitter emitter;
   reccore::CodeBlock* code = emitter.create_block(4096);
-  emulation::rec::BlockCompiler compiler(&emitter);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
 
   uint32_t compiled_regs[32];
@@ -973,7 +1001,7 @@ void TestRegisterZeroStaysZero() {
   const DecodedBlock decoded = decoder.Decode(kProgramBase, 4);
   reccore::Emitter emitter;
   reccore::CodeBlock* code = emitter.create_block(4096);
-  emulation::rec::BlockCompiler compiler(&emitter);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   compiler.Compile(decoded, code);
 
   uint32_t regs[32] = {};
@@ -1002,7 +1030,7 @@ void TestItStopsAtWhatItCannotCompile() {
   const DecodedBlock decoded = decoder.Decode(kProgramBase, 5);
   reccore::Emitter emitter;
   reccore::CodeBlock* code = emitter.create_block(4096);
-  emulation::rec::BlockCompiler compiler(&emitter);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
 
   CheckEqual(compiled.compiled, 2, "two instructions were compiled");
@@ -1031,15 +1059,19 @@ void TestNopCompilesToNothing() {
   printf("a nop compiles to no host code at all\n");
 
   reccore::Emitter emitter;
-  emulation::rec::BlockCompiler compiler(&emitter);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
 
-  // An empty block is the prologue, the next_pc store and the epilogue - the
-  // floor. Four nops have to come to exactly the same thing.
-  FakeMemory nothing;
-  BlockDecoder empty_decoder(nothing.Fetch());
+  // A single nop is the floor: the prologue, the next_pc store and the tail.
+  // Four of them have to come to exactly the same thing, since each emits
+  // nothing of its own. (An empty block is not the comparison to make - it has
+  // no tail at all, because there is nothing to charge to the budget and
+  // nowhere to go next.)
+  FakeMemory one;
+  one.Write(kProgramBase, { NOP() });
+  BlockDecoder one_decoder(one.Fetch());
   reccore::CodeBlock* empty_code = emitter.create_block(4096);
   const emulation::rec::CompiledBlock empty =
-      compiler.Compile(empty_decoder.Decode(kProgramBase, 4), empty_code);
+      compiler.Compile(one_decoder.Decode(kProgramBase, 1), empty_code);
 
   FakeMemory memory;
   memory.Write(kProgramBase, { NOP(), NOP(), NOP(), NOP() });
@@ -1140,7 +1172,7 @@ void TestTheValueOfALoadArrivesOneInstructionLate() {
   const DecodedBlock decoded = decoder.Decode(kProgramBase, 5);
   reccore::Emitter emitter;
   reccore::CodeBlock* code = emitter.create_block(4096);
-  emulation::rec::BlockCompiler compiler(&emitter);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   compiler.Compile(decoded, code);
 
   uint32_t regs[32] = {};
@@ -1289,7 +1321,7 @@ void TestABranchWithoutItsDelaySlotIsNotCompiled() {
   BlockDecoder decoder(memory.Fetch());
   reccore::Emitter emitter;
   reccore::CodeBlock* code = emitter.create_block(4096);
-  emulation::rec::BlockCompiler compiler(&emitter);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled =
       compiler.Compile(decoder.Decode(kProgramBase, 3), code);
   CheckEqual(compiled.compiled, 1, "the branch was left to the interpreter");
@@ -1321,7 +1353,7 @@ void TestTheAndLinkBranchesAreLeftAlone() {
   BlockDecoder decoder(memory.Fetch());
   reccore::Emitter emitter;
   reccore::CodeBlock* code = emitter.create_block(4096);
-  emulation::rec::BlockCompiler compiler(&emitter);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled =
       compiler.Compile(decoder.Decode(kProgramBase, 2), code);
   CheckEqual(compiled.compiled, 0, "bgezal is the interpreter's");
@@ -1349,7 +1381,7 @@ void TestTheCallingConventionIsHonoured() {
   BlockDecoder decoder(memory.Fetch());
   reccore::Emitter emitter;
   reccore::CodeBlock* code = emitter.create_block(4096);
-  emulation::rec::BlockCompiler compiler(&emitter);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled =
       compiler.Compile(decoder.Decode(kProgramBase, 6), code);
   CheckEqual(compiled.compiled, 6, "the whole block compiled");
@@ -1442,7 +1474,7 @@ void TestWhatItClaimsToCompileIsWhatItCompiles() {
     BlockDecoder decoder(memory.Fetch());
     reccore::Emitter emitter;
     reccore::CodeBlock* code = emitter.create_block(4096);
-    emulation::rec::BlockCompiler compiler(&emitter);
+    emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
     const emulation::rec::CompiledBlock compiled =
         compiler.Compile(decoder.Decode(kProgramBase, 2), code);
     emitter.destroy_block(code);
@@ -1507,6 +1539,9 @@ class Engine {
     host.interpret = [this](uint32_t pc) { return machine.Run(pc); };
     host.load_in_flight = [this]() { return machine.LoadInFlight(); };
     recompiler_.reset(new emulation::rec::Recompiler(host, machine.r));
+    recompiler_->set_allocate_registers(g_allocate_registers);
+    recompiler_->set_minimum_block_instructions(1);
+    recompiler_->set_link_blocks(g_link_blocks);
 
     // The interpreter's own stores have to invalidate too.
     emulation::rec::Recompiler* rec = recompiler_.get();
@@ -1609,8 +1644,8 @@ void TestAWholeProgramRunsTheSameWayBothWays() {
   // And the engine did the thing it exists to do, rather than quietly
   // interpreting everything and agreeing with itself.
   Check(stats.blocks_compiled > 0, "blocks were compiled");
-  Check(stats.blocks_executed > stats.blocks_compiled,
-        "and executed more often than they were compiled - the loop was cached");
+  Check(stats.instructions_compiled > stats.blocks_executed,
+        "each entry into compiled code ran more than one instruction");
   Check(stats.instructions_compiled > 40,
         "most of the work ran as compiled code");
   Check(stats.instructions_interpreted > 0,
@@ -1869,32 +1904,179 @@ void TestManyBlocksShareOneArena() {
   CheckEqual(static_cast<int64_t>(engine.recompiler()->arena_count()), 1,
              "and they all fit in one arena");
 }
-}  // namespace
 
-int main() {
-  printf("rec_test - emitter, block cache, decoder, compiler\n");
-  printf("           (Docs/Recompiler-Plan.md steps 1 to 5)\n\n");
+// ---------------------------------------------------------------------------
+// Block linking
+// ---------------------------------------------------------------------------
 
-  TestEmitsACallableFunction();
-  TestArgumentsArriveWhereTheyShould();
-  TestReadsAndWritesThroughAPointer();
-  TestCacheFindsWhatWasPutIn();
-  TestTheThreeViewsOfRamAreOneBlock();
-  TestAStoreIntoCodeThrowsItAway();
-  TestABlockSpanningTwoPages();
-  TestClearThrowsEverythingAway();
+// The loop from the engine tests, small enough to reason about: four times
+// round, then out.
+std::vector<uint32_t> CountingLoop() {
+  return {
+      ADDIU(1, 0, 4),           // 0
+      ADDU(2, 2, 1),            // 1: loop top
+      ADDIU(1, 1, 0xFFFF),      // 2
+      BNE(1, 0, 0xFFFD),        // 3: back to index 1
+      NOP(),                    // 4
+      JR(0),                    // 5
+      NOP(),                    // 6
+  };
+}
 
-  TestStraightLineStopsAtTheCap();
-  TestABranchTakesItsDelaySlot();
-  TestEveryJumpFormEndsABlock();
-  TestSyscallEndsTheBlockWithNoDelaySlot();
-  TestReturnFromExceptionEndsTheBlock();
-  TestAnOrdinaryCop0MoveIsNotAnRfe();
-  TestMultiplyMarksTheBlockAsDynamicallyPriced();
-  TestLoadsAndStoresAreToldApart();
-  TestUnmappedMemoryEndsTheBlock();
-  TestAblockCanStartAtADelaySlot();
+void TestALoopStaysInsideCompiledCode() {
+  printf("a linked loop runs without returning to the dispatcher\n");
 
+  Engine engine;
+  engine.bus.WriteProgram(kProgramBase, CountingLoop());
+  engine.AttachRecompiler();
+  engine.Run(kProgramBase);
+
+  const emulation::rec::Recompiler::Stats& stats = engine.recompiler()->stats();
+  CheckEqual(engine.machine.r[2], 10, "the loop produced 4+3+2+1");
+  Check(stats.links_made > 0, "links were made");
+
+  // The point of the whole exercise: one entry into compiled code now buys
+  // several blocks' worth of work instead of one.
+  Check(stats.instructions_compiled >= stats.blocks_executed * 3,
+        "and each dispatch ran several blocks' worth of instructions");
+
+  // And with linking off, the same program dispatches far more often. This is
+  // the comparison that says the mechanism is doing anything at all.
+  Engine unlinked;
+  unlinked.bus.WriteProgram(kProgramBase, CountingLoop());
+  unlinked.AttachRecompiler();
+  unlinked.recompiler()->set_link_blocks(false);
+  unlinked.Run(kProgramBase);
+  CheckEqual(unlinked.machine.r[2], 10, "unlinked, it produces the same answer");
+  CheckEqual(static_cast<int64_t>(unlinked.recompiler()->stats().links_made), 0,
+             "and makes no links");
+  Check(unlinked.recompiler()->stats().blocks_executed >
+            stats.blocks_executed,
+        "and returns to the dispatcher more often");
+}
+
+void TestTheBudgetBoundsAChain() {
+  printf("the budget stops a chain of linked blocks from running forever\n");
+
+  // Without a budget this program never returns: it is an unconditional loop
+  // with no exit, exactly the shape of a game's main loop, and linked blocks
+  // would jump between each other with nothing to interrupt them.
+  const std::vector<uint32_t> forever = {
+      ADDIU(1, 1, 1),           // 0
+      BEQ(0, 0, 0xFFFE),        // 1: always taken, back to index 0
+      NOP(),                    // 2
+  };
+
+  Engine engine;
+  engine.bus.WriteProgram(kProgramBase, forever);
+  engine.AttachRecompiler();
+  engine.recompiler()->set_budget(30);
+
+  uint32_t pc = kProgramBase;
+  for (int i = 0; i < 10; ++i)
+    pc = engine.recompiler()->Step(pc);
+
+  const emulation::rec::Recompiler::Stats& stats = engine.recompiler()->stats();
+  Check(pc != 0, "it is still going, as an endless loop should be");
+  CheckEqual(static_cast<int64_t>(stats.blocks_executed), 10,
+             "ten entries into compiled code, one per Step");
+
+  // Each entry runs the budget's worth, give or take the block it was inside
+  // when the budget ran out - the check is at the end of a block, not the
+  // middle of one.
+  Check(stats.instructions_compiled >= 10 * 30,
+        "each entry ran at least its budget");
+  if (stats.instructions_compiled >= 10 * 30 + 10 * 8) {
+    printf("  (budget probe: %llu instructions over 10 entries)\n",
+           static_cast<unsigned long long>(stats.instructions_compiled));
+  }
+  Check(stats.instructions_compiled < 10 * 30 + 10 * 8,
+        "and overshot by at most one block each time");
+  CheckEqual(engine.machine.r[1],
+             static_cast<uint32_t>(stats.instructions_compiled / 3),
+             "and the guest counted once per trip round the loop");
+}
+
+void TestAStoreBreaksTheLinksIntoABlock() {
+  printf("a store into a linked block takes the jumps into it apart first\n");
+
+  // This is the failure block linking makes possible and invalidation alone
+  // does not catch: block A holds a jump straight into block B's code. When a
+  // store replaces B's guest instructions, dropping B from the cache is not
+  // enough - A's jump still points at B's host code, which is still there and
+  // still perfectly runnable. Nothing crashes. The game just runs the code it
+  // replaced.
+  const uint32_t patch_address = kProgramBase + 28;   // index 7
+  const uint32_t patched_word = ADDIU(4, 0, 22);
+
+  const std::vector<uint32_t> program = {
+      ADDIU(5, 0, 2),
+      LUI_(1, static_cast<uint16_t>(patch_address >> 16)),
+      ORI_(1, 1, static_cast<uint16_t>(patch_address & 0xFFFF)),
+      LUI_(2, static_cast<uint16_t>(patched_word >> 16)),
+      ORI_(2, 2, static_cast<uint16_t>(patched_word & 0xFFFF)),
+      BEQ(0, 0, 1),             // 5: to index 7 - so a block starts there, and
+      NOP(),                    // 6:    this block links to it
+      ADDIU(4, 0, 11),          // 7: overwritten
+      SW(2, 1, 0),              // 8: overwrite it
+      ADDIU(5, 5, 0xFFFF),      // 9
+      BNE(5, 0, 0xFFFC),        // 10: back to index 7, linking to it again
+      NOP(),                    // 11
+      JR(0),                    // 12
+      NOP(),                    // 13
+  };
+
+  Engine engine;
+  engine.bus.WriteProgram(kProgramBase, program);
+  engine.AttachRecompiler();
+  engine.Run(kProgramBase);
+
+  CheckEqual(engine.machine.r[4], 22, "the replaced instruction is what ran");
+  Check(engine.recompiler()->stats().links_made > 0, "links were made");
+  Check(engine.recompiler()->stats().links_broken > 0,
+        "and the store took them apart again");
+}
+
+void TestAFaultingAccessStopsTheBlock() {
+  printf("an access that raises an exception stops the block where it is\n");
+
+  // The load at index 1 is unaligned, which on this machine is an address
+  // error. Everything after it belongs to an execution that is no longer
+  // happening - the CPU has vectored elsewhere - so none of it may run. A
+  // recompiler that carried on here would produce corruption a long way from
+  // the cause, which is why the check is emitted after every access rather
+  // than argued about.
+  const std::vector<uint32_t> program = {
+      ADDIU(3, 0, 5),           // 0: runs
+      LW(2, 0, 0x4001),         // 1: unaligned - faults
+      ADDIU(4, 0, 7),           // 2: must NOT run
+      ADDIU(5, 0, 9),           // 3: must NOT run
+      JR(0),                    // 4
+      NOP(),                    // 5
+  };
+
+  Engine engine;
+  engine.bus.WriteProgram(kProgramBase, program);
+  engine.AttachRecompiler();
+  engine.bus.faults_on_unaligned = engine.recompiler();
+
+  const uint32_t next = engine.recompiler()->Step(kProgramBase);
+
+  CheckEqual(engine.machine.r[3], 5, "the instruction before the fault ran");
+  CheckEqual(engine.machine.r[2], 0, "the faulting load delivered nothing");
+  CheckEqual(engine.machine.r[4], 0, "the instruction after it did not run");
+  CheckEqual(engine.machine.r[5], 0, "nor the one after that");
+  Check(next == emulation::rec::Recompiler::kFaulted,
+        "and the engine was told the block faulted rather than finished");
+  CheckEqual(static_cast<int64_t>(engine.recompiler()->stats().faults), 1,
+             "one fault was counted");
+}
+
+// Everything that compiles or runs guest code. Called twice - once with step
+// 6's register allocator off, once with it on - because the allocator's whole
+// risk is that it changes an answer somewhere, and the only convincing way to
+// say it does not is to ask every question again.
+void RunEverythingThatCompiles() {
   TestCompiledArithmeticMatchesTheInterpreter();
   TestRegisterZeroStaysZero();
   TestItStopsAtWhatItCannotCompile();
@@ -1919,6 +2101,142 @@ int main() {
   TestABlockIsNotEnteredWithALoadInFlight();
   TestAnUncompilableInstructionIsCachedAsOne();
   TestManyBlocksShareOneArena();
+}
+
+// The two switches the last two steps added, in every combination. Linking
+// changes what runs between blocks and allocation changes what runs inside
+// them, and the pair interacting is exactly the kind of thing neither one's
+// own tests would catch.
+void RunTheMatrix() {
+  static const bool kOff = false;
+  static const bool kOn = true;
+  const bool settings[4][2] = {
+      { kOff, kOff }, { kOff, kOn }, { kOn, kOff }, { kOn, kOn },
+  };
+  for (const auto& setting : settings) {
+    g_link_blocks = setting[0];
+    g_allocate_registers = setting[1];
+    printf("\n--- linking %s, allocation %s ---\n",
+           g_link_blocks ? "on" : "off",
+           g_allocate_registers ? "on" : "off");
+    RunEverythingThatCompiles();
+  }
+}
+
+// The allocator has to actually be doing something, or running the suite twice
+// proves only that nothing happened twice.
+void TestTheAllocatorAllocates() {
+  printf("the allocator caches the registers a block leans on\n");
+
+  // Long enough to be worth allocating - rec_bench puts the break-even at
+  // around eleven instructions - and all of it working through r1 and r2.
+  std::vector<uint32_t> program;
+  for (int i = 0; i < 8; ++i) {
+    program.push_back(ADDIU(1, 1, 1));
+    program.push_back(ADDU(2, 2, 1));
+  }
+  FakeMemory memory;
+  memory.Write(kProgramBase, program);
+  BlockDecoder decoder(memory.Fetch());
+  const DecodedBlock decoded =
+      decoder.Decode(kProgramBase, static_cast<uint32_t>(program.size()));
+
+  reccore::Emitter emitter;
+  reccore::CodeBlock* off_code = emitter.create_block(4096);
+  emulation::rec::BlockCompiler off(&emitter);
+  off.set_allocate_registers(false);
+  const emulation::rec::CompiledBlock without = off.Compile(decoded, off_code);
+
+  reccore::CodeBlock* on_code = emitter.create_block(4096);
+  emulation::rec::BlockCompiler on(&emitter);
+  on.set_allocate_registers(true);
+  const emulation::rec::CompiledBlock with = on.Compile(decoded, on_code);
+
+  CheckEqual(without.registers_allocated, 0, "with the allocator off, nothing is cached");
+  CheckEqual(with.registers_allocated, 2, "with it on, both busy registers are");
+
+  // Not smaller, and that is the point worth writing down: `mov eax, r12d` is
+  // three bytes and so is `mov eax, [rsi+4]`. Allocation does not shrink the
+  // code, it removes memory operations - and whether that is worth anything on
+  // a machine with store-to-load forwarding is a question for rec_bench, not
+  // for a byte count. All that is checked here is that the prologue and
+  // epilogue it adds stay bounded.
+  Check(with.host_bytes <= without.host_bytes + 40,
+        "and what it adds around the block is a fixed, small cost");
+
+  // A register touched once is not worth a host register, a push and a load,
+  // however long the block is.
+  std::vector<uint32_t> sparse_program;
+  for (uint32_t reg = 1; reg <= 16; ++reg)
+    sparse_program.push_back(ADDIU(reg, 0, static_cast<uint16_t>(reg)));
+  FakeMemory sparse;
+  sparse.Write(kProgramBase, sparse_program);
+  BlockDecoder sparse_decoder(sparse.Fetch());
+  reccore::CodeBlock* sparse_code = emitter.create_block(4096);
+  const emulation::rec::CompiledBlock sparse_block = on.Compile(
+      sparse_decoder.Decode(kProgramBase,
+                            static_cast<uint32_t>(sparse_program.size())),
+      sparse_code);
+  CheckEqual(sparse_block.registers_allocated, 0,
+             "a register used once is left in memory");
+
+  // And a block too short to amortise the entry cost allocates nothing at all,
+  // whatever its registers look like. This is the measured part of step 6:
+  // below about eleven instructions allocation is a loss, so it is not done.
+  FakeMemory brief;
+  brief.Write(kProgramBase, {
+      ADDIU(1, 1, 1), ADDU(2, 2, 1), ADDU(2, 2, 1),
+      ADDIU(1, 1, 1), ADDU(2, 2, 1), ADDIU(1, 1, 1),
+  });
+  BlockDecoder brief_decoder(brief.Fetch());
+  reccore::CodeBlock* brief_code = emitter.create_block(4096);
+  const emulation::rec::CompiledBlock brief_block =
+      on.Compile(brief_decoder.Decode(kProgramBase, 6), brief_code);
+  CheckEqual(brief_block.registers_allocated, 0,
+             "and a short block is left alone however busy its registers are");
+
+  emitter.destroy_block(off_code);
+  emitter.destroy_block(on_code);
+  emitter.destroy_block(sparse_code);
+  emitter.destroy_block(brief_code);
+}
+
+}  // namespace
+
+int main() {
+  printf("rec_test - emitter, block cache, decoder, compiler, engine\n");
+  printf("           (Docs/Recompiler-Plan.md steps 1 to 6)\n\n");
+
+  TestEmitsACallableFunction();
+  TestArgumentsArriveWhereTheyShould();
+  TestReadsAndWritesThroughAPointer();
+  TestCacheFindsWhatWasPutIn();
+  TestTheThreeViewsOfRamAreOneBlock();
+  TestAStoreIntoCodeThrowsItAway();
+  TestABlockSpanningTwoPages();
+  TestClearThrowsEverythingAway();
+
+  TestStraightLineStopsAtTheCap();
+  TestABranchTakesItsDelaySlot();
+  TestEveryJumpFormEndsABlock();
+  TestSyscallEndsTheBlockWithNoDelaySlot();
+  TestReturnFromExceptionEndsTheBlock();
+  TestAnOrdinaryCop0MoveIsNotAnRfe();
+  TestMultiplyMarksTheBlockAsDynamicallyPriced();
+  TestLoadsAndStoresAreToldApart();
+  TestUnmappedMemoryEndsTheBlock();
+  TestAblockCanStartAtADelaySlot();
+
+  RunTheMatrix();
+
+  printf("\n");
+  g_link_blocks = true;
+  g_allocate_registers = true;
+  TestTheAllocatorAllocates();
+  TestALoopStaysInsideCompiledCode();
+  TestTheBudgetBoundsAChain();
+  TestAStoreBreaksTheLinksIntoABlock();
+  TestAFaultingAccessStopsTheBlock();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

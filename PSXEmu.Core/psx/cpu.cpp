@@ -319,6 +319,9 @@ bool Cpu::NextIsGteCommand() {
 }
 
 void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes code) {
+  // Counted so that a compiled memory access can tell, afterwards, that the
+  // access it just made raised one - see exceptions_raised().
+  ++exceptions_raised_;
 
 
   #if defined(_DEBUG) && defined(CPU_DEBUG)
@@ -721,7 +724,7 @@ uint32_t Cpu::Load(MemorySize size, uint32_t address) {
 
 void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
   //todo: research about this value, ignore for now
-  if (IsBusError() == true) { 
+  if (IsBusError() == true) {
     //context_->ctrl.BadVaddr = context_->prev_pc; //bus errors leave it
     RaiseException(context_->prev_pc,kOtherException,kExceptionCodeDBE);
     return;
@@ -731,6 +734,12 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
     RaiseException(context_->prev_pc,kOtherException,kExceptionCodeAdES);
     return;
   }
+
+  // A store may be landing on instructions something has already compiled.
+  // Nothing is registered unless the recompiler is switched on, and then this
+  // is a predicted call and a bitmap lookup on the far side.
+  if (store_observer_ != nullptr)
+    store_observer_(store_observer_context_, address);
 
   // A watched RAM address records who wrote it. "This structure holds garbage"
   // is otherwise a dead end: the write that put it there happened long before

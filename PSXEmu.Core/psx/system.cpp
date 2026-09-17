@@ -17,6 +17,7 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "psx/psx.h"
+#include "psx/recompiler_bridge.h"
 //#include <stdio.h>
 //#include <stdlib.h>
 //#pragma warning( disable : 4996 )
@@ -109,6 +110,13 @@ int System::Deinitialize() {
 // One instruction, with any pending interrupt taken before the next one. No
 // wall clock is consulted, so a headless run is reproducible.
 void System::StepInstruction() {
+  // The one safe point to change CPU: here, between instructions, on the
+  // thread that runs the machine. Switching the recompiler off frees the
+  // compiled code, and the menu that asks for it runs on the message thread -
+  // doing it there could free the block the machine is executing.
+  if (config_.recompiler != (recompiler_ != nullptr))
+    EnableRecompiler(config_.recompiler);
+
   cpu_.context()->current_cycles = 0;
 
   if (cpu_.context()->ctrl.SR.IEc && (cpu_.context()->ctrl.SR.raw & 0x400))
@@ -176,7 +184,21 @@ void System::StepInstruction() {
     }
   }
 
-  cpu_.ExecuteInstruction();
+  // With the recompiler on, one step is a chain of compiled blocks rather than
+  // one instruction - but only when nothing about the machine's state makes
+  // that unsafe. A GTE command has to be the interpreter's, because the
+  // interrupt behind it is delivered by the code below; and an interrupt that
+  // was just raised has to reach the vector before any block runs.
+  //
+  // What compiled code ran is charged to the rest of the machine afterwards:
+  // it does not tick as it goes, the way ExecuteInstruction does.
+  if (recompiler_ != nullptr && !gte_command_first) {
+    const uint32_t cycles = recompiler_->Step();
+    if (cycles > 0)
+      cpu_.TickCycles(cycles);
+  } else {
+    cpu_.ExecuteInstruction();
+  }
 
   if (gte_command_first) {
     cpu_.RaiseException(gte_command_pc, kOtherException, kExceptionCodeInt);
@@ -586,6 +608,18 @@ void System::thread_func(System* sys) {
  
   //opengl.Deinitialize();
   OutputDebugStringA("end of thread\n");
+}
+
+// The recompiler is created on demand and destroyed when it is turned off, so
+// with it off the machine carries no trace of it: nothing worth naming in
+// StepInstruction, no store observer on the Cpu, and no compiled code held.
+void System::EnableRecompiler(bool on) {
+  if (on == (recompiler_ != nullptr))
+    return;
+  if (on)
+    recompiler_.reset(new RecompilerBridge(this));
+  else
+    recompiler_.reset();
 }
 
 

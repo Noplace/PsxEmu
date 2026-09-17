@@ -23,6 +23,11 @@
 namespace emulation {
 namespace psx {
 
+// Defined in psx/recompiler_bridge.h, which System only ever holds a pointer
+// to: including it here would pull the whole recompiler into everything that
+// includes system.h.
+class RecompilerBridge;
+
 class System {
  friend DebugAssist;
  public:
@@ -97,6 +102,18 @@ class System {
   // effect without anything needing to be told about it.
   EmuConfig& config() { return config_; }
   const EmuConfig& config() const { return config_; }
+  // The recompiler, off unless something turns it on.
+  //
+  // With it off, StepInstruction is the code it always was. With it on, the
+  // machine runs blocks of compiled guest code instead of one interpreted
+  // instruction at a time, which changes when interrupts land and charges
+  // cycles in bursts - see psx/recompiler_bridge.h. Opt-in for that reason,
+  // and checked against the regression baselines rather than assumed
+  // equivalent.
+  void EnableRecompiler(bool on);
+  bool recompiler_enabled() const { return recompiler_ != nullptr; }
+  RecompilerBridge* recompiler() { return recompiler_.get(); }
+
   uint8_t* ram() { return io_.ram_buffer.u8; }
   uint8_t* bios() { return io_.bios_buffer.u8; }
   double base_freq_hz() { return base_freq_hz_; }
@@ -169,6 +186,7 @@ class System {
   utilities::Timer timer;
   uint64_t cycles_per_second_;
 
+  std::unique_ptr<RecompilerBridge> recompiler_;
   std::unique_ptr<std::thread> thread;
   double base_freq_hz_;
   TimingInfo timing_;

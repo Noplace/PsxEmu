@@ -80,6 +80,33 @@
   <ItemGroup>
     <ClCompile Include="audio\dsoundaudioengine.cpp" />
     <ClCompile Include="audio\wasapiaudioengine.cpp" />
+    <ClCompile Include="lib\reccore\emitter.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_a.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_b.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_c.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_d.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_e.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_f.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_g.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_h.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_i.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_j.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_k.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_l.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_m.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_n.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_o.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_p.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_q.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_r.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_s.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_t.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_u.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_v.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_w.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_x.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_y.cpp" />
+    <ClCompile Include="lib\reccore\intel\ia32_z.cpp" />
     <ClCompile Include="psx\cdrom.cpp" />
     <ClCompile Include="psx\cpu.cpp" />
     <ClCompile Include="psx\debug_assist.cpp" />
@@ -102,6 +129,17 @@
     <ClInclude Include="audio\dsoundaudioengine.h" />
     <ClInclude Include="audio\iaudioengine.h" />
     <ClInclude Include="audio\wasapiaudioengine.h" />
+    <ClInclude Include="lib\reccore\emitter.h" />
+    <ClInclude Include="lib\reccore\instructionset.h" />
+    <ClInclude Include="lib\reccore\intel\addressing.h" />
+    <ClInclude Include="lib\reccore\intel\ia32.h" />
+    <ClInclude Include="lib\reccore\intel\intel.h" />
+    <ClInclude Include="lib\reccore\intel\IS.h" />
+    <ClInclude Include="lib\reccore\mem_mgr.h" />
+    <ClInclude Include="lib\reccore\reccore.h" />
+    <ClInclude Include="lib\reccore\types.h" />
+    <ClInclude Include="platform\frame_limiter.h" />
+    <ClInclude Include="platform\speed_resampler.h" />
     <ClInclude Include="platform\timer.h" />
     <ClInclude Include="platform\types.h" />
     <ClInclude Include="platform\util.h" />
@@ -120,6 +158,7 @@
     <ClInclude Include="psx\kernel.h" />
     <ClInclude Include="psx\iso9660.h" />
     <ClInclude Include="psx\emuconfig.h" />
+    <ClInclude Include="psx\recompiler_bridge.h" />
     <ClInclude Include="psx\settings.h" />
     <ClInclude Include="psx\mdec.h" />
     <ClInclude Include="psx\mc.h" />
@@ -130,8 +169,17 @@
     <ClInclude Include="psx\state.h" />
     <ClInclude Include="psx\system.h" />
     <ClInclude Include="psx\types.h" />
+    <ClInclude Include="rec\block_cache.h" />
+    <ClInclude Include="rec\block_compiler.h" />
+    <ClInclude Include="rec\block_decoder.h" />
+    <ClInclude Include="rec\recompiler.h" />
+    <ClInclude Include="rec\runtime.h" />
+    <ClInclude Include="rec\x86_extras.h" />
     <ClInclude Include="utilities\cdrom\iso9660.h" />
     <ClInclude Include="utilities\lean\hash_table.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="lib\reccore\README.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

@@ -53,6 +53,21 @@
 //     left a value on its way to a register. When the host says one is in
 //     flight, this interprets instead - at most two instructions, and then the
 //     pipeline is empty again.
+//
+// Step 7 added block linking, and two more of the same kind:
+//
+//   - **A link into a block that has been thrown away is worse than a stale
+//     block.** The cache entry goes, but the host code it pointed at is still
+//     there and still runnable, so a jump straight into it does not crash -
+//     it quietly runs the guest instructions that have just been replaced.
+//     `incoming_` is indexed by target for exactly this: when a block is about
+//     to go, every jump into it is sent back to its own block's `ret` first.
+//   - **A chain of linked blocks would never come back.** A guest loop living
+//     entirely in compiled code would jump around inside itself forever, and
+//     the emulator would never take an interrupt or draw a frame again. Every
+//     block charges its length to `BlockState::budget` on the way out and
+//     returns when it runs out; the host sets the budget to however long it
+//     can afford not to hear from the CPU.
 
 #include "lib/reccore/reccore.h"
 #include "rec/block_cache.h"
@@ -61,7 +76,9 @@
 #include "rec/runtime.h"
 
 #include <cstdint>
+#include <cstring>
 #include <functional>
+#include <unordered_map>
 #include <vector>
 
 namespace emulation {
@@ -103,11 +120,21 @@ class Recompiler {
  public:
   struct Stats {
     uint64_t blocks_compiled = 0;
-    uint64_t blocks_executed = 0;
+    uint64_t blocks_executed = 0;           // entries into compiled code
     uint64_t instructions_compiled = 0;     // executed as compiled code
     uint64_t instructions_interpreted = 0;  // steps taken by the interpreter
     uint64_t blocks_invalidated = 0;
     uint64_t host_bytes = 0;                // code emitted, cumulative
+    uint64_t links_made = 0;
+    uint64_t links_broken = 0;
+    uint64_t blocks_with_allocation = 0;   // blocks that cached any register
+    uint64_t faults = 0;                   // accesses that raised an exception
+    uint64_t cycles_compiled = 0;          // what compiled code owes the machine
+
+    // `blocks_executed` counts entries into compiled code, not blocks run: a
+    // chain of linked blocks is one entry. So instructions_compiled divided by
+    // blocks_executed is how much work each dispatch buys, which is the number
+    // linking exists to raise.
   };
 
   // One arena holds many blocks. 256 KB is a few thousand of them, and the
@@ -144,6 +171,12 @@ class Recompiler {
   // Runs whatever is at `pc` - a compiled block, or one interpreted
   // instruction - and returns where to continue.
   uint32_t Step(uint32_t pc) {
+    // Cleared first, so that a step which interprets rather than running a
+    // block does not leave the previous chain's cycles lying around for the
+    // host to charge a second time. An interpreted instruction ticks the
+    // machine itself; it owes nothing here.
+    last_cycles_ = 0;
+
     if (reclaim_pending_ && executing_ == 0)
       Reclaim();
 
@@ -162,21 +195,74 @@ class Recompiler {
     // outlive invalidation - but the Block does not.
     const Block block = *found;
 
+    // What comes back may be several blocks later: a block linked to the next
+    // jumps straight to it rather than returning here. The budget is what
+    // bounds that, and what is left of it is how much ran.
     state_.next_pc = pc + block.guest_bytes;
+    state_.budget = budget_;
+    state_.fault = 0;
     ++executing_;
     reinterpret_cast<void (*)(BlockState*)>(block.code)(&state_);
     --executing_;
 
     ++stats_.blocks_executed;
-    stats_.instructions_compiled += block.compiled_instructions;
+    stats_.instructions_compiled +=
+        static_cast<uint64_t>(budget_ - state_.budget);
+    // One cycle an instruction. Not because that is exactly what the
+    // interpreter charges - see block_decoder.h - but because it is what the
+    // measurements say reproduces its pacing, and a model nobody has measured
+    // is worse than a flat one everybody can see.
+    last_cycles_ = static_cast<uint32_t>(budget_ - state_.budget);
+    stats_.cycles_compiled += last_cycles_;
+
+    // A memory access raised a guest exception and the block stopped where it
+    // was. Whoever raised it has already moved the CPU's pc, so there is
+    // nothing here to say about where to go next - the caller asks the machine.
+    if (state_.fault != 0) {
+      ++stats_.faults;
+      return kFaulted;
+    }
     return state_.next_pc;
   }
+
+  // What Step returns when compiled code stopped because the host raised an
+  // exception. Not an address: the host's own pc is the answer.
+  static const uint32_t kFaulted = 0xFFFFFFFFu;
+
+  // Called by a load or store callback that has just raised a guest exception.
+  // The block stops at that instruction and runs nothing after it; Step then
+  // returns kFaulted, and where execution goes next is the machine's own pc.
+  void SetFault() { state_.fault = 1; }
 
   // Every guest store has to come through here, including the interpreter's.
   // Cheap when it is not a code page, which is almost always.
   void NoteStore(uint32_t address) {
     if (!cache_.IsCodePage(address))
       return;
+
+    // Which blocks are about to go, so the jumps into them can be taken apart
+    // first. A link left pointing at a block whose guest words have changed is
+    // the worst failure this design can produce: the code is still there and
+    // still runnable, so nothing crashes - it just quietly runs what the game
+    // has already replaced.
+    const uint32_t page = BlockCache::Normalise(address) >> BlockCache::kPageShift;
+    std::vector<uint32_t> going;
+    for (const auto& entry : incoming_) {
+      const uint32_t target = entry.first;
+      const Block* block = cache_.Find(target);
+      if (block == nullptr)
+        continue;
+      const uint32_t first = BlockCache::Normalise(target) >> BlockCache::kPageShift;
+      const uint32_t bytes = block->guest_bytes;
+      const uint32_t last =
+          (BlockCache::Normalise(target) + (bytes == 0 ? 0 : bytes - 1)) >>
+          BlockCache::kPageShift;
+      if (page >= first && page <= last)
+        going.push_back(target);
+    }
+    for (uint32_t target : going)
+      BreakLinksTo(target);
+
     stats_.blocks_invalidated += cache_.InvalidatePage(address);
   }
 
@@ -189,14 +275,49 @@ class Recompiler {
   // by which point nothing is inside one.
   void Reset() {
     cache_.Clear();
+    incoming_.clear();   // the code those links live in is about to be released
     reclaim_pending_ = true;
   }
+
+  // The budget a single entry into compiled code is given, in guest
+  // instructions. In the emulator this would be the cycles until the next
+  // scheduled event; here it is simply how long a chain of linked blocks may
+  // run before the dispatcher gets a look in.
+  void set_budget(int32_t instructions) { budget_ = instructions; }
+  int32_t budget() const { return budget_; }
+
+  void set_link_blocks(bool on) {
+    link_blocks_ = on;
+    compiler_.set_link_blocks(on);
+  }
+
+  // Step 6's allocator, for the A/B. Compiled blocks already in the cache keep
+  // whatever they were compiled with, so flip this before anything runs.
+  void set_allocate_registers(bool on) { compiler_.set_allocate_registers(on); }
+
+  // For tests: see BlockCompiler::set_minimum_block_instructions.
+  void set_minimum_block_instructions(uint32_t instructions) {
+    compiler_.set_minimum_block_instructions(instructions);
+  }
+
+  // Cycles charged by the most recent Step, for a host that has to hand them
+  // on to the rest of the machine.
+  uint32_t last_cycles() const { return last_cycles_; }
 
   const Stats& stats() const { return stats_; }
   const BlockCache& cache() const { return cache_; }
   size_t arena_count() const { return arenas_.size(); }
 
  private:
+  // One patchable jump at the end of one block, and where it goes when it is
+  // not pointing at anything.
+  struct Link {
+    uint32_t owner = 0;          // the guest address of the block it lives in
+    uint8_t* site = nullptr;     // the rel32 itself
+    uint8_t* after = nullptr;    // the instruction after it, which rel32 is from
+    int32_t unlinked = 0;
+  };
+
   uint32_t Interpret(uint32_t pc) {
     ++stats_.instructions_interpreted;
     return host_.interpret(pc);
@@ -232,10 +353,72 @@ class Recompiler {
       block.cycles = compiled.compiled;   // one each; see the timing note below
       ++stats_.blocks_compiled;
       stats_.host_bytes += compiled.host_bytes;
+      if (compiled.registers_allocated > 0)
+        ++stats_.blocks_with_allocation;
     }
 
     cache_.Insert(block);
+
+    if (block.code != nullptr && link_blocks_) {
+      RecordLinks(pc, compiled);
+      // This block may be what some earlier block has been waiting to jump to.
+      Relink(pc);
+    }
     return cache_.Find(pc);
+  }
+
+  // Remember every slot this block has, indexed by where it wants to go, and
+  // point the ones whose destination already exists straight at it.
+  void RecordLinks(uint32_t pc, const CompiledBlock& compiled) {
+    uint8_t* const code = static_cast<uint8_t*>(compiled.code);
+    for (int i = 0; i < compiled.link_count; ++i) {
+      const CompiledBlock::LinkSlot& slot = compiled.links[i];
+      Link link;
+      link.owner = pc;
+      link.site = code + slot.site;
+      link.after = code + slot.after;
+      link.unlinked = slot.unlinked;
+      incoming_[slot.target].push_back(link);
+      Point(link, slot.target);
+    }
+  }
+
+  // Point every slot that wants this address at the block now sitting there.
+  void Relink(uint32_t target) {
+    const auto it = incoming_.find(target);
+    if (it == incoming_.end())
+      return;
+    for (const Link& link : it->second)
+      Point(link, target);
+  }
+
+  void Point(const Link& link, uint32_t target) {
+    const Block* block = cache_.Find(target);
+    if (block == nullptr || block->code == nullptr)
+      return;   // nothing there yet, or nothing but a marker to interpret
+
+    // A rel32 jump reaches 2 GB. Two arenas in one process are almost always
+    // far closer than that, but "almost always" is not a thing to encode into
+    // a jump, so a link that would not reach is simply not made.
+    const intptr_t delta = static_cast<uint8_t*>(block->code) - link.after;
+    if (delta > INT32_MAX || delta < INT32_MIN)
+      return;
+
+    const int32_t displacement = static_cast<int32_t>(delta);
+    memcpy(link.site, &displacement, sizeof(displacement));
+    ++stats_.links_made;
+  }
+
+  // Send every jump into this address back to its own block's `ret`. Called
+  // just before the block there is thrown away.
+  void BreakLinksTo(uint32_t target) {
+    const auto it = incoming_.find(target);
+    if (it == incoming_.end())
+      return;
+    for (const Link& link : it->second) {
+      memcpy(link.site, &link.unlinked, sizeof(link.unlinked));
+      ++stats_.links_broken;
+    }
   }
 
   reccore::CodeBlock* ArenaWithRoom() {
@@ -257,35 +440,35 @@ class Recompiler {
     return static_cast<Recompiler*>(context);
   }
 
-  static uint32_t LoadThunk32(void* c, uint32_t a) {
+  static uint32_t LoadThunk32(void* c, uint32_t a, uint32_t pc) {
     Recompiler* self = Self(c);
-    return self->host_.load32(self->host_.context, a);
+    return self->host_.load32(self->host_.context, a, pc);
   }
-  static uint32_t LoadThunk16(void* c, uint32_t a) {
+  static uint32_t LoadThunk16(void* c, uint32_t a, uint32_t pc) {
     Recompiler* self = Self(c);
-    return self->host_.load16(self->host_.context, a);
+    return self->host_.load16(self->host_.context, a, pc);
   }
-  static uint32_t LoadThunk8(void* c, uint32_t a) {
+  static uint32_t LoadThunk8(void* c, uint32_t a, uint32_t pc) {
     Recompiler* self = Self(c);
-    return self->host_.load8(self->host_.context, a);
+    return self->host_.load8(self->host_.context, a, pc);
   }
 
   // A store goes to memory first and invalidates second. The other order would
   // discard the block and then let the write that discarded it land, which
   // is the same thing here - but not once a store can fault.
-  static void StoreThunk32(void* c, uint32_t a, uint32_t v) {
+  static void StoreThunk32(void* c, uint32_t a, uint32_t v, uint32_t pc) {
     Recompiler* self = Self(c);
-    self->host_.store32(self->host_.context, a, v);
+    self->host_.store32(self->host_.context, a, v, pc);
     self->NoteStore(a);
   }
-  static void StoreThunk16(void* c, uint32_t a, uint32_t v) {
+  static void StoreThunk16(void* c, uint32_t a, uint32_t v, uint32_t pc) {
     Recompiler* self = Self(c);
-    self->host_.store16(self->host_.context, a, v);
+    self->host_.store16(self->host_.context, a, v, pc);
     self->NoteStore(a);
   }
-  static void StoreThunk8(void* c, uint32_t a, uint32_t v) {
+  static void StoreThunk8(void* c, uint32_t a, uint32_t v, uint32_t pc) {
     Recompiler* self = Self(c);
-    self->host_.store8(self->host_.context, a, v);
+    self->host_.store8(self->host_.context, a, v, pc);
     self->NoteStore(a);
   }
 
@@ -299,6 +482,16 @@ class Recompiler {
   Stats stats_;
   int executing_ = 0;
   bool reclaim_pending_ = false;
+
+  // Jumps indexed by the guest address they want to reach, which is the
+  // direction invalidation needs: "this block is going, who points at it?"
+  std::unordered_map<uint32_t, std::vector<Link>> incoming_;
+  bool link_blocks_ = true;
+
+  // Long enough that a hot loop stays inside compiled code, short enough that
+  // the host still hears from the CPU promptly.
+  int32_t budget_ = 1024;
+  uint32_t last_cycles_ = 0;
 };
 
 }  // namespace rec

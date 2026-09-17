@@ -131,6 +131,21 @@ class BlockDecoder {
       instruction.pc = pc;
       instruction.word = word;
       instruction.kind = Classify(word);
+      // One cycle an instruction, flat - and that is a measurement, not an
+      // assumption that was never checked.
+      //
+      // The obvious refinement is wrong: Cpu::LW calls Tick() twice where
+      // Cpu::ADDU calls it once, so charging loads two looks obviously more
+      // faithful. Tried, and it runs the machine visibly fast - the BIOS shell
+      // drew 379 primitives in 400 frames instead of 1157, because each frame
+      // was consuming cycles the interpreter would not have spent. Flat
+      // reproduces the interpreter's pacing on that run exactly, framebuffer
+      // checksum included.
+      //
+      // Which says the interpreter's real cost per instruction is not the count
+      // of Tick() calls in its handler, and working out what it actually is -
+      // rather than guessing again - is what the cycle model needs before it
+      // can be called accurate. See Docs/Recompiler-Plan.md.
       instruction.cycles = 1;
       instruction.in_delay_slot = ending_after_delay_slot;
       block.instructions.push_back(instruction);

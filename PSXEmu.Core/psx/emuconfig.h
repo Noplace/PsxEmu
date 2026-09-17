@@ -160,6 +160,21 @@ struct EmuConfig {
   // first place, so this setting has nothing to add there.
   bool skip_bios_intro = false;
 
+  // --- CPU ----------------------------------------------------------------
+  // Run the machine on the recompiler rather than the interpreter.
+  //
+  // Roughly twice the speed (Docs/Recompiler-Plan.md has the numbers), and
+  // off by default because its timing is not yet proven equivalent: the BIOS
+  // boot is identical either way, but a game's frame timing differs slightly,
+  // so the interpreter stays the thing every baseline is measured against.
+  //
+  // Safe to change while the machine is running. System::StepInstruction
+  // applies it between instructions, on the thread that runs the machine -
+  // which matters, because switching it off frees the compiled code, and
+  // doing that from the message thread while a block is executing would be
+  // freeing the ground out from under it.
+  bool recompiler = false;
+
   // --- BIOS ---------------------------------------------------------------
   // Which image in the front end's BIOS folder to boot, by filename alone -
   // "SCPH1001.BIN", not a path. The folder is the front end's to know
