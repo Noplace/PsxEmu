@@ -12,7 +12,8 @@ Working notes for anything spanning more than one sitting. Status per document.
 | [Bugs-Found.md](Bugs-Found.md) | live | Bugs fixed in the revived code, with the symptom each produced |
 | [Threading-Plan.md](Threading-Plan.md) | proposed | Moving the machine off the message thread, in three stages |
 | [Emulation-Speed-Plan.md](Emulation-Speed-Plan.md) | proposed | 50/100/150/200% speed, and why the audio path is the whole job |
-| [Recompiler-Plan.md](Recompiler-Plan.md) | proposed | Dynamic recompilation, now that RecCore is known to emit x64 |
+| [Recompiler-Plan.md](Recompiler-Plan.md) | started | Dynamic recompilation. Steps 1-5 done: RecCore vendored, block cache, decoder, a compiler covering arithmetic, memory and branches, and the engine that drives them with invalidation. Nothing wired into the core yet |
+| [GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md) | proposed | Finding out whether the rasteriser or the SPU is the bottleneck, and what to do about each |
 
 ## Where things stand
 

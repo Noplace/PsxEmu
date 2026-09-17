@@ -99,6 +99,19 @@ cl %FLAGS% /Fo:Temp\tools\obj_speedres\ /Fe:Temp\tools\speed_resampler_test.exe 
    PSXEmu.Core\tools\speed_resampler_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
+rem The recompiler, which is being built beside the core rather than into it -
+rem nothing in psx\ includes any of this, and the emulator does not link it.
+rem Only the emitter files rec_test actually reaches are compiled; the rest of
+rem the vendored library is there for when more of it is needed.
+if not exist Temp\tools\obj_rec mkdir Temp\tools\obj_rec
+cl %FLAGS% /Fo:Temp\tools\obj_rec\ /Fe:Temp\tools\rec_test.exe ^
+   PSXEmu.Core\tools\rec_test.cpp ^
+   PSXEmu.Core\lib\reccore\emitter.cpp ^
+   PSXEmu.Core\lib\reccore\intel\ia32_a.cpp ^
+   PSXEmu.Core\lib\reccore\intel\ia32_m.cpp ^
+   PSXEmu.Core\lib\reccore\intel\ia32_r.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 echo.
 echo Built Temp\tools\boot_runner.exe
 echo Built Temp\tools\media_test.exe

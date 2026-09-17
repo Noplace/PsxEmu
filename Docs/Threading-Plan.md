@@ -144,9 +144,9 @@ small, and on its own it costs nothing at runtime.
 
 ## What this does not buy
 
-**Throughput.** The interpreter already runs the BIOS boot at 1.57x real time
-on this machine, and the heavier discs at around 0.94-1.2x; the work is one
-CPU-bound thread either way and moving it does not make it faster. If the goal
+**Throughput.** Measured one run at a time, the interpreter runs the BIOS boot
+at 1.71x real time and the heavier discs at 1.69-1.73x (about 99 fps); the work
+is one CPU-bound thread either way and moving it does not make it faster. If the goal
 is headroom - and at 200% speed it is - that is
 [Recompiler-Plan.md](Recompiler-Plan.md), not this.
 

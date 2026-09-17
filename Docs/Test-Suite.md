@@ -337,6 +337,17 @@ and are not counted above, since they test no emulation: `letterbox_test`
 the frame counts, that a minute at 150% does not drift, and that blocks join
 continuously).
 
+`rec_test` (157 checks) is not counted either, and for a different reason: it
+covers the recompiler in `PSXEmu.Core/rec/`, which is being built beside the
+interpreter rather than into it. Nothing in `psx/` includes it and the emulator
+does not link it. Its compiler checks are differential - a block is compiled,
+executed, and every register, every byte of memory and the address it says to
+continue at are compared against a reference interpreter written from the
+instruction set rather than from the compiler. Its engine checks do the same
+thing to whole programs: a loop, code that rewrites itself, and a load left in
+flight across a block boundary are each run interpreted and then recompiled,
+and the two machines compared. See `Docs/Recompiler-Plan.md`.
+
 ### BIOS boot, SCPH1001
 
     boot_runner bios/SCPH1001.BIN --frames 400 --quiet

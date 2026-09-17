@@ -170,8 +170,8 @@ build the menu and the nth id maps back to the nth entry:
 
 What cannot be verified here is how it *feels*, and whether the host actually
 holds 200% on a heavy scene. On this machine the interpreter runs the BIOS boot
-at 1.57x real time and the heavier discs at roughly 0.94-1.2x, so **200% will
-not be reachable on real games until the interpreter gets faster** - which is
-[Recompiler-Plan.md](Recompiler-Plan.md). 150% is borderline. The setting is
-still worth having: 50% is immediately useful, and the readout will tell the
-truth about the rest.
+at 1.71x real time and the discs at 1.69-1.73x, measured one run at a time
+(the earlier "0.94-1.2x" here was three runs competing for one machine). So
+**150% is already reachable and 200% is not** - the readout will say which,
+and closing that last gap is the whole remaining case for
+[Recompiler-Plan.md](Recompiler-Plan.md).
