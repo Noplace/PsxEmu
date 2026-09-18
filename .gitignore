@@ -7,3 +7,9 @@ Temp/
 *.sdf
 *.user
 .vs/
+# Crash and trace dumps the core writes into the working directory
+# (Cpu::DumpTrace, the DBE logger in cpu.cpp, kernel.cpp's SystemError)
+trace*.txt
+dbe_debug.txt
+# Left behind by media_test when run with the repo root as its work directory
+media_test_*.bin
