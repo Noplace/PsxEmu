@@ -92,6 +92,8 @@ namespace psxemu {
         kCommandOpenBiosFolder,
         kCommandSpeedFirst,
         kCommandSpeedLast = kCommandSpeedFirst + 3,   // 50, 100, 150, 200%
+        kCommandPauseInMenus,
+        kCommandShowTimings,
         kCommandExit,
     };
 
@@ -290,13 +292,10 @@ namespace psxemu {
     // ---------------------------------------------------------------------------------------------
     // The frame
     // ---------------------------------------------------------------------------------------------
-
-    // How long one frame is allowed to run for before the loop gives up on it. Not a timing
-    // constant - a machine that has stopped producing frames at all would otherwise hang the
-    // window, and this is what makes that show up as a frozen picture rather than a hung process.
-    inline constexpr uint64_t kMaxInstructionsPerFrame = 8000000;
-
-    // How much audio to keep queued is no longer a constant here: it belongs to the output, since
-    // DirectSound needs about twice what WASAPI does. See IAudioEngine::TargetQueuedSamples.
+    //
+    // Nothing about running a frame lives here any more. The machine's own thread owns all of it -
+    // how long a frame may run for before it is given up on is host::Machine::kMaxInstructions-
+    // PerFrame, and how much sound to keep in hand is host::Machine::kAudioTargetFrames, measured
+    // in the ring between the machine and the audio thread rather than in any one device.
 
 }   // namespace psxemu

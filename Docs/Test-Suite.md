@@ -298,15 +298,59 @@ late. The six rate checks all passed while frames were arriving 0 to 30 ms
 apart, because the overshoots and the catch-ups averaged out; the audio pump,
 fed once a frame, was the thing that noticed.
 
-It exists because **the front end's speed cannot be measured headlessly at
-all** - it is set by the monitor's refresh rate and the sound device, neither
-of which a harness has. This checks the one piece that takes the decision away
-from both of them. See bug 49; the emulator ran at 2.8x on a 165 Hz display
-for as long as it did partly because no test could have caught it.
+It exists because **a harness has neither a monitor nor a sound device**, and
+those were what the emulator's speed used to be set by. This checks the one
+piece that takes the decision away from both of them. See bug 49; the emulator
+ran at 2.8x on a 165 Hz display for as long as it did partly because no test
+could have caught it.
+
+The speed itself is no longer beyond reach: the built emulator can be launched,
+sent a `WM_COMMAND` to boot, and read back through its title bar - which is how
+the threading work was checked, and how the numbers in Threading-Plan.md were
+taken. What a frame looks like and what it sounds like are still out of reach.
 
 Timing-sensitive by nature, so it is the one harness that can fail on a
 heavily loaded machine without anything being wrong. The bounds are wide
 enough that only a real regression should cross them.
+
+## host_test
+
+    host_test [bios]
+
+Thirty-two checks on `PSXEmu.Core/host/` - the channels the front end's threads
+talk through, and the threads themselves (Docs/Threading-Plan.md). Every other
+harness here is single-threaded by construction, and a checksum cannot see a
+race: a lost sample, a frame read while it was being written, a request run out
+of order. So each channel is driven the way it will be used, one thread on each
+side, with a sequence number in every item.
+
+- **The channels.** Two million frames through the sample ring in random chunk
+  sizes, arriving in order with nothing lost, repeated or torn; 200,000 requests
+  from four threads, each thread's in its own order; 20,000 frames through the
+  mailbox, none of them read half-written, with taken plus dropped accounting
+  for every one published; mouse motion adding up exactly across a racing
+  publisher and taker; a doorbell that does not lose a ring that came first.
+- **The machine's thread.** A threaded BIOS boot lands on **boot_runner's own
+  instruction count and checksum** - 97,749,265 and `c7c8db90c5984798` - which
+  is the assertion that threading changed nothing about what the machine
+  computes. Then again with pause and resume requests thrown at it from another
+  thread as fast as it will take them (432 of them, same numbers), and again
+  through a state saved at frame 200 and loaded into a fresh machine by request.
+- **Stopping.** Forty machines stopped mid-frame, mid-pace and paused; the
+  slowest came back in 17 ms. A paused machine answers a request in under a
+  millisecond, because it waits on its doorbell rather than polling.
+- **All three threads together**, at real speed, against a device that plays at
+  exactly 44,100 frames a second: five seconds with nothing short, nothing
+  dropped, no underrun and every frame presented - pausing twice in the middle.
+
+The BIOS is `bios/SCPH1001.BIN` unless one is named, and the thread checks are
+skipped, loudly, without it.
+
+What it cannot check is the Win32 side: the window, the Direct3D presenter and
+the real sound devices. Those were exercised by driving the built emulator with
+posted `WM_COMMAND`s and reading the frame rate back out of its title bar - see
+the note in Threading-Plan.md - and the last word on how it feels is still the
+person using it.
 
 ## Baselines
 
@@ -330,18 +374,21 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 251 | | `gpu_test` | 31 |
 | `gte_test` | 99 | | `mdec_test` | 85 |
-| `timer_test` | 70 | | `media_test` | 251 |
+| `timer_test` | 70 | | `media_test` | 253 |
 | `sio_test` | 105 | | `spu_test` | 108 |
 
-**1,000 checks, 0 failures**, all eight green as of the same commit. Each
-harness's own section above says what its groups cover.
+**1,002 checks, 0 failures**, all eight green. Each harness's own section above
+says what its groups cover. (`media_test` gained two when the front end's
+`pause_in_menus` and `show_timings` settings arrived: every setting in
+`EmuConfig` round-trips through the file, and those are settings.)
 
-Three smaller harnesses cover the `platform/` headers the front end leans on
-and are not counted above, since they test no emulation: `letterbox_test`
-(aspect ratio), `frame_limiter_test` (8 checks - the average rate, and since bug 62 the spacing between frames too) and
-`speed_resampler_test` (11 checks, the audio arithmetic behind 50-200% speed -
-the frame counts, that a minute at 150% does not drift, and that blocks join
-continuously).
+Four smaller harnesses cover the host-side headers the front end leans on and
+are not counted above, since they test no emulation: `letterbox_test` (aspect
+ratio), `frame_limiter_test` (8 checks - the average rate, and since bug 62 the
+spacing between frames too), `speed_resampler_test` (11 checks, the audio
+arithmetic behind 50-200% speed - the frame counts, that a minute at 150% does
+not drift, and that blocks join continuously) and `host_test` (32 checks, the
+threads and the channels between them - its own section above).
 
 `rec_test` (460 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which is being built beside the

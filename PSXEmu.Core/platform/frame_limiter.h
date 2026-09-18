@@ -1,23 +1,27 @@
 // Paces a loop to a target rate against the wall clock.
 //
-// This exists because nothing else in the front end does it. Its loop runs one
-// emulated frame and goes round again, so the rate it actually achieves is
-// whatever happens to block first:
+// This exists because nothing else does it. A loop that runs one emulated frame
+// and goes round again achieves whatever rate happens to block it first, and
+// the two things that used to were both accidents:
 //
 //   - `Present(1, 0)` with vsync on, which is the *monitor's* refresh rate.
 //     165 Hz here, against an emulated display producing 59.29 - the machine
-//     runs at 2.8x and the whole BIOS intro goes past in a third of the time.
+//     ran at 2.8x and the whole BIOS intro went past in a third of the time.
 //   - `QueueAudio`, which used to block when the sound device's buffer was
 //     full and so, with a working device, paced the machine to about the right
 //     rate as a side effect. That was luck, not design: it did nothing at all
-//     when `CreateAudioEngine` returned null. It no longer blocks (bug 49), so
-//     this is now the only thing pacing the loop - which is why how evenly it
-//     spaces the frames matters as much as the rate it holds on average.
+//     when `CreateAudioEngine` returned null.
 //
 // Neither is the machine's own clock, so neither belongs in charge of it. This
 // is, and it lives in Core rather than in a front end because "how fast should
 // this run" is a property of the emulated machine - see Emulator-Project-
 // Standards section 1.
+//
+// Since the front end was threaded (Docs/Threading-Plan.md) neither accident is
+// even reachable: presenting is the video thread's and the sound device is the
+// audio thread's, so this is the only thing the machine's thread waits for.
+// Which is why how evenly it spaces frames matters as much as the average rate
+// it holds - bug 62.
 #pragma once
 
 #include <chrono>

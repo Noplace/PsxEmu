@@ -106,19 +106,22 @@ The SPU produces 44,100 samples per **emulated** second. At 200% that is 88,200
 samples per wall second arriving at a device that consumes 44,100. At 50% it is
 22,050 into a device that wants 44,100.
 
-Today `WASAPIAudioEngine::QueueAudio` deals with a full buffer by waiting:
+When this was written `WASAPIAudioEngine::QueueAudio` dealt with a full buffer
+by waiting:
 
 ```cpp
 while (availableFrames < frameCount && m_playing) sleep_for(1ms);
 ```
 
-So at 200% the emulator would spend its time asleep in the audio engine and the
-frame limiter would never be the thing pacing it. **The speed setting would not
-work, and the reason would be invisible.** This is the same blocking call that
-[Threading-Plan.md](Threading-Plan.md) stage 1 removes; that stage is a
-prerequisite here, not an optional tidy-up.
+So at 200% the emulator would have spent its time asleep in the audio engine and
+the frame limiter would never have been the thing pacing it. **The speed setting
+would not have worked, and the reason would have been invisible.** That blocking
+call went in [Threading-Plan.md](Threading-Plan.md)'s stage 1, which was a
+prerequisite here rather than an optional tidy-up. There is no `QueueAudio` at
+all now: the machine's thread writes into a ring and the audio thread pulls from
+it at the device's pace, so a full buffer stops nothing.
 
-With it non-blocking, the options are:
+With nothing blocking, the options were:
 
 1. **Resample by the speed factor** - produce 88,200, hand the device 44,100.
    The result is pitched up and shortened, which is what fast-forward sounds

@@ -12,6 +12,19 @@ PsxEmu/
       util.h                   SafeDelete / SafeDeleteArray / SafeRelease
       frame_limiter.h          holds a front end's loop to the machine's frame rate
       speed_resampler.h        stretches the SPU's output to the emulation speed
+    host/                      the only thread-aware part of Core - Docs/Threading-Plan.md
+      doorbell.h               one per thread; everything that gives it work rings it
+      request_queue.h          the one door into something another thread owns
+      sample_ring.h            sound, machine thread to audio thread, lock-free
+      frame_mailbox.h          finished frames, machine thread to video thread
+      input_exchange.h         the host's pads and mouse in, the pads' motors out
+      machine.h/.cpp           the machine's thread: requests, a frame, hand-off, pacing
+      audio_output.h/.cpp      the audio thread: keeps the device fed from the ring
+      video_output.h/.cpp      the video thread: shows the newest frame
+    audio/                     sound devices, driven by host/audio_output
+      iaudioengine.h           what one has to do: wait, say how much room, take it
+      wasapiaudioengine.h/.cpp WASAPI, shared and event-driven
+      dsoundaudioengine.h/.cpp DirectSound, a looping buffer topped up every 5 ms
     psx/                       the machine
       psx.h                    aggregate header - order is load-bearing
       system.h/.cpp            owns every component, and runs them an instruction at a time
@@ -47,9 +60,12 @@ PsxEmu/
     main.cpp                   wWinMain, and nothing else
     framework.h                the include set every file here opens with
     const.h                    every constant: window names, menu ids, the choice tables
-    app.h/.cpp                 class App - all front-end state, and the frame loop
+    app.h/.cpp                 class App - the UI thread: window, menus, settings, and the
+                               four threads everything else runs on
     menu.h/.cpp                builds the menu bar; ticks an item against a value
     engine_factory.h/.cpp      brings up a graphics and an audio engine, each with a fallback
+    video_presenter.h/.cpp     what the video thread draws with: a Direct3D engine
+    input_thread.h/.cpp        the input thread: pads, keyboard, raw mouse at 1 kHz
     win32_paths.h/.cpp         command line, BIOS, settings file, data root, disc-derived names
     win32_dialogs.h/.cpp       the file pickers and the message boxes
     keyboard.h                 the keyboard as a digital pad

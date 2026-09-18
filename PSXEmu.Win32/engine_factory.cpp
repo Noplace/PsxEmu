@@ -30,8 +30,11 @@
 namespace psxemu {
 
     std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred, HWND window,
-                                                          int width, int height, HWND message_owner,
-                                                          std::string* active_backend) {
+                                                          int width, int height,
+                                                          std::string* active_backend,
+                                                          std::wstring* warning) {
+        if (warning != nullptr)
+            warning->clear();
         auto try_backend = [&](GraphicsBackend backend) -> std::unique_ptr<IGraphicsEngine> {
             std::unique_ptr<IGraphicsEngine> engine;
             if (backend == GraphicsBackend::kD3D12)
@@ -57,11 +60,12 @@ namespace psxemu {
                 (preferred == GraphicsBackend::kD3D12) ? L"Direct3D 12" : L"Direct3D 11";
             const wchar_t* fallback_name =
                 (fallback == GraphicsBackend::kD3D12) ? L"Direct3D 12" : L"Direct3D 11";
-            std::wstring message = preferred_name;
-            message += L" was not available; using ";
-            message += fallback_name;
-            message += L" instead.";
-            ShowWarning(message_owner, message.c_str());
+            if (warning != nullptr) {
+                *warning = preferred_name;
+                *warning += L" was not available; using ";
+                *warning += fallback_name;
+                *warning += L" instead.";
+            }
             return engine;
         }
 

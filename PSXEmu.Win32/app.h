@@ -18,30 +18,38 @@
 *****************************************************************************************************************/
 #pragma once
 
-// The Win32 front end: a window, a graphics engine, an audio device, a machine, and the loop that
-// drives them.
+// The Win32 front end: a window, menus, settings - and four threads doing everything else.
 //
-// It owns no emulation. The core in PSXEmu.Core rasterises every pixel on the CPU and this only
-// uploads the finished frame; the one thing that flows the other way is input, through the core's
-// SIO device. Which graphics engine is running is not this class's business either - it holds an
-// IGraphicsEngine and the Video menu swaps which one that is under a running machine.
+// This class is the UI thread. It owns the window and the menus, keeps the settings, and answers
+// messages; it does not emulate, draw or make a sound, and it never waits on a thread that does.
+// Every menu command that changes the machine is posted to the machine's thread and applied there
+// between frames; everything the threads have to say comes back as a posted message (PostToUi),
+// never a sent one - see Docs/Threading-Plan.md's rules, and rule 2 in particular: a SendMessage
+// from another thread is a wait on this one, and at shutdown that is a deadlock.
 //
-// Everything in it is private and there is one public entry point, Run, because the invariants here
-// only hold when the members are changed together: the filter menu ticks against the engine that is
-// actually running rather than the one the settings file asked for, the settings file is rewritten
-// whenever a setting changes rather than at exit, and the member declaration order below is what
-// stops the machine being torn down after the device it is drawing to.
+// Who owns what:
 //
-// It was a plain struct with public members and forty-five free functions taking it by reference,
-// which is what public-by-default was actually for. None of those invariants could be stated, let
-// alone kept, from the outside.
+//   UI thread (this)        the window, menus, dialogs, psxemu.ini and `config_`
+//   host::Machine           `system_` - all emulation - the frame limiter, save states
+//   host::VideoOutput       the Direct3D engine, the swap chain, the filters
+//   host::AudioOutput       the sound device
+//   InputThread             the pads, the keyboard, the mouse
+//
+// The machine is single-threaded exactly as it was: only host::Machine's thread ever calls into
+// System, which is why every baseline in Docs/Test-Suite.md still holds, and why host_test can
+// check a threaded BIOS boot against boot_runner instruction for instruction.
 
 #include "framework.h"
 
 #include "const.h"
 #include "engine_factory.h"
-#include "gamepad.h"
-#include "mouse.h"
+#include "host/audio_output.h"
+#include "host/machine.h"
+#include "host/video_output.h"
+#include "input_thread.h"
+#include "video_presenter.h"
+
+#include <functional>
 
 namespace psxemu {
 
@@ -50,100 +58,71 @@ namespace psxemu {
         App() = default;
         ~App();
 
-        // Its address lives in the window's user data for as long as the window does, so it cannot
-        // be moved or copied out from under the window procedure.
+        // Its address lives in the window's user data for as long as the window does, and in the
+        // threads' hooks, so it cannot be moved or copied out from under either.
         App(const App&) = delete;
         App& operator=(const App&) = delete;
 
         // Brings the front end up and runs until the window closes. The process exit code; 1 if
-        // anything needed to start was missing. Everything owned is released on the way out
-        // whichever way it returns, which is what makes the failure paths safe - they used to
-        // `return 1` from the middle of startup with the presenter and the audio device already up,
-        // leaking both.
+        // anything needed to start was missing.
         int Run(HINSTANCE instance, int show_command);
 
      private:
         // ---------------------------------------------------------------------------------------
-        // Startup
+        // Startup and shutdown
         // ---------------------------------------------------------------------------------------
 
         bool Initialize(HINSTANCE instance, int show_command);
         bool CreateAppWindow(HINSTANCE instance);
-        bool CreateGraphics();
         bool CreateMachine();
 
-        // The settings the machine holds, applied once it exists, plus every menu tick that follows
-        // from them.
+        // Starts input, audio, video and the machine, in that order - outputs before the thing
+        // that feeds them.
+        void StartThreads();
+
+        // Stops them in the reverse order: the machine first, so nothing more is produced, then
+        // video (which releases the swap chain before the window goes), then audio, then input.
+        // Called from WM_CLOSE, before the window is destroyed.
+        void StopThreads();
+
+        // The settings the machine and the menus start from.
         void ApplySettings();
 
-        // Resolves and creates the per-user directories, once, at startup. A failure here is silent
-        // - the settings file still lives beside the executable and keeps working - because
-        // refusing to run the emulator over a save-data folder is a worse failure than the one it
-        // would be protecting against.
         void SetUpDataDirectories();
-
-        // Which BIOS image to boot: the command line, else the settings file's choice if it is
-        // still in the folder, else whatever FindBios turns up beside the executable. Needs the
-        // folder already scanned, so it runs after SetUpDataDirectories and not before.
         std::string ResolveBiosPath(const std::string& from_command_line);
 
-        // ---------------------------------------------------------------------------------------
-        // The loop
-        // ---------------------------------------------------------------------------------------
-
+        // GetMessage and nothing else. The machine has its own thread; this one is free to answer
+        // the window even while a frame is being run or presented.
         int MainLoop();
 
-        // Drains the queue. False once WM_QUIT has been seen, which is the only thing that ends the
-        // loop.
-        bool PumpMessages(MSG* message);
+        // ---------------------------------------------------------------------------------------
+        // Between threads
+        // ---------------------------------------------------------------------------------------
 
-        // The loop has stopped running frames: paused, or Windows is running a modal loop of its
-        // own - a menu, a drag or resize of the window, a dialog - inside a message this loop
-        // dispatched, and will not hand control back until it ends. Stops the sound device, which
-        // nothing feeds until then. Safe to call any number of times.
-        void EnterStall();
+        // Any thread: runs `work` on the UI thread. A posted message, never a sent one.
+        void PostToUi(std::function<void()> work);
 
-        // Called at the top of every frame; after a stall, restarts the sound device and forgets
-        // the gap.
-        void LeaveStall();
+        // Hands the machine a request. Sugar for machine_.Post.
+        void PostToMachine(std::function<void(emulation::host::Machine&)> request);
 
-        // A save or load asked for during the last frame, actioned here between frames and never
-        // mid-frame, per Docs/Save-States-Plan.md - the top of the loop is the one point nothing
-        // about the current frame is half-done yet.
-        void ApplyPendingStates();
+        // Copies the front end's settings onto the machine, where they take effect between frames.
+        void SendConfigToMachine();
 
-        // Samples both pads and the keyboard once and hands the result to Sio.
-        void PollInput();
+        // Called on the machine's thread, once a second: posted on to the UI, which shows it.
+        void OnMachineReport(const emulation::host::MachineReport& report);
 
-        // Runs the machine until the GPU says a frame is finished - the same loop the headless
-        // harness runs. Decides how much work an iteration does; it does *not* decide when the next
-        // one starts. The wall clock belongs to LimitFrameRate; see bug 49 and
-        // platform/frame_limiter.h.
-        void RunOneFrame();
+        // Called on the machine's thread before each frame: maps what the input thread last read
+        // onto the ports the settings name, and hands the pads' motors back the other way. All of
+        // it touches nothing but `system` and the machine-thread-only members below.
+        void ApplyInput(emulation::psx::System& system,
+                        const emulation::host::HostInput& input);
 
-        // Drains whatever the SPU generated during that frame and hands it to the audio device.
-        // Pulling here rather than pushing from inside the core is what keeps the core free of any
-        // audio API: it just fills a buffer.
-        void PumpAudio();
-
-        // Uploads the finished frame - or the whole of VRAM, if Video > View VRAM is on - and
-        // presents it.
-        void PresentFrame();
-
-        // What actually holds the machine to 59.29 Hz (49.76 in PAL). Last in the iteration, so the
-        // wait absorbs whatever the rest of it did not take.
-        void LimitFrameRate();
-
-        // Appends "59.3 fps (100%)" to the window title once a second: emulated frames actually
-        // produced per second of wall clock, and that as a percentage of what the emulated display
-        // is producing them at.
-        //
-        // 100% is a console. Anything else is the front end running the machine at the wrong speed,
-        // which is invisible without a number - a boot intro at 280% just looks like a short intro.
-        void UpdateSpeedReadout();
+        // The window title: the disc's name, the speed, and - with Emulation > Show Timings - where
+        // each frame's time went.
+        void UpdateTitle();
 
         // ---------------------------------------------------------------------------------------
-        // Settings
+        // Menus and settings, all on the UI thread
         // ---------------------------------------------------------------------------------------
 
         // Writes only when something actually changed, which is what makes it safe to call on every
@@ -152,55 +131,22 @@ namespace psxemu {
 
         void SetVolume(float value);
         void SetFilter(const std::string& key);
-
-        // Live switch: tears down the active engine and brings up the other one against the same
-        // window, restoring whichever filter was last saved for D3D12 if that is what it switched
-        // to. CreateGraphicsEngine's own try-then-fallback already covers "the one just picked will
-        // not initialise"; this only has to handle the (very unlikely, since the engine being
-        // replaced was working moments ago) case where the fallback fails too.
         void SetRenderer(const std::string& key);
-
         void SetControllerType(int port, const std::string& key);
         void SetInputSource(int port, const std::string& key);
-
-        // Which source feeds one player (0-3 = A-D) of whichever port's controller_type is
-        // "multitap" - meaningless, and never read, otherwise.
         void SetMultitapSource(int port, int player, const std::string& key);
-
         void SetFrameLimiter(bool on);
-
-        // How fast to run the machine against the wall clock - 0.5, 1.0, 1.5 or 2.0. Only the
-        // pacing and the audio resampling change; the emulated machine is a PlayStation at every
-        // setting. Means nothing while the frame limiter is off, which is why the menu greys the
-        // choices out there.
         void SetSpeed(float speed);
-
-        // Takes effect on the next command the drive is given, so there is nothing to reset and no
-        // reason to make it a cold-boot-only choice - though a boot already past its logo screen
-        // will not replay it.
         void SetCdMechanicalTiming(bool on);
-
-        // Whether booting a disc arms System::set_auto_boot so the BIOS's logo and disc-check
-        // screens never run - see EmuConfig::skip_bios_intro. Booting a PS-EXE already always uses
-        // that same hand-off regardless of this, so there is nothing here for BootPsExeFromFile to
-        // read.
         void SetSkipBiosIntro(bool on);
         void SetRecompiler(bool on);
         void SetAudioBackend(const std::string& key);
+        void SetPauseInMenus(bool on);
+        void SetShowTimings(bool on);
 
-        // Rescans the BIOS folder and refills Settings > BIOS from what is in it. Called at
-        // startup and whenever the menu's own Rescan item is used, which is what makes dropping a
-        // dump in while the emulator is running work without restarting it.
         void RefreshBiosMenu();
-
-        // Chooses the nth image the last scan found, for the next cold boot - Reset, Boot disc,
-        // Boot BIOS, or the next run. A BIOS is only read at power-on, and applying one on the spot
-        // would mean a menu click restarting whatever was playing.
         void SelectBios(int index);
 
-        // This half of the tick functions in menu.h: each reads what is currently set and hands it
-        // over. The machine is checked here because these are the call sites that know whether
-        // there is one yet.
         void UpdateVolumeMenu();
         void UpdateRendererMenu();
         void UpdateFilterMenu();
@@ -213,63 +159,46 @@ namespace psxemu {
         void UpdateSkipBiosIntroMenu();
         void UpdateRecompilerMenu();
         void UpdateAudioBackendMenu();
+        void UpdatePauseInMenusMenu();
+        void UpdateShowTimingsMenu();
 
         // ---------------------------------------------------------------------------------------
-        // The machine
+        // The machine, asked for from here and done there
         // ---------------------------------------------------------------------------------------
 
-        // Cold boot: the machine comes back in the state it has at power-on. Three menu commands
-        // need this and each used to carry its own copy.
-        bool ResetMachine();
-
-        // Puts a disc in the drive and starts the machine from cold, which is what switching a
-        // console on with a game in it does: the BIOS runs its intro, checks the disc, reads
-        // SYSTEM.CNF, loads the executable it names and jumps to it. Nothing here understands the
-        // disc - the BIOS does all of it. Unless EmuConfig::skip_bios_intro is set, in which case
-        // System::set_auto_boot is armed instead: the BIOS still runs for real, just hands off to
-        // the game before its logo and disc-check screens would otherwise start.
-        bool BootDiscFromFile(const std::string& path);
-
-        // Starts with an empty drive, which lands in the BIOS shell.
+        void BootDiscFromFile(const std::string& path);
         void BootBios();
-
-        // Boots through the BIOS for real, the same as switching the console on with an empty
-        // drive, and only once it reaches the address it would hand a game control at does the
-        // executable get side-loaded on top. Letting the BIOS run first is what a raw side-load
-        // skips: clearing BEV and Isolate Cache, and setting up the default video mode, both of
-        // which a standalone test program can depend on having happened, the same way it could on
-        // real hardware.
-        bool BootPsExeFromFile(const std::string& path);
+        void BootPsExeFromFile(const std::string& path);
+        void ResetMachine();
+        void SetUserPaused(bool paused);
 
         // Gives the disc just mounted its own pair of memory cards, in
-        // memcards_root\<disc>\card1.mcr and card2.mcr - created the first time a disc is played
-        // and loaded on every boot after that.
-        //
-        // Called only from a cold boot. Swapping a disc mid-session leaves the cards alone, which
-        // is what real hardware does: the memory card slots have nothing to do with the disc drive,
-        // and disconnecting one under a running game mid-swap would be a save silently vanishing
-        // from under a game that thinks its card is still there.
-        void LoadOrCreateMemoryCardsForDisc(const std::string& disc_path);
+        // memcards_root\<disc>\card1.mcr and card2.mcr. Runs on the machine's thread, from the
+        // boot paths - and on this one at startup, before the threads exist.
+        void LoadOrCreateMemoryCardsForDisc(emulation::psx::System& system,
+                                            const std::string& disc_path);
 
-        // Supplies the two things only this knows - where states are kept, and which disc is in the
-        // drive - to the path builder in win32_paths.h.
-        std::string SaveStateSlotPath(int slot) const;
+        // While a menu - or a dialog opened from one - is up. Pauses the machine only if
+        // EmuConfig::pause_in_menus asks for it; counted, since a dialog can open over a menu.
+        void EnterMenuPause();
+        void LeaveMenuPause();
 
-        // Titles the window after whatever is loaded - a disc image, a bare PS-EXE, or nothing (the
-        // BIOS shell with an empty drive).
-        //
-        // Records the name in title_base_ rather than setting the window text directly, because the
-        // speed readout is appended to it once a second and would otherwise be wiped by every disc
-        // change.
+        // Scoped EnterMenuPause, for the modal dialogs this thread puts up itself.
+        struct MenuPause {
+            explicit MenuPause(App* app) : app_(app) { app_->EnterMenuPause(); }
+            ~MenuPause() { app_->LeaveMenuPause(); }
+            MenuPause(const MenuPause&) = delete;
+            MenuPause& operator=(const MenuPause&) = delete;
+            App* app_;
+        };
+
+        std::string SaveStateSlotPath(emulation::psx::System& system, int slot) const;
         void SetWindowTitleForPath(const std::string& path);
 
         // ---------------------------------------------------------------------------------------
         // Messages
         // ---------------------------------------------------------------------------------------
 
-        // The application pointer arrives with the window and lives in its user data, which is what
-        // a global used to do less safely. Messages sent during CreateWindowExW itself can land
-        // before that is set, so every use is guarded.
         static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam, LPARAM lparam);
         static App* From(HWND window);
 
@@ -279,110 +208,78 @@ namespace psxemu {
         // ---------------------------------------------------------------------------------------
         // What it owns
         // ---------------------------------------------------------------------------------------
-        //
-        // In the order it has to be torn down in: members are destroyed in reverse, so the machine
-        // stops before the audio device goes away and both go before the Direct3D device.
 
         // Not owned - the window owns itself once created, and destroys itself on WM_DESTROY.
         HWND window_ = nullptr;
 
-        // Whichever backend is actually active right now - not necessarily the same as the
-        // persisted `graphics_backend` preference, since creating the preferred one can fall back
-        // to the other. The Video menu ticks against this, not against the config.
-        std::unique_ptr<IGraphicsEngine> graphics_;
-        std::string current_backend_ = "d3d12";
-        // Which sound output is actually open - "wasapi" or "dsound" - or empty when neither
-        // could be. Not the requested one: CreateAudioEngine falls back.
-        std::string current_audio_backend_;
-        std::string current_filter_;   // ditto, for the filter menu
-
-        // Video > View VRAM: shows the whole 1024x512 VRAM instead of the display area, for chasing
-        // texture/CLUT corruption that the normal view only shows the symptom of. Not persisted -
-        // always starts off.
-        bool view_vram_ = false;
-        std::vector<uint32_t> vram_view_scratch_;
-
-        std::unique_ptr<IAudioEngine> audio_;
+        // The emulated machine. Created here, then driven only by the machine's thread until
+        // StopThreads has returned.
         std::unique_ptr<emulation::psx::System> system_;
 
-        // The BIOS in use, as a full path, and the images the last scan of the folder found, as
-        // filenames. The menu's ids are positions in that list, so it and the menu are refilled
-        // together - see RefreshBiosMenu.
-        // bios_path_ is what the next cold boot will use, which is not necessarily what the running
-        // machine was built with: choosing from the menu sets this and nothing else.
+        // The threads, and the channels between them. Declared after `system_`, so they are torn
+        // down before it; each one stops its thread in its own destructor as a backstop, though
+        // StopThreads has normally done it already.
+        std::unique_ptr<emulation::host::AudioOutput> audio_;
+        std::unique_ptr<emulation::host::VideoOutput> video_;
+        std::unique_ptr<emulation::host::Machine> machine_;
+        std::unique_ptr<InputThread> input_;
+
+        // The front end's own copy of the settings: what the menus tick against and what
+        // psxemu.ini is written from. The machine has a copy of its own, which this one is sent
+        // to; reading the machine's would be reading what another thread writes.
+        emulation::psx::EmuConfig config_;
+        emulation::psx::SettingsFile settings_;
+
+        // Whichever backends are actually open, as the threads that opened them reported. Not the
+        // requested ones: opening can fall back.
+        std::string current_backend_ = "d3d11";
+        std::string current_audio_backend_;
+        std::string current_filter_;
+
+        // Video > View VRAM: the machine ships all of VRAM instead of the display area. Not
+        // persisted - always starts off.
+        bool view_vram_ = false;
+
+        // The BIOS in use, as a full path, and the images the last scan found. bios_path_ is what
+        // the *next* cold boot will use, which is not necessarily what the running machine was
+        // built with.
         std::string bios_path_;
         std::vector<std::string> bios_files_;
 
-        // User settings, and where they are kept. Written as they are changed rather than only at
-        // exit, so a crash or a kill does not lose them.
-        emulation::psx::SettingsFile settings_;
-
-        // Per-user data, under Documents\My Games\PSXEmu - the same convention GBAEmu uses, so both
-        // live in the one place a person would look for either. Empty if Documents could not be
-        // resolved, which callers treat as "skip this rather than fail the boot".
+        // Per-user data, under Documents\My Games\PSXEmu.
         std::string data_root_;
-        std::string memcards_root_;   // data_root_\memcards
-        std::string savestates_root_;   // data_root_\savestates
-        std::string bios_root_;   // data_root_\bios - the images Settings > BIOS offers
+        std::string memcards_root_;
+        std::string savestates_root_;
+        std::string bios_root_;
         std::string settings_path_;
-        bool running_ = false;
-        bool paused_ = true;
 
-        // Between EnterStall and LeaveStall. Starts true: the sound device is opened stopped, and
-        // the first frame starts it.
-        bool stalled_ = true;
+        // What the UI believes the machine's pause state is: its own, and how deep the menus are.
+        // The machine has the last word on both, but the menu has to know what it is asking for.
+        bool paused_by_user_ = true;
+        int menu_depth_ = 0;
 
-        // A save or load requested this frame, actioned once at the top of the next frame. -1 means
-        // nothing pending. The generic Save State/Load State menu items act on last_slot_, which
-        // F1-F8 also update, so the two stay in step.
-        int pending_save_slot_ = -1;
-        int pending_load_slot_ = -1;
-        int last_slot_ = 1;   // matches F1, the first of the eight slots
+        // Set once WM_CLOSE has started shutting things down: menu commands stop being taken, so
+        // nothing is posted to a thread that is being joined.
+        bool stopping_ = false;
 
-        // Scratch for one frame of audio, sized for the worst case at 30 fps. A member rather than
-        // a function-local static so there is one per application rather than one per process.
-        std::array<int16_t, emulation::psx::Spu::kSampleRate / 30 * 2> audio_scratch_ = {};
+        // The slot F1-F8 last used, which the Save State/Load State menu items act on too.
+        int last_slot_ = 1;
 
-        // What the SPU produced, resampled for the speed the machine is running at, waiting for
-        // room on the device. QueueAudio takes what fits and no longer blocks for the rest, so
-        // this is where the remainder lives until next frame - a few frames' worth at most, and
-        // capped in PumpAudio so a stopped device cannot grow it without bound.
-        utilities::SpeedResampler speed_resampler_;
-        std::vector<int16_t> audio_pending_;
-
-        // Speed. title_base_ is what the window would be called with no readout on it - kept so the
-        // readout can be re-appended without re-deriving the name from the disc path every time it
-        // updates.
-        //
-        // Nothing in this project had ever measured wall-clock speed before this (Docs/Gaps.md said
-        // so, and said it mattered more than it sounded), so "the intro plays too fast" had no
-        // number attached to it and no way to tell a fix from a placebo.
+        // The title, and the last thing the machine said about itself.
         std::wstring title_base_ = kWindowTitle;
-        uint64_t speed_frames_ = 0;   // emulated frames since the last update
-        std::chrono::steady_clock::time_point speed_since_ = std::chrono::steady_clock::now();
+        emulation::host::MachineReport report_;
+        bool have_report_ = false;
+        double present_ms_ = 0.0;      // mean, from the video thread's own timing
+        double presents_per_second_ = 0.0;
 
-        // Without this the loop runs at whatever blocks first - the monitor's refresh rate, or the
-        // sound device - see platform/frame_limiter.h.
-        utilities::FrameLimiter frame_limiter_;
-
-        // Four fixed XInput slots - "Gamepad 1".."Gamepad 4" in the Input menu, XInput user index
-        // 0-3 respectively - the most XInput itself ever supports, which is why there are exactly
-        // four and not some other number. Which PSX port (or, for a Multitap, which of its four
-        // players) each one feeds, and whether a source uses a gamepad at all rather than the
-        // keyboard, is decided by EmuConfig::input_source/multitap_player_source and applied each
-        // frame - see PollInput. Two, not four, were ever needed before Multitap existed, since only
-        // two ports exist to assign one to each of.
-        std::array<Gamepad, 4> gamepads_{ Gamepad(0), Gamepad(1), Gamepad(2), Gamepad(3) };
-
-        // The real mouse. Unlike gamepads_, there is one of these regardless of how many ports use
-        // it - a port's controller_type says whether it is Sio::kMouse at all, not which of several
-        // physical mice to read, since there is only ever the one. Registered for raw input once, in
-        // CreateAppWindow; fed to Sio from PollInput.
-        Mouse mouse_;
+        // ---------------------------------------------------------------------------------------
+        // The machine thread's own, touched in ApplyInput and in posted requests - never here
+        // ---------------------------------------------------------------------------------------
 
         // Frames each port has left to sit empty before the controller just chosen for it is
         // plugged in - see SetControllerType. Zero is the steady state.
         std::array<int, 2> replug_frames_ = { 0, 0 };
+        std::array<std::string, 2> plugged_type_ = { "", "" };
     };
 
 }   // namespace psxemu

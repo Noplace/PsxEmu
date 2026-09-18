@@ -1557,6 +1557,23 @@ void TestSettingsFile(const std::string& directory) {
     Check(empty_loaded.bios_file.empty(), "and an empty choice stays empty");
   }
 
+  // The two front-end switches the threading work added. Both default off -
+  // the game keeps running under a menu, as it does in the emulators this one
+  // follows, and the title stays short - and both survive the file.
+  {
+    EmuConfig config;
+    Check(!config.pause_in_menus && !config.show_timings,
+          "menus do not pause the machine and timings are hidden, by default");
+    config.pause_in_menus = true;
+    config.show_timings = true;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.pause_in_menus && loaded.show_timings,
+          "pausing in menus and showing timings survive the round trip");
+  }
+
   // A key this build does not know about is preserved rather than dropped, so
   // a file written by a newer build survives being loaded and saved by an
   // older one.

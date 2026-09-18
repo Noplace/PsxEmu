@@ -27,13 +27,27 @@
 
 namespace psxemu {
 
+    using emulation::psx::EmuConfig;
+    using emulation::psx::Sio;
     using emulation::psx::System;
+    using emulation::host::HostInput;
+    using emulation::host::Machine;
+    using emulation::host::MachineReport;
+    using emulation::host::Presenter;
+    using emulation::host::VideoOutput;
+
+    namespace {
+
+        // Anything a thread asks the UI thread to do arrives as this, carrying a std::function the
+        // window procedure runs and deletes. Posted, never sent: see the rules in app.h.
+        const UINT kMessageRunOnUi = WM_APP + 1;
+
+    }   // namespace
 
     App::~App() {
+        StopThreads();
         if (system_ != nullptr)
             system_->Deinitialize();
-        if (audio_ != nullptr)
-            audio_->Shutdown();
     }
 
     int App::Run(HINSTANCE instance, int show_command) {
@@ -49,13 +63,9 @@ namespace psxemu {
     bool App::Initialize(HINSTANCE instance, int show_command) {
         const CommandLine command_line = ParseCommandLine();
 
-        // Loaded early, before the graphics engine exists to hold the choice - the rest of the
-        // settings (audio_volume and friends, which live on System::config()) are read back later
-        // via LoadConfig, once the machine exists to hold them; graphics_backend is read directly
-        // in CreateGraphics too, purely to decide which engine to construct, and it is read again
-        // through the normal LoadConfig path to end up in the same place either way.
         settings_path_ = Narrow(SettingsPathBesideExecutable());
         settings_.Load(settings_path_);
+        emulation::psx::LoadConfig(settings_, config_);
 
         // Before the machine, because the machine is built around a BIOS: the folder has to exist
         // and be scanned to know whether the one the settings file names is still in it.
@@ -74,31 +84,19 @@ namespace psxemu {
 
         if (!CreateAppWindow(instance))
             return false;
-        if (!CreateGraphics())
-            return false;
-
-        // Read straight from the settings file for the same reason the renderer is: the output
-        // exists before the machine does, so the machine's config is not there yet to ask.
-        const std::string requested_audio = settings_.GetString("audio_backend", "wasapi");
-        audio_ = CreateAudioEngine(
-            (requested_audio == "dsound") ? AudioBackend::kDirectSound : AudioBackend::kWasapi,
-            &current_audio_backend_);
-        // Opened stopped. The loop starts it with the first frame it runs, and stops it whenever
-        // it stops running them - see EnterStall.
-
         if (!CreateMachine())
             return false;
 
         ApplySettings();
-        // After ApplySettings, which is what puts the settings file's own choice on the config. At
-        // startup the ticked image and the running one are the same; they part company the moment
-        // a different one is chosen, which only takes effect at the next cold boot.
         RefreshBiosMenu();
 
+        // Before the threads start, so this is still the only thread touching the machine.
         if (!command_line.disc.empty() && system_->LoadDisc(command_line.disc.c_str())) {
             SetWindowTitleForPath(command_line.disc);
-            LoadOrCreateMemoryCardsForDisc(command_line.disc);
+            LoadOrCreateMemoryCardsForDisc(*system_, command_line.disc);
         }
+
+        StartThreads();
 
         ShowWindow(window_, show_command);
         UpdateWindow(window_);
@@ -123,26 +121,7 @@ namespace psxemu {
             CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
                             CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
                             nullptr, CreateMainMenu(), instance, this);
-        if (window_ != nullptr)
-            mouse_.Attach(window_);
         return window_ != nullptr;
-    }
-
-    bool App::CreateGraphics() {
-        RECT client;
-        GetClientRect(window_, &client);
-        const int client_width = client.right - client.left;
-        const int client_height = client.bottom - client.top;
-        const std::string requested_backend = settings_.GetString("graphics_backend", "d3d11");
-        const GraphicsBackend preferred =
-            (requested_backend == "d3d12") ? GraphicsBackend::kD3D12 : GraphicsBackend::kD3D11;
-        graphics_ = CreateGraphicsEngine(preferred, window_, client_width, client_height, window_,
-                                         &current_backend_);
-        if (graphics_ == nullptr) {
-            ShowError(window_, L"Could not create a Direct3D device.");
-            return false;
-        }
-        return true;
     }
 
     bool App::CreateMachine() {
@@ -156,27 +135,18 @@ namespace psxemu {
         return true;
     }
 
+    // The settings file's own choices, onto the machine and the menus, while this is still the
+    // only thread there is.
     void App::ApplySettings() {
-        // The rest of the settings, now that the machine exists to hold them - the file itself was
-        // already loaded in Initialize, before the graphics engine, to decide which one to
-        // construct. A missing file is normal on a first run and leaves the defaults in place.
-        emulation::psx::LoadConfig(settings_, system_->config());
-        // The engine actually running can differ from the file's own preference if that one failed
-        // and CreateGraphicsEngine fell back - reflect reality rather than silently trusting what
-        // LoadConfig just read.
-        system_->config().graphics_backend = current_backend_;
-        // Likewise for sound: the output that actually opened, which is not the file's choice when
-        // that one could not be. Left alone when neither could, so a machine that is only silent
-        // for now does not lose the preference it will have again once its device comes back.
-        if (!current_audio_backend_.empty())
-            system_->config().audio_backend = current_audio_backend_;
+        system_->config() = config_;
+        system_->sio().set_controller_type(0, ParseControllerType(config_.controller_type[0]));
+        system_->sio().set_controller_type(1, ParseControllerType(config_.controller_type[1]));
+        plugged_type_[0] = config_.controller_type[0];
+        plugged_type_[1] = config_.controller_type[1];
+
+        // The renderer and the sound device are ticked when the threads that open them report
+        // back what actually opened, which is not always what was asked for.
         UpdateVolumeMenu();
-        UpdateAudioBackendMenu();
-        UpdateRendererMenu();
-        system_->sio().set_controller_type(
-            0, ParseControllerType(system_->config().controller_type[0]));
-        system_->sio().set_controller_type(
-            1, ParseControllerType(system_->config().controller_type[1]));
         UpdateControllerTypeMenu();
         UpdateInputSourceMenu();
         UpdateMultitapSourceMenu();
@@ -185,12 +155,11 @@ namespace psxemu {
         UpdateCdTimingMenu();
         UpdateSkipBiosIntroMenu();
         UpdateRecompilerMenu();
-        if (current_backend_ == "d3d12") {
-            LoadAllFilters(*graphics_);
-            SetFilter(system_->config().video_filter);
-        } else {
-            UpdateFilterMenu();
-        }
+        UpdatePauseInMenusMenu();
+        UpdateShowTimingsMenu();
+        UpdateFilterMenu();
+        UpdateRendererMenu();
+        UpdateAudioBackendMenu();
     }
 
     void App::SetUpDataDirectories() {
@@ -210,8 +179,7 @@ namespace psxemu {
 
     // Which image to boot, in the order the answers are allowed to win: the command line, then the
     // one the settings file names if it is still in the folder, then whatever FindBios turns up
-    // beside the executable. A name that has since been deleted falls through to the last of those
-    // rather than refusing to start.
+    // beside the executable.
     std::string App::ResolveBiosPath(const std::string& from_command_line) {
         if (!from_command_line.empty())
             return FindBios(from_command_line);
@@ -242,406 +210,339 @@ namespace psxemu {
             return;
 
         // Chosen, not applied. A BIOS is only read at power-on, so this is what the *next* cold
-        // boot will use - Reset, Boot disc, Boot BIOS, or the next time the emulator starts. The
-        // machine that is running keeps the image it was built with, because the alternative is a
-        // menu click that restarts a game without being asked to.
+        // boot will use - Reset, Boot disc, Boot BIOS, or the next time the emulator starts.
         bios_path_ = bios_root_ + "\\" + bios_files_[index];
-
-        if (system_ != nullptr) {
-            system_->config().bios_file = bios_files_[index];
-            SaveSettingsIfChanged();
-        }
-        // The tick follows the choice rather than the running machine, so it shows what is set -
-        // which is the only feedback there is that the click did anything.
+        config_.bios_file = bios_files_[index];
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
         RefreshBiosMenu();
     }
 
     // ---------------------------------------------------------------------------------------------
-    // The loop
+    // The threads
     // ---------------------------------------------------------------------------------------------
 
-    int App::MainLoop() {
-        running_ = true;
-        MSG message = {};
-        while (running_) {
-            if (!PumpMessages(&message))
-                break;
+    void App::StartThreads() {
+        // Output first, then input, then the machine that feeds and reads them.
+        audio_ = std::make_unique<emulation::host::AudioOutput>(
+            [](const std::string& backend, std::string* opened) {
+                return CreateAudioEngine(
+                    (backend == "dsound") ? AudioBackend::kDirectSound : AudioBackend::kWasapi,
+                    opened);
+            },
+            [this](const std::string& opened) {
+                // On the audio thread: hand it to the UI, which owns the menus and the settings.
+                PostToUi([this, opened] {
+                    current_audio_backend_ = opened;
+                    if (!opened.empty())
+                        config_.audio_backend = opened;
+                    UpdateAudioBackendMenu();
+                    SaveSettingsIfChanged();
+                    if (opened.empty()) {
+                        ShowWarning(window_,
+                                    L"Neither WASAPI nor DirectSound could be opened, so there is "
+                                    L"no sound. The machine keeps running.");
+                    }
+                });
+            });
 
-            if (paused_) {
-                EnterStall();
-                Sleep(16);
-                continue;
+        // Copied now, not read from `config_` on the video thread: that one belongs to this
+        // thread, and a menu command could be changing it while the factory runs.
+        const std::string start_renderer = config_.graphics_backend;
+        const std::string start_filter = config_.video_filter;
+        video_ = std::make_unique<VideoOutput>(
+            [this, start_renderer, start_filter]() -> std::unique_ptr<Presenter> {
+                // On the video thread: a Direct3D device is created by the thread that will use
+                // it, and used by no other.
+                auto presenter = std::make_unique<D3DPresenter>(
+                    window_, [this](std::function<void()> work) { PostToUi(std::move(work)); });
+                if (!presenter->Open(start_renderer, start_filter)) {
+                    PostToUi([this] {
+                        ShowError(window_, L"Could not create a Direct3D device.");
+                        PostMessageW(window_, WM_CLOSE, 0, 0);
+                    });
+                    return nullptr;
+                }
+                // What actually opened, which is not always what was asked for.
+                const std::string renderer = presenter->renderer();
+                const std::string filter = presenter->filter();
+                PostToUi([this, renderer, filter] {
+                    current_backend_ = renderer;
+                    current_filter_ = filter;
+                    config_.graphics_backend = renderer;
+                    config_.video_filter = filter;
+                    UpdateRendererMenu();
+                    UpdateFilterMenu();
+                    SaveSettingsIfChanged();
+                });
+                return presenter;
+            });
+
+        Machine::Hooks hooks;
+        hooks.apply_input = [this](System& system, const HostInput& input) {
+            ApplyInput(system, input);
+        };
+        hooks.report = [this](const MachineReport& report) { OnMachineReport(report); };
+        machine_ = std::make_unique<Machine>(system_.get(), &video_->frames(), &audio_->samples(),
+                                             hooks);
+        input_ = std::make_unique<InputThread>(&machine_->input(), window_);
+
+        input_->Start();
+        audio_->Start(config_.audio_backend);
+        video_->Start();
+        machine_->Start(paused_by_user_ ? emulation::host::kPausedByUser : 0);
+    }
+
+    void App::StopThreads() {
+        if (stopping_)
+            return;
+        stopping_ = true;
+
+        // Stopped in order, on a thread of their own, so this one can go on answering messages
+        // while it waits - rule 3. Nothing of ours sends a message to this thread, but DXGI is
+        // entitled to while a swap chain is being released, and a UI thread sitting in a join
+        // would never answer it. Pumping costs nothing and closes that off entirely.
+        std::thread stopper([this] {
+            // The machine first: nothing more is produced, and nothing more is asked of the
+            // outputs. Then video, which destroys the Direct3D engine on its own thread - and
+            // has to, before the window it draws into is destroyed.
+            if (machine_ != nullptr)
+                machine_->Stop();
+            if (video_ != nullptr)
+                video_->Stop();
+            if (audio_ != nullptr)
+                audio_->Stop();
+            if (input_ != nullptr)
+                input_->Stop();
+        });
+
+        const HANDLE stopping = static_cast<HANDLE>(stopper.native_handle());
+        for (;;) {
+            const DWORD woke =
+                MsgWaitForMultipleObjects(1, &stopping, FALSE, INFINITE, QS_ALLINPUT);
+            if (woke != WAIT_OBJECT_0 + 1)
+                break;   // the threads are done, or the wait failed - either way, stop waiting
+            MSG message;
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
             }
+        }
+        stopper.join();
 
-            LeaveStall();
-            ApplyPendingStates();
-            PollInput();
-            RunOneFrame();
-            PumpAudio();
-            UpdateSpeedReadout();
+        // Anything the threads posted on their way out has nobody left to run it.
+        if (window_ != nullptr) {
+            MSG message;
+            while (PeekMessageW(&message, window_, kMessageRunOnUi, kMessageRunOnUi, PM_REMOVE)) {
+                delete reinterpret_cast<std::function<void()>*>(message.lParam);
+            }
+        }
+    }
 
-            //PumpAudio();
-
-            PresentFrame();
-            LimitFrameRate();
+    int App::MainLoop() {
+        MSG message = {};
+        while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
         }
 
-        // Written on every change already; this catches anything the last edit missed and costs
-        // nothing when there is nothing to write.
+        // Written on every change already; this catches anything the last edit missed.
         SaveSettingsIfChanged();
-
-        // Everything owned is released by the destructor, in the order it was declared in.
         return static_cast<int>(message.wParam);
     }
 
-    bool App::PumpMessages(MSG* message) {
-        while (PeekMessageW(message, nullptr, 0, 0, PM_REMOVE)) {
-            if (message->message == WM_QUIT) {
-                running_ = false;
-                break;
-            }
-            TranslateMessage(message);
-            DispatchMessageW(message);
-        }
-        return running_;
-    }
+    // ---------------------------------------------------------------------------------------------
+    // Between threads
+    // ---------------------------------------------------------------------------------------------
 
-    // Pausing, a menu, a drag and a dialog all look the same from here: frames stop, and with them
-    // everything that feeds the sound device. Leaving the device running through that is not
-    // neutral. WASAPI plays silence once it runs dry, but DirectSound's buffer loops, and past the
-    // data and its 100 ms of guard silence it plays whatever it held a lap ago - so pausing, or
-    // holding a menu open, repeated the last second of sound for as long as either lasted (bug 63).
-    void App::EnterStall() {
-        if (stalled_)
+    void App::PostToUi(std::function<void()> work) {
+        if (window_ == nullptr)
             return;
-        stalled_ = true;
-        if (audio_ != nullptr)
-            audio_->Pause();
+        std::function<void()>* held = new std::function<void()>(std::move(work));
+        if (!PostMessageW(window_, kMessageRunOnUi, 0, reinterpret_cast<LPARAM>(held)))
+            delete held;   // the window has gone; nobody will run it
     }
 
-    void App::LeaveStall() {
-        if (!stalled_)
-            return;
-        stalled_ = false;
-        if (audio_ != nullptr)
-            audio_->Play();
-
-        // Nothing to catch up on. The limiter would only give up on its deadline by itself after a
-        // long stall and would try to make up a short one; the resampler was interpolating towards
-        // sound from before it; and the speed readout would count it as slow frames.
-        frame_limiter_.Reset();
-        speed_resampler_.Reset();
-        audio_pending_.clear();
-        speed_frames_ = 0;
-        speed_since_ = std::chrono::steady_clock::now();
+    void App::PostToMachine(std::function<void(Machine&)> request) {
+        if (machine_ != nullptr)
+            machine_->Post(std::move(request));
     }
 
-    void App::ApplyPendingStates() {
-        if (pending_save_slot_ >= 0) {
-            const std::string path = SaveStateSlotPath(pending_save_slot_);
-            const std::string error = system_->SaveState(path);
-            if (!error.empty()) {
-                const std::wstring message(error.begin(), error.end());
-                ShowError(window_, message.c_str());
-            }
-            pending_save_slot_ = -1;
-        }
-        if (pending_load_slot_ >= 0) {
-            const std::string path = SaveStateSlotPath(pending_load_slot_);
-            const std::string error = system_->LoadState(path);
-            if (!error.empty()) {
-                const std::wstring message(error.begin(), error.end());
-                ShowError(window_, message.c_str());
-            }
-            pending_load_slot_ = -1;
-        }
+    void App::SendConfigToMachine() {
+        const EmuConfig config = config_;
+        PostToMachine([config](Machine& machine) { machine.ApplyConfig(config); });
     }
 
-    void App::PollInput() {
-        using emulation::psx::Sio;
+    // On the machine's thread. Nothing here may touch the window or the menus, so the whole report
+    // goes to the UI thread and is shown there.
+    void App::OnMachineReport(const MachineReport& report) {
+        PostToUi([this, report] {
+            report_ = report;
+            have_report_ = true;
+            if (video_ != nullptr) {
+                uint64_t presents = 0;
+                double total_ms = 0.0;
+                video_->TakeTiming(&presents, &total_ms);
+                present_ms_ = presents > 0 ? total_ms / static_cast<double>(presents) : 0.0;
+                presents_per_second_ = static_cast<double>(presents);
+            }
+            UpdateTitle();
+        });
+    }
 
-        // Input is sampled once per frame, on this thread, and handed to the core. The pads are
-        // polled unconditionally, focused or not, so a controller being unplugged mid-game is
-        // noticed straight away rather than only after the window is clicked back into; only the
-        // *buttons and axes* are withheld while unfocused, matching what the keyboard already does.
-        const Gamepad::State gamepad_state[4] = { gamepads_[0].Poll(), gamepads_[1].Poll(),
-                                                  gamepads_[2].Poll(), gamepads_[3].Poll() };
-        const uint16_t keyboard_buttons = ReadKeyboardPad();
-        const Mouse::State mouse_state = mouse_.Poll();
-        const bool focused = (GetForegroundWindow() == window_);
+    void App::UpdateTitle() {
+        std::wstring title = title_base_;
+        if (have_report_) {
+            wchar_t suffix[96] = {};
+            if (report_.paused) {
+                swprintf(suffix, std::size(suffix), L"  -  paused");
+            } else if (report_.refresh_hz > 0.0) {
+                swprintf(suffix, std::size(suffix), L"  -  %.1f fps (%.0f%%)", report_.fps,
+                         100.0 * report_.fps / report_.refresh_hz);
+            } else {
+                swprintf(suffix, std::size(suffix), L"  -  %.1f fps", report_.fps);
+            }
+            title += suffix;
 
-        // A real PSX mouse has no notion of position at all - see sio.h's Mouse comment - so there
-        // is no "inside the window" the wire protocol itself can express. What a player actually
-        // wants is the VirtualBox/VMware-style experience of the *host* cursor: motion only counts
-        // while it is over the game, not wherever it happens to wander while this window still has
-        // focus (another monitor, a corner of the desktop outside the client area, and so on).
-        // Checked here rather than clipping or hiding the OS cursor, which would also block reaching
-        // this window's own menu bar - raw input keeps accumulating regardless, so this only decides
-        // whether that accumulated motion is used below or left to drain away unread.
-        bool cursor_in_client = false;
-        {
-            POINT cursor;
-            RECT client;
-            if (GetCursorPos(&cursor) && ScreenToClient(window_, &cursor) &&
-                GetClientRect(window_, &client)) {
-                cursor_in_client = (PtInRect(&client, cursor) != FALSE);
+            // Where the frame's time went, on each thread that has any - Emulation > Show Timings.
+            // "idle" is what the frame limiter slept off: the headroom, and what a faster speed
+            // setting has to come out of.
+            if (config_.show_timings && !report_.paused) {
+                wchar_t timings[192] = {};
+                swprintf(timings, std::size(timings),
+                         L"  |  emulate %.1f  hand-off %.2f  idle %.1f  present %.2f ms"
+                         L"  |  sound %.0f ms",
+                         report_.emulate_ms, report_.handoff_ms, report_.idle_ms, present_ms_,
+                         report_.audio_queued_frames * 1000.0 / emulation::psx::Spu::kSampleRate);
+                title += timings;
+
+                // Only when there is something to say: a frame the video thread never showed, or
+                // sound the audio thread had to make up. Zero is the normal state and says
+                // nothing.
+                if (report_.frames_dropped != 0 || report_.audio_short_frames != 0) {
+                    wchar_t edges[96] = {};
+                    swprintf(edges, std::size(edges), L"  |  dropped %llu  short %llu",
+                             static_cast<unsigned long long>(report_.frames_dropped),
+                             static_cast<unsigned long long>(report_.audio_short_frames));
+                    title += edges;
+                }
             }
         }
-        // will keep it always on for now
-        const bool mouse_over_client = true;   //focused && cursor_in_client;
+        SetWindowTextW(window_, title.c_str());
+    }
 
-        // Re-applied every frame rather than only when the menu changes it - exactly how
-        // set_connected below already has to be, since a Reset or a fresh disc boot reinitialises
-        // Sio to its power-on defaults, and this is what makes either pick the configured
-        // controller back up without either call site needing to know that happened.
-        // set_controller_type is a no-op once converged, so this costs nothing in the steady state.
-        //
-        // A port whose controller has just been swapped for a different kind holds nothing at all
-        // until its replug countdown runs out - see SetControllerType.
+    // ---------------------------------------------------------------------------------------------
+    // Input, on the machine's thread
+    // ---------------------------------------------------------------------------------------------
+
+    // What the input thread last read, mapped onto the ports the settings name. This is the old
+    // PollInput with the device polling taken out of it: the reading is already in the pad's own
+    // vocabulary, and arrives at most a millisecond old.
+    void App::ApplyInput(System& system, const HostInput& input) {
+        const EmuConfig& config = system.config();
+
+        // A different controller is a different physical device, and on a real console the port
+        // sits empty while one is unplugged and the next plugged in. Some games need to see that
+        // before they will believe what is there now: Bomberman Party Edition's pad driver, shown
+        // a multitap and then a pad with no gap between them, went on decoding the port as a
+        // multitap and took no input from anything until the machine was reset (bug 54). Noticed
+        // here rather than in the menu, so the countdown belongs to the thread that runs it.
         Sio::ControllerType controller_type[2];
         for (int port = 0; port < 2; ++port) {
-            const std::string& key = system_->config().controller_type[port];
-            controller_type[port] =
-                replug_frames_[port] > 0 ? Sio::kNone : ParseControllerType(key);
+            if (config.controller_type[port] != plugged_type_[port]) {
+                plugged_type_[port] = config.controller_type[port];
+                replug_frames_[port] = kControllerReplugFrames;
+            }
+            controller_type[port] = replug_frames_[port] > 0
+                                        ? Sio::kNone
+                                        : ParseControllerType(config.controller_type[port]);
             if (replug_frames_[port] > 0)
                 --replug_frames_[port];
-            system_->sio().set_controller_type(port, controller_type[port]);
+            system.sio().set_controller_type(port, controller_type[port]);
         }
 
-        // What one source (keyboard, or one of the four XInput slots) is doing right now, in Sio's
-        // own vocabulary. Shared by the single-pad path below and each of a Multitap's four players
-        // - reading a source is the same operation regardless of which PSX-side slot the result
-        // ends up feeding.
+        // What one source (the keyboard, or one of the four XInput slots) is doing right now, in
+        // Sio's own vocabulary. Shared by the single-pad path below and each of a Multitap's four
+        // players.
         struct SourceReading {
             bool connected = true;   // the keyboard is always "there"
             uint16_t buttons = 0;
             uint8_t left_x = 0x80, left_y = 0x80, right_x = 0x80, right_y = 0x80;
-            int rumble_target = -1;   // which gamepads_[] slot feels this reading's motors
+            int rumble_target = -1;   // which XInput slot feels this reading's motors
         };
-        auto ReadSource = [&](InputSource source) {
+        auto read_source = [&input](InputSource source) {
             SourceReading r;
-            int g = -1;
+            int pad = -1;
             switch (source) {
                 case InputSource::kKeyboard:
-                    r.buttons = focused ? keyboard_buttons : 0;
+                    r.buttons = input.focused ? input.keyboard : 0;
                     return r;
-                case InputSource::kGamepad1: g = 0; break;
-                case InputSource::kGamepad2: g = 1; break;
-                case InputSource::kGamepad3: g = 2; break;
-                case InputSource::kGamepad4: g = 3; break;
+                case InputSource::kGamepad1: pad = 0; break;
+                case InputSource::kGamepad2: pad = 1; break;
+                case InputSource::kGamepad3: pad = 2; break;
+                case InputSource::kGamepad4: pad = 3; break;
             }
-            r.connected = gamepads_[g].connected();
-            r.buttons = focused ? gamepad_state[g].buttons : 0;
-            r.left_x = gamepad_state[g].left_x;
-            r.left_y = gamepad_state[g].left_y;
-            r.right_x = gamepad_state[g].right_x;
-            r.right_y = gamepad_state[g].right_y;
-            r.rumble_target = g;
+            r.connected = input.pads[pad].connected;
+            r.buttons = input.focused ? input.pads[pad].buttons : 0;
+            r.left_x = input.pads[pad].left_x;
+            r.left_y = input.pads[pad].left_y;
+            r.right_x = input.pads[pad].right_x;
+            r.right_y = input.pads[pad].right_y;
+            r.rumble_target = pad;
             return r;
         };
-        // Rumble is an output, not an input, so it is not gated on focus - the emulated machine
-        // keeps running in the background (only Pause actually stops it), and a real console would
-        // not silence a controller's motor just because another window has focus. If two sources
-        // are ever mapped to the same physical pad, the later SetRumble call below simply wins for
-        // that frame - a real edge case (mirroring one pad to two slots), not a bug.
-        auto ApplyRumble = [&](int port, int player, const SourceReading& r) {
+
+        // Rumble is an output, not an input, so it is not gated on focus - the machine keeps
+        // running in the background, and a real console would not silence a controller's motor
+        // because another window has focus. The input thread applies what is left here.
+        auto apply_rumble = [this, &system](int port, int player, const SourceReading& r) {
             if (r.rumble_target < 0)
                 return;
-            uint8_t motor_small = 0, motor_large = 0;
-            system_->sio().motor_state(port, &motor_small, &motor_large, player);
-            gamepads_[r.rumble_target].SetRumble(motor_small, motor_large);
+            uint8_t motor_small = 0;
+            uint8_t motor_large = 0;
+            system.sio().motor_state(port, &motor_small, &motor_large, player);
+            machine_->input().SetRumble(r.rumble_target, motor_small, motor_large);
         };
 
         for (int port = 0; port < 2; ++port) {
-            // A port set to no controller reports nothing at all - Sio already forces connected
-            // false itself for a kNone port regardless of what is asked, but there is nothing else
-            // for the rest of this iteration to do either way.
+            // A port set to no controller reports nothing at all.
             if (controller_type[port] == Sio::kNone) {
-                system_->sio().set_connected(port, false);
+                system.sio().set_connected(port, false);
                 continue;
             }
 
             // A mouse's mapping is not a player choice the way a pad's input_source is - it is
             // always the real Windows mouse, exactly as a real PSX mouse is always whatever is
-            // plugged into the port rather than something a game can redirect.
+            // plugged into the port.
             if (controller_type[port] == Sio::kMouse) {
-                system_->sio().set_connected(port, true);
-                system_->sio().set_mouse_buttons(port, mouse_over_client && mouse_state.left,
-                                                 mouse_over_client && mouse_state.right);
-                if (mouse_over_client)
-                    system_->sio().add_mouse_motion(port, mouse_state.dx, mouse_state.dy);
+                system.sio().set_connected(port, true);
+                system.sio().set_mouse_buttons(port, input.mouse_left, input.mouse_right);
+                system.sio().add_mouse_motion(port, input.mouse_dx, input.mouse_dy);
                 continue;
             }
 
-            // A Multitap sources each of its four players independently
-            // (multitap_player_source), rather than the one input_source a plain port uses -
-            // otherwise this is exactly the single-pad path below, run four times.
+            // A Multitap sources each of its four players independently; otherwise this is exactly
+            // the single-pad path below, run four times.
             if (controller_type[port] == Sio::kMultitap) {
                 for (int player = 0; player < 4; ++player) {
-                    const InputSource source = ParseInputSource(
-                        system_->config().multitap_player_source[port][player]);
-                    const SourceReading r = ReadSource(source);
-                    system_->sio().set_connected(port, r.connected, player);
-                    system_->sio().set_buttons(port, r.buttons, player);
-                    system_->sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y, player);
-                    ApplyRumble(port, player, r);
+                    const InputSource source =
+                        ParseInputSource(config.multitap_player_source[port][player]);
+                    const SourceReading r = read_source(source);
+                    system.sio().set_connected(port, r.connected, player);
+                    system.sio().set_buttons(port, r.buttons, player);
+                    system.sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y, player);
+                    apply_rumble(port, player, r);
                 }
                 continue;
             }
 
-            const InputSource source = ParseInputSource(system_->config().input_source[port]);
-            const SourceReading r = ReadSource(source);
-            system_->sio().set_connected(port, r.connected);
-            system_->sio().set_buttons(port, r.buttons);
-            system_->sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y);
-            ApplyRumble(port, /*player=*/0, r);
+            const InputSource source = ParseInputSource(config.input_source[port]);
+            const SourceReading r = read_source(source);
+            system.sio().set_connected(port, r.connected);
+            system.sio().set_buttons(port, r.buttons);
+            system.sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y);
+            apply_rumble(port, /*player=*/0, r);
         }
-    }
-
-    void App::RunOneFrame() {
-        const uint64_t target_frame = system_->gpu().frame_count() + 1;
-        uint64_t guard = 0;
-        while (system_->gpu().frame_count() < target_frame && guard++ < kMaxInstructionsPerFrame) {
-            system_->StepInstruction();
-        }
-    }
-
-    void App::PumpAudio() {
-        if (audio_ == nullptr)
-            return;
-
-        const int frames = system_->spu().ReadSamples(audio_scratch_.data(),
-                                                      static_cast<int>(audio_scratch_.size() / 2));
-        // The SPU makes 44,100 samples per *emulated* second and the device
-        // drains 44,100 per real one, so anything but 100% has to be resampled
-        // on the way out or the device backs up (fast) or starves (slow).
-        //
-        // On top of the speed, a trim of at most half a percent to hold the
-        // device's buffer at its own target. Two clocks are involved - the
-        // frame limiter paces the machine off the host's steady_clock, the
-        // sound card consumes off its own - and they are never exactly equal.
-        // Left alone, that difference accumulates until the buffer is either
-        // full (samples dropped) or empty (a click), every few minutes,
-        // forever. GBAEmu does not need this because its audio call blocks, so
-        // the sound card is its clock; here the frame limiter is, and this is
-        // what keeps the two in step. Half a percent is about eight cents,
-        // which is inaudible, and it is clamped so a real shortfall - a host
-        // that cannot keep up - shows up as a shortfall rather than as pitch.
-        if (frames > 0) {
-            double speed = system_->config().emulation_speed;
-            if (audio_ != nullptr) {
-                // The target is the device's to say: DirectSound needs twice what WASAPI does,
-                // because it moves in coarser steps - see IAudioEngine::TargetQueuedSamples.
-                const int target = audio_->TargetQueuedSamples();
-                const int queued = audio_->GetQueuedSampleCount();
-                const double error = static_cast<double>(queued - target) /
-                                     static_cast<double>(target);
-                double trim = 1.0 + 0.005 * error;
-                if (trim < 0.995) trim = 0.995;
-                if (trim > 1.005) trim = 1.005;
-                speed *= trim;
-            }
-            speed_resampler_.Append(audio_scratch_.data(), frames, speed, &audio_pending_);
-        }
-        if (audio_pending_.empty())
-            return;
-
-        // QueueAudio takes what fits and no longer waits for room - waiting
-        // stopped the machine, and with it the message pump, whenever the sound
-        // card was a few milliseconds behind. Whatever it did not take is
-        // offered again next frame.
-        const int queued = audio_->QueueAudio(audio_pending_.data(),
-                                              static_cast<int>(audio_pending_.size()));
-        if (queued >= static_cast<int>(audio_pending_.size())) {
-            audio_pending_.clear();
-            return;
-        }
-        if (queued > 0)
-            audio_pending_.erase(audio_pending_.begin(), audio_pending_.begin() + queued);
-
-        // A device that has stopped draining entirely - paused, or gone - must
-        // not turn this into a memory leak. A quarter second is far more than
-        // the few frames of slack this exists to absorb, and dropping the
-        // oldest is what a real one does when it underruns anyway.
-        const size_t kMaxPending = emulation::psx::Spu::kSampleRate / 2;
-        if (audio_pending_.size() > kMaxPending) {
-            audio_pending_.erase(audio_pending_.begin(),
-                                 audio_pending_.end() - kMaxPending);
-        }
-    }
-
-    void App::PresentFrame() {
-        int width = 0;
-        int height = 0;
-        const uint32_t* pixels = system_->gpu().framebuffer(width, height);
-
-        // Video > View VRAM substitutes the whole 1 MB VRAM, converted the same way the display
-        // area already is, for the display framebuffer - same presentation path, same letterbox
-        // helper, just a different (and much bigger, non-4:3) source rectangle. Rebuilt every frame
-        // since VRAM is never still while the machine runs.
-        if (view_vram_) {
-            const int vram_width = emulation::psx::GpuCore::kVramWidth;
-            const int vram_height = emulation::psx::GpuCore::kVramHeight;
-            vram_view_scratch_.resize(static_cast<size_t>(vram_width) * vram_height);
-            const uint16_t* vram = system_->gpu().vram();
-            for (int i = 0; i < vram_width * vram_height; ++i) {
-                const uint16_t p = vram[i];
-                const uint32_t r = ((p & 0x1F) << 3) | ((p & 0x1F) >> 2);
-                const uint32_t g = (((p >> 5) & 0x1F) << 3) | (((p >> 5) & 0x1F) >> 2);
-                const uint32_t b = (((p >> 10) & 0x1F) << 3) | (((p >> 10) & 0x1F) >> 2);
-                vram_view_scratch_[i] = 0xFF000000u | (r << 16) | (g << 8) | b;
-            }
-            pixels = vram_view_scratch_.data();
-            width = vram_width;
-            height = vram_height;
-        }
-
-        if (graphics_ != nullptr) {
-            graphics_->BeginFrame();
-            graphics_->RenderFramebuffer(pixels, width, height);
-            graphics_->EndFrame();
-        }
-    }
-
-    void App::LimitFrameRate() {
-        // Composes with the two accidental brakes rather than fighting them: if vsync or the audio
-        // device already held this frame back past its deadline there is nothing left to wait for
-        // and this returns at once, and if neither did, this is what keeps the machine at the speed
-        // of a PlayStation instead of the speed of the screen it is drawn on.
-        //
-        // Emulation > Frame Limiter turns it off, which puts the loop back to being paced by
-        // whatever blocks first - useful to get through a load or to read the host's real headroom
-        // off the title bar, and wrong for playing. Reset while it is off so re-enabling starts a
-        // fresh deadline rather than owing however long it ran unpaced.
-        // Times the speed the machine is being run at: 2.0 waits for half as
-        // long, so twice as many emulated frames fit in a real second. Nothing
-        // about the emulated machine changes - see EmuConfig::emulation_speed.
-        if (system_->config().frame_limiter)
-            frame_limiter_.Wait(system_->gpu().refresh_hz() * system_->config().emulation_speed);
-        else
-            frame_limiter_.Reset();
-    }
-
-    void App::UpdateSpeedReadout() {
-        ++speed_frames_;
-        const auto now = std::chrono::steady_clock::now();
-        const double elapsed = std::chrono::duration<double>(now - speed_since_).count();
-        if (elapsed < 1.0)
-            return;
-
-        const double fps = speed_frames_ / elapsed;
-        const double target = (system_ != nullptr) ? system_->gpu().refresh_hz() : 0.0;
-        speed_frames_ = 0;
-        speed_since_ = now;
-
-        wchar_t suffix[64] = {};
-        if (target > 0.0) {
-            swprintf(suffix, std::size(suffix), L"  -  %.1f fps (%.0f%%)", fps,
-                     100.0 * fps / target);
-        } else {
-            swprintf(suffix, std::size(suffix), L"  -  %.1f fps", fps);
-        }
-        SetWindowTextW(window_, (title_base_ + suffix).c_str());
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -649,81 +550,41 @@ namespace psxemu {
     // ---------------------------------------------------------------------------------------------
 
     void App::SaveSettingsIfChanged() {
-        if (system_ == nullptr || settings_path_.empty())
+        if (settings_path_.empty())
             return;
         emulation::psx::SettingsFile updated = settings_;
-        emulation::psx::StoreConfig(updated, system_->config());
+        emulation::psx::StoreConfig(updated, config_);
         if (updated.Serialise() == settings_.Serialise())
             return;
         settings_ = updated;
         settings_.Save(settings_path_);
     }
 
-    void App::UpdateVolumeMenu() {
-        if (system_ != nullptr)
-            TickVolume(window_, system_->config().audio_volume);
-    }
+    void App::UpdateVolumeMenu() { TickVolume(window_, config_.audio_volume); }
 
     void App::SetVolume(float value) {
-        if (system_ == nullptr)
-            return;
-        system_->config().audio_volume = value;
+        config_.audio_volume = value;
         UpdateVolumeMenu();
         SaveSettingsIfChanged();
+        SendConfigToMachine();
     }
 
     // These two tick against what is actually running rather than against the config, since a
-    // fallback can leave the two disagreeing - so no machine is needed and none is checked for.
-    void App::UpdateRendererMenu() {
-        TickRenderer(window_, current_backend_);
-    }
+    // fallback can leave the two disagreeing.
+    void App::UpdateRendererMenu() { TickRenderer(window_, current_backend_); }
+    void App::UpdateAudioBackendMenu() { TickAudioBackend(window_, current_audio_backend_); }
 
-    void App::UpdateAudioBackendMenu() {
-        TickAudioBackend(window_, current_audio_backend_);
-    }
-
-    // Switching sound output while a game runs. Safe here because nothing else touches the engine
-    // between frames: PumpAudio feeds it from this same loop, and neither engine runs a thread of
-    // its own - both are fed by push, so shutting one down leaves nothing still calling into it.
+    // Switching sound output while a game runs: the audio thread closes one device and opens the
+    // other, and says which it ended up with.
     void App::SetAudioBackend(const std::string& key) {
-        if (key == current_audio_backend_)
+        if (key == current_audio_backend_ || audio_ == nullptr)
             return;
-
-        if (audio_ != nullptr)
-            audio_->Shutdown();
-        audio_.reset();
-
-        audio_ = CreateAudioEngine(
-            (key == "dsound") ? AudioBackend::kDirectSound : AudioBackend::kWasapi,
-            &current_audio_backend_);
-
-        // What was queued in the old engine went with it, and the resampler was part-way through
-        // interpolating towards samples the new one will never see. Starting both clean costs a
-        // few milliseconds of silence, which is what a switch sounds like anyway.
-        audio_pending_.clear();
-        speed_resampler_.Reset();
-
-        if (audio_ == nullptr) {
-            ShowWarning(window_,
-                        L"Neither WASAPI nor DirectSound could be opened, so there is no sound. "
-                        L"The machine keeps running.");
-        } else {
-            // Left to the loop. The switch is made from the menu, so the loop is stalled while it
-            // happens, and LeaveStall starts whichever engine is open when the next frame runs -
-            // or, while paused, leaves it stopped, which is the point.
-            if (!stalled_)
-                audio_->Play();
-            if (system_ != nullptr)
-                system_->config().audio_backend = current_audio_backend_;
-        }
-
-        UpdateAudioBackendMenu();
+        config_.audio_backend = key;
         SaveSettingsIfChanged();
+        audio_->SwitchBackend(key);
     }
 
-    void App::UpdateFilterMenu() {
-        TickFilter(window_, current_backend_, current_filter_);
-    }
+    void App::UpdateFilterMenu() { TickFilter(window_, current_backend_, current_filter_); }
 
     void App::SetFilter(const std::string& key) {
         if (current_backend_ != "d3d12") {
@@ -735,284 +596,284 @@ namespace psxemu {
                         L"first (Settings > Video > Renderer).");
             return;
         }
-        if (graphics_ != nullptr)
-            graphics_->SetPixelShader(key);
+        config_.video_filter = key;
         current_filter_ = key;
-        if (system_ != nullptr)
-            system_->config().video_filter = key;
+        if (video_ != nullptr) {
+            video_->Post([key](VideoOutput& video) {
+                if (video.presenter() != nullptr)
+                    static_cast<D3DPresenter*>(video.presenter())->SetFilter(key);
+                video.PresentAgain();
+            });
+        }
         UpdateFilterMenu();
         SaveSettingsIfChanged();
     }
 
+    // Live renderer switch, done on the video thread - it owns the device. What actually opened
+    // comes back from there, the same way it does at startup.
     void App::SetRenderer(const std::string& key) {
-        if (key == current_backend_)
+        if (key == current_backend_ || video_ == nullptr)
             return;
-
-        RECT client;
-        GetClientRect(window_, &client);
-        const int width = client.right - client.left;
-        const int height = client.bottom - client.top;
-
-        if (graphics_ != nullptr)
-            graphics_->Shutdown();
-        graphics_.reset();
-
-        const GraphicsBackend preferred =
-            (key == "d3d12") ? GraphicsBackend::kD3D12 : GraphicsBackend::kD3D11;
-        graphics_ =
-            CreateGraphicsEngine(preferred, window_, width, height, window_, &current_backend_);
-        if (graphics_ == nullptr) {
-            ShowError(window_,
-                      L"Could not switch renderer, and the previous one could not "
-                      L"be restored either. Restart the emulator.");
-            current_backend_.clear();
-            current_filter_.clear();
-            UpdateRendererMenu();
-            UpdateFilterMenu();
-            return;
-        }
-
-        current_filter_.clear();
-        if (current_backend_ == "d3d12") {
-            LoadAllFilters(*graphics_);
-            const std::string preferred_filter =
-                (system_ != nullptr) ? system_->config().video_filter : "";
-            SetFilter(preferred_filter);   // also saves + updates the menu
-        } else {
-            UpdateFilterMenu();
-        }
-
-        if (system_ != nullptr)
-            system_->config().graphics_backend = current_backend_;
-        UpdateRendererMenu();
-        SaveSettingsIfChanged();
+        video_->Post([this, key](VideoOutput& video) {
+            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            if (presenter == nullptr)
+                return;
+            presenter->SetRenderer(key);
+            const std::string renderer = presenter->renderer();
+            const std::string filter = presenter->filter();
+            video.PresentAgain();
+            PostToUi([this, renderer, filter] {
+                current_backend_ = renderer;
+                current_filter_ = filter;
+                if (!renderer.empty())
+                    config_.graphics_backend = renderer;
+                config_.video_filter = filter;
+                UpdateRendererMenu();
+                UpdateFilterMenu();
+                SaveSettingsIfChanged();
+            });
+        });
     }
 
-    void App::UpdateControllerTypeMenu() {
-        if (system_ != nullptr)
-            TickControllerTypes(window_, system_->config().controller_type);
-    }
+    void App::UpdateControllerTypeMenu() { TickControllerTypes(window_, config_.controller_type); }
 
     void App::SetControllerType(int port, const std::string& key) {
-        if (system_ == nullptr)
-            return;
-        // A different controller is a different physical device, and on a real console the port
-        // sits empty while one is unplugged and the next plugged in. Some games need to see that
-        // before they will believe what is there now: Bomberman Party Edition's pad driver, shown
-        // a multitap and then a pad with no gap between them, went on decoding the port as a
-        // multitap and took no input from anything until the machine was reset (bug 54). So the
-        // port is left empty for kControllerReplugFrames first, and PollInput plugs the new
-        // controller in once that has run out.
-        if (system_->config().controller_type[port] != key)
-            replug_frames_[port] = kControllerReplugFrames;
-        system_->config().controller_type[port] = key;
-        const auto type = replug_frames_[port] > 0 ? emulation::psx::Sio::kNone
-                                                   : ParseControllerType(key);
-        system_->sio().set_controller_type(port, type);
+        config_.controller_type[port] = key;
         UpdateControllerTypeMenu();
         // Switching to or from kMouse/kNone/kMultitap changes whether this port's own source items
-        // (or, for kMultitap, its four players' source items) should be greyed out, so both source
-        // menus need refreshing too, not just the type menu's own ticks.
+        // (or, for kMultitap, its four players' source items) should be greyed out.
         UpdateInputSourceMenu();
         UpdateMultitapSourceMenu();
         SaveSettingsIfChanged();
+        SendConfigToMachine();
     }
 
     void App::UpdateInputSourceMenu() {
-        if (system_ != nullptr) {
-            TickInputSources(window_, system_->config().input_source,
-                             system_->config().controller_type);
-        }
+        TickInputSources(window_, config_.input_source, config_.controller_type);
     }
 
     void App::SetInputSource(int port, const std::string& key) {
-        if (system_ == nullptr)
-            return;
-        system_->config().input_source[port] = key;
+        config_.input_source[port] = key;
         UpdateInputSourceMenu();
         SaveSettingsIfChanged();
+        SendConfigToMachine();
     }
 
     void App::UpdateMultitapSourceMenu() {
-        if (system_ != nullptr) {
-            TickMultitapSources(window_, system_->config().multitap_player_source,
-                                system_->config().controller_type);
-        }
+        TickMultitapSources(window_, config_.multitap_player_source, config_.controller_type);
     }
 
     void App::SetMultitapSource(int port, int player, const std::string& key) {
-        if (system_ == nullptr || port < 0 || port >= 2 || player < 0 || player >= 4)
+        if (port < 0 || port >= 2 || player < 0 || player >= 4)
             return;
-        system_->config().multitap_player_source[port][player] = key;
+        config_.multitap_player_source[port][player] = key;
         UpdateMultitapSourceMenu();
         SaveSettingsIfChanged();
+        SendConfigToMachine();
     }
 
-    void App::UpdateFrameLimiterMenu() {
-        if (system_ != nullptr)
-            TickFrameLimiter(window_, system_->config().frame_limiter);
-    }
-
-    void App::UpdateSpeedMenu() {
-        if (system_ != nullptr)
-            TickSpeed(window_, system_->config().emulation_speed);
-    }
+    void App::UpdateFrameLimiterMenu() { TickFrameLimiter(window_, config_.frame_limiter); }
+    void App::UpdateSpeedMenu() { TickSpeed(window_, config_.emulation_speed); }
 
     void App::SetSpeed(float speed) {
-        if (system_ == nullptr)
-            return;
-        system_->config().emulation_speed = speed;
-
-        // A speed is only meaningful if something is pacing the machine, so
-        // asking for one asks for the limiter. Without this, choosing a speed
-        // with the limiter off does nothing at all and gives no hint why - and
-        // the machine keeps running at whatever the host manages, which since
-        // the audio device stopped blocking is "faster than a PlayStation".
-        if (!system_->config().frame_limiter) {
-            system_->config().frame_limiter = true;
+        config_.emulation_speed = speed;
+        // A speed is only meaningful if something is pacing the machine, so asking for one asks
+        // for the limiter. Without this, choosing a speed with the limiter off does nothing at all
+        // and gives no hint why.
+        if (!config_.frame_limiter) {
+            config_.frame_limiter = true;
             UpdateFrameLimiterMenu();
         }
-        // The deadline was being paced to the old rate and the resampler carries
-        // a fractional position from the old one; both are stale.
-        frame_limiter_.Reset();
-        speed_resampler_.Reset();
         UpdateSpeedMenu();
         SaveSettingsIfChanged();
+        // The machine restarts its pacing when it sees either of these change - the deadline it
+        // was keeping and the resampler's position both belong to the old rate.
+        SendConfigToMachine();
     }
 
     void App::SetFrameLimiter(bool on) {
-        if (system_ == nullptr)
-            return;
-        system_->config().frame_limiter = on;
-        // Whichever way it went, the deadline it was pacing to is stale - it has either just
-        // stopped being used or has not been used for a while. Starting clean stops the first frame
-        // back from being asked to make up the gap.
-        frame_limiter_.Reset();
-        // The audio the resampler was interpolating from was produced at a rate
-        // that is about to change; carrying its position across the change is a
-        // click.
-        speed_resampler_.Reset();
-        audio_pending_.clear();
+        config_.frame_limiter = on;
         UpdateFrameLimiterMenu();
         SaveSettingsIfChanged();
+        SendConfigToMachine();
     }
 
-    void App::UpdateCdTimingMenu() {
-        if (system_ != nullptr)
-            TickCdTiming(window_, system_->config().cdrom_mechanical_timing);
-    }
+    void App::UpdateCdTimingMenu() { TickCdTiming(window_, config_.cdrom_mechanical_timing); }
 
     void App::SetCdMechanicalTiming(bool on) {
-        if (system_ == nullptr)
-            return;
-        system_->config().cdrom_mechanical_timing = on;
+        config_.cdrom_mechanical_timing = on;
         UpdateCdTimingMenu();
         SaveSettingsIfChanged();
+        SendConfigToMachine();
     }
 
-    void App::UpdateSkipBiosIntroMenu() {
-        if (system_ != nullptr)
-            TickSkipBiosIntro(window_, system_->config().skip_bios_intro);
-    }
+    void App::UpdateSkipBiosIntroMenu() { TickSkipBiosIntro(window_, config_.skip_bios_intro); }
 
     void App::SetSkipBiosIntro(bool on) {
-        if (system_ == nullptr)
-            return;
-        system_->config().skip_bios_intro = on;
+        config_.skip_bios_intro = on;
         UpdateSkipBiosIntroMenu();
         SaveSettingsIfChanged();
+        SendConfigToMachine();
     }
 
-    void App::UpdateRecompilerMenu() {
-        if (system_ != nullptr)
-            TickRecompiler(window_, system_->config().recompiler);
-    }
+    void App::UpdateRecompilerMenu() { TickRecompiler(window_, config_.recompiler); }
 
-    // Changing CPU while a game is running is allowed, and this is all it takes
-    // from here: the setting is read by the machine's own thread between
-    // instructions, which is the only place it is safe to act on. Doing the
-    // switch here instead would free compiled code out from under whatever is
-    // executing it.
+    // Changing CPU while a game is running is allowed, and this is all it takes from here: the
+    // setting reaches the machine as a request, and System::StepInstruction acts on it between
+    // instructions - the only place it is safe, since switching it off frees compiled code.
     void App::SetRecompiler(bool on) {
-        if (system_ == nullptr)
-            return;
-        system_->config().recompiler = on;
+        config_.recompiler = on;
         UpdateRecompilerMenu();
         SaveSettingsIfChanged();
+        SendConfigToMachine();
+    }
+
+    void App::UpdatePauseInMenusMenu() { TickPauseInMenus(window_, config_.pause_in_menus); }
+
+    void App::SetPauseInMenus(bool on) {
+        config_.pause_in_menus = on;
+        UpdatePauseInMenusMenu();
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+        // Asked for while a menu is open - which is the only way to ask - so it takes effect from
+        // the next one rather than pausing under the one being used.
+    }
+
+    void App::UpdateShowTimingsMenu() { TickShowTimings(window_, config_.show_timings); }
+
+    void App::SetShowTimings(bool on) {
+        config_.show_timings = on;
+        UpdateShowTimingsMenu();
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+        UpdateTitle();
     }
 
     // ---------------------------------------------------------------------------------------------
     // The machine
     // ---------------------------------------------------------------------------------------------
 
-    bool App::ResetMachine() {
-        system_->Deinitialize();
-        if (system_->Initialize(bios_path_.c_str()) != 0) {
-            ShowError(window_, L"Failed to initialise the system (BIOS missing?).");
-            return false;
-        }
-        system_->set_auto_boot(false);
-        return true;
+    // All of these run on the machine's thread. What they have to say comes back through PostToUi.
+
+    void App::ResetMachine() {
+        const std::string bios = bios_path_;
+        PostToMachine([this, bios](Machine& machine) {
+            System& system = machine.system();
+            system.Deinitialize();
+            if (system.Initialize(bios.c_str()) != 0) {
+                PostToUi([this] {
+                    ShowError(window_, L"Failed to initialise the system (BIOS missing?).");
+                });
+                return;
+            }
+            system.set_auto_boot(false);
+            machine.ResetPacing();
+        });
     }
 
-    bool App::BootDiscFromFile(const std::string& path) {
-        if (!ResetMachine())
-            return false;
-        // The disc has to be in the drive before the BIOS looks, or it finds an open shell and
-        // stops at the menu.
-        system_->EjectDisc();
-        if (!system_->LoadDisc(path.c_str())) {
-            ShowWarning(window_,
-                        L"Could not read that disc image.\n\n"
-                        L"Supported: .cue (with its .bin or .img), .mds (with its "
-                        L".mdf), .bin, .img, .iso.");
-            return false;
-        }
-        // The disc is already mounted, so there is nothing left for the hand-off to load itself -
-        // just arm it before the machine starts running.
-        if (system_->config().skip_bios_intro)
-            system_->set_auto_boot(true);
+    void App::BootDiscFromFile(const std::string& path) {
+        const std::string bios = bios_path_;
+        PostToMachine([this, bios, path](Machine& machine) {
+            System& system = machine.system();
+            system.Deinitialize();
+            if (system.Initialize(bios.c_str()) != 0) {
+                PostToUi([this] {
+                    ShowError(window_, L"Failed to initialise the system (BIOS missing?).");
+                });
+                return;
+            }
+            system.set_auto_boot(false);
 
-        // Each disc gets its own pair of memory cards - a real console has none of this, of course,
-        // but "which card was in when I saved" is otherwise a question the player has to answer by
-        // hand.
-        LoadOrCreateMemoryCardsForDisc(path);
+            // The disc has to be in the drive before the BIOS looks, or it finds an open shell and
+            // stops at the menu.
+            system.EjectDisc();
+            if (!system.LoadDisc(path.c_str())) {
+                PostToUi([this] {
+                    ShowWarning(window_,
+                                L"Could not read that disc image.\n\n"
+                                L"Supported: .cue (with its .bin or .img), .mds (with its "
+                                L".mdf), .bin, .img, .iso.");
+                });
+                return;
+            }
+            // Already mounted, so there is nothing left for the hand-off to load itself - just arm
+            // it before the machine starts running.
+            if (system.config().skip_bios_intro)
+                system.set_auto_boot(true);
 
-        SetWindowTitleForPath(path);
-        paused_ = false;
-        return true;
+            // Each disc gets its own pair of memory cards - a real console has none of this, but
+            // "which card was in when I saved" is otherwise a question the player has to answer by
+            // hand.
+            LoadOrCreateMemoryCardsForDisc(system, path);
+
+            machine.ResetPacing();
+            machine.SetPaused(emulation::host::kPausedByUser, false);
+            PostToUi([this, path] {
+                paused_by_user_ = false;
+                SetWindowTitleForPath(path);
+            });
+        });
     }
 
     void App::BootBios() {
-        if (!ResetMachine())
-            return;
-        system_->EjectDisc();
-        SetWindowTitleForPath(std::string());
-        paused_ = false;
+        const std::string bios = bios_path_;
+        PostToMachine([this, bios](Machine& machine) {
+            System& system = machine.system();
+            system.Deinitialize();
+            if (system.Initialize(bios.c_str()) != 0) {
+                PostToUi([this] {
+                    ShowError(window_, L"Failed to initialise the system (BIOS missing?).");
+                });
+                return;
+            }
+            system.set_auto_boot(false);
+            system.EjectDisc();
+            machine.ResetPacing();
+            machine.SetPaused(emulation::host::kPausedByUser, false);
+            PostToUi([this] {
+                paused_by_user_ = false;
+                SetWindowTitleForPath(std::string());
+            });
+        });
     }
 
-    bool App::BootPsExeFromFile(const std::string& path) {
+    void App::BootPsExeFromFile(const std::string& path) {
         if (!LooksLikePsExe(path)) {
             ShowWarning(window_,
                         L"Could not load that file as a PS-X EXE.\n\n"
                         L"It must be the executable itself - the header starts with "
                         L"the 8 bytes \"PS-X EXE\" - not a disc image or a Windows "
                         L"executable.");
-            return false;
+            return;
         }
-        if (!ResetMachine())
-            return false;
-        // Nothing about a leftover disc should affect a test program that never asks the CD-ROM for
-        // anything.
-        system_->EjectDisc();
-        system_->set_auto_boot_exe(true, path);
-        SetWindowTitleForPath(path);
-        paused_ = false;
-        return true;
+        const std::string bios = bios_path_;
+        PostToMachine([this, bios, path](Machine& machine) {
+            System& system = machine.system();
+            system.Deinitialize();
+            if (system.Initialize(bios.c_str()) != 0) {
+                PostToUi([this] {
+                    ShowError(window_, L"Failed to initialise the system (BIOS missing?).");
+                });
+                return;
+            }
+            // Nothing about a leftover disc should affect a test program that never asks the
+            // CD-ROM for anything. The BIOS still runs for real first - see the hand-off in
+            // System::set_auto_boot_exe.
+            system.EjectDisc();
+            system.set_auto_boot_exe(true, path);
+            machine.ResetPacing();
+            machine.SetPaused(emulation::host::kPausedByUser, false);
+            PostToUi([this, path] {
+                paused_by_user_ = false;
+                SetWindowTitleForPath(path);
+            });
+        });
     }
 
-    void App::LoadOrCreateMemoryCardsForDisc(const std::string& disc_path) {
-        if (memcards_root_.empty() || system_ == nullptr)
+    // On the machine's thread, from the boot paths above and from the command line before the
+    // threads start.
+    void App::LoadOrCreateMemoryCardsForDisc(System& system, const std::string& disc_path) {
+        if (memcards_root_.empty())
             return;
 
         const std::string dir = memcards_root_ + "\\" + DiscIdentifier(disc_path);
@@ -1020,36 +881,61 @@ namespace psxemu {
 
         for (int slot = 0; slot < 2; ++slot) {
             const std::string path = dir + "\\card" + std::to_string(slot + 1) + ".mcr";
-            if (system_->mc(slot).LoadFile(path.c_str()) == S_OK)
+            if (system.mc(slot).LoadFile(path.c_str()) == S_OK)
                 continue;
 
-            // LoadFile fails for two different reasons and only one is worth saying anything about:
-            // no card there yet, which is the ordinary case for a game played for the first time,
-            // or a file that exists but is not a valid 128 KB card, which CreateFile is about to
-            // overwrite.
+            // LoadFile fails for two different reasons and only one is worth saying anything
+            // about: no card there yet, which is the ordinary case for a game played for the first
+            // time, or a file that exists but is not a valid 128 KB card, which CreateFile is
+            // about to overwrite.
             FILE* existing = fopen(path.c_str(), "rb");
             const bool had_file = existing != nullptr;
             if (existing != nullptr)
                 fclose(existing);
 
-            if (system_->mc(slot).CreateFile(path.c_str()) != S_OK) {
+            if (system.mc(slot).CreateFile(path.c_str()) != S_OK) {
                 const std::wstring message =
                     L"Could not create a memory card for slot " + std::to_wstring(slot + 1) + L".";
-                ShowWarning(window_, message.c_str());
+                PostToUi([this, message] { ShowWarning(window_, message.c_str()); });
             } else if (had_file) {
                 const std::wstring message =
                     L"The memory card file for slot " + std::to_wstring(slot + 1) +
                     L" was not a valid 128 KB card and has been reset:\n\n" +
                     std::wstring(path.begin(), path.end());
-                ShowWarning(window_, message.c_str());
+                PostToUi([this, message] { ShowWarning(window_, message.c_str()); });
             }
         }
     }
 
-    std::string App::SaveStateSlotPath(int slot) const {
-        const std::string disc_path =
-            (system_ != nullptr) ? system_->cdrom().disc().path() : std::string();
-        return psxemu::SaveStateSlotPath(savestates_root_, disc_path, slot);
+    void App::SetUserPaused(bool paused) {
+        paused_by_user_ = paused;
+        PostToMachine([paused](Machine& machine) {
+            machine.SetPaused(emulation::host::kPausedByUser, paused);
+        });
+    }
+
+    void App::EnterMenuPause() {
+        ++menu_depth_;
+        if (menu_depth_ == 1 && config_.pause_in_menus) {
+            PostToMachine(
+                [](Machine& machine) { machine.SetPaused(emulation::host::kPausedForMenu, true); });
+        }
+    }
+
+    void App::LeaveMenuPause() {
+        if (menu_depth_ > 0)
+            --menu_depth_;
+        if (menu_depth_ == 0) {
+            // Cleared whether or not it was set: turning the setting off while a menu is open
+            // would otherwise leave the machine paused with nothing to unpause it.
+            PostToMachine([](Machine& machine) {
+                machine.SetPaused(emulation::host::kPausedForMenu, false);
+            });
+        }
+    }
+
+    std::string App::SaveStateSlotPath(System& system, int slot) const {
+        return psxemu::SaveStateSlotPath(savestates_root_, system.cdrom().disc().path(), slot);
     }
 
     void App::SetWindowTitleForPath(const std::string& path) {
@@ -1061,7 +947,7 @@ namespace psxemu {
             title_base_ =
                 std::wstring(kWindowTitle) + L" - " + std::wstring(name.begin(), name.end());
         }
-        SetWindowTextW(window_, title_base_.c_str());
+        UpdateTitle();
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1083,25 +969,50 @@ namespace psxemu {
         App* app = From(window);
 
         switch (message) {
+            case kMessageRunOnUi: {
+                // A thread asked for this to happen here. Owned by the message; run it once - or
+                // not at all, if the window is on its way out: a warning that opens a dialog while
+                // everything is being stopped helps nobody.
+                std::function<void()>* work =
+                    reinterpret_cast<std::function<void()>*>(lparam);
+                if (work != nullptr) {
+                    if (app == nullptr || !app->stopping_)
+                        (*work)();
+                    delete work;
+                }
+                return 0;
+            }
+
             case WM_SIZE:
-                if (app != nullptr && app->graphics_ != nullptr && wparam != SIZE_MINIMIZED)
-                    app->graphics_->Resize(LOWORD(lparam), HIWORD(lparam));
+                if (app != nullptr && app->video_ != nullptr && wparam != SIZE_MINIMIZED) {
+                    const int width = LOWORD(lparam);
+                    const int height = HIWORD(lparam);
+                    // The swap chain belongs to the video thread; resizing it from here would be
+                    // two threads in one device. It shows the current frame again afterwards, so
+                    // the window is not left stretched until the next one arrives.
+                    app->video_->Post([width, height](VideoOutput& video) {
+                        if (video.presenter() != nullptr)
+                            video.presenter()->Resize(width, height);
+                        video.PresentAgain();
+                    });
+                }
                 return 0;
 
-            // Windows is about to run a modal loop of its own - the menu bar, a drag or resize of
-            // the window - or, for a dialog or a message box, says it is idle inside one. MainLoop
-            // does not get control back until it ends, and restarts things on the frame after.
+            // Windows is about to run a modal loop of its own - the menu bar, or a drag or resize
+            // of the window. The machine keeps running underneath it now; whether it should is
+            // Emulation > Pause While in Menus.
             case WM_ENTERMENULOOP:
-            case WM_ENTERSIZEMOVE:
-            case WM_ENTERIDLE:
                 if (app != nullptr)
-                    app->EnterStall();
-                break;
+                    app->EnterMenuPause();
+                return 0;
+
+            case WM_EXITMENULOOP:
+                if (app != nullptr)
+                    app->LeaveMenuPause();
+                return 0;
 
             case WM_COMMAND:
-                // Every command needs the machine, and it does not exist until after the window
-                // does.
-                if (app != nullptr && app->system_ != nullptr)
+                if (app != nullptr)
                     app->OnCommand(LOWORD(wparam));
                 return 0;
 
@@ -1110,10 +1021,13 @@ namespace psxemu {
                     app->OnKeyDown(wparam);
                 return 0;
 
-            case WM_INPUT:
+            case WM_CLOSE:
+                // Every thread is stopped before the window goes: the video thread has a swap
+                // chain on it, and the machine has a report to post to it.
                 if (app != nullptr)
-                    app->mouse_.OnRawInput(reinterpret_cast<HRAWINPUT>(lparam));
-                break;   // let DefWindowProcW do its own WM_INPUT cleanup
+                    app->StopThreads();
+                DestroyWindow(window);
+                return 0;
 
             case WM_DESTROY:
                 PostQuitMessage(0);
@@ -1126,28 +1040,40 @@ namespace psxemu {
     }
 
     void App::OnKeyDown(WPARAM key) {
+        if (stopping_)
+            return;
         if (key == VK_SPACE)
-            paused_ = !paused_;
-        //if (key == VK_ESCAPE)
-        //  PostMessageW(window_, WM_CLOSE, 0, 0);
+            SetUserPaused(!paused_by_user_);
         // F1-F8: plain loads that slot, Ctrl+ saves it. Both also become the slot the Save
         // State/Load State menu items act on, so pressing F3 and then using the menu (or another
         // F-key) do not disagree about which slot is "current".
         if (key >= VK_F1 && key <= VK_F8) {
             const int slot = static_cast<int>(key - VK_F1) + 1;
             last_slot_ = slot;
-            if (GetKeyState(VK_CONTROL) & 0x8000)
-                pending_save_slot_ = slot;
-            else
-                pending_load_slot_ = slot;
+            const bool save = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            PostToMachine([this, slot, save](Machine& machine) {
+                const std::string path = SaveStateSlotPath(machine.system(), slot);
+                const std::string error = save ? machine.system().SaveState(path)
+                                               : machine.system().LoadState(path);
+                if (!save)
+                    machine.ResetPacing();
+                if (!error.empty()) {
+                    const std::wstring message(error.begin(), error.end());
+                    PostToUi([this, message] { ShowError(window_, message.c_str()); });
+                }
+            });
         }
     }
 
     void App::OnCommand(int command) {
+        if (stopping_)
+            return;
+
         switch (command) {
             case kCommandBootDisc: {
                 // Switching the console on with a game in the drive. Pick an image, then the
                 // machine starts from cold and the BIOS boots it.
+                MenuPause held(this);
                 const std::string path =
                     ChooseFile(window_, FileDialog::kOpen, kDiscFilter, nullptr);
                 if (!path.empty())
@@ -1158,21 +1084,28 @@ namespace psxemu {
             case kCommandSwapDisc: {
                 // Changing the disc in a running machine, for a game that asks for its second one.
                 // No reset - that is what Boot disc is for.
+                MenuPause held(this);
                 const std::string path =
                     ChooseFile(window_, FileDialog::kOpen, kDiscFilter, nullptr);
                 if (path.empty())
                     break;
-                if (!system_->LoadDisc(path.c_str())) {
-                    ShowWarning(window_, L"Could not read that disc image.");
-                    break;
-                }
-                SetWindowTitleForPath(path);
+                PostToMachine([this, path](Machine& machine) {
+                    if (!machine.system().LoadDisc(path.c_str())) {
+                        PostToUi([this] {
+                            ShowWarning(window_, L"Could not read that disc image.");
+                        });
+                        return;
+                    }
+                    PostToUi([this, path] { SetWindowTitleForPath(path); });
+                });
                 break;
             }
 
             case kCommandEjectDisc:
-                system_->EjectDisc();
-                SetWindowTitleForPath(std::string());
+                PostToMachine([this](Machine& machine) {
+                    machine.system().EjectDisc();
+                    PostToUi([this] { SetWindowTitleForPath(std::string()); });
+                });
                 break;
 
             case kCommandBootBios:
@@ -1180,8 +1113,8 @@ namespace psxemu {
                 break;
 
             case kCommandBootExe: {
-                // A standalone test program or homebrew binary - no disc. The BIOS boots normally
-                // first; see BootPsExeFromFile for why.
+                // A standalone test program or homebrew binary - no disc.
+                MenuPause held(this);
                 const std::string path =
                     ChooseFile(window_, FileDialog::kOpen, kExeFilter, nullptr);
                 if (!path.empty())
@@ -1192,26 +1125,36 @@ namespace psxemu {
             case kCommandOpenMemoryCardSlot1:
             case kCommandOpenMemoryCardSlot2: {
                 const int slot = (command == kCommandOpenMemoryCardSlot1) ? 0 : 1;
+                MenuPause held(this);
                 const std::string path = ChooseFile(window_, FileDialog::kOpen, kCardFilter, "mcr");
                 if (path.empty())
                     break;
-                if (system_->mc(slot).LoadFile(path.c_str()) != S_OK) {
-                    ShowWarning(window_,
-                                L"Could not open that memory card. It must be exactly "
-                                L"128 KB.");
-                }
+                PostToMachine([this, slot, path](Machine& machine) {
+                    if (machine.system().mc(slot).LoadFile(path.c_str()) != S_OK) {
+                        PostToUi([this] {
+                            ShowWarning(window_,
+                                        L"Could not open that memory card. It must be exactly "
+                                        L"128 KB.");
+                        });
+                    }
+                });
                 break;
             }
 
             case kCommandCreateMemoryCardSlot1:
             case kCommandCreateMemoryCardSlot2: {
                 const int slot = (command == kCommandCreateMemoryCardSlot1) ? 0 : 1;
+                MenuPause held(this);
                 const std::string path = ChooseFile(window_, FileDialog::kSave, kCardFilter, "mcr");
                 if (path.empty())
                     break;
-                if (system_->mc(slot).CreateFile(path.c_str()) != S_OK) {
-                    ShowWarning(window_, L"Could not create that memory card file.");
-                }
+                PostToMachine([this, slot, path](Machine& machine) {
+                    if (machine.system().mc(slot).CreateFile(path.c_str()) != S_OK) {
+                        PostToUi([this] {
+                            ShowWarning(window_, L"Could not create that memory card file.");
+                        });
+                    }
+                });
                 break;
             }
 
@@ -1220,16 +1163,26 @@ namespace psxemu {
                 break;
 
             case kCommandPause:
-                paused_ = !paused_;
+                SetUserPaused(!paused_by_user_);
                 break;
 
             case kCommandSaveState:
-                pending_save_slot_ = last_slot_;
+            case kCommandLoadState: {
+                const int slot = last_slot_;
+                const bool save = (command == kCommandSaveState);
+                PostToMachine([this, slot, save](Machine& machine) {
+                    const std::string path = SaveStateSlotPath(machine.system(), slot);
+                    const std::string error = save ? machine.system().SaveState(path)
+                                                   : machine.system().LoadState(path);
+                    if (!save)
+                        machine.ResetPacing();
+                    if (!error.empty()) {
+                        const std::wstring message(error.begin(), error.end());
+                        PostToUi([this, message] { ShowError(window_, message.c_str()); });
+                    }
+                });
                 break;
-
-            case kCommandLoadState:
-                pending_load_slot_ = last_slot_;
-                break;
+            }
 
             case kCommandViewVram: {
                 view_vram_ = !view_vram_;
@@ -1238,27 +1191,33 @@ namespace psxemu {
                     CheckMenuItem(bar, static_cast<UINT>(kCommandViewVram),
                                   MF_BYCOMMAND | (view_vram_ ? MF_CHECKED : MF_UNCHECKED));
                 }
+                const bool on = view_vram_;
+                PostToMachine([on](Machine& machine) { machine.set_view_vram(on); });
                 break;
             }
 
             case kCommandFrameLimiter:
-                if (system_ != nullptr)
-                    SetFrameLimiter(!system_->config().frame_limiter);
+                SetFrameLimiter(!config_.frame_limiter);
                 break;
 
             case kCommandCdMechanicalTiming:
-                if (system_ != nullptr)
-                    SetCdMechanicalTiming(!system_->config().cdrom_mechanical_timing);
+                SetCdMechanicalTiming(!config_.cdrom_mechanical_timing);
                 break;
 
             case kCommandSkipBiosIntro:
-                if (system_ != nullptr)
-                    SetSkipBiosIntro(!system_->config().skip_bios_intro);
+                SetSkipBiosIntro(!config_.skip_bios_intro);
                 break;
 
             case kCommandRecompiler:
-                if (system_ != nullptr)
-                    SetRecompiler(!system_->config().recompiler);
+                SetRecompiler(!config_.recompiler);
+                break;
+
+            case kCommandPauseInMenus:
+                SetPauseInMenus(!config_.pause_in_menus);
+                break;
+
+            case kCommandShowTimings:
+                SetShowTimings(!config_.show_timings);
                 break;
 
             case kCommandRescanBios:

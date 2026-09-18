@@ -18,8 +18,6 @@
 *****************************************************************************************************************/
 #pragma once
 
-#include "audio/iaudioengine.h"
-
 namespace emulation {
 namespace psx {
 
@@ -30,7 +28,7 @@ namespace psx {
   works out of the same 512 KB of sound RAM the samples live in.
 
   The core owns the mixing and hands finished frames to whoever asks. A front
-  end drains them with ReadSamples and pushes them at an IAudioEngine, or a
+  end drains them with ReadSamples and hands them to its sound device, or a
   headless harness drains them and checks the numbers - which is the only way
   any of this is testable, because audio has no equivalent of looking at the
   screen and seeing that it is wrong.
@@ -64,10 +62,6 @@ class Spu : public Component {
   // Returns how many frames were actually copied.
   int ReadSamples(int16_t* out, int frames);
   int QueuedFrames() const;
-
-  // Optional sink. When set, finished frames are pushed to it as well as
-  // buffered, so a front end can either pull or be pushed to.
-  void set_audio_engine(IAudioEngine* engine) { engine_ = engine; }
 
   void QueueCdAudio(const uint8_t* raw_sector);
   // Interleaved stereo at some other rate - XA-ADPCM comes out at 37800 or
@@ -143,8 +137,7 @@ class Spu : public Component {
   int voice_event_count() const { return voice_event_count_; }
 
   // Every voice, every register, the noise and reverb working state, sound
-  // RAM itself (Bytes) and the CD-audio input buffer. Not saved: engine_
-  // (a host pointer, rewired by set_audio_engine after load, not state),
+  // RAM itself (Bytes) and the CD-audio input buffer. Not saved:
   // buffer_/buffer_read_/write_/count_ (the drained-frame ring buffer -
   // host-side output, the same reasoning as the GPU's framebuffer), stats_,
   // and the opt-in voice_events_ trace.
@@ -246,7 +239,6 @@ class Spu : public Component {
   int16_t cd_resample_scratch_[2];
   void PushCdFrame(int16_t left, int16_t right);
 
-  IAudioEngine* engine_;
   Stats stats_;
 
   bool trace_voices_;

@@ -2993,6 +2993,12 @@ port at `kNone` until it runs out. Only a change made in the menu does this; a
 reset, a boot or a loaded state applies the configured type at once, as
 before.
 
+*Since 2026-09-18 both halves live on the machine's thread, in `App::ApplyInput`
+(Docs/Threading-Plan.md): the countdown starts when that sees the configured
+type differ from the one currently plugged in, rather than when the menu sets
+it, so the thread that runs the machine owns the whole of it. Same 60 frames,
+same behaviour.*
+
 **How it was found.** With a scratch `boot_runner` that could change a port's
 type on a schedule, take presses on either port and dump RAM at chosen frames.
 Pressing L1 - which does nothing on the title screen - in two otherwise
@@ -3445,6 +3451,15 @@ test's assumptions cannot find that assumption's bug - the underrun counter
 lived in the same engine and looked at the same cursor. And a measurement of
 the output is only independent if nothing between the two changes the signal.
 
+*Superseded on 2026-09-18.* The machinery above - the guard silence, the prime,
+the queue target per engine, the resync on write - is gone with the push model
+itself. The audio thread pulls instead (Docs/Threading-Plan.md phase 3), so the
+device asks for what it wants when it wants it and there is no queue for the
+machine to guess at. What this bug taught is built into the engine rather than
+bolted on: DirectSound writes past the *write* cursor, never the play cursor,
+and keeps silence beyond its data so running out is a gap. Re-measured against
+both real devices with the BIOS running: 0 frames short, 0 resyncs.
+
 ## 62. The frame limiter held the right average by delivering frames 0 to 30 ms apart
 
 `platform/frame_limiter.h`
@@ -3540,3 +3555,10 @@ check by hand is a menu held open over a game with DirectSound selected.
 **Worth remembering.** "An unfed device plays silence" is true of WASAPI, not
 of sound devices in general: a looping buffer plays whatever it was last given.
 And on a single-threaded front end, every menu is a pause.
+
+*Superseded on 2026-09-18.* `EnterStall` and `LeaveStall` are gone: the machine
+has its own thread, so a menu no longer stops it and there is nothing to stall
+(Docs/Threading-Plan.md phase 5). The bug cannot come back either way - the
+audio thread writes silence into whatever the ring cannot fill, so a device is
+never left playing what it happens to still hold. Whether a menu pauses the
+machine is now a choice: Emulation > Pause While in Menus, off by default.

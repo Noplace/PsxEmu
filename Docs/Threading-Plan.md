@@ -1,24 +1,31 @@
 # Threading: the window, the machine, video, audio and input
 
+**Built, 2026-09-18.** Phases 0 to 6 are done: the machine, video, audio and
+input each have a thread, and the UI thread does nothing but answer the window.
+What each phase cost and bought is in the phase table; what was measured is
+under "What it buys, in numbers". Phase 7 - a thread for the rasteriser, and
+disc read-ahead - is still optional and still unmeasured.
+
 ## The conclusion first
 
-Yes, it can be done, and it is how the performance-focused emulators are built.
-The design below gives the front end five threads - the window, the machine,
-video, audio and input - that share nothing except a handful of typed channels.
-The emulated machine itself (`psx/`) stays exactly as single-threaded and
-deterministic as it is today, so every checksum in
-[Test-Suite.md](Test-Suite.md) still means what it means now.
+It can be done, it is how the performance-focused emulators are built, and it
+now is. The front end has five threads - the window, the machine, video, audio
+and input - sharing nothing except a handful of typed channels. The emulated
+machine itself (`psx/`) is exactly as single-threaded and deterministic as it
+was, so every checksum in [Test-Suite.md](Test-Suite.md) still means what it
+meant - and `host_test` proves it, by running a threaded BIOS boot to
+`boot_runner`'s own instruction count.
 
-What it buys is **headroom, pacing and responsiveness**. The thread running the
-machine stops doing anything but emulate: no upload or present, no sound-card
-calls, no pad polling, no waiting for the monitor. Menus, drags and dialogs stop
-freezing the game. Sound is pulled at the device's own pace, and running short
-becomes a gap, never noise. What it does not buy is a faster CPU core: that is
-about 90% of the work, it stays one thread, and the recompiler is what moves it.
+What it bought is **pacing and responsiveness**, not speed. The thread running
+the machine does nothing but emulate: no upload or present, no sound-card calls,
+no pad polling, no waiting for the monitor. Menus, drags and dialogs no longer
+freeze the game. Sound is pulled at the device's own pace, and running short is
+a gap rather than noise. What it did not buy is a faster CPU core: that is about
+90% of the work, it stays one thread, and the recompiler is what moves it.
 
-Build it in phases, each one shippable and verified on its own. The risky one -
-the machine leaving the window's thread - comes after everything it depends on
-already works.
+It was built in the phases below, in order, each verified before the next. The
+risky one - the machine leaving the window's thread - came after everything it
+depends on already worked.
 
 ## What the standard is
 
@@ -55,45 +62,48 @@ What they have in common is the design here:
 
 ## What runs where today
 
-*As of 2026-09-18.* `App::MainLoop` does everything on the one thread Windows
-delivers messages on:
+*As of 2026-09-18, with phases 0 to 6 built.* Five threads, each owning one
+thing and talking to the others only through the channels below.
 
 ```cpp
-while (running_) {
-    if (!PumpMessages(&message)) break;
-    if (paused_) { EnterStall(); Sleep(16); continue; }
-    LeaveStall();          // restarts the sound device after a stall
-    ApplyPendingStates();
-    PollInput();           // XInput, the keyboard, the mouse -> Sio
-    RunOneFrame();         // ~500k instructions, until the GPU's frame counter moves
-    PumpAudio();           // takes what fits and never waits
-    UpdateSpeedReadout();
-    PresentFrame();        // upload, draw, present
-    LimitFrameRate();      // sleeps out the rest of the frame
+// The machine's thread - host::Machine::Run, in PSXEmu.Core/host/
+while (!stop) {
+    requests.Drain(*this);               // boot, reset, states, settings, pause
+    if (paused) { doorbell.Wait(100ms); continue; }
+    apply_input(system, input.Take());   // what the input thread last read
+    RunOneFrame();                       // until the GPU's frame counter moves
+    PublishFrame();                      // one atomic exchange to the video thread
+    PumpAudio();                         // resampled into the ring the audio thread pulls
+    Pace();                              // the frame limiter, and nothing else
 }
 ```
 
-Sharing one thread goes wrong in both directions.
+The UI thread is `GetMessage`/`DispatchMessage` and nothing else. The video
+thread waits for a frame and presents it - vsync blocks there and nowhere else.
+The audio thread is paced by the device: wait, ask how much room, fill it from
+the ring, put silence in whatever the ring could not supply. The input thread
+polls the pads, the keyboard and the mouse a thousand times a second.
 
-**The machine holds up the window.** While a frame is being run or presented,
-messages wait: the window does not redraw, the menu does not open, and a drag
-does not move it. A slow frame - a disc read from the network share, a heavy
-scene - makes that visible.
+What that fixed, in the order it used to hurt:
 
-**The window holds up the machine.** A menu, a drag or resize of the window,
-and a dialog each run a modal loop of Windows' own inside a message this loop
-dispatched, and `MainLoop` gets no control back until it ends. The machine
-stops for as long as the menu stays open or the mouse button stays down. Since
-bug 63 the sound device stops with it rather than DirectSound replaying its
-last second, but the freeze itself is what one thread costs.
+- **A menu, a drag or a dialog no longer stops the machine.** They block the UI
+  thread only. Whether the machine *should* keep running under a menu is now a
+  setting - Emulation > Pause While in Menus, off by default, which is what
+  DuckStation, PCSX2 and Dolphin do.
+- **A long frame no longer stops the window.** Messages are answered while the
+  machine is mid-frame, so the window redraws, the menu opens and a drag moves.
+- **The machine no longer pays for the output.** Uploading and presenting the
+  frame, feeding the sound card and polling the pads have left its frame
+  budget. The one that could actually stall it is gone too: when the machine
+  outruns the monitor - 200% on a 60 Hz display - `Present` blocks the video
+  thread, and the mailbox drops the frames nobody could show, rather than the
+  monitor pacing the machine.
+- **Sound is pulled, not pushed.** Running short is silence the audio thread
+  puts in deliberately, counted, instead of whatever the device's buffer held
+  last - which is what bugs 61 and 63 both were.
 
-**The machine pays for the output.** Uploading and presenting the frame,
-feeding the sound card and polling the pads all come out of the frame budget
-the emulation needs. Present is cheap while the machine produces frames more
-slowly than the monitor shows them - the swap chains are two-buffer flip model,
-and at 59 fps on a 165 Hz display a back buffer is normally free - but when the
-machine outruns the monitor, `Present` blocks and the monitor paces the
-machine: 200% speed on a 60 Hz display cannot happen with vsync on.
+What one thread still costs: nothing about emulation itself. A frame of the
+BIOS shell is the same 12 ms of interpreter either way.
 
 ## The design
 
@@ -102,7 +112,7 @@ machine: 200% speed on a 60 Hz display cannot happen with vsync on.
 | Thread | Owns - and nothing else touches it | What it does |
 |---|---|---|
 | **UI** (today's main thread) | the window, the menus and dialogs, the settings file, and its own copy of the settings for ticking menus | `GetMessage`/`DispatchMessage` and nothing else. A menu command becomes a request to the thread that owns what it changes; so does a hotkey (Space, F1-F8). |
-| **Machine** | `System` - every emulated component - with the frame limiter, the speed resampler, save states, memory cards and the recompiler | take requests; apply pending states; read the input snapshot; `RunOneFrame`; hand the frame to video and the samples to audio; set the rumble; pace. While paused it waits for a request instead of running frames. |
+| **Machine** | `System` - every emulated component - with the frame limiter, the speed resampler, save states, memory cards and the recompiler | take requests; read the input snapshot; `RunOneFrame`; hand the frame to video and the samples to audio; set the rumble; pace. While paused it waits for a request instead of running frames. |
 | **Video** | the `IGraphicsEngine` - D3D11 or D3D12 - with its swap chain and filters | wait for a new frame or a request; apply resize, filter, renderer and vsync changes; upload, draw, present. Vsync blocks this thread and no other. |
 | **Audio** | the `IAudioEngine` - WASAPI or DirectSound | paced by the device. WASAPI in event-driven mode wakes when the device wants data; DirectSound runs on a 5 ms timer and tops up ahead of its write cursor. Both read the sample ring and write silence for whatever it cannot supply. Registered with MMCSS as "Pro Audio", as render threads normally are, so a busy machine cannot starve it. |
 | **Input** | the XInput pads, the keyboard, the raw mouse (through a message-only window of its own) and the rumble motors | poll at 1 kHz and publish a snapshot; apply rumble when it changes. |
@@ -114,11 +124,11 @@ table is owned by exactly one thread.
 
 | From → to | Carries | How | Depth, and what happens at the edges |
 |---|---|---|---|
-| UI → machine | boot, reset, pause, states, discs, cards, settings | a queue of requests - a mutex around a vector of `std::function<void(System&)>`, swapped out whole - plus an event to wake a paused machine | unbounded but tiny: one menu click is one entry |
-| UI → video | resize, filter, renderer, vsync, View VRAM | the same kind of queue | drained before every present |
+| UI → machine | boot, reset, pause, save and load states, discs, cards, settings, View VRAM | a queue of requests - a mutex around a vector of `std::function<void(Machine&)>`, swapped out whole - plus a doorbell to wake a paused machine | unbounded but tiny: one menu click is one entry |
+| UI → video | resize, filter, renderer | the same kind of queue | drained before every present |
 | UI → audio | which backend | the same | drained on every wake |
 | machine → video | finished frames | a three-slot mailbox: the machine fills a free slot and publishes it with one atomic exchange; video takes the newest | never more than one frame behind. A frame video did not get to is dropped and counted - which is also exactly how 200% on a 60 Hz monitor shows every other frame |
-| machine → audio | samples | a single-producer, single-consumer lock-free ring, about 200 ms | empty: silence, counted. Full: the newest samples are dropped, counted. The rate trim holds it at its target so that neither happens in steady state |
+| machine → audio | samples | a single-producer, single-consumer lock-free ring, 8,192 frames - 186 ms | empty: silence, counted. Full: the newest samples are dropped, counted. The rate trim holds it at its target so neither happens in steady state; if it ever ends up four times past the target anyway, the audio thread skips down to twice it rather than playing a backlog late |
 | input → machine | pads, keyboard, mouse buttons and focus | the latest snapshot behind a small lock; mouse motion adds up until the machine takes it | latest wins, and it is never more than a millisecond old |
 | machine → input | motor levels | two atomics per pad | latest wins |
 | any → UI | the title-bar speed, errors, "this is now the state" | `PostMessage` with a small payload | **never `SendMessage`** - see the rules |
@@ -135,8 +145,10 @@ One master, as now: the frame limiter on the machine's thread, at the emulated
 refresh rate times the speed setting. The others follow it.
 
 - **Audio**: the resampler's half-percent trim steers by the ring's fill level
-  instead of the device's queue - the same control loop, measuring a
-  different buffer. Target about 50 ms, which is DuckStation's default.
+  instead of the device's queue - the same control loop, measuring a different
+  buffer. The target is 40 ms (`Machine::kAudioTargetFrames`): enough to cover
+  the machine's 17 ms bursts plus the device taking its 10 ms, with room to
+  spare. DuckStation holds 50 ms for the same reason.
 - **Video**: shows the newest frame at the monitor's next refresh with vsync
   on, or at once with it off.
 
@@ -147,23 +159,32 @@ time-stretched audio, and a pre-frame sleep to cut input latency.
 ### Pause, menus and dialogs
 
 A menu, a drag and a dialog block only the UI thread, so the game keeps running
-under them - which is what DuckStation, PCSX2 and Dolphin do. The bug 63 wiring
-(`WM_ENTERMENULOOP`, `WM_ENTERSIZEMOVE` and `WM_ENTERIDLE` calling
-`EnterStall`) comes out with the thread; left in, it would silence a game that
-is still playing. "Pause while a menu is open" can be a setting later if anyone
-wants it.
+under them - which is what DuckStation, PCSX2 and Dolphin do. Bug 63's wiring
+went with the thread: `EnterStall` and `LeaveStall` are gone, and left in they
+would have silenced a game that was still playing.
 
-Pause becomes a request. The machine stops running frames and waits on its
-request event, not a `Sleep(16)` poll, so it still answers requests. The ring
-runs dry, so audio plays silence. Video keeps the last frame and presents it
-again on a resize - the window stops going blank while it is dragged.
+Whether a menu *should* stop the game is a matter of taste, so it is a setting:
+**Emulation > Pause While in Menus**, `EmuConfig::pause_in_menus`, off by
+default. On, `WM_ENTERMENULOOP` and the dialogs this thread opens itself hold a
+counted `kPausedForMenu` on the machine - counted because a file picker can open
+over a menu, and the machine should come back only when the last of them closes.
+
+Pause is a request like any other. The machine stops running frames and waits on
+its doorbell rather than polling, so it still answers requests at once - a
+paused machine ran one 0.04 ms after it was posted. The ring runs dry and the
+audio thread fills silence; video keeps the last frame and shows it again on a
+resize, so the window does not go blank while it is dragged.
 
 ### Starting and stopping
 
-**Start**: the UI creates the window, then starts input, audio and video. Each
-creates its own device on its own thread and reports success or failure by
-posted message. Then it builds the machine and starts its thread, and enters the
-message loop. The UI never waits for another thread's answer.
+**Start**: the UI creates the window and the machine, puts the settings file's
+choices on it, and mounts a disc named on the command line - all while it is
+still the only thread there is. Then it starts them outputs-first: input, audio,
+video, and the machine last, so nothing is producing before there is somewhere
+to put it. Each device is created on the thread that will use it and reports
+what actually opened by posted message - which is how the menu comes to tick the
+renderer that opened rather than the one that was asked for. The UI never waits
+for any of it.
 
 **Stop**, in this order: the machine first, so nothing more is produced; then
 video, which releases the swap chain before the window goes; then audio; then
@@ -174,52 +195,71 @@ input; then `DestroyWindow`. The UI joins each thread with
 
 - **`psx/`: unchanged.** Still single-threaded, still deterministic.
 - **`PSXEmu.Core/host/`: new, and the only thread-aware part of Core.** The
-  channels (request queue, sample ring, frame mailbox, input snapshot) and
-  `MachineThread`, which owns a `System`, runs the loop above, and talks to the
-  outside only through channels. No Win32 in it.
+  channels - `doorbell.h`, `request_queue.h`, `sample_ring.h`,
+  `frame_mailbox.h`, `input_exchange.h` - and the three threads that use them:
+  `Machine`, which owns a `System` and runs the loop above, `AudioOutput` and
+  `VideoOutput`. No window, no device and no message loop anywhere in it; the
+  front end passes those in as a factory or an interface.
 
-  This deliberately changes the old rule that nothing in Core is
-  thread-aware. The machine still is not; the new code is the loop that drives
-  it. Putting that loop in Core means a headless harness can run it, which is
+  This deliberately changes the old rule that nothing in Core is thread-aware.
+  The machine still is not; the new code is the loop that drives it. Putting
+  that loop in Core is what lets `host_test` run the real thing headlessly -
   the only way threading gets a test other than a person watching a window.
-- **`PSXEmu.Win32/`**: the UI thread - `App` shrinks to the window, the menus
-  and the settings - and the three device threads on the far side of the
-  channels.
-- **`IAudioEngine` turns from push into pull**: each engine runs its own
-  thread and asks a source for samples, the way DuckStation's `AudioStream`
-  does. `IGraphicsEngine` keeps its interface; only the thread that calls it
-  changes.
+- **`PSXEmu.Win32/`**: the UI thread - `App`, now the window, the menus and the
+  settings - plus the two pieces the threads in `host/` need from Windows:
+  `video_presenter.h/.cpp` (the Direct3D engine the video thread draws with) and
+  `input_thread.h/.cpp` (the pads, keyboard and raw mouse).
+- **`IAudioEngine` turns from push into pull**: no `QueueAudio`, but
+  `WaitForRoom`, `WritableFrames` and `WriteFrames`, which is the loop
+  `AudioOutput`'s thread runs. The engines own no thread themselves - one owns
+  them - which is what keeps `host/` the only place in Core that starts one.
+  `IGraphicsEngine` keeps its interface; only the thread calling it changed.
 
 ## Phases
 
-| # | Change | What it buys | Verified by |
+| # | Change | Done | What it bought |
 |---|---|---|---|
-| 0 | Per-stage times in the title-bar readout: emulate, present, audio, input | the "before" numbers, so the later phases can be measured against them rather than assumed | you reading them |
-| 1 | The channels in `host/`, with a `host_test` harness | nothing visible - the foundation | two threads pushing sequence-numbered, checksummed data through each channel: nothing lost, duplicated or torn, and the edge counts right |
-| 2 | One door: every menu command becomes a request; the UI keeps its own copy of the settings; still one thread | nothing visible - it is what makes phase 5 small | every checksum unchanged, and no `system_->` left in a UI handler |
-| 3 | Audio thread: pull, paced by the device, silence when short | a short ring sounds like a gap, never garbage, by construction - bug 61 and 63's DirectSound machinery retires; latency can come down | `host_test` with a fake device pulling in real time; your ear |
-| 4 | Video thread and the frame mailbox | upload and present leave the machine's frame; 200% on a 60 Hz display; the window keeps its picture while being resized | `host_test` on the mailbox; your eye |
-| 5 | Machine thread: `MachineThread` runs the loop, the UI becomes a pure pump, the stall wiring comes out | menus, drags and dialogs no longer freeze the game; a slow frame never makes the window stop responding | the threaded loop matching `boot_runner`'s checksums; stopping it under load 100 times; your soak |
-| 6 | Input thread | device stalls (the once-a-second probe of each empty XInput slot) can no longer hitch a frame; input at most 1 ms old | `host_test` on the snapshot; your hands |
-| 7 | Only if phase 0 asks: a GPU thread (DuckStation-style - the GPU's registers and timing stay with the machine and rasterising moves behind a FIFO), and a disc read-ahead thread for images on the network share | the rasteriser is 4-5% of a game's time interpreted ([GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md)), and about 12% recompiled - its 0.76 s of Wild Arms' 1,500 frames against the 6.5 s they take at 3.89x | the twelve-disc table, byte for byte |
-
-Phases 3 and 4 work with the machine still on the UI thread, which is why they
-come first: each takes something off the machine's thread and can be judged on
-its own before the big move.
+| 0 | Per-stage times in the title bar - Emulation > Show Timings - plus the Pause While in Menus setting beside it | yes | the "before" numbers, from a build kept as `Build\x64\Release\PSXEmu.Win32.single-thread.exe` |
+| 1 | The channels in `host/`: doorbell, request queue, sample ring, frame mailbox, input exchange, with `host_test` | yes | the foundation, and 20 checks that hold it - each one proved by planting a bug in a copy of the header and watching it fail |
+| 2 | One door: every menu command is a request; the UI keeps its own `EmuConfig` and the machine is sent a copy | yes | folded into phase 5 rather than shipped alone: the `App` restructure is one change |
+| 3 | Audio thread: pull, paced by the device, silence when short | yes | bug 61 and 63's DirectSound machinery retired - no guard, no prime, no resync-on-write. 0 shortfalls over 8 s on both backends |
+| 4 | Video thread and the frame mailbox | yes | present and the upload left the machine's frame; a resize repaints from the video thread; frames the monitor cannot show are dropped and counted |
+| 5 | Machine thread; the UI becomes a pure `GetMessage` pump; the bug 63 stall wiring comes out | yes | menus, drags and dialogs no longer freeze the game - and Pause While in Menus is there for anyone who wants the old behaviour |
+| 6 | Input thread, at 1 kHz, owning raw mouse input on a message-only window of its own | yes | an empty XInput slot's once-a-second probe can no longer hitch a frame; the reading a frame takes is at most a millisecond old |
+| 7 | A GPU thread (DuckStation-style - registers and timing stay with the machine, rasterising moves behind a FIFO), and disc read-ahead for images on the network share | no | worth 4-5% interpreted, about 12% recompiled ([GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md)) - still optional, still unmeasured here |
 
 ### What it buys, in numbers
 
-- **Emulation today**: Wild Arms runs 10.0 ms of emulation per 16.9 ms frame
-  interpreted (1.69x) and 4.4 ms recompiled (3.89x) -
-  [Recompiler-Plan.md](Recompiler-Plan.md). At 200% the whole budget is 8.4 ms.
-- **What leaves the machine's thread**: the upload and present, the audio
-  calls and the pad polls. Their cost has never been measured - it cannot be
-  from a headless run - and phase 0 is what measures it. The expectation is
-  around a millisecond a frame in the ordinary case, plus the stalls: `Present`
-  blocking whenever the machine outruns the monitor, and the empty-slot XInput
-  probe.
-- **What does not move**: emulation itself. On one thread or five, a frame of
-  Wild Arms is 10.0 ms interpreted.
+Measured on the BIOS boot, from the title-bar readout, single-threaded build
+against threaded one (Emulation > Show Timings shows all of these live):
+
+| | single-threaded | threaded |
+|---|---|---|
+| emulate | 6.9-12.6 ms | 7.7-12.2 ms |
+| present | 0.3-0.4 ms, **in the machine's frame** | 0.44-0.67 ms, on the video thread |
+| audio + input | 0.05 ms, in the frame | 0.03-0.17 ms hand-off, in the frame |
+| idle (headroom) | 3.8-9.5 ms | 4.6-9.0 ms |
+| closing the window | 266 ms | 48-271 ms |
+
+So the machine's own frame got about half a millisecond back in the ordinary
+case - 3% of a frame at 100%, and the honest answer to "does threading make it
+faster". What it actually bought is everything that is no longer *possible*: a
+menu cannot stop the machine, a slow frame cannot stop the window, and a
+monitor slower than the machine cannot pace it.
+
+- **Emulation is unchanged**: Wild Arms is 10.0 ms of interpreter per frame
+  (1.69x) and 4.4 ms recompiled (3.89x) either way -
+  [Recompiler-Plan.md](Recompiler-Plan.md). Threads move work off the machine's
+  thread; they do not make the machine faster.
+- **Sound**, measured against both real devices for 8 s with the BIOS running:
+  0 frames short, 0 dropped, 0 DirectSound resyncs. WASAPI sits at 45-66 ms in
+  the ring plus 23.5 ms in the device; DirectSound at 53-96 ms plus 60 ms. The
+  ring is held at 40 ms by the same half-percent trim as before, now measuring
+  the ring rather than the device's own queue.
+- **Opening a device is slow**: WASAPI took ~600 ms to open on this machine,
+  during which the machine can already be producing. The audio thread catches up
+  by skipping the ring down to twice the target rather than playing a backlog
+  late for the twenty seconds the trim would need - `AudioOutput::Run`.
 
 ## The rules
 
@@ -228,9 +268,11 @@ its own before the big move.
    the UI. Anything else goes through a channel.
 2. **Nothing waits for the UI thread.** No `SendMessage` to our window, and
    therefore no `SetWindowTextW` on it and no `MessageBox` from another thread,
-   because both send and wait. `UpdateSpeedReadout` and the `ShowError` calls
-   in `ApplyPendingStates` do exactly this today, and joined at shutdown they
-   are a deadlock. Post instead.
+   because both send and wait - joined at shutdown, that is a deadlock.
+   Everything a thread has to say goes through `App::PostToUi`, which posts a
+   `std::function` the window procedure runs and deletes. That is why
+   `CreateGraphicsEngine` returns the text of its fallback warning instead of
+   putting the dialog up itself: it runs on the video thread now.
 3. **The UI waits for nothing**, except the joins at shutdown, and those pump.
 4. **Save states and memory cards are touched only on the machine thread,
    between frames.** A state written from anywhere else is torn, and no
@@ -247,29 +289,34 @@ its own before the big move.
    dropped - and the counts are shown or logged. A channel that silently loses
    data is exactly what a checksum cannot see.
 
-## How it gets verified
+## How it was verified
 
-The machine stays single-threaded, so **every checksum in Test-Suite.md must be
-unchanged at every phase**. That proves the machine still computes the same
-thing, and nothing about the threads. For those:
+The machine stays single-threaded, so **every checksum in Test-Suite.md had to
+be unchanged** - and is. That proves the machine computes the same thing, and
+nothing at all about the threads. What was done for those:
 
-- **`host_test`** puts each channel under stress: two threads, millions of
-  sequence-numbered items with checksummed payloads. Nothing lost, nothing
-  duplicated, no frame torn, and the edge counters counting what they should.
-- **The threaded machine, headless.** `MachineThread` with a fake video that
-  checksums every frame it gets and a fake audio that pulls at 44,100 a second.
-  With no requests, its last frame must match `boot_runner`'s checksum for the
-  same run - the BIOS boot's `c7c8db90c5984798`. With requests fired at random
-  times - pause, save, load, reset - nothing hangs or crashes, and a state saved
-  by the threaded run must load into `boot_runner` and play on identically.
-- **Stopping under load**: start, run, stop, a hundred times, each within a
-  timeout.
-- **AddressSanitizer** on `host_test`, for anything used after a thread has
-  released it. MSVC has no ThreadSanitizer, so races are ruled out by rules 1
-  and 2 rather than detected.
-- **The front end** still cannot be run from an agent session, so the last
-  word is yours: an hour of a game with the menus in use, states saved and
-  loaded, discs swapped, backends switched, the window dragged and resized.
+- **`host_test`, 32 checks** (Test-Suite.md has the list): every channel under
+  two threads with sequence numbers in each item; the machine's thread landing
+  on `boot_runner`'s exact instruction count and checksum, again under 432
+  pause and resume requests, and again across a state saved and reloaded;
+  forty machines stopped mid-run, the slowest back in 17 ms; and all three
+  threads together for five seconds with nothing short, dropped or unshown.
+- **The channel checks were mutation-tested.** Three bugs planted in copies of
+  the headers - a producer that keeps writing into the slot it handed over, a
+  ring write that loses its wrapped half, motion replaced instead of
+  accumulated - and each one failed the check that should catch it.
+- **Both real sound devices**, with the BIOS running and the machine paced
+  normally: 8 s each, 0 frames short, 0 dropped, 0 resyncs.
+- **The built emulator itself**, driven by posted `WM_COMMAND`s with its frame
+  rate read back from the title bar - it turns out the front end *can* be run
+  from an agent session after all, which the old note here denied. Pause, View
+  VRAM, both renderers, both sound backends, the recompiler, 200% speed, reset,
+  reboot, window resizes and the menu-loop messages, over 45 seconds: 59.3 fps
+  throughout and a clean exit every time.
+- **Not covered**: what a frame actually looks like, and what anything sounds
+  like. Those are still yours - an hour of a game with the menus in use, states
+  saved and loaded, discs swapped and the window dragged is the soak this
+  cannot do.
 
 ## History
 
@@ -289,5 +336,14 @@ thing, and nothing about the threads. For those:
   removed rather than built on.
 - The first version of this plan had three stages: the audio wait, then one
   door into the machine, then one thread for the machine that also presented.
-  The first is done. The other two are phases 2 and 5 above, with presenting,
-  sound and input each given a thread of their own.
+  The first was done on its own; the other two became phases 2 and 5, with
+  presenting, sound and input each given a thread of their own instead.
+- **2026-09-18 - phases 0 to 6.** Built in the order above, over one sitting.
+  Two things found on the way that were not threading at all:
+  - `Sio::motor_state` took a parameter called `small`, which is a macro in
+    Windows' own RPC headers (`#define small char`). Any file that reached
+    `<dsound.h>` or `<objbase.h>` before `sio.h` stopped compiling with a
+    syntax error pointing at the wrong line. Renamed.
+  - The SPU still had an optional push sink - `set_audio_engine`, pushing every
+    frame at an `IAudioEngine` - that nothing had ever set. It went with the
+    push API.

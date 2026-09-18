@@ -209,6 +209,21 @@ struct EmuConfig {
   float emulation_speed = 1.0f;
 
   static const std::array<float, 4> kValidSpeeds;
+
+  // --- Front end ----------------------------------------------------------
+  // Whether the machine pauses while one of the front end's menus - or a
+  // dialog opened from one - is open.
+  //
+  // Off, the default, is what DuckStation, PCSX2 and Dolphin do: the machine
+  // runs on its own thread, so a menu blocks nothing but the window, and the
+  // game carries on underneath it. On is for anyone who would rather not lose
+  // a second of a game to reading a menu. See Docs/Threading-Plan.md.
+  bool pause_in_menus = false;
+
+  // Whether the window title carries where each frame's time goes - emulating,
+  // presenting, sound, input - on top of the frame rate. Docs/Threading-
+  // Plan.md's phase 0: the numbers the threading work is measured by.
+  bool show_timings = false;
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer

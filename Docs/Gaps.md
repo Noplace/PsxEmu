@@ -279,11 +279,13 @@ Missing or unproven:
 
 ### Settings cover little
 
-`psxemu.ini` holds `audio_volume`, `graphics_backend` (D3D11 or D3D12),
-`video_filter`, controller type and input source per port, the multitap player
-sources, `frame_limiter`, `cdrom_mechanical_timing`, `skip_bios_intro`,
-`bios_file` and `emulation_speed`. The last disc and the key bindings are not
-remembered; the bindings are a compiled-in table in `const.h`.
+`psxemu.ini` holds `audio_volume`, `audio_backend` (WASAPI or DirectSound),
+`graphics_backend` (D3D11 or D3D12), `video_filter`, controller type and input
+source per port, the multitap player sources, `frame_limiter`,
+`cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `bios_file`,
+`emulation_speed`, `pause_in_menus` and `show_timings`. The last disc and the
+key bindings are not remembered; the bindings are a compiled-in table in
+`const.h`.
 
 `bios_file` is a filename rather than a path: the images live in
 `Documents\My Games\PSXEmu\bios`, which Settings > BIOS lists (anything in it
@@ -296,18 +298,23 @@ to boot.
 
 A window, menus for disc, reset, pause, volume, video filter, controllers,
 which BIOS to boot and how fast to run (50-200%), D3D11 and D3D12 presenters,
-keyboard/XInput/mouse input, and a speed readout in the title bar (bug 49). No
-binding editor, no debugger, no settings dialog. It cannot be run from an agent
-session, so front-end changes are verified by hand.
+keyboard/XInput/mouse input, and a speed readout in the title bar (bug 49) that
+Emulation > Show Timings expands into where each frame's time went. No binding
+editor, no debugger, no settings dialog.
 
-**It is still single-threaded**, and the machine still shares a thread with the
-message pump. A long frame or a blocking present stops the window responding,
-and an open menu or a drag of the window stops the machine - with the sound
-device stopped along with it since bug 63, rather than DirectSound replaying its
-last second. The audio device no longer holds up the window - that was
-[Threading-Plan.md](Threading-Plan.md)'s stage 1 - and the plan's phases, a
-thread each for the window, the machine, video, audio and input, are what is
-left.
+It *can* be driven from an agent session after all - launched, sent
+`WM_COMMAND`s, and read back through its title bar (Test-Suite.md's host_test
+section) - which is how the threading work was checked end to end. What still
+needs a person is what a frame looks like and what anything sounds like.
+
+**It is no longer single-threaded** (2026-09-18). The machine, video, audio and
+input each have a thread and the UI thread only answers the window, so a menu or
+a drag no longer stops the game and a long frame no longer stops the window -
+[Threading-Plan.md](Threading-Plan.md) has what that cost and bought. Whether
+the game keeps running under an open menu is a setting: Emulation > Pause While
+in Menus, off by default. What is left of that plan is its phase 7, a thread for
+the rasteriser, which is worth about 12% with the recompiler on and nothing like
+a priority.
 
 ### Never run against the reference
 

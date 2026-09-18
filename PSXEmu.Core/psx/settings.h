@@ -177,6 +177,8 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("recompiler", c.recompiler);
   f.SetString("bios_file", c.bios_file);
   f.SetFloat("emulation_speed", c.emulation_speed);
+  f.SetBool("pause_in_menus", c.pause_in_menus);
+  f.SetBool("show_timings", c.show_timings);
 }
 
 inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
@@ -249,6 +251,9 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
       nearest = candidate;
   }
   c.emulation_speed = nearest;
+
+  c.pause_in_menus = f.GetBool("pause_in_menus", c.pause_in_menus);
+  c.show_timings = f.GetBool("show_timings", c.show_timings);
 }
 
 }

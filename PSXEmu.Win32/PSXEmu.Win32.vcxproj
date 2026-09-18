@@ -84,7 +84,9 @@
     <ClCompile Include="d3d11_presenter.cpp" />
     <ClCompile Include="d3d12_graphics_engine.cpp" />
     <ClCompile Include="engine_factory.cpp" />
+    <ClCompile Include="input_thread.cpp" />
     <ClCompile Include="main.cpp" />
+    <ClCompile Include="video_presenter.cpp" />
     <ClCompile Include="menu.cpp" />
     <ClCompile Include="win32_dialogs.cpp" />
     <ClCompile Include="win32_paths.cpp" />
@@ -99,7 +101,9 @@
     <ClInclude Include="framework.h" />
     <ClInclude Include="gamepad.h" />
     <ClInclude Include="igraphicsengine.h" />
+    <ClInclude Include="input_thread.h" />
     <ClInclude Include="keyboard.h" />
+    <ClInclude Include="video_presenter.h" />
     <ClInclude Include="menu.h" />
     <ClInclude Include="mouse.h" />
     <ClInclude Include="shaders\legacy_shaders.h" />

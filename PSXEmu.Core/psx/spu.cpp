@@ -116,7 +116,6 @@ const int16_t kGauss[512] = {
 Spu::Spu()
     : ram_(nullptr),
       buffer_(nullptr),
-      engine_(nullptr),
       trace_voices_(false),
       voice_events_(nullptr),
       voice_event_count_(0) {
@@ -944,11 +943,6 @@ void Spu::GenerateFrame() {
   ++stats_.frames;
 
   PushFrame(out_left, out_right);
-
-  if (engine_ != nullptr) {
-    const int16_t frame[2] = { out_left, out_right };
-    engine_->QueueAudio(frame, 2);
-  }
 }
 
 void Spu::Tick(uint32_t cycles) {

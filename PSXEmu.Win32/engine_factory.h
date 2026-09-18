@@ -42,9 +42,15 @@ namespace psxemu {
     //
     // `*active_backend` is set to whichever engine actually ended up running, which the caller uses
     // instead of the requested one for menu ticks and persisted state from here on.
+    //
+    // A fallback does not put a dialog up itself: it writes what it would have said into
+    // `*warning`, and the caller shows it. This runs on the video thread now, and a message box
+    // from any thread but the window's is a wait on the window's thread - see Docs/Threading-
+    // Plan.md's rules. Empty means nothing to say.
     std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred, HWND window,
-                                                          int width, int height, HWND message_owner,
-                                                          std::string* active_backend);
+                                                          int width, int height,
+                                                          std::string* active_backend,
+                                                          std::wstring* warning);
 
     // Compiles every ported filter into the engine at once - cheap (startup-cost D3DCompile calls,
     // not per-frame work), so there is no reason to defer any of them until first selected. Only

@@ -51,15 +51,31 @@ namespace psxemu {
             int32_t dy = 0;
         };
 
-        // Registers `window` for raw mouse input. Called once, from App::CreateAppWindow right after
-        // the window exists - harmless to leave registered even when no port is ever set to
-        // Sio::kMouse, since nothing reads accumulated_dx_/accumulated_dy_ unless one is.
-        bool Attach(HWND window) {
+        // Registers `window` for raw mouse input. Called once, from the input thread, on the
+        // message-only window of its own that it pumps - harmless to leave registered even when no
+        // port is ever set to Sio::kMouse, since nothing reads accumulated_dx_/accumulated_dy_
+        // unless one is.
+        //
+        // `background` adds RIDEV_INPUTSINK, which a message-only window needs: without it raw
+        // input only reaches a window that is in the foreground, and a message-only window never
+        // is. The caller gates motion on focus instead - see InputThread.
+        bool Attach(HWND window, bool background) {
             RAWINPUTDEVICE device = {};
             device.usUsagePage = 0x01;   // generic desktop controls
             device.usUsage = 0x02;       // mouse
+            device.dwFlags = background ? RIDEV_INPUTSINK : 0;
             device.hwndTarget = window;
             return RegisterRawInputDevices(&device, 1, sizeof(device)) != FALSE;
+        }
+
+        // Gives raw input back, before the window it was registered against goes away.
+        void Detach() {
+            RAWINPUTDEVICE device = {};
+            device.usUsagePage = 0x01;
+            device.usUsage = 0x02;
+            device.dwFlags = RIDEV_REMOVE;
+            device.hwndTarget = nullptr;
+            RegisterRawInputDevices(&device, 1, sizeof(device));
         }
 
         // Forward WM_INPUT here from the window procedure - `lparam` cast to HRAWINPUT the same way

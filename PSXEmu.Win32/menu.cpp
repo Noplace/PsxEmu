@@ -109,6 +109,11 @@ namespace psxemu {
         // between instructions.
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandRecompiler),
                     L"&Recompiler (faster, experimental)");
+        AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandPauseInMenus),
+                    L"Pause &While in Menus");
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandShowTimings),
+                    L"Show &Timings in Title Bar");
 
         // Volume. The labels carry a literal percent sign, so they are built with the doubled form
         // the table stores rather than passed through a formatter.
@@ -438,6 +443,22 @@ namespace psxemu {
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandRecompiler),
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickPauseInMenus(HWND window, bool on) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandPauseInMenus),
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickShowTimings(HWND window, bool on) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandShowTimings),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
     }
 

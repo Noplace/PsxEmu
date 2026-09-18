@@ -115,6 +115,16 @@ cl %FLAGS% /Fo:Temp\tools\obj_bench\ /Fe:Temp\tools\rec_bench.exe ^
    PSXEmu.Core\tools\rec_bench.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
+rem host\, the one part of Core that knows about threads: the channels between
+rem the front end's threads, stress-tested with a thread on each side, and the
+rem machine, audio and video threads run for real against a BIOS.
+set HOST=PSXEmu.Core\host\machine.cpp PSXEmu.Core\host\audio_output.cpp ^
+ PSXEmu.Core\host\video_output.cpp
+if not exist Temp\tools\obj_host mkdir Temp\tools\obj_host
+cl %FLAGS% /Fo:Temp\tools\obj_host\ /Fe:Temp\tools\host_test.exe ^
+   PSXEmu.Core\tools\host_test.cpp %HOST% %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
 echo.
 echo Built Temp\tools\boot_runner.exe
 echo Built Temp\tools\media_test.exe
@@ -122,4 +132,5 @@ echo Built Temp\tools\cpu_test.exe
 
 echo Built Temp\tools\gte_test.exe
 echo Built Temp\tools\gpu_test.exe
-echo Built Temp	ools\spu_test.exe
+echo Built Temp\tools\spu_test.exe
+echo Built Temp\tools\host_test.exe

@@ -48,6 +48,7 @@
 
 #include "psx/psx.h"
 
+#include <chrono>
 #include <windows.h>
 #include <xinput.h>
 
@@ -76,11 +77,16 @@ namespace psxemu {
         State Poll() {
             // XInputGetState on an empty slot is not the cheap no-op it looks like,
             // so back off to about once a second while nothing is connected rather
-            // than asking every frame.
+            // than asking every time round.
+            //
+            // By the clock, not by a count of calls: the input thread asks a
+            // thousand times a second, where the frame loop used to ask sixty, and
+            // a count of sixty would mean probing an empty slot every 60 ms.
             if (!connected_) {
-                if (++idle_frames_ < 60)
+                const auto now = std::chrono::steady_clock::now();
+                if (now < next_probe_)
                     return State();
-                idle_frames_ = 0;
+                next_probe_ = now + std::chrono::seconds(1);
             }
 
             const DWORD result = XInputGetState(static_cast<DWORD>(player_index_), &state_);
@@ -204,7 +210,7 @@ namespace psxemu {
         XINPUT_STATE state_;
         bool connected_ = false;
         int player_index_;
-        int idle_frames_ = 0;
+        std::chrono::steady_clock::time_point next_probe_;   // while nothing is plugged in
         uint8_t small_ = 0;
         uint8_t large_ = 0;
     };

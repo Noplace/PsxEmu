@@ -80,6 +80,9 @@
   <ItemGroup>
     <ClCompile Include="audio\dsoundaudioengine.cpp" />
     <ClCompile Include="audio\wasapiaudioengine.cpp" />
+    <ClCompile Include="host\audio_output.cpp" />
+    <ClCompile Include="host\machine.cpp" />
+    <ClCompile Include="host\video_output.cpp" />
     <ClCompile Include="psx\cdrom.cpp" />
     <ClCompile Include="psx\cpu.cpp" />
     <ClCompile Include="psx\debug_assist.cpp" />
@@ -102,6 +105,14 @@
     <ClInclude Include="audio\dsoundaudioengine.h" />
     <ClInclude Include="audio\iaudioengine.h" />
     <ClInclude Include="audio\wasapiaudioengine.h" />
+    <ClInclude Include="host\audio_output.h" />
+    <ClInclude Include="host\doorbell.h" />
+    <ClInclude Include="host\frame_mailbox.h" />
+    <ClInclude Include="host\input_exchange.h" />
+    <ClInclude Include="host\machine.h" />
+    <ClInclude Include="host\request_queue.h" />
+    <ClInclude Include="host\sample_ring.h" />
+    <ClInclude Include="host\video_output.h" />
     <ClInclude Include="platform\frame_limiter.h" />
     <ClInclude Include="platform\speed_resampler.h" />
     <ClInclude Include="platform\types.h" />

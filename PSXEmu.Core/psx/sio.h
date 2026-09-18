@@ -186,16 +186,21 @@ class Sio : public Component {
   // What the two motors are currently being asked to do: 0 or 255 for the
   // small one, 0-255 for the large one. A front end reads this once a frame
   // and feeds it to whatever actually vibrates. `player` - see set_buttons.
-  void motor_state(int port, uint8_t* small, uint8_t* large,
+  //
+  // Not named `small`: that is a macro in Windows' own RPC headers (`#define
+  // small char`), so any translation unit that reached those before this
+  // header - anything including <dsound.h> or <objbase.h> first - stopped
+  // compiling with a syntax error pointing here.
+  void motor_state(int port, uint8_t* small_motor, uint8_t* large_motor,
                    int player = 0) const {
     const Pad* pad = ResolvePad(port, player);
     if (pad == nullptr) {
-      if (small != nullptr) *small = 0;
-      if (large != nullptr) *large = 0;
+      if (small_motor != nullptr) *small_motor = 0;
+      if (large_motor != nullptr) *large_motor = 0;
       return;
     }
-    if (small != nullptr) *small = pad->motor_small;
-    if (large != nullptr) *large = pad->motor_large;
+    if (small_motor != nullptr) *small_motor = pad->motor_small;
+    if (large_motor != nullptr) *large_motor = pad->motor_large;
   }
 
   void Serialise(StateIO& io);

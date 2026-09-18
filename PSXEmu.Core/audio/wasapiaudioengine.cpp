@@ -1,9 +1,10 @@
 #include "wasapiaudioengine.h"
+#include <avrt.h>
 #include <stdexcept>
-#include <iostream>
-#include  <thread>
+#include <vector>
 #pragma comment(lib, "ole32.lib")
 #pragma comment(lib, "mmdevapi.lib")
+#pragma comment(lib, "avrt.lib")
 
 // Helper
 static void ThrowIfFailed(HRESULT hr) {
@@ -51,21 +52,43 @@ bool WASAPIAudioEngine::Initialize(int sampleRate, int channels) {
         waveFormat.nAvgBytesPerSec = waveFormat.nSamplesPerSec * waveFormat.nBlockAlign;
         waveFormat.cbSize = 0;
 
-        // Note: AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM and AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY 
-        // allow WASAPI to resample the emulator's 44100Hz 16-bit output to the device's actual format.
-        DWORD streamFlags = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+        // AUTOCONVERTPCM and SRC_DEFAULT_QUALITY let WASAPI resample the
+        // emulator's 44,100 Hz 16-bit output to whatever the device really
+        // runs at. EVENTCALLBACK is the pull model: the device signals
+        // m_bufferEvent each period, and the thread driving this engine fills
+        // the room it has.
+        const DWORD streamFlags = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM |
+                                  AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY |
+                                  AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
 
-        // Request 50ms buffer
-        REFERENCE_TIME bufferDuration = 500000; // 100ns units
+        // 20 ms, two periods on most hardware. The slack for the machine's
+        // once-a-frame bursts lives in host::SampleRing now, not here, so this
+        // only has to cover the audio thread being woken a period late -
+        // which is what the Multimedia Class Scheduler registration below is
+        // there to prevent.
+        const REFERENCE_TIME bufferDuration = 200000;   // 100 ns units
 
         ThrowIfFailed(m_audioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, streamFlags, bufferDuration, 0, &waveFormat, nullptr));
         ThrowIfFailed(m_audioClient->GetBufferSize(&m_bufferFrameCount));
+
+        m_bufferEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        if (m_bufferEvent == nullptr)
+            ThrowIfFailed(HRESULT_FROM_WIN32(GetLastError()));
+        ThrowIfFailed(m_audioClient->SetEventHandle(m_bufferEvent));
         ThrowIfFailed(m_audioClient->GetService(__uuidof(IAudioRenderClient), (void**)&m_renderClient));
+
+        // This is the thread that will drive the engine (see IAudioEngine), so
+        // this is the one to give "Pro Audio" scheduling - the class render
+        // threads are expected to run in, which a busy machine thread cannot
+        // starve. Not having it is not a reason to have no sound.
+        DWORD task_index = 0;
+        m_mmcss = AvSetMmThreadCharacteristicsW(L"Pro Audio", &task_index);
 
         m_initialized = true;
         return true;
     }
     catch (const std::exception&) {
+        m_initialized = true;   // so Shutdown releases what was created
         Shutdown();
         return false;
     }
@@ -81,6 +104,15 @@ void WASAPIAudioEngine::Shutdown() {
     m_device.Reset();
     m_enumerator.Reset();
 
+    if (m_bufferEvent != nullptr) {
+        CloseHandle(m_bufferEvent);
+        m_bufferEvent = nullptr;
+    }
+    if (m_mmcss != nullptr) {
+        AvRevertMmThreadCharacteristics(m_mmcss);
+        m_mmcss = nullptr;
+    }
+
     // Only if we were the ones who initialised it - otherwise this would
     // decrement the host's reference count and tear down its apartment.
     if (m_com_initialized) {
@@ -92,50 +124,53 @@ void WASAPIAudioEngine::Shutdown() {
 }
 
 void WASAPIAudioEngine::Play() {
-    if (m_initialized && !m_playing) {
-        m_audioClient->Start();
-        m_playing = true;
+    if (!m_initialized || m_playing || m_audioClient == nullptr) return;
+
+    // Fill the buffer with silence before starting, as the WASAPI samples do:
+    // a stream started empty is an underrun on its very first period.
+    UINT32 padding = 0;
+    if (SUCCEEDED(m_audioClient->GetCurrentPadding(&padding)) && padding < m_bufferFrameCount) {
+        const UINT32 frames = m_bufferFrameCount - padding;
+        BYTE* data = nullptr;
+        if (SUCCEEDED(m_renderClient->GetBuffer(frames, &data)))
+            m_renderClient->ReleaseBuffer(frames, AUDCLNT_BUFFERFLAGS_SILENT);
     }
+    m_audioClient->Start();
+    m_playing = true;
 }
 
 void WASAPIAudioEngine::Pause() {
-    if (m_initialized && m_playing) {
+    if (m_initialized && m_playing && m_audioClient != nullptr) {
         m_audioClient->Stop();
         m_playing = false;
     }
 }
 
-int WASAPIAudioEngine::QueueAudio(const int16_t* samples, int sampleCount) {
-    if (!m_initialized || !m_playing) return 0;
-
-    // sampleCount represents total 16-bit ints. A frame is typically 2 channels (left/right).
-    int frameCount = sampleCount / m_channels;
-    if (frameCount <= 0) return 0;
-
-    UINT32 padding = 0;
-    if (FAILED(m_audioClient->GetCurrentPadding(&padding))) return 0;
-
-    const UINT32 availableFrames = m_bufferFrameCount - padding;
-
-    // Write what fits and say so. This used to sleep in a loop until the device
-    // drained, which stopped the machine - and with it the message pump, so the
-    // window stopped responding - for as long as the sound card was behind.
-    // Whatever does not fit is the caller's to keep; see IAudioEngine.
-    const UINT32 framesToWrite = (availableFrames < static_cast<UINT32>(frameCount))
-                                     ? availableFrames
-                                     : static_cast<UINT32>(frameCount);
-    if (framesToWrite == 0) return 0;
-
-    BYTE* pData = nullptr;
-    if (FAILED(m_renderClient->GetBuffer(framesToWrite, &pData))) return 0;
-    memcpy(pData, samples, framesToWrite * m_channels * sizeof(int16_t));
-    m_renderClient->ReleaseBuffer(framesToWrite, 0);
-    return static_cast<int>(framesToWrite) * m_channels;
+void WASAPIAudioEngine::WaitForRoom(int timeout_ms) {
+    if (m_bufferEvent != nullptr && m_playing)
+        WaitForSingleObject(m_bufferEvent, static_cast<DWORD>(timeout_ms));
+    else
+        Sleep(static_cast<DWORD>(timeout_ms));
 }
 
-int WASAPIAudioEngine::GetQueuedSampleCount() const {
+int WASAPIAudioEngine::WritableFrames() {
+    if (!m_initialized || !m_playing) return 0;
+    UINT32 padding = 0;
+    if (FAILED(m_audioClient->GetCurrentPadding(&padding))) return 0;
+    return static_cast<int>(m_bufferFrameCount - padding);
+}
+
+void WASAPIAudioEngine::WriteFrames(const int16_t* samples, int frames) {
+    if (!m_initialized || !m_playing || frames <= 0) return;
+    BYTE* data = nullptr;
+    if (FAILED(m_renderClient->GetBuffer(static_cast<UINT32>(frames), &data))) return;
+    memcpy(data, samples, static_cast<size_t>(frames) * m_channels * sizeof(int16_t));
+    m_renderClient->ReleaseBuffer(static_cast<UINT32>(frames), 0);
+}
+
+int WASAPIAudioEngine::BufferedFrames() {
     if (!m_initialized) return 0;
     UINT32 padding = 0;
-    m_audioClient->GetCurrentPadding(&padding);
-    return padding * m_channels;
+    if (FAILED(m_audioClient->GetCurrentPadding(&padding))) return 0;
+    return static_cast<int>(padding);
 }
