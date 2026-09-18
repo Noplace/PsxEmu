@@ -10,7 +10,7 @@ Working notes for anything spanning more than one sitting. Status per document.
 | [Test-Suite.md](Test-Suite.md) | live | The three harnesses, and the baselines to check after any change |
 | [Gaps.md](Gaps.md) | live | Hardware and features still missing, ordered by impact. Also what is deliberately not done |
 | [Bugs-Found.md](Bugs-Found.md) | live | Bugs fixed in the revived code, with the symptom each produced |
-| [Threading-Plan.md](Threading-Plan.md) | proposed | Moving the machine off the message thread, in three stages |
+| [Threading-Plan.md](Threading-Plan.md) | proposed | A thread each for the window, the machine, video, audio and input, built in phases - and the standard it follows (DuckStation, PCSX2, Dolphin) |
 | [Emulation-Speed-Plan.md](Emulation-Speed-Plan.md) | proposed | 50/100/150/200% speed, and why the audio path is the whole job |
 | [Recompiler-Plan.md](Recompiler-Plan.md) | live | Dynamic recompilation, on the **Emulation > Recompiler** menu and off by default. 3.0-3.9x real time against the interpreter's 1.5-1.7x; BIOS boot identical. The differential harness has both CPUs agreeing exactly for millions of instructions - what is left is cycle accounting, not correctness |
 | [GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md) | proposed | Finding out whether the rasteriser or the SPU is the bottleneck, and what to do about each |

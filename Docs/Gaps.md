@@ -305,7 +305,8 @@ message pump. A long frame or a blocking present stops the window responding,
 and an open menu or a drag of the window stops the machine - with the sound
 device stopped along with it since bug 63, rather than DirectSound replaying its
 last second. The audio device no longer holds up the window - that was
-[Threading-Plan.md](Threading-Plan.md) stage 1, and stages 2 and 3 are what is
+[Threading-Plan.md](Threading-Plan.md)'s stage 1 - and the plan's phases, a
+thread each for the window, the machine, video, audio and input, are what is
 left.
 
 ### Never run against the reference
