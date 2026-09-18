@@ -3345,3 +3345,102 @@ area's edge where the other eleven do not.
 in every frame of every game for four days, invisible in a checksum nobody had
 a reference for, and it took comparing against a build from before the change
 to see it at all.
+
+## 61. DirectSound clicked, because taking out a blocking wait made a stale number load-bearing
+
+`audio/dsoundaudioengine.cpp`
+
+**Symptom.** With Settings > Audio > Output on DirectSound, a click every second
+or two during play. WASAPI was clean.
+
+**Cause.** Not one bug but two old ones, uncovered by a change that was
+correct in itself.
+
+`QueueAudio` used to block: it slept whenever the one-second secondary buffer
+was nearly full. So the game ran with about 990 ms queued, and nothing about
+DirectSound's accounting ever mattered with that much in hand. Making it
+non-blocking - so a sound card a few milliseconds behind could no longer stall
+the machine - handed the buffer's depth to the front end's rate control, which
+aims for 25 ms. Two things that 990 ms had been hiding then came out:
+
+1. **`GetQueuedSampleCount()` was a frame stale.** It returned `m_queuedBytes`
+   as the last `QueueAudio` had left it, which does not subtract what played
+   since - a comment above it called it "purely informational". The rate
+   control reads it *before* queuing each frame, so it always saw about 16.7 ms
+   more than was there, and held the real buffer near 8 ms while believing it
+   held 25. WASAPI's version asks the device (`GetCurrentPadding`), which is why
+   it never had the problem.
+2. **An underrun on DirectSound is loud.** The secondary buffer loops, so when
+   the play cursor overtakes the data it plays on into whatever the buffer held
+   a second earlier - a burst of the wrong waveform, not a gap. And the resync
+   jumped the write position by 4410 bytes, which is 1102.5 frames: half a frame
+   off, so every sample after it had left and right swapped.
+
+On top of both, the rate control can only trim by half a percent, so from an
+empty buffer it takes about five seconds to build up to 25 ms - which DirectSound
+started from at every launch, every unpause and every switch to it.
+
+**Fix.** The count reads the play cursor, so it is live. `Play()` starts with
+25 ms of silence already queued rather than none. Every write leaves 100 ms of
+silence after the data, uncounted, so an underrun plays a gap rather than stale
+sound. The resync lands on a whole frame, over that silence, and counts it.
+
+**Verified**, by replaying `App::PumpAudio` against the real engine - a 59.94 Hz
+loop off `steady_clock`, the real `SpeedResampler`, the rate control copied
+exactly - and counting underruns, since a click cannot be heard from a test:
+
+| | underruns in 10 s | queue held at |
+|---|---|---|
+| before | 6 | ~8 ms, reported as 27 |
+| live count only | 2-5 | 18 ms |
+| all three fixes | **0**, three runs | 24.6-24.9 ms |
+
+and a minute of it: 0 underruns, 25.0 ms. The engine keeps an `underruns()`
+counter now, since that is the number that says whether the output is healthy.
+
+**Worth remembering.** A blocking wait is a buffer, and a large one. Taking it
+out does not just change who waits - it changes how much slack every piece of
+code downstream of it has been quietly relying on. The number that was "purely
+informational" at 990 ms was the one steering the device at 25.
+
+**Second round - the first fix was incomplete, and the check that passed it
+was blind in the same place.** The user still heard clicking. The engine's own
+underrun count said zero, because it only ever compared the data against the
+*play* cursor. DirectSound has two, and measured on this machine the **write
+cursor runs 30 ms ahead of the play cursor**, which moves in **20 ms steps**.
+Everything between the two cursors has already been handed to the mixer, and a
+sample written there is simply never played. Holding 25 ms ahead of the play
+cursor therefore started every write about 5 ms *inside* that region - a loss on
+every frame, with the play cursor never once overtaking the data, so nothing was
+counted.
+
+Fixed by measuring from the write cursor instead: `GetQueuedSampleCount` reports
+only what lies beyond it, the underrun test is "the data no longer reaches past
+the write cursor", and a resync lands a prime's worth beyond the write cursor
+rather than the play cursor.
+
+**And a second finding along the way.** On this machine `sleep_for(1ms)` takes
+about 15.5 ms - nothing in the project raises the timer resolution, and even
+`timeBeginPeriod(1)` did not change it in a console process - so the frame
+limiter delivers frames anywhere from 0 to 30 ms apart rather than every 16.7.
+A 25 ms queue can be drained by one late frame plus one 20 ms cursor step. So
+the queue target is no longer one global constant: `IAudioEngine::
+TargetQueuedSamples()` lets each output say what it needs - 25 ms for WASAPI,
+50 ms for DirectSound, which puts DirectSound's total latency near 80 ms with
+the write cursor's own lead on top.
+
+**Verified**, paced by the real `FrameLimiter` rather than a tidy sleep, with the
+engine's count now watching the write cursor: 20 s at the old 25 ms target and
+20 s at the new 50 ms, **0 underruns** each.
+
+**Not verified: the sound itself.** A loopback capture of the output was built
+to count clicks independently of the engine, and it cannot be used here - the
+tone sent peaks at 0.244 and the tone captured peaks at 0.326, so something in
+this machine's audio path (a driver enhancement, most likely) reshapes the
+signal after it leaves the process, and a slope detector reads that as clicks.
+The ear that reported the bug is the one that has to confirm the fix.
+
+**Worth remembering, twice over.** An instrument that shares the thing-under-
+test's assumptions cannot find that assumption's bug - the underrun counter
+lived in the same engine and looked at the same cursor. And a measurement of
+the output is only independent if nothing between the two changes the signal.

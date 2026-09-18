@@ -492,7 +492,7 @@ namespace psxemu {
         // on the way out or the device backs up (fast) or starves (slow).
         //
         // On top of the speed, a trim of at most half a percent to hold the
-        // device's buffer at kAudioTargetSamples. Two clocks are involved - the
+        // device's buffer at its own target. Two clocks are involved - the
         // frame limiter paces the machine off the host's steady_clock, the
         // sound card consumes off its own - and they are never exactly equal.
         // Left alone, that difference accumulates until the buffer is either
@@ -505,9 +505,12 @@ namespace psxemu {
         if (frames > 0) {
             double speed = system_->config().emulation_speed;
             if (audio_ != nullptr) {
+                // The target is the device's to say: DirectSound needs twice what WASAPI does,
+                // because it moves in coarser steps - see IAudioEngine::TargetQueuedSamples.
+                const int target = audio_->TargetQueuedSamples();
                 const int queued = audio_->GetQueuedSampleCount();
-                const double error = static_cast<double>(queued - kAudioTargetSamples) /
-                                     static_cast<double>(kAudioTargetSamples);
+                const double error = static_cast<double>(queued - target) /
+                                     static_cast<double>(target);
                 double trim = 1.0 + 0.005 * error;
                 if (trim < 0.995) trim = 0.995;
                 if (trim > 1.005) trim = 1.005;

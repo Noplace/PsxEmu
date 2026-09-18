@@ -296,11 +296,7 @@ namespace psxemu {
     // window, and this is what makes that show up as a frozen picture rather than a hung process.
     inline constexpr uint64_t kMaxInstructionsPerFrame = 8000000;
 
-    // How much audio to keep sitting in the sound device, in samples (both
-    // channels together), as the level App::PumpAudio trims the resampler
-    // towards. The device buffer is 50 ms; this is about half of it, which is
-    // slack enough to ride out a frame that runs long without adding latency
-    // anyone would notice.
-    inline constexpr int kAudioTargetSamples = 44100 / 40 * 2;
+    // How much audio to keep queued is no longer a constant here: it belongs to the output, since
+    // DirectSound needs about twice what WASAPI does. See IAudioEngine::TargetQueuedSamples.
 
 }   // namespace psxemu
