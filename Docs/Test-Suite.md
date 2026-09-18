@@ -72,10 +72,12 @@ implementation, so a failure means the code is wrong rather than that it
 changed. NCLIP's area, OP's cross product and AVSZ's weighted sum are each
 computed by hand in the test.
 
-**The important caveat:** the BIOS shell issues *zero* GTE commands, so nothing
-here has been checked against real software. These tests say the implementation
-agrees with the description; they do not yet say it agrees with the hardware.
-That is what amidog's suite is for, and it is the next thing to run.
+These tests say the implementation agrees with the description. That it agrees
+with the hardware is amidog's `psxtest_gte` (`test/psxtest_gte/`): its REG and
+COMPLEX groups pass for all 22 commands. Its TIMING group is bug 42 and
+[CPU-Timing-Plan.md](CPU-Timing-Plan.md). The BIOS shell issues zero GTE
+commands, so the BIOS baseline below says nothing about the GTE; the game table
+does.
 
 ## gpu_test
 
@@ -118,7 +120,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 251 checks, 0 failures.**
+**Current: 253 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -383,17 +385,17 @@ says what its groups cover. (`media_test` gained two when the front end's
 `EmuConfig` round-trips through the file, and those are settings.)
 
 Four smaller harnesses cover the host-side headers the front end leans on and
-are not counted above, since they test no emulation: `letterbox_test` (aspect
-ratio), `frame_limiter_test` (8 checks - the average rate, and since bug 62 the
+are not counted above, since they test no emulation: `letterbox_test` (12
+checks, aspect ratio), `frame_limiter_test` (8 checks - the average rate, and since bug 62 the
 spacing between frames too), `speed_resampler_test` (11 checks, the audio
 arithmetic behind 50-200% speed - the frame counts, that a minute at 150% does
 not drift, and that blocks join continuously) and `host_test` (32 checks, the
 threads and the channels between them - its own section above).
 
 `rec_test` (460 checks) is not counted either, and for a different reason: it
-covers the recompiler in `PSXEmu.Core/rec/`, which is being built beside the
-interpreter rather than into it. Nothing in `psx/` includes it and the emulator
-does not link it. Its compiler checks are differential - a block is compiled,
+covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
+rather than inside it - nothing in `rec/` includes `psx/`, and
+`psx/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,
 executed, and every register, every byte of memory and the address it says to
 continue at are compared against a reference interpreter written from the
 instruction set rather than from the compiler. Its engine checks do the same
@@ -468,13 +470,11 @@ The SPU peak is bug 57's: the mix was coming out at a quarter and
 28,461 here is the hardware's own level rather than a number to compare against
 anything recorded before that bug.
 
-**These are baselines, not targets.** The BIOS boots and draws its intro: the
-blue radial gradient fills the frame correctly. The logo geometry on top of it
-is wrong, because the GTE is unimplemented - the 56 unimplemented paths are
-`COP2` being reached and trapping.
+**These are baselines, not targets.** The run reaches the shell menu, with no
+unimplemented paths hit.
 
-The 12 GPU primitives-per-frame and the pixel count are the numbers most
-sensitive to a renderer change; the checksum is sensitive to everything.
+The primitive and pixel counts are the numbers most sensitive to a renderer
+change; the checksum is sensitive to everything.
 
 **Earlier baselines, kept so the progression is not lost:**
 
@@ -612,13 +612,19 @@ wrong way, and it stays anyway.
 
 ## Still to build
 
-- **amidog's GTE suite has now run** (`test/psxtest_gte/` - see bug 41 for how
+- **amidog's GTE suite has run** (`test/psxtest_gte/` - see bug 41 for how
   to reach it, `--auto-boot --exe` or the Win32 front end's Boot PSX-EXE menu
-  command). Value and flags agree with hardware outright; timing does not -
-  see bug 42, still open, and "GTE" in Gaps.md.
+  command). Values and flags agree with hardware outright, and bug 42 made
+  every GTE command's own cost match. Its TIMING column is still red, because
+  the test's loop also measures the ordinary CPU instructions around each
+  command - [CPU-Timing-Plan.md](CPU-Timing-Plan.md) phases 0 and 3.
 - **amidog's CPU suite** on top of `cpu_test`, which covers the instruction set
-  but not its timing. `test/psxtest_cpu/` is present and runs to a results
-  screen unattended - see bug 41 - and nobody has read it yet.
-- **Memory card round trips** in `media_test`, once cards exist. Per the
-  standards document, the *wipe* is the point: write, wipe, read back, or a
-  `serialize()` that stores nothing still appears to work.
+  and, since bug 43, multiply/divide and branch costs. `test/psxtest_cpu/` is
+  present and runs to a results screen unattended - see bug 41 - and its
+  results have not been read precisely yet (CPU-Timing-Plan.md phase 0).
+- **Memory card round trips.** Cards exist now, and nothing tests them. Per
+  the standards document, the *wipe* is the point: write, wipe, read back, or
+  a `Serialise()` that stores nothing still appears to work.
+  [Memory-Cards-Plan.md](Memory-Cards-Plan.md) sketches an `mc_test`.
+- **Reverb and volume sweeps** in `spu_test` - implemented without a check
+  (Gaps.md).

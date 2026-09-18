@@ -8,11 +8,10 @@ Phases are ordered so that each one is testable when it lands. The ordering
 principle throughout: **nothing is "done" until a harness can show it working
 without a human looking at a window.**
 
-**Phase 4 below is stale.** It still lists the SPU, CD audio and MDEC as not
-started; all three are implemented and tested - see [Gaps.md](Gaps.md), which
-is audited more recently and is the one to trust for current status. Phase 5
-is current as of bug 42. The phase breakdown and Phases 0-3 are otherwise
-accurate.
+**Brought up to date 2026-09-18.** The checkboxes below reflect the tree as of
+the threading commit; [Gaps.md](Gaps.md) is still the more detailed and the one
+to trust for what is missing now. Where a box was ticked after the fact, the
+bug or plan that did it is named beside it.
 
 ---
 
@@ -63,7 +62,7 @@ implemented directly against D3D11.
       above it and "COMPUTER ENTERTAINMENT" below, fading in - and then reaches
       the shell menu, polls the controller port and issues CD-ROM commands.
 
-## Phase 2 - The GTE — DONE, pending a real 3D workload
+## Phase 2 - The GTE — DONE
 
 - [x] **All 22 commands**: RTPS/RTPT, NCLIP, AVSZ3/4, MVMVA, NCDS/NCDT,
       CC/CDP, DPCS/DPCT, INTPL, DCPL, SQR, OP, GPF/GPL, NCS/NCT, NCCS/NCCT.
@@ -80,14 +79,15 @@ implemented directly against D3D11.
       `UNKNOWN` in the opcode table.
 - [x] `gte_test`: 99 checks over the register file, saturation, and every
       command with an independently derived expected value. All passing.
-- [ ] **Validate against a real 3D workload.** The BIOS shell issues *zero*
-      GTE commands - it is entirely 2D - so nothing here has been exercised by
-      real software yet. amidog's GTE suite, or any 3D game, is the next check.
+- [x] **Validated against real software.** amidog's `psxtest_gte` REG and
+      COMPLEX groups pass for all 22 commands, and 3D games issue tens of
+      thousands of commands with none unrecognised. Its TIMING group is
+      bug 42 and [CPU-Timing-Plan.md](CPU-Timing-Plan.md).
 - [ ] MVMVA's garbage matrix (matrix select 3) is implemented from the
       description rather than from measurement; it is not something software
       uses deliberately.
 
-## Phase 3 - Making games boot
+## Phase 3 - Making games boot — DONE, except raw physical-drive reads
 
 - [x] **ISO9660**: the primary volume descriptor, directory walk, and file
       lookup by path in every form software writes it - bare name, leading
@@ -99,27 +99,30 @@ implemented directly against D3D11.
 - [x] `boot_runner --boot-disc` and a **Boot disc** menu item in the front end.
 - [x] 47 more checks in `media_test`, over a synthetic ISO9660 image the test
       builds itself.
-- [ ] Boot through the BIOS rather than around it. `BootDisc` side-loads the
-      executable directly; the BIOS's own boot path needs more of the CD-ROM
-      drive than is implemented.
+- [x] Boot through the BIOS rather than around it. The BIOS boots discs
+      itself and the front end lets it; `BootDisc` and `--auto-boot` remain for
+      the harness (bugs 18-19).
 - [ ] Directories are walked but untested beyond the root - no PlayStation
       disc puts its executable in a subdirectory, but the code path exists.
-- [ ] CD audio (CD-DA and XA-ADPCM) feeding the SPU mixer.
-- [ ] Memory cards: the SIO0 `0x81` device, the file format in `psx/mc.h`, and
-      save files on disk.
+- [x] CD audio (CD-DA and XA-ADPCM) feeding the SPU mixer. Bugs 25, 34-36.
+- [x] Memory cards: the SIO0 `0x81` device and save files on disk, one pair
+      per disc. The editor and eject are
+      [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
 - [ ] Raw reads from a physical drive (`IOCTL_CDROM_RAW_READ`) so audio tracks
       and a real TOC work, not just data tracks.
-- [ ] MDEC, for full-motion video.
+- [x] MDEC, for full-motion video. Bug 23.
 
-## Phase 4 - SPU
+## Phase 4 - SPU — DONE, reverb unverified
 
-`spu.cpp` has the register file but no mixer.
-
-- [ ] 24 voices: ADPCM decode, ADSR envelopes, pitch and interpolation.
-- [ ] Reverb, voice on/off edges, the IRQ address.
-- [ ] SPU RAM and DMA channel 4.
-- [ ] An `IAudioEngine` interface in Core the front ends implement, as GBAEmu
-      does - the core must not know which front end is running.
+- [x] 24 voices: ADPCM decode, ADSR envelopes, pitch and the Gaussian
+      interpolation. `spu_test`, 108 checks; bugs 39 and 57.
+- [x] Reverb, volume sweeps, voice on/off edges, the IRQ address. Reverb and
+      sweeps have no `spu_test` check and have not been compared against
+      hardware - see Gaps.md.
+- [x] SPU RAM and DMA channel 4.
+- [x] `IAudioEngine` in Core (`audio/`), WASAPI and DirectSound behind it,
+      pulled by the audio thread in `host/` - the core does not know which
+      front end is running.
 
 ## Phase 5 - Timing and accuracy
 
@@ -133,6 +136,9 @@ implemented directly against D3D11.
       was failing. Everywhere else, still the uniform one-cycle-per-instruction
       model bug 42 also found to be the actual remaining blocker on that same
       test. See [CPU-Timing-Plan.md](CPU-Timing-Plan.md).
+- [x] Multiply/divide costs and the branch-cost question - bug 43.
+- [ ] Memory-region load costs, measured rather than modelled -
+      CPU-Timing-Plan.md phase 3.
 - [ ] amidog's CPU suite on top of `cpu_test`. Present (`test/psxtest_cpu/`,
       reachable via bug 41's `--auto-boot --exe`) and run once, unattended, to
       a results screen - not yet read precisely. See CPU-Timing-Plan.md.
@@ -167,20 +173,23 @@ actually is rather than from memory:
       checks) came out of it. What's left is a separate, already-known gap, not
       a pitch bug: FF7's reverb-heavy mix runs through this core's two-tap
       delay rather than the hardware's comb/all-pass network - see Gaps.md.
-- [ ] **[Disc-Formats-Plan.md](Disc-Formats-Plan.md)** - track layouts for bare
-      images, and compressed containers. Starts by correcting the premise: a
-      bare `.img` does load.
-- [ ] **[Recompiler-Plan.md](Recompiler-Plan.md)** - dynamic recompilation,
-      and the measurement that should come before any of it.
-- [ ] **[CPU-Timing-Plan.md](CPU-Timing-Plan.md)** - real per-instruction
-      cycle counts (multiply/divide, memory regions, the branch/loop-overhead
-      question bug 42's own measurement raised), verified the way bug 42
-      verified the GTE's: from inside the amidog test suites already sitting
-      in `test/`, not by argument.
-- [~] `psx/emuconfig.h` and `psx/settings.h` exist, following GBAEmu design.
-      One setting so far - `audio_volume`, with an Audio menu and `psxemu.ini`
-      beside the executable. The BIOS path and the disc path are still not
-      settings.
+- [~] **[Disc-Formats-Plan.md](Disc-Formats-Plan.md)** - `.mds`/`.mdf` and
+      `.ccd`/`.img` done; compressed containers (CHD, ECM, PBP) and track
+      layouts for a bare image with no descriptor are not.
+- [x] **[Recompiler-Plan.md](Recompiler-Plan.md)** - built and wired in,
+      behind Emulation > Recompiler, off by default. 3.0-3.9x real time; the
+      BIOS boot is identical, and a game's checksum is not yet, because
+      compiled code's cycle accounting is approximate.
+- [~] **[CPU-Timing-Plan.md](CPU-Timing-Plan.md)** - real per-instruction
+      cycle counts. Phases 1-2 done (bug 43); phase 0 (reading `psxtest_cpu`
+      precisely), phase 3 (memory regions) and phase 4 not.
+- [x] **[Threading-Plan.md](Threading-Plan.md)** - window, machine, video,
+      audio and input threads. Phase 7, a rasteriser thread, not done.
+- [x] **[Emulation-Speed-Plan.md](Emulation-Speed-Plan.md)** - 50-200%.
+- [~] `psx/emuconfig.h` and `psx/settings.h`, following GBAEmu's design.
+      `psxemu.ini` holds audio, video, input, speed, recompiler and BIOS
+      choices - the list is in Gaps.md. The last disc and the key bindings are
+      still not settings.
 - [ ] ImGui in the Win32 front end, for a debugger and settings UI.
 - [ ] `PSXEmu.Interop` and `PSXEmu.WinUI`, if wanted - the design in GBAEmu's
       `Docs/WinUI-Interop.md` transfers whole.
@@ -189,27 +198,20 @@ actually is rather than from memory:
 
 ## Where it stands
 
-The BIOS boots and renders its whole intro: the Sony diamond, "SONY" above it
-and "COMPUTER ENTERTAINMENT" below, fading in, and then the shell menu with its
-"MEMORY CARD" and "CD PLAYER" entries. The controller port is polled and the
-CD-ROM is issued commands.
+Games boot through the BIOS and play - twelve discs are in the baseline table
+in [Test-Suite.md](Test-Suite.md), with their films, XA audio and CD music, and
+no game is known to be blocked. What is left is mostly timing: memory-region
+costs and amidog's CPU suite (Phase 5), and the recompiler's cycle accounting.
+Then the Phase 6 items still open - the memory card editor, compressed disc
+images, and a front end with a debugger and a settings dialog.
 
-What was thought to still be visibly wrong here turned out not to be:
-
-- **The "rainbow smear" behind the two menu entries was the shell's own
-  paint-splatter decoration, not a bug.** A reference screenshot of real
-  SCPH1001 hardware shows the identical composition - a coloured splatter
-  behind MEMORY CARD and CD PLAYER, the same floating blue spheres, the same
-  MAIN MENU box - so the earlier premise ("a flat fill belongs there") was
-  wrong about the original BIOS, not about this GPU. See
-  [Gaps.md](Gaps.md#not-gaps) for the comparison. The GTE line that used to
-  follow it here is stale in the same way this whole section is: see the note
-  at the top of this file and read [Gaps.md](Gaps.md) instead for current
-  status.
-
-Phase 2 is still the next big piece, and it needs amidog's GTE suite alongside
-it from the first commit - thirty commands, and a wrong one shows up as "the
-picture looks a bit off" and nothing more.
+One thing that was thought to be wrong and is not, kept here because it cost
+time: **the "rainbow smear" behind the BIOS menu's two entries is the shell's
+own paint-splatter decoration.** A reference screenshot of real SCPH1001
+hardware shows the identical composition - a coloured splatter behind MEMORY
+CARD and CD PLAYER, the same floating blue spheres, the same MAIN MENU box - so
+the earlier premise ("a flat fill belongs there") was wrong about the original
+BIOS, not about this GPU. See [Gaps.md](Gaps.md#not-gaps).
 
 How the boot was unstuck, for the record: the Cop0 status history in
 `boot_runner` showed the second vertical blank being entered and never returned

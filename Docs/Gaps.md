@@ -7,6 +7,7 @@ game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 Last audited 2026-09-15, after bug 55 (DICR master flag). Every entry below
 was checked against the code at that point, not carried forward from the
 previous audit (which predated bug 39 and the September 12-14 commits).
+Harness counts and the recompiler and threading entries refreshed 2026-09-18.
 
 ---
 
@@ -38,8 +39,8 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 251, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 251 - 1,000
-checks, no failures. The two that were failing when this document was last
+cpu 251, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 253 - 1,002
+checks, no failures (re-run 2026-09-18). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
@@ -320,7 +321,12 @@ a priority.
 
 - **amidog's CPU suite** (`test/psxtest_cpu/`) runs to its results screen; the
   results have not been read.
-- **A dynamic recompiler** is a plan only - [Recompiler-Plan.md](Recompiler-Plan.md).
+- **The recompiler against the game table.** It is built and runs the BIOS
+  boot identically, but a game's checksum differs between the two CPUs -
+  interrupts land at block boundaries rather than instruction boundaries, and
+  compiled code charges one cycle an instruction flat. No run of the
+  twelve-disc table with `--recompiler` is recorded. See
+  [Recompiler-Plan.md](Recompiler-Plan.md).
 
 ## Not gaps
 

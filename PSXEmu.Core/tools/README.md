@@ -12,13 +12,28 @@ The batch file compiles the core sources directly rather than going through
 MSBuild, so the harnesses stay independent of the solution configuration. It is
 also the fastest way to get a compile error out of the core.
 
+**Check counts, what each group covers, and the baselines live in
+[Docs/Test-Suite.md](../../Docs/Test-Suite.md)**, not here, so there is one
+place to keep current.
+
+## What is here
+
+| Harness | What it is |
+|---|---|
+| `boot_runner` | Boots a BIOS or a disc for N frames and reports everything - the checksum baselines, tracing, `--recompiler`, save states |
+| `cpu_test` `gte_test` `gpu_test` `mdec_test` `timer_test` `sio_test` `spu_test` `media_test` | The eight emulation harnesses. Each takes an optional group name; `media_test` takes a work directory |
+| `rec_test` | The recompiler, differentially against a reference interpreter |
+| `rec_bench` | Recompiled against interpreted; a benchmark, asserts nothing |
+| `host_test` | The threads and channels in `host/` |
+| `frame_limiter_test` `speed_resampler_test` `letterbox_test` | The host-side headers the front end leans on |
+| `wav_pitch` | The note in a WAV `boot_runner --wav` wrote |
+| `make_test_disc` | Writes a synthetic disc image |
+
+Every test harness exits 0 when everything passed.
+
 ## boot_runner
 
     boot_runner <bios.bin> [options]
-
-Boots a BIOS dump and runs for a given number of frames, then reports what
-happened. See [Docs/Test-Suite.md](../../Docs/Test-Suite.md) for the full option
-list and the current baselines.
 
 The four numbers worth reading first:
 
@@ -40,47 +55,9 @@ When something is wrong, in rough order of usefulness:
 
 `--dis` reads both RAM and the BIOS, so BIOS-resident code disassembles too.
 
-## media_test
-
-    media_test [work-directory]
-
 ## cpu_test
-
-    cpu_test [group]
-
-Unit tests for the R3000A, the memory map, exceptions and the interrupt path.
-Each test assembles a handful of MIPS instructions into RAM, runs them through
-the real CPU, and checks what came out - the same path a game takes. No BIOS,
-no window. Pass a group name to run only that group.
-
-Currently 181 checks in ten groups: `arithmetic`, `shifts`, `muldiv`,
-`branches`, `jumps`, `loadstore`, `unaligned`, `memory`, `exceptions`,
-`interrupts`.
 
 Four bugs turned up on this suite's first run, before it had been aimed at
 anything: `0x80000000 / -1` was killing the host process, division by zero
 returned the wrong values, bus errors were being decided on the virtual address
 so KSEG1 register access failed, and `break` did nothing at all.
-
-## media_test
-
-    media_test [work-directory]
-
-Protocol-level tests for the disc layer and the CD-ROM controller, with no
-BIOS, no window, and no disc of its own - it writes the images it needs into
-the work directory and removes them afterwards. Exit code 0 if all checks
-passed.
-
-Currently 103 checks, over disc images, the CD-ROM controller, the ISO9660
-filesystem, SYSTEM.CNF and the disc boot. A second argument of `keep` leaves
-the generated images behind for `boot_runner --boot-disc` to use.
-
-See [Docs/Test-Suite.md](../../Docs/Test-Suite.md) for what each group covers
-and why it is worth testing this way.
-
-## Still to write
-
-- **`gte_test`** - amidog's GTE suite, needed from the day GTE work starts.
-- **amidog's CPU suite**, on top of `cpu_test`, for timing rather than results.
-- **Memory card round trips** in `media_test`, once cards exist - write, wipe,
-  read back. The wipe is the point.

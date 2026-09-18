@@ -26,7 +26,7 @@
 // can discard it. That is the whole of it, and keeping it that way is what
 // lets this be tested on its own long before there is a compiler to fill it.
 //
-// See Docs/Recompiler-Plan.md. Nothing in the emulator calls any of this yet.
+// See Docs/Recompiler-Plan.md.
 
 #include <cstdint>
 #include <unordered_map>

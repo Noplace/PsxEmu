@@ -1,5 +1,10 @@
 # Wild Arms: blank after "press start"
 
+> **Status: fixed by bugs 25-26** (`Docs/Bugs-Found.md`). A seek did not stop
+> the read already running, so every read began one sector late. The harness's
+> `--press` and `--frame-log` came out of this investigation. Kept as it was
+> written.
+
 The opening film plays with sound, the menu appears and asks for Start, and
 after Start the screen goes blank and stays there.
 

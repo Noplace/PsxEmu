@@ -1,5 +1,10 @@
 # Implementing the MDEC
 
+> **Status: built - bug 23** (`Docs/Bugs-Found.md`), covered by `mdec_test`.
+> Step 3 below is wrong about the hardware: software does the variable-length
+> decoding, not the MDEC. DMA pacing came later with bugs 55 and 56. The plan
+> is kept as it was written.
+
 The motion decoder is the last large component the core is missing. Everything
 else in the chain works: a disc boots, a game runs, and it streams its movie off
 the disc at the right rate. What it cannot do is turn those sectors into

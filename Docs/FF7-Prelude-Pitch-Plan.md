@@ -1,5 +1,11 @@
 # Final Fantasy VII: the prelude's high notes come out low
 
+> **Status: fixed by bug 39** (`Docs/Bugs-Found.md`). Key-on discarded the loop
+> point the game had just set, so every note looped over too much sample and
+> came out a twelfth flat. The hypotheses below were all cleared by
+> instrumentation first; the plan is kept as it was written, with its outcome
+> under "Status" at the end.
+
 `Final Fantasy VII [SCUS-94163]` cd1 boots, plays the Sony and Squaresoft
 logos, and if nothing is pressed it reaches the title screen and starts the
 prelude. The notes are there, in time, with the right instrument - and the
@@ -323,13 +329,11 @@ framebuffer checksum, instruction count and interrupt count before and after.
 **The pitch is fixed.** H1, H2, H3 and H4's sweep half are all closed, and the
 cause was none of them: it was where the voice loops back to.
 
-**What remains, and it is the reverb.** `reverb FFFFFF` with the master enable
-set - FF7 routes all 24 voices through it, and this core implements it as a
-two-tap delay rather than the hardware's comb-and-all-pass network. That is a
-real difference in what the prelude sounds like, it is independent of
-everything above, and it is not addressed here. The delay length is derived
-from the whole space above `reverb_base_`, so it is not even a fixed room; it
-is whatever the game's work area size makes it. That is its own pass.
+**What remained was the reverb** - `reverb FFFFFF` with the master enable
+set, FF7 routing all 24 voices through what was then a two-tap delay rather
+than the hardware's comb-and-all-pass network. Commit `1419d78` has since
+replaced it with the documented network; it has no `spu_test` check and has
+not been compared against hardware (Gaps.md, "Reverb and volume sweeps").
 
 H5 - a layer keyed on but never sounding - was never needed: the six prelude
 voices all key on, all play, and all measure correctly after the fix.

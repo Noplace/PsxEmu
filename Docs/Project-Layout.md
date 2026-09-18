@@ -28,15 +28,22 @@ PsxEmu/
     psx/                       the machine
       psx.h                    aggregate header - order is load-bearing
       system.h/.cpp            owns every component, and runs them an instruction at a time
-      cpu.h/.cpp               MIPS R3000A
+      component.h              the base every device derives from
+      emuconfig.h              EmuConfig - every runtime setting, held by value
+      settings.h               psxemu.ini: load and store EmuConfig
+      state.h/.cpp             StateIO - save states, read and written through one path
+      cpu.h/.cpp               MIPS R3000A interpreter
       cpu_context.h            register file
-      gte.h/.cpp               geometry coprocessor  (one command implemented)
+      recompiler_bridge.h      the one file that knows both cpu.h and rec/
+      gte.h/.cpp               geometry coprocessor: all 22 commands
       gpu_core.h               the interface the core talks to the GPU through
       gpu.h/.cpp               software GPU: VRAM, GP0/GP1, rasteriser
-      cdrom.h/.cpp             CD-ROM controller: FIFOs, commands, interrupts
-      disc.h/.cpp              disc images: cue, bin, img, iso, physical drive
-      sio.h/.cpp               controller / memory card port
-      spu.h/.cpp               sound registers  (no mixer yet)
+      cdrom.h/.cpp             CD-ROM controller: FIFOs, all 28 commands, CD-DA and XA-ADPCM
+      disc.h/.cpp              disc images: cue, mds/mdf, ccd/img, bin, iso, physical drive
+      iso9660.h/.cpp           the filesystem: volume descriptor, directories, file lookup
+      mdec.h/.cpp              motion decoder
+      sio.h/.cpp               controller / memory card port: pad, DualShock, mouse, multitap
+      spu.h/.cpp               sound: 24 voices, ADSR, reverb, sweeps, CD input
       dma.h/.cpp               DMA channels
       io_interface.h/.cpp      memory map and hardware registers
       root_counter.h/.cpp      timers
@@ -45,16 +52,31 @@ PsxEmu/
       debug.h                  BREAKPOINT, and the trap counter behind it
       debug_assist.h/.cpp      _DEBUG-only CSV instruction logger
       emu.h/.cpp               superseded by system.*; kept, not built
+    rec/                       the recompiler - includes nothing from psx/ (Docs/Recompiler-Plan.md)
+      recompiler.h             the engine: HostInterface, dispatch, invalidation
+      block_decoder.h          guest code to a block
+      block_compiler.h         a block to x64, with the register allocator
+      block_cache.h            compiled blocks by address, and the page bitmap
+      runtime.h                what compiled code calls back into
+      emitter.h                executable memory and a byte cursor
+      x86_extras.h             the instruction encodings
+    lib/reccore/               the RecCore emitter, vendored and since replaced; built by nothing
     utilities/
       cdrom/iso9660.h          ISO9660 structures
       cdrom/cdrom.cpp          old host CD read, superseded by disc.cpp; not built
       lean/hash_table.h
     tools/                     headless harnesses, built by a .bat, not the solution
       build_tools.bat
-      boot_runner.cpp
-      cpu_test.cpp
-      media_test.cpp
-      disasm.h
+      boot_runner.cpp          boots a BIOS or disc, reports everything; the checksum baselines
+      cpu_test.cpp  gte_test.cpp  gpu_test.cpp  mdec_test.cpp
+      timer_test.cpp  sio_test.cpp  spu_test.cpp  media_test.cpp
+                               the eight emulation harnesses (Docs/Test-Suite.md)
+      rec_test.cpp  rec_bench.cpp   the recompiler's tests, and its benchmark
+      host_test.cpp            the threads and channels in host/
+      frame_limiter_test.cpp  speed_resampler_test.cpp  letterbox_test.cpp
+      wav_pitch.cpp            the note in a WAV boot_runner wrote
+      make_test_disc.cpp       writes a synthetic disc image
+      disasm.h  letterbox.h
   PSXEmu.Win32/                front end: a window, Direct3D, input
     PSXEmu.Win32.vcxproj
     main.cpp                   wWinMain, and nothing else

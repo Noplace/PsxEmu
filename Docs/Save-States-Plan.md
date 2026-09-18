@@ -1,5 +1,9 @@
 # Save states
 
+> **Status: built - bug 44** (`Docs/Bugs-Found.md`). The verification procedure
+> is in Test-Suite.md under "Save states". The inventory below is the plan as
+> written; bug 44 records what it missed.
+
 ## What a state has to contain
 
 Everything the machine can be asked about that is not derivable. Surveyed from

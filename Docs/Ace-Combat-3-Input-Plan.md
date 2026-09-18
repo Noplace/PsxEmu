@@ -1,5 +1,10 @@
 # Ace Combat 3: input never reaches the game
 
+> **Status: fixed by bug 46** (`Docs/Bugs-Found.md`). The game's pad driver
+> polls rather than taking the interrupt, and never saw the pad answer - then
+> did not believe it once it could. The "leading hypothesis" below predates the
+> fix; the plan is kept as it was written.
+
 Reported as "input not working" on
 `\\superserverx\D\Games\Sony\PSX\ISO\Ace Combat 3\Ace Combat 3 - Electrosphere
 [SLUS-00972].cue`. Worked through the same way
