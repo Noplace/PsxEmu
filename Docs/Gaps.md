@@ -301,9 +301,12 @@ binding editor, no debugger, no settings dialog. It cannot be run from an agent
 session, so front-end changes are verified by hand.
 
 **It is still single-threaded**, and the machine still shares a thread with the
-message pump: a long frame or a blocking present stops the window responding.
-The audio device no longer does - that was [Threading-Plan.md](Threading-Plan.md)
-stage 1, and stages 2 and 3 are what is left.
+message pump. A long frame or a blocking present stops the window responding,
+and an open menu or a drag of the window stops the machine - with the sound
+device stopped along with it since bug 63, rather than DirectSound replaying its
+last second. The audio device no longer holds up the window - that was
+[Threading-Plan.md](Threading-Plan.md) stage 1, and stages 2 and 3 are what is
+left.
 
 ### Never run against the reference
 

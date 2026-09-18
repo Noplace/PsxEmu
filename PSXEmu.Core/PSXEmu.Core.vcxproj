@@ -104,7 +104,6 @@
     <ClInclude Include="audio\wasapiaudioengine.h" />
     <ClInclude Include="platform\frame_limiter.h" />
     <ClInclude Include="platform\speed_resampler.h" />
-    <ClInclude Include="platform\timer.h" />
     <ClInclude Include="platform\types.h" />
     <ClInclude Include="platform\util.h" />
     <ClInclude Include="psx\cdrom.h" />

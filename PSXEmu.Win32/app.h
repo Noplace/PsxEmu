@@ -97,6 +97,16 @@ namespace psxemu {
         // loop.
         bool PumpMessages(MSG* message);
 
+        // The loop has stopped running frames: paused, or Windows is running a modal loop of its
+        // own - a menu, a drag or resize of the window, a dialog - inside a message this loop
+        // dispatched, and will not hand control back until it ends. Stops the sound device, which
+        // nothing feeds until then. Safe to call any number of times.
+        void EnterStall();
+
+        // Called at the top of every frame; after a stall, restarts the sound device and forgets
+        // the gap.
+        void LeaveStall();
+
         // A save or load asked for during the last frame, actioned here between frames and never
         // mid-frame, per Docs/Save-States-Plan.md - the top of the loop is the one point nothing
         // about the current frame is half-done yet.
@@ -317,6 +327,10 @@ namespace psxemu {
         std::string settings_path_;
         bool running_ = false;
         bool paused_ = true;
+
+        // Between EnterStall and LeaveStall. Starts true: the sound device is opened stopped, and
+        // the first frame starts it.
+        bool stalled_ = true;
 
         // A save or load requested this frame, actioned once at the top of the next frame. -1 means
         // nothing pending. The generic Save State/Load State menu items act on last_slot_, which

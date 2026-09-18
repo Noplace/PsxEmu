@@ -51,11 +51,6 @@ class System {
   // directly and get the same answer every run.
   void StepInstruction();
 
-  // StepInstruction wrapped in the wall-clock pacing a front end wants.
-  void Step();
-
-  void Run();
-  void Stop();
   void LoadBiosFromMemory(const void* buffer);
   bool LoadBiosFromFile(const char* filename);
   bool LoadPsExe(const char* filename);
@@ -157,7 +152,6 @@ class System {
     ++cpu_context_.current_cycles;
     io_.Tick(1);
   }
-  TimingInfo& timing() { return timing_; }
 
   // How many hardware interrupts were actually taken. An interrupt that is
   // raised but never delivered looks exactly like one that was never raised.
@@ -189,14 +183,8 @@ class System {
   std::string LoadState(const std::string& path);
 
  private:
-  std::atomic<int> state;
-  utilities::Timer timer;
-  uint64_t cycles_per_second_;
-
   std::unique_ptr<RecompilerBridge> recompiler_;
-  std::unique_ptr<std::thread> thread;
   double base_freq_hz_;
-  TimingInfo timing_;
   uint64_t interrupts_taken_;
   // How many interrupts were taken with each I_STAT bit pending, so "the
   // interrupt fires but the handler does nothing" can be told apart from "the
@@ -206,7 +194,6 @@ class System {
   uint64_t interrupts_blocked_im_;
   uint64_t interrupts_after_gte_command_ = 0;
   uint64_t instructions_with_ie_;
-  static void thread_func(System* sys);
   Gpu gpu_;
   CpuContext cpu_context_;
   Cpu cpu_;

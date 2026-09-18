@@ -83,8 +83,8 @@ namespace psxemu {
         audio_ = CreateAudioEngine(
             (requested_audio == "dsound") ? AudioBackend::kDirectSound : AudioBackend::kWasapi,
             &current_audio_backend_);
-        if (audio_ != nullptr)
-            audio_->Play();
+        // Opened stopped. The loop starts it with the first frame it runs, and stops it whenever
+        // it stops running them - see EnterStall.
 
         if (!CreateMachine())
             return false;
@@ -268,17 +268,12 @@ namespace psxemu {
                 break;
 
             if (paused_) {
+                EnterStall();
                 Sleep(16);
-                // Nothing to catch up on when the machine starts again. The limiter would work this
-                // out for itself on the first frame back, but saying so here is cheaper than
-                // relying on that. The resampler is reset for the same reason: the sound it was
-                // interpolating from stopped however long ago the pause began.
-                frame_limiter_.Reset();
-                speed_resampler_.Reset();
-                audio_pending_.clear();
                 continue;
             }
 
+            LeaveStall();
             ApplyPendingStates();
             PollInput();
             RunOneFrame();
@@ -309,6 +304,36 @@ namespace psxemu {
             DispatchMessageW(message);
         }
         return running_;
+    }
+
+    // Pausing, a menu, a drag and a dialog all look the same from here: frames stop, and with them
+    // everything that feeds the sound device. Leaving the device running through that is not
+    // neutral. WASAPI plays silence once it runs dry, but DirectSound's buffer loops, and past the
+    // data and its 100 ms of guard silence it plays whatever it held a lap ago - so pausing, or
+    // holding a menu open, repeated the last second of sound for as long as either lasted (bug 63).
+    void App::EnterStall() {
+        if (stalled_)
+            return;
+        stalled_ = true;
+        if (audio_ != nullptr)
+            audio_->Pause();
+    }
+
+    void App::LeaveStall() {
+        if (!stalled_)
+            return;
+        stalled_ = false;
+        if (audio_ != nullptr)
+            audio_->Play();
+
+        // Nothing to catch up on. The limiter would only give up on its deadline by itself after a
+        // long stall and would try to make up a short one; the resampler was interpolating towards
+        // sound from before it; and the speed readout would count it as slow frames.
+        frame_limiter_.Reset();
+        speed_resampler_.Reset();
+        audio_pending_.clear();
+        speed_frames_ = 0;
+        speed_since_ = std::chrono::steady_clock::now();
     }
 
     void App::ApplyPendingStates() {
@@ -683,10 +708,11 @@ namespace psxemu {
                         L"Neither WASAPI nor DirectSound could be opened, so there is no sound. "
                         L"The machine keeps running.");
         } else {
-            // Unconditionally, paused or not. Pausing never stops the engine - it only stops
-            // feeding it, which plays as silence - so nothing would ever start this one again if
-            // it were left stopped because the switch happened during a pause.
-            audio_->Play();
+            // Left to the loop. The switch is made from the menu, so the loop is stalled while it
+            // happens, and LeaveStall starts whichever engine is open when the next frame runs -
+            // or, while paused, leaves it stopped, which is the point.
+            if (!stalled_)
+                audio_->Play();
             if (system_ != nullptr)
                 system_->config().audio_backend = current_audio_backend_;
         }
@@ -1061,6 +1087,16 @@ namespace psxemu {
                 if (app != nullptr && app->graphics_ != nullptr && wparam != SIZE_MINIMIZED)
                     app->graphics_->Resize(LOWORD(lparam), HIWORD(lparam));
                 return 0;
+
+            // Windows is about to run a modal loop of its own - the menu bar, a drag or resize of
+            // the window - or, for a dialog or a message box, says it is idle inside one. MainLoop
+            // does not get control back until it ends, and restarts things on the frame after.
+            case WM_ENTERMENULOOP:
+            case WM_ENTERSIZEMOVE:
+            case WM_ENTERIDLE:
+                if (app != nullptr)
+                    app->EnterStall();
+                break;
 
             case WM_COMMAND:
                 // Every command needs the machine, and it does not exist until after the window

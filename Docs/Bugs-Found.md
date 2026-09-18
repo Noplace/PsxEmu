@@ -3487,3 +3487,56 @@ over five seconds of an idle loop.
 **Worth remembering.** A test of an average cannot see anything that averages
 out, and "exactly on rate" was hiding frames arriving at twice the interval
 followed by frames arriving at none.
+
+## 63. Paused, or with a menu held open, DirectSound replayed the last second of sound on a loop
+
+`PSXEmu.Win32/app.cpp`
+
+**Symptom.** Found by reading the code, not reported: with DirectSound as the
+output, pausing (Space, or Emulation > Pause), holding a menu open, or dragging
+the window made the last second of sound repeat, after about a tenth of a
+second of silence, for as long as it lasted. WASAPI went quiet instead.
+
+**Cause.** Two things together. Pausing never stopped the sound device: the
+paused branch of the loop only stopped feeding it, on the understanding - a
+comment in `SetAudioBackend` said so - that an unfed device "plays as silence".
+WASAPI's does. DirectSound's secondary buffer loops, and bug 61's guard puts
+only 100 ms of silence after the data; past that, the play cursor runs on into
+the rest of the one-second ring, which still holds the audio from a lap ago,
+and round again.
+
+The other half is the single thread. A menu, a drag or resize of the window,
+and a dialog each run a modal loop of Windows' own inside a message the main
+loop dispatched, and the loop gets no control back until it ends - so each of
+those was a pause nobody asked for, with the same result.
+
+**Fix.** The device plays only while the loop is running frames.
+`App::EnterStall` stops it, and is called from the paused branch and from
+`WM_ENTERMENULOOP`, `WM_ENTERSIZEMOVE` and `WM_ENTERIDLE` (sent to the owner
+while a dialog or message box sits idle). `App::LeaveStall` starts it again at
+the top of the next frame and resets the frame limiter, the resampler, the
+pending audio and the speed readout, none of which should count the gap. The
+device is now opened stopped and started by the first frame, and switching
+backend leaves starting the new one to the loop as well.
+
+A dialog opened from a menu command needs nothing extra: the menu has already
+stalled the loop, and nothing restarts it until the frame after the command -
+dialog included - has returned.
+
+**Verified.** Against the real devices, with a probe that makes the loop's own
+calls in the same order. Before, on DirectSound: 0.1 s of silence, then the
+last second of sound on repeat, still going when the measurement stopped at
+5 s - 86% of the ring was old audio. After:
+
+| | during a stall | after it |
+|---|---|---|
+| DirectSound | stopped, play cursor frozen over 1.5 s | ring 0% old audio; no underruns in the next 2 s, nor across 20 stalls of 100-400 ms |
+| WASAPI | stopped, 1,688 samples held over 1 s | lowest queue in the next 2 s: 1,252 samples - never dry |
+
+The window messages themselves were not exercised: the front end cannot be run
+from an agent session. What is verified is the device half. The one thing to
+check by hand is a menu held open over a game with DirectSound selected.
+
+**Worth remembering.** "An unfed device plays silence" is true of WASAPI, not
+of sound devices in general: a looping buffer plays whatever it was last given.
+And on a single-threaded front end, every menu is a pause.

@@ -970,8 +970,8 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Running the core directly rather than through System::Run keeps the
-  // harness single-threaded and deterministic.
+  // One StepInstruction at a time, on this thread, and nothing paced by the
+  // wall clock - which is what makes the harness deterministic.
   std::vector<int16_t> audio;
   uint64_t instructions = 0;
   uint64_t last_frame = system->gpu().frame_count();

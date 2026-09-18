@@ -218,44 +218,6 @@ void System::StepInstruction() {
   }
 }
 
-// Paced against the wall clock, for a front end that wants the machine to run
-// at something close to real speed.
-void System::Step() {
-  const double dt = 1000.0 / base_freq_hz_;
-  timing_.current_cycles = timer.GetCurrentCycles();
-  timing_.time_span =
-      (timing_.current_cycles - timing_.prev_cycles) * timer.resolution();
-  if (timing_.time_span > 500.0)  // clamping time
-    timing_.time_span = 500.0;
-
-  timing_.span_accumulator += timing_.time_span;
-
-  while (timing_.span_accumulator >= dt) {
-    StepInstruction();
-    const uint64_t spent = cpu_.context()->current_cycles;
-    timing_.span_accumulator -= dt * (spent > 0 ? spent : 1);
-  }
-
-  timing_.total_cycles += timing_.current_cycles - timing_.prev_cycles;
-  timing_.prev_cycles = timing_.current_cycles;
-  timing_.fps_time_span += timing_.time_span;
-}
-
-void System::Run() {
-  if (thread!=nullptr && state == 1) return;
-  state = 1;
-  cycles_per_second_ = 0;
-  thread = std::make_unique<std::thread>(System::thread_func, this);
-}
-
-void System::Stop() {
-  if (thread==nullptr && state == 0) return;
-  state = 0;
-  thread->join();
-  OutputDebugStringA("killed thread\n");
-  thread.reset();
-}
-
 void System::LoadBiosFromMemory(const void* buffer) {
   memcpy(io_.bios_buffer.u8, buffer, kBiosSize);
 }
@@ -603,20 +565,6 @@ std::string System::LoadState(const std::string& path) {
     iso_.Close();
 
   return "";
-}
-
-void System::thread_func(System* sys) {
-  memset(&sys->timing_,0,sizeof(sys->timing_));
-  sys->timer.Calibrate();
-  sys->timing_.prev_cycles = sys->timer.GetCurrentCycles();
-  //gfx init  
-
-  while (sys->state != 0) {
-      sys->Step();
-  }
- 
-  //opengl.Deinitialize();
-  OutputDebugStringA("end of thread\n");
 }
 
 // The recompiler is created on demand and destroyed when it is turned off, so

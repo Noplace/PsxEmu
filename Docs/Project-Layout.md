@@ -9,11 +9,12 @@ PsxEmu/
     PSXEmu.Core.vcxproj
     platform/                  stands in for the WinCore library this repo does not have
       types.h                  fixed-width integer names
-      timer.h                  steady_clock behind the old utilities::Timer shape
       util.h                   SafeDelete / SafeDeleteArray / SafeRelease
+      frame_limiter.h          holds a front end's loop to the machine's frame rate
+      speed_resampler.h        stretches the SPU's output to the emulation speed
     psx/                       the machine
       psx.h                    aggregate header - order is load-bearing
-      system.h/.cpp            owns every component, and the run loop
+      system.h/.cpp            owns every component, and runs them an instruction at a time
       cpu.h/.cpp               MIPS R3000A
       cpu_context.h            register file
       gte.h/.cpp               geometry coprocessor  (one command implemented)
@@ -81,7 +82,7 @@ paths relative to it:
 
 ```cpp
 #include "psx/psx.h"
-#include "platform/timer.h"
+#include "platform/frame_limiter.h"
 #include "tools/disasm.h"
 ```
 

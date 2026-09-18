@@ -9,37 +9,53 @@ each one, and stop whenever the remaining benefit stops justifying the risk.
 
 ## What runs where today
 
-`App::MainLoop` does everything on the one thread Windows delivers messages on:
+*As of 2026-09-18, after stage 1 and bug 63.* `App::MainLoop` does everything
+on the one thread Windows delivers messages on:
 
 ```cpp
 while (running_) {
     if (!PumpMessages(&message)) break;
-    if (paused_) { Sleep(16); frame_limiter_.Reset(); continue; }
+    if (paused_) { EnterStall(); Sleep(16); continue; }
+    LeaveStall();          // restarts the sound device after a stall
     ApplyPendingStates();
     PollInput();
-    RunOneFrame();       // ~500k instructions, until the GPU's frame counter moves
-    PumpAudio();         // can block - see below
+    RunOneFrame();         // ~500k instructions, until the GPU's frame counter moves
+    PumpAudio();           // takes what fits and never waits - stage 1
     UpdateSpeedReadout();
-    PresentFrame();      // can block on vsync
-    LimitFrameRate();    // sleeps out the rest of the frame
+    PresentFrame();        // can block on vsync
+    LimitFrameRate();      // sleeps out the rest of the frame
 }
 ```
 
-Three things in that loop can stop the machine, and while any of them does, the
-window is not pumping messages: it does not redraw, the menu does not open, and
-a drag does not move it.
+Sharing one thread goes wrong in both directions.
 
-1. **Audio back-pressure.** `WASAPIAudioEngine::QueueAudio` waits for room:
-   `while (availableFrames < frameCount && m_playing) sleep_for(1ms)`. Whenever
-   the device buffer is full, the whole loop stops there.
-2. **Present.** With vsync on, `PresentFrame` blocks until the monitor is ready.
-3. **A slow frame.** A disc read from the network share, or a heavy scene.
+**The machine holds up the window.** While a frame is being run or presented,
+messages wait: the window does not redraw, the menu does not open, and a drag
+does not move it. Two things can make that long:
 
-None of this is a correctness bug, and the frame limiter is written to compose
-with the first two rather than fight them (see its comment). It is a
-responsiveness problem, and it gets worse the moment speed control lands: a
-device that only drains 44,100 samples a second is a hard brake at 200%, which
-is the subject of [Emulation-Speed-Plan.md](Emulation-Speed-Plan.md).
+1. **Present.** With vsync on, `PresentFrame` blocks until the monitor is
+   ready - one refresh at most, 6 ms at 165 Hz.
+2. **A slow frame.** A disc read from the network share, or a heavy scene.
+
+There used to be a third, and it was the worst: `QueueAudio` waited for room in
+the device's buffer, so the whole loop stopped whenever the sound card was
+behind - and at 200% speed a device draining 44,100 samples a second was a hard
+brake. Stage 1 below took the wait out, and the resampler in
+[Emulation-Speed-Plan.md](Emulation-Speed-Plan.md) now hands the device 44,100
+samples a second at any speed.
+
+**The window holds up the machine.** A menu, a drag or resize of the window,
+and a dialog each run a modal loop of Windows' own inside a message this loop
+dispatched, and `MainLoop` gets no control back until it ends. The machine
+stops for as long as the menu stays open or the mouse button stays down. Since
+bug 63 the sound device stops with it - `WM_ENTERMENULOOP`, `WM_ENTERSIZEMOVE`
+and `WM_ENTERIDLE` call `EnterStall`, and the next frame's `LeaveStall` starts
+it again - where before, DirectSound replayed its last second on a loop. The
+freeze itself is what one thread costs, and only stage 3 removes it.
+
+None of this is a correctness bug. It is responsiveness: the frame limiter
+composes with a blocking present rather than fighting it (see its comment), and
+`LeaveStall` resets it so a stall is not made up afterwards.
 
 ## What makes this harder than it looks
 
@@ -65,7 +81,10 @@ message thread; the keyboard and XInput are polled. The emulation thread needs
 a consistent snapshot per frame, not a half-updated one.
 
 **Nothing in `PSXEmu.Core` is thread-aware**, and it should stay that way. The
-core is owned by `App`; the threading belongs entirely to the front end.
+core is owned by `App`; the threading belongs entirely to the front end. (Until
+2026-09-18 `System` still carried `Run`, `Stop` and a `thread_func` that spun a
+wall-clock-paced `Step` on a `std::thread`. Nothing started it, and it had no
+audio, no present and no locking, so it was removed rather than built on.)
 
 ## Stage 1: stop the audio brake (no threads) - **done, 2026-09-16**
 
@@ -141,6 +160,25 @@ small, and on its own it costs nothing at runtime.
   settings, or route the reads through the queue too.
 - **Pause** stops the emulation thread's work but must not stop it draining
   commands, or the menu deadlocks against a paused machine.
+
+Found by reading the code on 2026-09-18, and not yet in the bullets above:
+
+- **Calls that wait for the UI thread.** `UpdateSpeedReadout` sets the title
+  with `SetWindowTextW`, which from another thread is a `SendMessage` that
+  waits for the window's own thread to answer. The moment the UI thread waits
+  on the emulation thread - joining it at shutdown - that is a deadlock. Post
+  the text instead. The same goes for `ShowError` and `ShowWarning`, which
+  `ApplyPendingStates` and machine setup raise and which would otherwise open
+  from the emulation thread.
+- **Input is mostly thread-free already.** The keyboard (`GetAsyncKeyState`)
+  and XInput can be polled from the emulation thread directly. Only the mouse,
+  which arrives as `WM_INPUT` on the UI thread and accumulates in `mouse_`,
+  needs the snapshot described above.
+- **The stall wiring comes out.** `WM_ENTERMENULOOP`, `WM_ENTERSIZEMOVE` and
+  `WM_ENTERIDLE` call `EnterStall` because today a menu stops the machine
+  (bug 63). On its own thread the machine keeps running under a menu, and
+  leaving them in would silence a game that is still playing - from the wrong
+  thread, too. Only pause should stall it then.
 
 ## What this does not buy
 

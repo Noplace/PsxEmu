@@ -30,12 +30,9 @@
 #include <memory.h>
 #include <eh.h>
 #include <functional>
-#include <thread>
-#include <atomic>
 
 #include "platform/types.h"
 #include "platform/util.h"
-#include "platform/timer.h"
 #include "platform/frame_limiter.h"
 #include "platform/speed_resampler.h"
 
