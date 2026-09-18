@@ -1068,10 +1068,14 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       break;
 
-    case 0x0F: {  // Getparam
-      // Returns current parameters: stat, mode, file, channel, sm
-      // We don't fully track file/channel/sm from Setfilter yet, so return 0s
-      const uint8_t data[5] = { StatusByte(), mode_, 0, 0, 0 };
+    case 0x0F: {  // Getparam - what Setmode and Setfilter last set
+      // The status, the mode, a byte that is always zero, then the file and
+      // channel Setfilter selected. Software takes each field by its position,
+      // so the zero matters as much as the values do: without it the file and
+      // channel would each arrive a byte early.
+      const uint8_t data[5] = {
+        StatusByte(), mode_, 0x00, filter_file_, filter_channel_
+      };
       QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 5);
       break;
     }

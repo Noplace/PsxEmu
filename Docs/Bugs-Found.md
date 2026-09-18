@@ -3562,3 +3562,37 @@ has its own thread, so a menu no longer stops it and there is nothing to stall
 audio thread writes silence into whatever the ring cannot fill, so a device is
 never left playing what it happens to still hold. Whether a menu pauses the
 machine is now a choice: Emulation > Pause While in Menus, off by default.
+
+## 64. Getparam answered zeros where the Setfilter file and channel belong
+
+`Getparam` (0Fh) replied `stat, mode, 0, 0, 0`, with a comment saying the
+file and channel were not tracked. They were: `Setfilter` already stored them
+in `filter_file_` and `filter_channel_`, and the XA decoder filters on them.
+Only the reply had not caught up.
+
+psx-spx gives the layout as `INT3(stat,mode,null,file,channel)`: a byte that is
+always zero sits between the mode and the file. That byte matters as much as
+the values. Software reads each field by its position, so leaving it out would
+hand a game the channel as the file, the same kind of mistake as GetlocL's
+status byte (bug 51).
+
+**The fix.** The reply is now `stat, mode, 00, file, channel`.
+
+**Verified.** A `Getparam` group in `media_test` (6 checks, 259 in all) sets a
+mode of C8h and a filter of file 1, channel 5, and checks every byte of the
+reply. The four values are different from each other and none equals the
+status, so a byte in the wrong position cannot pass. With the old reply put
+back, the file and channel checks fail. All eight harnesses pass. The BIOS
+boot is unchanged (`c7c8db90c5984798`, 97,749,265 instructions), and so are
+Air Combat, Wild Arms and Captain Tsubasa J at frames 1000/2000/3000.
+
+**What that does not show.** None of those three discs sends Getparam at all:
+their command histograms have no 0Fh. So the game runs show nothing broke,
+not that anything was fixed. No game known to need this has been found. The
+fix was written in an agent worktree and ported to master afterwards.
+
+Captain Tsubasa J's `.mds`/`.mdf` gives a different frame 3000 from the table
+(1,863 sectors where the table has 3,776, and 1,192 XA sectors filtered out).
+That is the image, not this change: the pre-fix build gives the same numbers
+on it. The table was taken from the `.cue`/`.bin`, whose zeroed subheaders
+(Gaps.md) mean nothing is ever filtered.

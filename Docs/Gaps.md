@@ -39,7 +39,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 251, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 253 - 1,002
+cpu 251, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 259 - 1,008
 checks, no failures (re-run 2026-09-18). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops

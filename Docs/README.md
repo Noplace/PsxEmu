@@ -40,7 +40,7 @@ A PlayStation 1 emulator revived from a 2012-2014 codebase.
 
 - Builds clean under MSVC 14.51 (`v145`), `/std:c++20 /permissive-`, all four
   of Debug/Release x Win32/x64, plus the headless harnesses.
-- **1,002 checks across the eight emulation harnesses, 0 failures**, and more
+- **1,008 checks across the eight emulation harnesses, 0 failures**, and more
   harnesses beside them - the recompiler's 460, the threads' 32, and the three
   around `platform/`. [Test-Suite.md](Test-Suite.md) has the table.
 - The CPU with load delay slots and measured multiply/divide/branch costs; the

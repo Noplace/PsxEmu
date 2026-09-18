@@ -990,6 +990,28 @@ void TestCdExtraCommands(emulation::psx::System* system,
   CheckEqual(cd.WaitForInterrupt(response, &length, 16), 5,
              "then errors - there is no session 2");
 
+  // Getparam reads back what Setmode and Setfilter set: the status, the mode,
+  // a byte that is always zero, then the file and channel. Software takes each
+  // field by its position, so a reply laid out differently from hardware hands
+  // it the wrong field - the mistake GetlocL made (bug 51). The mode, file and
+  // channel are all different, and none is the status, so a byte in the wrong
+  // place cannot pass for the right one.
+  BeginTest("Getparam");
+  const uint8_t filtered_xa[1] = { 0xC8 };         // double speed, XA, filtered
+  cd.Command(0x0E, filtered_xa, 1);                // Setmode
+  cd.WaitForInterrupt(response, &length, 16);
+  const uint8_t file1_channel5[2] = { 0x01, 0x05 };
+  cd.Command(0x0D, file1_channel5, 2);             // Setfilter
+  cd.WaitForInterrupt(response, &length, 16);
+  cd.Command(0x0F, nullptr, 0);                    // Getparam
+  CheckEqual(cd.WaitForInterrupt(response, &length, 16), 3,
+             "Getparam acknowledges");
+  CheckEqual(length, 5, "Getparam returns five bytes");
+  CheckEqual(response[1], 0xC8, "the second byte is the mode");
+  CheckEqual(response[2], 0x00, "the third is always zero");
+  CheckEqual(response[3], 0x01, "the fourth is the file Setfilter chose");
+  CheckEqual(response[4], 0x05, "and the fifth is its channel");
+
   // Reset reboots the controller: it acknowledges, completes, and puts the
   // mode back to zero.
   BeginTest("Reset");

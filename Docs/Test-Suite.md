@@ -120,7 +120,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 253 checks, 0 failures.**
+**Current: 259 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -144,7 +144,9 @@ Covers, in the order it runs:
 - **The controller with a disc**: GetID reports a licensed region, GetTN
   reports the track count, Setloc + ReadN delivers the sector that was
   actually asked for, and GetlocL answers with that sector's header - eight
-  bytes with no status byte in front (bug 51)
+  bytes with no status byte in front (bug 51); Getparam reads back the mode
+  and the Setfilter file and channel, with the always-zero byte between them
+  (bug 64)
 - **An ISO9660 filesystem** the test builds itself: the volume descriptor, the
   root directory, and finding a file by every form software writes - bare
   name, either slash, a `cdrom:` prefix, a `;1` suffix, the wrong case - plus
@@ -376,10 +378,10 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 251 | | `gpu_test` | 31 |
 | `gte_test` | 99 | | `mdec_test` | 85 |
-| `timer_test` | 70 | | `media_test` | 253 |
+| `timer_test` | 70 | | `media_test` | 259 |
 | `sio_test` | 105 | | `spu_test` | 108 |
 
-**1,002 checks, 0 failures**, all eight green. Each harness's own section above
+**1,008 checks, 0 failures**, all eight green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)
