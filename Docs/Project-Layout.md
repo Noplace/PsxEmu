@@ -172,9 +172,11 @@ PlayStation's drawing is expressed in shaders.
 That boundary is the point. It is why `boot_runner` can render and checksum
 frames with no graphics device at all, and it is what made the D3D12 engine
 possible without touching anything else: both sit behind `IGraphicsEngine`,
-`engine_factory.cpp` is the only file that names either, and Video > Renderer
-swaps which one is running under a live machine. A Vulkan one would go in the
-same way.
+`engine_factory.cpp` is the only file that names either, and Settings > Video >
+Renderer swaps which one is running under a live machine. A Vulkan one would go
+in the same way. Sound has the same arrangement - `IAudioEngine`, with WASAPI and
+DirectSound behind it and Settings > Audio > Output switching between them
+while a game runs.
 
 The filters are the one exception to "does nothing else", and they are the
 front end's own: they run on the finished frame on its way to the screen, not
@@ -198,9 +200,9 @@ File > Boot disc mounts a `.cue`, a `.mds`, or a `.bin`, `.img`, `.iso`
 or `.mdf` image; a drive letter can
 be passed on the command line.
 
-Each of the two controller ports is fed from whatever Input > Port n Source
-says - the keyboard, or one of the two XInput pads - and holds whichever
-controller Input > Controller Port n says. The keyboard map is the one in
+Each of the two controller ports is fed from whatever Settings > Input > Port n
+Source says - the keyboard, or one of the two XInput pads - and holds whichever
+controller Settings > Input > Controller Port n says. The keyboard map is the one in
 `const.h`: arrows for the d-pad, X/Z/S/A for cross/square/circle/triangle, Q/W
 and 1/2 for the shoulders, Enter for start and Shift for select.
 

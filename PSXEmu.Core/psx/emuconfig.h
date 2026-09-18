@@ -61,6 +61,14 @@ struct EmuConfig {
   static const float kMinAudioVolume;
   static const float kMaxAudioVolume;
 
+  // Which output the front end sends sound to. "wasapi" is the default
+  // because it is what was used before this was a choice - WASAPI was always
+  // tried first, with DirectSound only as the fallback - so nobody's sound
+  // changes on upgrade. DirectSound is there for the machines where WASAPI's
+  // shared-mode latency or a driver quirk makes it the worse of the two.
+  std::string audio_backend = "wasapi";
+  static const std::array<const char*, 2> kValidAudioBackends;
+
   // --- Video ------------------------------------------------------------
   // Which presenter draws the framebuffer. "d3d11" is the default so an
   // existing settings file (or none at all) behaves exactly as it did before
@@ -210,6 +218,9 @@ inline const float EmuConfig::kMaxAudioVolume = 8.0f;
 
 inline const std::array<const char*, 2>
     EmuConfig::kValidGraphicsBackends = { "d3d11", "d3d12" };
+
+inline const std::array<const char*, 2>
+    EmuConfig::kValidAudioBackends = { "wasapi", "dsound" };
 
 // Empty string ("None") first, then the eight loaded filters in the same
 // order PSXEmu.Win32's Video > Filter menu offers them.

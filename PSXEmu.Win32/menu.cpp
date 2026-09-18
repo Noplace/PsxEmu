@@ -23,6 +23,38 @@
 
 namespace psxemu {
 
+    namespace {
+
+        // Appends a popup and stamps its item with `tag`, so it can be found again later without
+        // anyone counting positions. See kBiosMenuTag for why that matters.
+        void AppendTaggedPopup(HMENU parent, HMENU popup, const wchar_t* label, ULONG_PTR tag) {
+            AppendMenuW(parent, MF_POPUP, reinterpret_cast<UINT_PTR>(popup), label);
+            MENUITEMINFOW info = {};
+            info.cbSize = sizeof(info);
+            info.fMask = MIIM_DATA;
+            info.dwItemData = tag;
+            SetMenuItemInfoW(parent, GetMenuItemCount(parent) - 1, TRUE, &info);
+        }
+
+        // Depth-first through every popup under `menu`, for the one whose item carries `tag`.
+        HMENU FindTaggedPopup(HMENU menu, ULONG_PTR tag) {
+            const int count = GetMenuItemCount(menu);
+            for (int i = 0; i < count; ++i) {
+                MENUITEMINFOW info = {};
+                info.cbSize = sizeof(info);
+                info.fMask = MIIM_DATA | MIIM_SUBMENU;
+                if (!GetMenuItemInfoW(menu, i, TRUE, &info) || info.hSubMenu == nullptr)
+                    continue;
+                if (info.dwItemData == tag)
+                    return info.hSubMenu;
+                if (HMENU found = FindTaggedPopup(info.hSubMenu, tag))
+                    return found;
+            }
+            return nullptr;
+        }
+
+    }   // namespace
+
     HMENU CreateMainMenu() {
         HMENU file = CreatePopupMenu();
         AppendMenuW(file, MF_STRING, kCommandBootDisc, L"&Boot disc...");
@@ -169,19 +201,37 @@ namespace psxemu {
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(multitap_port[1]),
                     L"M&ultitap Port 2");
 
+        // Which API the sound goes out through. Beside the volume rather than in place of it, the
+        // way Video holds Renderer and Filter side by side.
+        HMENU output = CreatePopupMenu();
+        for (size_t i = 0; i < std::size(kAudioBackendChoices); ++i) {
+            AppendMenuW(output, MF_STRING, static_cast<UINT_PTR>(kCommandAudioBackendFirst + i),
+                        kAudioBackendChoices[i].label);
+        }
+
+        HMENU audio = CreatePopupMenu();
+        AppendMenuW(audio, MF_POPUP, reinterpret_cast<UINT_PTR>(volume), L"&Volume");
+        AppendMenuW(audio, MF_POPUP, reinterpret_cast<UINT_PTR>(output), L"&Output");
+
         // The BIOS list is the one menu whose contents are not a table in const.h - it is whatever
         // is in the data folder. Built empty here and filled by PopulateBiosMenu once that folder
-        // has been scanned, so the bar exists before any of it is known.
+        // has been scanned, so the bar exists before any of it is known. Tagged rather than
+        // counted, so PopulateBiosMenu finds it wherever it sits - see kBiosMenuTag.
         HMENU bios = CreatePopupMenu();
+
+        // Everything that is a preference rather than an action lives here, so the bar itself stays
+        // short: File for things to open, Emulation for things the running machine does, Settings
+        // for how it does them.
         HMENU settings = CreatePopupMenu();
-        AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(bios), L"&BIOS");
+        AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(input), L"&Input");
+        AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(audio), L"&Audio");
+        AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(video), L"&Video");
+        AppendMenuW(settings, MF_SEPARATOR, 0, nullptr);
+        AppendTaggedPopup(settings, bios, L"&BIOS", kBiosMenuTag);
 
         HMENU bar = CreateMenu();
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(emulation), L"&Emulation");
-        AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(input), L"&Input");
-        AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(volume), L"&Audio");
-        AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(video), L"&Video");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(settings), L"&Settings");
         return bar;
     }
@@ -191,10 +241,7 @@ namespace psxemu {
         HMENU bar = GetMenu(window);
         if (bar == nullptr)
             return;
-        HMENU settings = GetSubMenu(bar, kMenuBarSettingsIndex);
-        if (settings == nullptr)
-            return;
-        HMENU bios = GetSubMenu(settings, kSettingsMenuBiosIndex);
+        HMENU bios = FindTaggedPopup(bar, kBiosMenuTag);
         if (bios == nullptr)
             return;
 
@@ -255,6 +302,18 @@ namespace psxemu {
         for (size_t i = 0; i < std::size(kSpeedChoices); ++i) {
             const bool on = (current == kSpeedChoices[i].value);
             CheckMenuItem(bar, static_cast<UINT>(kCommandSpeedFirst + i),
+                          MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+        }
+    }
+
+    // An empty `backend` - no output could be opened - leaves both unticked, which is the truth.
+    void TickAudioBackend(HWND window, const std::string& backend) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        for (size_t i = 0; i < std::size(kAudioBackendChoices); ++i) {
+            const bool on = (backend == kAudioBackendChoices[i].key);
+            CheckMenuItem(bar, static_cast<UINT>(kCommandAudioBackendFirst + i),
                           MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
         }
     }

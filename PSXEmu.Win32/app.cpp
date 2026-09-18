@@ -77,7 +77,12 @@ namespace psxemu {
         if (!CreateGraphics())
             return false;
 
-        audio_ = CreateAudioEngine();
+        // Read straight from the settings file for the same reason the renderer is: the output
+        // exists before the machine does, so the machine's config is not there yet to ask.
+        const std::string requested_audio = settings_.GetString("audio_backend", "wasapi");
+        audio_ = CreateAudioEngine(
+            (requested_audio == "dsound") ? AudioBackend::kDirectSound : AudioBackend::kWasapi,
+            &current_audio_backend_);
         if (audio_ != nullptr)
             audio_->Play();
 
@@ -160,7 +165,13 @@ namespace psxemu {
         // and CreateGraphicsEngine fell back - reflect reality rather than silently trusting what
         // LoadConfig just read.
         system_->config().graphics_backend = current_backend_;
+        // Likewise for sound: the output that actually opened, which is not the file's choice when
+        // that one could not be. Left alone when neither could, so a machine that is only silent
+        // for now does not lose the preference it will have again once its device comes back.
+        if (!current_audio_backend_.empty())
+            system_->config().audio_backend = current_audio_backend_;
         UpdateVolumeMenu();
+        UpdateAudioBackendMenu();
         UpdateRendererMenu();
         system_->sio().set_controller_type(
             0, ParseControllerType(system_->config().controller_type[0]));
@@ -639,6 +650,48 @@ namespace psxemu {
         TickRenderer(window_, current_backend_);
     }
 
+    void App::UpdateAudioBackendMenu() {
+        TickAudioBackend(window_, current_audio_backend_);
+    }
+
+    // Switching sound output while a game runs. Safe here because nothing else touches the engine
+    // between frames: PumpAudio feeds it from this same loop, and neither engine runs a thread of
+    // its own - both are fed by push, so shutting one down leaves nothing still calling into it.
+    void App::SetAudioBackend(const std::string& key) {
+        if (key == current_audio_backend_)
+            return;
+
+        if (audio_ != nullptr)
+            audio_->Shutdown();
+        audio_.reset();
+
+        audio_ = CreateAudioEngine(
+            (key == "dsound") ? AudioBackend::kDirectSound : AudioBackend::kWasapi,
+            &current_audio_backend_);
+
+        // What was queued in the old engine went with it, and the resampler was part-way through
+        // interpolating towards samples the new one will never see. Starting both clean costs a
+        // few milliseconds of silence, which is what a switch sounds like anyway.
+        audio_pending_.clear();
+        speed_resampler_.Reset();
+
+        if (audio_ == nullptr) {
+            ShowWarning(window_,
+                        L"Neither WASAPI nor DirectSound could be opened, so there is no sound. "
+                        L"The machine keeps running.");
+        } else {
+            // Unconditionally, paused or not. Pausing never stops the engine - it only stops
+            // feeding it, which plays as silence - so nothing would ever start this one again if
+            // it were left stopped because the switch happened during a pause.
+            audio_->Play();
+            if (system_ != nullptr)
+                system_->config().audio_backend = current_audio_backend_;
+        }
+
+        UpdateAudioBackendMenu();
+        SaveSettingsIfChanged();
+    }
+
     void App::UpdateFilterMenu() {
         TickFilter(window_, current_backend_, current_filter_);
     }
@@ -650,7 +703,7 @@ namespace psxemu {
             // doing nothing.
             ShowWarning(window_,
                         L"Filters require the Direct3D 12 renderer. Switch renderer "
-                        L"first (Video > Renderer).");
+                        L"first (Settings > Video > Renderer).");
             return;
         }
         if (graphics_ != nullptr)
@@ -1189,6 +1242,11 @@ namespace psxemu {
                 if (command >= kCommandVolumeFirst &&
                     command < kCommandVolumeFirst + static_cast<int>(std::size(kVolumeSteps))) {
                     SetVolume(kVolumeSteps[command - kCommandVolumeFirst].value);
+                } else if (command >= kCommandAudioBackendFirst &&
+                           command < kCommandAudioBackendFirst +
+                                         static_cast<int>(std::size(kAudioBackendChoices))) {
+                    SetAudioBackend(
+                        kAudioBackendChoices[command - kCommandAudioBackendFirst].key);
                 } else if (command >= kCommandRendererFirst &&
                            command < kCommandRendererFirst +
                                          static_cast<int>(std::size(kBackendChoices))) {

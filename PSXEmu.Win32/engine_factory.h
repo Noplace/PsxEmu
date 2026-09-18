@@ -51,9 +51,16 @@ namespace psxemu {
     // worth calling on an engine that supports filters at all; see IGraphicsEngine.
     void LoadAllFilters(IGraphicsEngine& engine);
 
-    // Tries the modern output first and falls back. Audio is optional: a machine with no working
-    // output device should still run, silently, rather than refusing to start - so null here is an
-    // ordinary outcome, not a failure the caller has to report.
-    std::unique_ptr<IAudioEngine> CreateAudioEngine();
+    enum class AudioBackend { kWasapi, kDirectSound };
+
+    // Tries `preferred` first and falls back to the other. Audio is optional: a machine with no
+    // working output device should still run, silently, rather than refusing to start - so null here
+    // is an ordinary outcome, not a failure the caller has to report.
+    //
+    // `*active_backend` is set to whichever engine actually ended up running ("wasapi" or "dsound"),
+    // or cleared when neither did, which the caller uses for the menu tick and the saved setting
+    // rather than the one it asked for - the same arrangement CreateGraphicsEngine has.
+    std::unique_ptr<IAudioEngine> CreateAudioEngine(AudioBackend preferred,
+                                                    std::string* active_backend);
 
 }   // namespace psxemu

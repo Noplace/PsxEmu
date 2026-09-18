@@ -80,17 +80,46 @@ namespace psxemu {
         engine.LoadCustomPixelShader("xbrz", g_ps_xbrz_filter, sizeof(g_ps_xbrz_filter));
     }
 
-    std::unique_ptr<IAudioEngine> CreateAudioEngine() {
-        using emulation::psx::Spu;
+    namespace {
 
-        auto wasapi = std::make_unique<WASAPIAudioEngine>();
-        if (wasapi->Initialize(Spu::kSampleRate, 2))
-            return wasapi;
+        std::unique_ptr<IAudioEngine> TryAudioEngine(AudioBackend backend) {
+            using emulation::psx::Spu;
+            std::unique_ptr<IAudioEngine> engine;
+            if (backend == AudioBackend::kWasapi)
+                engine = std::make_unique<WASAPIAudioEngine>();
+            else
+                engine = std::make_unique<DirectSoundAudioEngine>();
+            if (!engine->Initialize(Spu::kSampleRate, 2))
+                return nullptr;
+            return engine;
+        }
 
-        auto dsound = std::make_unique<DirectSoundAudioEngine>();
-        if (dsound->Initialize(Spu::kSampleRate, 2))
-            return dsound;
+        const char* AudioBackendKey(AudioBackend backend) {
+            return (backend == AudioBackend::kWasapi) ? "wasapi" : "dsound";
+        }
 
+    }   // namespace
+
+    std::unique_ptr<IAudioEngine> CreateAudioEngine(AudioBackend preferred,
+                                                    std::string* active_backend) {
+        const AudioBackend fallback = (preferred == AudioBackend::kWasapi)
+                                          ? AudioBackend::kDirectSound
+                                          : AudioBackend::kWasapi;
+
+        // No warning on the fallback, unlike the renderer: sound quietly coming out of the other
+        // API is a better outcome than a dialog about it, and the menu tick shows which one is
+        // actually running for anyone who wants to know.
+        for (AudioBackend backend : { preferred, fallback }) {
+            std::unique_ptr<IAudioEngine> engine = TryAudioEngine(backend);
+            if (engine != nullptr) {
+                if (active_backend != nullptr)
+                    *active_backend = AudioBackendKey(backend);
+                return engine;
+            }
+        }
+
+        if (active_backend != nullptr)
+            active_backend->clear();
         return nullptr;
     }
 

@@ -154,6 +154,7 @@ inline bool IsValidChoice(const std::string& value,
 inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetFloat("audio_volume", c.audio_volume);
   f.SetString("graphics_backend", c.graphics_backend);
+  f.SetString("audio_backend", c.audio_backend);
   f.SetString("video_filter", c.video_filter);
   f.SetString("controller_type_port1", c.controller_type[0]);
   f.SetString("controller_type_port2", c.controller_type[1]);
@@ -189,6 +190,11 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
       f.GetString("graphics_backend", c.graphics_backend);
   if (IsValidChoice(backend, EmuConfig::kValidGraphicsBackends))
     c.graphics_backend = backend;
+
+  const std::string audio_backend =
+      f.GetString("audio_backend", c.audio_backend);
+  if (IsValidChoice(audio_backend, EmuConfig::kValidAudioBackends))
+    c.audio_backend = audio_backend;
 
   const std::string filter = f.GetString("video_filter", c.video_filter);
   if (IsValidChoice(filter, EmuConfig::kValidVideoFilters))

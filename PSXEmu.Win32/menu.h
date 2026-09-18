@@ -65,6 +65,7 @@ namespace psxemu {
 
     // The renderer actually running, which is not necessarily the persisted preference - creating
     // the preferred one can fall back to the other.
+    void TickAudioBackend(HWND window, const std::string& backend);
     void TickRenderer(HWND window, const std::string& backend);
 
     // The current filter, and every filter item greyed out when the active renderer does not

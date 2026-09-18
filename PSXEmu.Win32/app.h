@@ -176,6 +176,7 @@ namespace psxemu {
         // read.
         void SetSkipBiosIntro(bool on);
         void SetRecompiler(bool on);
+        void SetAudioBackend(const std::string& key);
 
         // Rescans the BIOS folder and refills Settings > BIOS from what is in it. Called at
         // startup and whenever the menu's own Rescan item is used, which is what makes dropping a
@@ -201,6 +202,7 @@ namespace psxemu {
         void UpdateCdTimingMenu();
         void UpdateSkipBiosIntroMenu();
         void UpdateRecompilerMenu();
+        void UpdateAudioBackendMenu();
 
         // ---------------------------------------------------------------------------------------
         // The machine
@@ -279,6 +281,9 @@ namespace psxemu {
         // to the other. The Video menu ticks against this, not against the config.
         std::unique_ptr<IGraphicsEngine> graphics_;
         std::string current_backend_ = "d3d12";
+        // Which sound output is actually open - "wasapi" or "dsound" - or empty when neither
+        // could be. Not the requested one: CreateAudioEngine falls back.
+        std::string current_audio_backend_;
         std::string current_filter_;   // ditto, for the filter menu
 
         // Video > View VRAM: shows the whole 1024x512 VRAM instead of the display area, for chasing

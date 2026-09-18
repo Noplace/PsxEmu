@@ -63,6 +63,8 @@ namespace psxemu {
         kCommandLoadState,
         kCommandVolumeFirst,
         kCommandVolumeLast = kCommandVolumeFirst + 7,
+        kCommandAudioBackendFirst,
+        kCommandAudioBackendLast = kCommandAudioBackendFirst + 1,   // WASAPI, DirectSound
         kCommandRendererFirst,
         kCommandRendererLast = kCommandRendererFirst + 1,   // Direct3D 11, 12
         kCommandFilterFirst,
@@ -138,6 +140,13 @@ namespace psxemu {
     // The two renderer choices, in the order the Video > Renderer menu and
     // EmuConfig::kValidGraphicsBackends both list them.
     struct BackendChoice { const char* key; const wchar_t* label; };
+
+    // The sound outputs, in the order Settings > Audio > Output lists them. The keys are what
+    // psxemu.ini stores and EmuConfig::kValidAudioBackends accepts.
+    inline constexpr BackendChoice kAudioBackendChoices[] = {
+        { "wasapi", L"&WASAPI" },
+        { "dsound", L"&DirectSound" },
+    };
 
     inline constexpr BackendChoice kBackendChoices[] = {
         { "d3d11", L"Direct3D &11" },
@@ -231,12 +240,15 @@ namespace psxemu {
     // problem; the list is truncated rather than overflowing into the next run's ids.
     inline constexpr int kMaxBiosEntries = 32;
 
-    // Where the BIOS list lives in the bar, for the one function that has to find it again at
-    // runtime to refill it - CreateMainMenu builds the whole bar, but only this menu's contents
-    // depend on what is on disk. Kept next to the builder they describe: reordering the bar or the
-    // Settings menu without changing these silently refills the wrong popup.
-    inline constexpr int kMenuBarSettingsIndex = 5;   // File, Emulation, Input, Audio, Video, Settings
-    inline constexpr int kSettingsMenuBiosIndex = 0;
+    // How the one function that refills a menu at runtime finds it again - the BIOS list, whose
+    // contents depend on what is on disk. The popup carries this in its item data and is found by
+    // searching the bar for it.
+    //
+    // It used to be found by position - the bar's sixth item, then the Settings menu's first -
+    // with a comment warning that reordering either would silently refill the wrong popup. Moving
+    // Input, Audio and Video into Settings is exactly that reordering, so the position went and the
+    // tag replaced it: the BIOS list can now move anywhere without anything having to be told.
+    inline constexpr ULONG_PTR kBiosMenuTag = 0x42494F53;   // 'BIOS'
 
     // ---------------------------------------------------------------------------------------------
     // Input
