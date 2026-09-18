@@ -337,7 +337,7 @@ and are not counted above, since they test no emulation: `letterbox_test`
 the frame counts, that a minute at 150% does not drift, and that blocks join
 continuously).
 
-`rec_test` (452 checks) is not counted either, and for a different reason: it
+`rec_test` (460 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which is being built beside the
 interpreter rather than into it. Nothing in `psx/` includes it and the emulator
 does not link it. Its compiler checks are differential - a block is compiled,
@@ -358,6 +358,14 @@ changed while a game is running. The BIOS
 boot is identical either way; a game's framebuffer checksum is not yet, because
 the cycle model is approximate - see the timing section of
 `Docs/Recompiler-Plan.md`. Without the flag nothing about the run changes.
+
+`boot_runner --recompiler-diff` is the differential harness: two whole machines,
+one on each CPU, with all 32 registers plus HI, LO and the pc compared at every
+block boundary. On a disagreement it prints the block's disassembly, the
+registers that differ, and the interrupt counts on both sides - which is what
+says whether the CPU computed something wrong or the two machines simply took an
+interrupt at different instructions. It runs until the frame count is reached or
+something diverges, and exits non-zero for the latter.
 
 `rec_bench` is a benchmark rather than a test, and it asserts nothing:
 recompiled against interpreted, the register allocator on against off, and a

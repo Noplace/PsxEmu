@@ -24,12 +24,11 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  PSXEmu.Core\psx\mc.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
  PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\psx\disc.cpp PSXEmu.Core\psx\sio.cpp ^
  PSXEmu.Core\psx\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
- PSXEmu.Core\psx\state.cpp PSXEmu.Core\psx\debug_assist.cpp ^
- PSXEmu.Core\lib\reccore\emitter.cpp
+ PSXEmu.Core\psx\state.cpp PSXEmu.Core\psx\debug_assist.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
  /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core
-set LIBS=/link /SUBSYSTEM:CONSOLE user32.lib
+set LIBS=/link /SUBSYSTEM:CONSOLE user32.lib psapi.lib
 
 cl %FLAGS% /Fo:Temp\tools\obj_boot\ /Fe:Temp\tools\boot_runner.exe ^
    PSXEmu.Core\tools\boot_runner.cpp %CORE% %LIBS%
@@ -106,22 +105,14 @@ rem Only the emitter files rec_test actually reaches are compiled; the rest of
 rem the vendored library is there for when more of it is needed.
 if not exist Temp\tools\obj_rec mkdir Temp\tools\obj_rec
 cl %FLAGS% /Fo:Temp\tools\obj_rec\ /Fe:Temp\tools\rec_test.exe ^
-   PSXEmu.Core\tools\rec_test.cpp ^
-   PSXEmu.Core\lib\reccore\emitter.cpp ^
-   PSXEmu.Core\lib\reccore\intel\ia32_a.cpp ^
-   PSXEmu.Core\lib\reccore\intel\ia32_m.cpp ^
-   PSXEmu.Core\lib\reccore\intel\ia32_r.cpp %LIBS%
+   PSXEmu.Core\tools\rec_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem The measurement step 6 of the plan is conditional on: compiled against
 rem interpreted, and the register allocator on against off.
 if not exist Temp\tools\obj_bench mkdir Temp\tools\obj_bench
 cl %FLAGS% /Fo:Temp\tools\obj_bench\ /Fe:Temp\tools\rec_bench.exe ^
-   PSXEmu.Core\tools\rec_bench.cpp ^
-   PSXEmu.Core\lib\reccore\emitter.cpp ^
-   PSXEmu.Core\lib\reccore\intel\ia32_a.cpp ^
-   PSXEmu.Core\lib\reccore\intel\ia32_m.cpp ^
-   PSXEmu.Core\lib\reccore\intel\ia32_r.cpp %LIBS%
+   PSXEmu.Core\tools\rec_bench.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 echo.

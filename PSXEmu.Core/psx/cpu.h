@@ -349,15 +349,44 @@ class Cpu : public Component {
     return pending_load_.active || armed_load_.active;
   }
 
-  // Called after every store the interpreter performs, so that compiled code
-  // built from those words can be thrown away. Only some of a program's stores
-  // go through compiled code, so this cannot live in the recompiler - a game
-  // that loads an overlay with the interpreter would otherwise go on running
-  // the code it replaced.
-  typedef void (*StoreObserver)(void* context, uint32_t address);
+  // The load that will reach its register at the start of the next
+  // instruction, for a harness comparing this CPU against another at an
+  // instruction boundary. The two are not in the same state there even when
+  // they agree: compiled code writes a load's value out before the block ends,
+  // where the interpreter still has it in the pipeline. Applying this is what
+  // makes the two comparable.
+  bool GetPendingLoad(uint32_t* index, uint32_t* value) const {
+    if (!pending_load_.active)
+      return false;
+    *index = pending_load_.reg;
+    *value = pending_load_.value;
+    return true;
+  }
+
+  // Called after anything writes guest memory, so that compiled code built
+  // from those words can be thrown away.
+  //
+  // "Anything" is the point. The interpreter's own stores are the obvious half,
+  // and they cannot live in the recompiler because only some of a program's
+  // stores go through compiled code. The other half is everything that writes
+  // RAM without passing through the CPU at all - a DMA, above all, which is how
+  // a game loads an overlay on this machine: the CD channel drops new code into
+  // RAM and jumps to it, and Cpu::Store never sees a byte of it.
+  //
+  // `bytes` is what makes the second half affordable. A DMA moves thousands of
+  // words and reporting each one would cost more than the transfer; a bulk
+  // write reports its whole range once instead.
+  typedef void (*StoreObserver)(void* context, uint32_t address, uint32_t bytes);
   void set_store_observer(StoreObserver observer, void* context) {
     store_observer_ = observer;
     store_observer_context_ = context;
+  }
+
+  // For everything that writes guest memory behind the CPU's back: DMA
+  // transfers, a side-loaded executable, a restored save state.
+  void NoteBulkWrite(uint32_t address, uint32_t bytes) {
+    if (store_observer_ != nullptr && bytes != 0)
+      store_observer_(store_observer_context_, address, bytes);
   }
 
   // True when the pc is sitting on a GTE command. System::StepInstruction has

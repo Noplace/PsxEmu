@@ -229,9 +229,10 @@ class RecompilerBridge {
     Of(c)->Access(pc, kM8, a, true, v);
   }
 
-  // The interpreter's own stores, on their way to the block cache.
-  static void StoreObserver(void* context, uint32_t address) {
-    Of(context)->recompiler_->NoteStore(address);
+  // Everything that writes guest memory, on its way to the block cache: the
+  // interpreter's stores one at a time, and a DMA's whole range at once.
+  static void StoreObserver(void* context, uint32_t address, uint32_t bytes) {
+    Of(context)->recompiler_->NoteStoreRange(address, bytes);
   }
 
   System* system_;

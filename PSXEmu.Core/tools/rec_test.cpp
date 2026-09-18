@@ -12,7 +12,6 @@
 // Nothing here touches PSXEmu.Core/psx. The recompiler is being built beside
 // the interpreter, not into it.
 
-#include "lib/reccore/reccore.h"
 #include "rec/block_cache.h"
 #include "rec/block_decoder.h"
 #include "rec/block_compiler.h"
@@ -22,6 +21,8 @@
 #include <cstdio>
 #include <cstring>
 #include <intrin.h>
+#include <windows.h>
+#include <psapi.h>
 #include <map>
 #include <memory>
 
@@ -31,8 +32,9 @@ using emulation::rec::BlockDecoder;
 using emulation::rec::DecodedBlock;
 using emulation::rec::EndReason;
 using emulation::rec::Kind;
-using namespace reccore;
-using namespace reccore::intel;
+using emulation::rec::Emitter;
+using emulation::rec::CodeBlock;
+namespace x86 = emulation::rec::x86;
 
 namespace {
 
@@ -72,9 +74,8 @@ void TestEmitsACallableFunction() {
     return;
 
   emitter.set_block(block);
-  IA32 assembler(&emitter);
-  assembler.MOV(EAX, 42u);   // 32-bit write zero-extends into RAX
-  assembler.RET();
+  x86::MovRegImm(&emitter, 0, 42);   // 32-bit write zero-extends into RAX
+  x86::Ret(&emitter);
 
   // Cast the block's own address rather than using execute_block, which only
   // knows about void(*)() - a compiled guest block will take arguments.
@@ -101,16 +102,10 @@ void TestArgumentsArriveWhereTheyShould() {
   }
 
   emitter.set_block(block);
-  IA32 assembler(&emitter);
   // int32 add(int32 a, int32 b): a in ECX, b in EDX, result in EAX.
-  //
-  // A register operand goes through EA's one-byte constructor, which is the
-  // register-direct form (mod=3). Passing the register enum on its own is
-  // ambiguous - it converts to both a register and an immediate - so the cast
-  // is what says which was meant.
-  assembler.MOV(EAX, ECX);
-  assembler.ADD(EAX, EA(static_cast<uint8_t>(EDX)));
-  assembler.RET();
+  x86::MovRegReg(&emitter, 0, 1);                       // mov eax, ecx
+  x86::AluRegReg(&emitter, x86::AluOp::kAdd, 0, 2);     // add eax, edx
+  x86::Ret(&emitter);
 
   typedef int32_t (*AddFunc)(int32_t, int32_t);
   const AddFunc add = reinterpret_cast<AddFunc>(block->address);
@@ -141,20 +136,11 @@ void TestReadsAndWritesThroughAPointer() {
   }
 
   emitter.set_block(block);
-  IA32 assembler(&emitter);
   // void add_fields(Context* c): c in RCX. c->r1 += c->r0.
-  //
-  // Memory operands are named by the strings in addressing.h's table. There is
-  // a form for [RCX] but none carrying a displacement, so the displaced one is
-  // built by hand: mod=1 is "an 8-bit displacement follows".
-  EA base("[RCX]");
-  EA base_plus_four("[RCX]");
-  base_plus_four.mod = 1;
-  base_plus_four.displacement = 4;
-
-  assembler.MOV(EAX, base);                 // eax = c->r0
-  assembler.ADD(base_plus_four, EAX);       // c->r1 += eax
-  assembler.RET();
+  x86::MovRegMem(&emitter, 0, 1, 0);                        // eax = c->r0
+  x86::AluRegMem(&emitter, x86::AluOp::kAdd, 0, 1, 4);      // eax += c->r1
+  x86::MovMemReg(&emitter, 0, 1, 4);                        // c->r1 = eax
+  x86::Ret(&emitter);
 
   typedef void (*AddFields)(Context*);
   const AddFields add_fields = reinterpret_cast<AddFields>(block->address);
@@ -165,6 +151,47 @@ void TestReadsAndWritesThroughAPointer() {
   CheckEqual(context.r0, 7, "and the one it read was left alone");
 
   emitter.destroy_block(block);
+}
+
+// Executable memory that is actually given back, which the emitter this
+// replaced did not do: its VirtualFree passed a size alongside MEM_RELEASE,
+// which is ERROR_INVALID_PARAMETER, and it ignored the result. Two hundred
+// cycles of allocate-and-free leaked every byte.
+//
+// Checked by watching the process's own committed memory rather than by
+// trusting the call: the failure mode being guarded against is a free that
+// reports nothing and does nothing.
+void TestExecutableMemoryIsGivenBack() {
+    printf("executable memory is released, not just dropped\n");
+
+    PROCESS_MEMORY_COUNTERS_EX before = {};
+    before.cb = sizeof(before);
+    GetProcessMemoryInfo(GetCurrentProcess(),
+                         reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&before),
+                         sizeof(before));
+
+    Emitter emitter;
+    for (int i = 0; i < 200; ++i) {
+        CodeBlock* block = emitter.create_block(256 * 1024);
+        x86::Ret(&emitter);
+        emitter.destroy_block(block);
+    }
+
+    PROCESS_MEMORY_COUNTERS_EX after = {};
+    after.cb = sizeof(after);
+    GetProcessMemoryInfo(GetCurrentProcess(),
+                         reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&after),
+                         sizeof(after));
+
+    CheckEqual(emitter.failed_frees(), 0, "every release succeeded");
+    // 200 x 256 KB is 50 MB if none of it came back. A megabyte of slack covers
+    // whatever else the process did meanwhile.
+    const long long growth =
+        static_cast<long long>(after.PrivateUsage - before.PrivateUsage);
+    Check(growth < 1024 * 1024,
+          "and fifty megabytes of blocks did not stay committed");
+    if (growth >= 1024 * 1024)
+        printf("  (grew by %lld KB)\n", growth / 1024);
 }
 
 // ---------------------------------------------------------------------------
@@ -608,7 +635,7 @@ emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
   return state;
 }
 
-void RunBlock(reccore::CodeBlock* code, emulation::rec::BlockState* state) {
+void RunBlock(CodeBlock* code, emulation::rec::BlockState* state) {
   reinterpret_cast<void (*)(emulation::rec::BlockState*)>(code->address)(state);
 }
 
@@ -618,7 +645,7 @@ void RunBlock(reccore::CodeBlock* code, emulation::rec::BlockState* state) {
 bool g_allocate_registers = true;
 bool g_link_blocks = true;
 
-emulation::rec::BlockCompiler MakeCompiler(reccore::Emitter* emitter) {
+emulation::rec::BlockCompiler MakeCompiler(Emitter* emitter) {
   emulation::rec::BlockCompiler compiler(emitter);
   compiler.set_allocate_registers(g_allocate_registers);
   compiler.set_link_blocks(g_link_blocks);
@@ -873,8 +900,8 @@ bool RunBothWays(const std::vector<uint32_t>& program,
   const DecodedBlock decoded =
       decoder.Decode(kProgramBase, static_cast<uint32_t>(program.size()));
 
-  reccore::Emitter emitter;
-  reccore::CodeBlock* code = emitter.create_block(4096);
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
   emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
 
@@ -999,8 +1026,8 @@ void TestRegisterZeroStaysZero() {
   memory.Write(kProgramBase, program);
   BlockDecoder decoder(memory.Fetch());
   const DecodedBlock decoded = decoder.Decode(kProgramBase, 4);
-  reccore::Emitter emitter;
-  reccore::CodeBlock* code = emitter.create_block(4096);
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
   emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   compiler.Compile(decoded, code);
 
@@ -1028,8 +1055,8 @@ void TestItStopsAtWhatItCannotCompile() {
   });
   BlockDecoder decoder(memory.Fetch());
   const DecodedBlock decoded = decoder.Decode(kProgramBase, 5);
-  reccore::Emitter emitter;
-  reccore::CodeBlock* code = emitter.create_block(4096);
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
   emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
 
@@ -1058,7 +1085,7 @@ void TestItStopsAtWhatItCannotCompile() {
 void TestNopCompilesToNothing() {
   printf("a nop compiles to no host code at all\n");
 
-  reccore::Emitter emitter;
+  Emitter emitter;
   emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
 
   // A single nop is the floor: the prologue, the next_pc store and the tail.
@@ -1069,7 +1096,7 @@ void TestNopCompilesToNothing() {
   FakeMemory one;
   one.Write(kProgramBase, { NOP() });
   BlockDecoder one_decoder(one.Fetch());
-  reccore::CodeBlock* empty_code = emitter.create_block(4096);
+  CodeBlock* empty_code = emitter.create_block(4096);
   const emulation::rec::CompiledBlock empty =
       compiler.Compile(one_decoder.Decode(kProgramBase, 1), empty_code);
 
@@ -1077,7 +1104,7 @@ void TestNopCompilesToNothing() {
   memory.Write(kProgramBase, { NOP(), NOP(), NOP(), NOP() });
   BlockDecoder decoder(memory.Fetch());
   const DecodedBlock decoded = decoder.Decode(kProgramBase, 4);
-  reccore::CodeBlock* code = emitter.create_block(4096);
+  CodeBlock* code = emitter.create_block(4096);
   const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
 
   CheckEqual(compiled.compiled, 4, "all four count as compiled");
@@ -1170,8 +1197,8 @@ void TestTheValueOfALoadArrivesOneInstructionLate() {
   memory.Write(kProgramBase, program);
   BlockDecoder decoder(memory.Fetch());
   const DecodedBlock decoded = decoder.Decode(kProgramBase, 5);
-  reccore::Emitter emitter;
-  reccore::CodeBlock* code = emitter.create_block(4096);
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
   emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   compiler.Compile(decoded, code);
 
@@ -1319,8 +1346,8 @@ void TestABranchWithoutItsDelaySlotIsNotCompiled() {
       ADD_TRAPPING(2, 1, 1),    // the delay slot, and not compilable
   });
   BlockDecoder decoder(memory.Fetch());
-  reccore::Emitter emitter;
-  reccore::CodeBlock* code = emitter.create_block(4096);
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
   emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled =
       compiler.Compile(decoder.Decode(kProgramBase, 3), code);
@@ -1336,7 +1363,7 @@ void TestABranchWithoutItsDelaySlotIsNotCompiled() {
       LWL(3, 1, 0),             // not compilable: it reads a load in flight
   });
   BlockDecoder second_decoder(second.Fetch());
-  reccore::CodeBlock* second_code = emitter.create_block(4096);
+  CodeBlock* second_code = emitter.create_block(4096);
   const emulation::rec::CompiledBlock second_compiled =
       compiler.Compile(second_decoder.Decode(kProgramBase, 3), second_code);
   CheckEqual(second_compiled.compiled, 1, "the load was left to the interpreter");
@@ -1351,8 +1378,8 @@ void TestTheAndLinkBranchesAreLeftAlone() {
   FakeMemory memory;
   memory.Write(kProgramBase, { BGEZAL(1, 4), NOP() });
   BlockDecoder decoder(memory.Fetch());
-  reccore::Emitter emitter;
-  reccore::CodeBlock* code = emitter.create_block(4096);
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
   emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled =
       compiler.Compile(decoder.Decode(kProgramBase, 2), code);
@@ -1379,8 +1406,8 @@ void TestTheCallingConventionIsHonoured() {
       NOP(),
   });
   BlockDecoder decoder(memory.Fetch());
-  reccore::Emitter emitter;
-  reccore::CodeBlock* code = emitter.create_block(4096);
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
   emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
   const emulation::rec::CompiledBlock compiled =
       compiler.Compile(decoder.Decode(kProgramBase, 6), code);
@@ -1395,7 +1422,7 @@ void TestTheCallingConventionIsHonoured() {
   // only if all three survived.
   //
   //   int check(BlockState* state, void* block)   - state in RCX, block in RDX
-  reccore::CodeBlock* caller = emitter.create_block(256);
+  CodeBlock* caller = emitter.create_block(256);
   emitter.set_block(caller);
   namespace x86 = emulation::rec::x86;
   x86::Push(&emitter, 3);   // this caller has to preserve them for C++ too
@@ -1472,8 +1499,8 @@ void TestWhatItClaimsToCompileIsWhatItCompiles() {
     FakeMemory memory;
     memory.Write(kProgramBase, { word, ADDIU(6, 6, 1) });
     BlockDecoder decoder(memory.Fetch());
-    reccore::Emitter emitter;
-    reccore::CodeBlock* code = emitter.create_block(4096);
+    Emitter emitter;
+    CodeBlock* code = emitter.create_block(4096);
     emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
     const emulation::rec::CompiledBlock compiled =
         compiler.Compile(decoder.Decode(kProgramBase, 2), code);
@@ -2141,13 +2168,13 @@ void TestTheAllocatorAllocates() {
   const DecodedBlock decoded =
       decoder.Decode(kProgramBase, static_cast<uint32_t>(program.size()));
 
-  reccore::Emitter emitter;
-  reccore::CodeBlock* off_code = emitter.create_block(4096);
+  Emitter emitter;
+  CodeBlock* off_code = emitter.create_block(4096);
   emulation::rec::BlockCompiler off(&emitter);
   off.set_allocate_registers(false);
   const emulation::rec::CompiledBlock without = off.Compile(decoded, off_code);
 
-  reccore::CodeBlock* on_code = emitter.create_block(4096);
+  CodeBlock* on_code = emitter.create_block(4096);
   emulation::rec::BlockCompiler on(&emitter);
   on.set_allocate_registers(true);
   const emulation::rec::CompiledBlock with = on.Compile(decoded, on_code);
@@ -2172,7 +2199,7 @@ void TestTheAllocatorAllocates() {
   FakeMemory sparse;
   sparse.Write(kProgramBase, sparse_program);
   BlockDecoder sparse_decoder(sparse.Fetch());
-  reccore::CodeBlock* sparse_code = emitter.create_block(4096);
+  CodeBlock* sparse_code = emitter.create_block(4096);
   const emulation::rec::CompiledBlock sparse_block = on.Compile(
       sparse_decoder.Decode(kProgramBase,
                             static_cast<uint32_t>(sparse_program.size())),
@@ -2189,7 +2216,7 @@ void TestTheAllocatorAllocates() {
       ADDIU(1, 1, 1), ADDU(2, 2, 1), ADDIU(1, 1, 1),
   });
   BlockDecoder brief_decoder(brief.Fetch());
-  reccore::CodeBlock* brief_code = emitter.create_block(4096);
+  CodeBlock* brief_code = emitter.create_block(4096);
   const emulation::rec::CompiledBlock brief_block =
       on.Compile(brief_decoder.Decode(kProgramBase, 6), brief_code);
   CheckEqual(brief_block.registers_allocated, 0,
@@ -2210,6 +2237,7 @@ int main() {
   TestEmitsACallableFunction();
   TestArgumentsArriveWhereTheyShould();
   TestReadsAndWritesThroughAPointer();
+  TestExecutableMemoryIsGivenBack();
   TestCacheFindsWhatWasPutIn();
   TestTheThreeViewsOfRamAreOneBlock();
   TestAStoreIntoCodeThrowsItAway();

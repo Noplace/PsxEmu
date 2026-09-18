@@ -92,6 +92,24 @@ class BlockCache {
     return (it == blocks_.end()) ? nullptr : &it->second;
   }
 
+  // Whether any block was compiled from any page this range covers.
+  //
+  // A DMA moves thousands of words at a time and asking about each one is far
+  // too slow, so a bulk transfer asks once about the whole range. Almost every
+  // such range is data - an ordering table, a sound buffer - and answers no
+  // after a handful of bitmap lookups.
+  bool RangeTouchesCode(uint32_t address, uint32_t bytes) const {
+    if (bytes == 0)
+      return false;
+    const uint32_t first = Normalise(address) >> kPageShift;
+    const uint32_t last = Normalise(address + bytes - 1) >> kPageShift;
+    for (uint32_t page = first; page <= last; ++page) {
+      if (IsCodePage(page << kPageShift))
+        return true;
+    }
+    return false;
+  }
+
   // Whether any block was compiled from this page - the one question the store
   // path has to answer on every write, so it is a bitmap lookup and nothing
   // more.

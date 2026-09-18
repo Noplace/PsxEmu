@@ -20,7 +20,6 @@
 //
 // Nothing here touches PSXEmu.Core/psx.
 
-#include "lib/reccore/reccore.h"
 #include "rec/block_compiler.h"
 #include "rec/block_decoder.h"
 #include "rec/recompiler.h"

@@ -12,7 +12,7 @@ Working notes for anything spanning more than one sitting. Status per document.
 | [Bugs-Found.md](Bugs-Found.md) | live | Bugs fixed in the revived code, with the symptom each produced |
 | [Threading-Plan.md](Threading-Plan.md) | proposed | Moving the machine off the message thread, in three stages |
 | [Emulation-Speed-Plan.md](Emulation-Speed-Plan.md) | proposed | 50/100/150/200% speed, and why the audio path is the whole job |
-| [Recompiler-Plan.md](Recompiler-Plan.md) | live | Dynamic recompilation, wired into the core behind `System::EnableRecompiler` and off by default. 3.0-3.9x real time against the interpreter's 1.5-1.7x; BIOS boot identical, game timing not yet proven equivalent |
+| [Recompiler-Plan.md](Recompiler-Plan.md) | live | Dynamic recompilation, on the **Emulation > Recompiler** menu and off by default. 3.0-3.9x real time against the interpreter's 1.5-1.7x; BIOS boot identical. The differential harness has both CPUs agreeing exactly for millions of instructions - what is left is cycle accounting, not correctness |
 | [GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md) | proposed | Finding out whether the rasteriser or the SPU is the bottleneck, and what to do about each |
 
 ## Where things stand

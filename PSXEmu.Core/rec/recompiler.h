@@ -69,7 +69,7 @@
 //     returns when it runs out; the host sets the budget to however long it
 //     can afford not to hear from the CPU.
 
-#include "lib/reccore/reccore.h"
+#include "rec/emitter.h"
 #include "rec/block_cache.h"
 #include "rec/block_compiler.h"
 #include "rec/block_decoder.h"
@@ -161,7 +161,7 @@ class Recompiler {
   }
 
   ~Recompiler() {
-    for (reccore::CodeBlock* arena : arenas_)
+    for (CodeBlock* arena : arenas_)
       emitter_.destroy_block(arena);
   }
 
@@ -233,6 +233,23 @@ class Recompiler {
   // The block stops at that instruction and runs nothing after it; Step then
   // returns kFaulted, and where execution goes next is the machine's own pc.
   void SetFault() { state_.fault = 1; }
+
+  // Everything that writes guest memory has to come through here - not just
+  // the CPU's stores.
+  //
+  // A DMA writes RAM directly, without going anywhere near Cpu::Store, and on
+  // this machine that is how a game loads an overlay: the CD channel drops new
+  // code into RAM and jumps to it. Compiled code built from whatever was there
+  // before has to go, and nothing else in the system would have said so.
+  void NoteStoreRange(uint32_t address, uint32_t bytes) {
+    if (!cache_.RangeTouchesCode(address, bytes))
+      return;
+    const uint32_t first = BlockCache::Normalise(address) >> BlockCache::kPageShift;
+    const uint32_t last =
+        BlockCache::Normalise(address + bytes - 1) >> BlockCache::kPageShift;
+    for (uint32_t page = first; page <= last; ++page)
+      NoteStore(page << BlockCache::kPageShift);
+  }
 
   // Every guest store has to come through here, including the interpreter's.
   // Cheap when it is not a code page, which is almost always.
@@ -331,7 +348,7 @@ class Recompiler {
     if (decoded.empty())
       return nullptr;   // nothing mapped there; the interpreter will fault
 
-    reccore::CodeBlock* arena = ArenaWithRoom();
+    CodeBlock* arena = ArenaWithRoom();
     const size_t before = arena->cursor;
     const CompiledBlock compiled = compiler_.Compile(decoded, arena);
 
@@ -421,7 +438,7 @@ class Recompiler {
     }
   }
 
-  reccore::CodeBlock* ArenaWithRoom() {
+  CodeBlock* ArenaWithRoom() {
     if (arenas_.empty() ||
         arenas_.back()->cursor + kMaxBlockBytes > arenas_.back()->size) {
       arenas_.push_back(emitter_.create_block(kArenaBytes));
@@ -431,7 +448,7 @@ class Recompiler {
 
   void Reclaim() {
     reclaim_pending_ = false;
-    for (reccore::CodeBlock* arena : arenas_)
+    for (CodeBlock* arena : arenas_)
       emitter_.destroy_block(arena);
     arenas_.clear();
   }
@@ -473,12 +490,12 @@ class Recompiler {
   }
 
   HostInterface host_;
-  reccore::Emitter emitter_;
+  Emitter emitter_;
   BlockDecoder decoder_;
   BlockCompiler compiler_;
   BlockCache cache_;
   BlockState state_;
-  std::vector<reccore::CodeBlock*> arenas_;
+  std::vector<CodeBlock*> arenas_;
   Stats stats_;
   int executing_ = 0;
   bool reclaim_pending_ = false;

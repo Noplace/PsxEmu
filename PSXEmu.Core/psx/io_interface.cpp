@@ -587,10 +587,16 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
     case 0x1F801820: case 0x1F801824: mdec.Write(address, data); return;
     case 0x1F801810: system_->gpu_core()->WriteData(data); return;
     case 0x1F801814: system_->gpu_core()->WriteStatus(data); return;
-    case 0xFFFE0130: 
-      io.cache_control = data; 
-      if ((data&0x800)==0x800) 
-        system_->cpu().icache.Invalidate(); 
+    case 0xFFFE0130:
+      io.cache_control = data;
+      if ((data&0x800)==0x800) {
+        system_->cpu().icache.Invalidate();
+        // The instruction cache is not the only thing holding a copy of the
+        // code once the recompiler is on. This write says nothing about which
+        // part of memory changed, so every compiled block goes - the same
+        // answer the instruction cache gives, and the only one available.
+        system_->ResetCompiledCode();
+      }
       return;
   }
   BREAKPOINT

@@ -76,7 +76,7 @@
 //     code would stop halfway through an effect the interpreter has no way to
 //     be told about.
 
-#include "lib/reccore/reccore.h"
+#include "rec/emitter.h"
 #include "rec/block_decoder.h"
 #include "rec/runtime.h"
 #include "rec/x86_extras.h"
@@ -186,7 +186,7 @@ class BlockCompiler {
   // cleverer allocator.
   static const uint32_t kMinimumBlockInstructions = 12;
 
-  explicit BlockCompiler(reccore::Emitter* emitter) : emitter_(emitter) {
+  explicit BlockCompiler(Emitter* emitter) : emitter_(emitter) {
     for (int i = 0; i < 32; ++i)
       host_of_[i] = -1;   // everything in memory until a block says otherwise
   }
@@ -211,7 +211,7 @@ class BlockCompiler {
   // allocator's.
   void set_link_blocks(bool on) { link_blocks_ = on; }
 
-  CompiledBlock Compile(const DecodedBlock& block, reccore::CodeBlock* code) {
+  CompiledBlock Compile(const DecodedBlock& block, CodeBlock* code) {
     CompiledBlock result;
     if (code == nullptr)
       return result;
@@ -560,7 +560,7 @@ class BlockCompiler {
   // because a block reached by a jump runs its own prologue, and that prologue
   // expects the state where the calling convention puts it. RCX is volatile and
   // free by now: the last call this block made is long past.
-  void EmitTail(reccore::CodeBlock* code, size_t block_start, uint32_t count,
+  void EmitTail(CodeBlock* code, size_t block_start, uint32_t count,
                 CompiledBlock* result) {
     x86::Mov64RegReg(emitter_, kScratchB, kStatePtr);   // mov rcx, rbx
     EmitFrameRestore();
@@ -618,7 +618,7 @@ class BlockCompiler {
   //
   // It sits after the normal tail's `ret`, so nothing reaches it by falling
   // through - only the jumps that each memory access left behind.
-  void EmitFaultExit(reccore::CodeBlock* code) {
+  void EmitFaultExit(CodeBlock* code) {
     if (fault_exits_.empty())
       return;
     const size_t stub = code->cursor;
@@ -631,7 +631,7 @@ class BlockCompiler {
     fault_exits_.clear();
   }
 
-  void AddLinkSlot(reccore::CodeBlock* code, size_t block_start, uint32_t target,
+  void AddLinkSlot(CodeBlock* code, size_t block_start, uint32_t target,
                    CompiledBlock* result) {
     CompiledBlock::LinkSlot& slot = result->links[result->link_count++];
     slot.target = target;
@@ -642,12 +642,12 @@ class BlockCompiler {
 
   // The displacement of a jump is measured from the end of the instruction, and
   // a rel8 jump is two bytes long.
-  static void PatchRel8(reccore::CodeBlock* code, size_t jump_at, size_t target) {
+  static void PatchRel8(CodeBlock* code, size_t jump_at, size_t target) {
     code->ptr8bit[jump_at + 1] =
         static_cast<uint8_t>(static_cast<int8_t>(target - (jump_at + 2)));
   }
 
-  static void PatchRel32(reccore::CodeBlock* code, size_t site, int32_t value) {
+  static void PatchRel32(CodeBlock* code, size_t site, int32_t value) {
     memcpy(&code->ptr8bit[site], &value, sizeof(value));
   }
 
@@ -1059,7 +1059,7 @@ class BlockCompiler {
   // Two instructions and six bytes on the path that does not fault, and the
   // jump that does is recorded so it can be pointed at the block's fault exit
   // once the length of the block is known.
-  void EmitFaultCheck(reccore::CodeBlock* code, size_t block_start) {
+  void EmitFaultCheck(CodeBlock* code, size_t block_start) {
     x86::CmpMemImm8(emitter_, kStatePtr, kOffFault, 0);
     x86::JccRel8(emitter_, x86::Cc::kEqual, 5);   // skip the jump below
     fault_exits_.push_back(code->cursor);
@@ -1108,7 +1108,7 @@ class BlockCompiler {
     return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(value)));
   }
 
-  reccore::Emitter* emitter_;
+  Emitter* emitter_;
 
   // The load in flight, as the compiler walks the block. Compile-time state:
   // the emitted code carries only the value, in kPending.
@@ -1130,7 +1130,7 @@ class BlockCompiler {
 
   // The block being emitted, and the jumps out of it that a faulting memory
   // access leaves behind for EmitFaultExit to point somewhere.
-  reccore::CodeBlock* code_ = nullptr;
+  CodeBlock* code_ = nullptr;
   size_t block_start_ = 0;
   std::vector<size_t> fault_exits_;
   int8_t host_of_[32] = {};

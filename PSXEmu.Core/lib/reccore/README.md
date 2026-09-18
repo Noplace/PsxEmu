@@ -1,96 +1,67 @@
-# RecCore, vendored
+# RecCore, vendored - and no longer built
 
 A copy of `https://github.com/Noplace/RecCore` at commit
 `5f795ead1bd2bcdc68e0ea19b6ff1c1c07ddd4ff` ("update to VS 2022", 2023-02-25),
 taken 2026-09-16. The repository's `Lib/` directory, minus its own `.vcxproj`
 and wizard `ReadMe.txt`.
 
-**Copied, not depended on.** No submodule and no include path pointing outside
-this tree - an include path that no longer resolved is what made the old Game
-Boy recompiler unbuildable, and it is why `Docs/Recompiler-Plan.md` spent a
-section wondering whether the library still existed. To re-sync, clone the
-repository again and diff `Lib/` against this directory; the commit above is
-the base.
+**Nothing compiles this any more.** It is not in `PSXEmu.Core.vcxproj` and not
+in `tools/build_tools.bat`; the recompiler uses `PSXEmu.Core/rec/emitter.h`
+instead. The directory is kept because the findings below took real time to
+establish and are worth having written down, and because the upstream commit is
+the base for any future re-sync.
 
-## What it is
+## Why it was replaced
 
-An x86 instruction emitter. `reccore::Emitter` owns a block of
-`PAGE_EXECUTE_READWRITE` memory and an emit cursor; `reccore::intel::IA32` is
-a method per mnemonic that encodes into it.
+It was vendored to supply an x86 emitter. In the end the emulator used six
+functions from it - allocate a block of executable memory, free it, set a
+cursor, emit a byte, a word, a dword - because every actual instruction
+encoding was written by hand in `rec/x86_extras.h` against the instruction
+reference. Five thousand six hundred lines of library for sixty lines of work,
+with two defects in the sixty:
 
-Despite the name, **it emits x86-64**: `intel.h` defines
-`Reg64 = RAX..RDI, R8..R15` beside `Reg32`, `ia32.h` carries `Reg64` overloads
-and an `emitREX` that encodes the high register bits into the prefix, and
-there is VEX encoding for the XMM/YMM forms.
+- **`destroy_block` never freed anything.** It called
+  `VirtualFree(address, size, MEM_DECOMMIT|MEM_RELEASE)`. `MEM_RELEASE` requires
+  a size of zero and cannot be combined with `MEM_DECOMMIT`, so the call failed
+  with `ERROR_INVALID_PARAMETER` every time - and the return value was not
+  checked, so it failed silently. Measured: 200 allocate/free cycles of 256 KB
+  leaked all 51,200 KB. `rec_test` now has a check that watches the process's
+  own committed memory, so this cannot come back unnoticed.
+- **`emit8` was unchecked.** `*(ptr8bit + cursor++) = byte`, with nothing
+  comparing the cursor against the block's size. Running off the end of an
+  arena would have corrupted the block next to it silently.
+
+Both are fixed in `rec/emitter.h`, which also keeps a note on why its pages are
+RWX rather than W^X - block linking patches emitted code millions of times in a
+long run, and flipping page protection around each patch would cost more than
+linking saves.
+
+## What is in here, if it is ever wanted again
+
+An x86-64 instruction emitter, despite the `IA32` name: `intel.h` defines
+`Reg64 = RAX..R15`, `ia32.h` carries `Reg64` overloads and an `emitREX`, and
+there is VEX encoding for the XMM/YMM forms. Its instruction coverage is
+partial - `ADD`, `AND`, `OR`, `MOV`, `CMP`, `SHL` and `RET`, with no `SUB`,
+`XOR`, `NOT`, `SHR`, `SAR`, `NEG`, `SETcc`, `MOVZX`, `CALL`, `CMOVcc` or the
+jumps - which is what made writing the encodings by hand the shorter path.
 
 ## Local changes
 
-None, and the rule held through step 4 of the plan: what was missing went into
-`PSXEmu.Core/rec/x86_extras.h` instead. Keep it that way where possible - the
-diff against upstream stays readable - and if a change here ever becomes
-unavoidable, note it in this list with the reason.
+None. Nothing here was ever edited; what was missing went into
+`rec/x86_extras.h` instead, so a diff against upstream is still just the
+upstream.
 
-**Its instruction coverage is partial**, which is the thing to know before
-planning work around it. Present: `ADD`, `AND`, `OR`, `MOV`, `CMP`, `SHL`
-(one form), `RET`. Absent, and needed even for simple integer code: `SUB`,
-`XOR`, `NOT`, `SHR`, `SAR`, `NEG`, `SETcc`, `MOVZX` - and, once a block can
-call out and branch, `CALL`, `CMOVcc`, `PUSH`/`POP` and `MOVSX`. Those are in
-`rec/x86_extras.h`, emitting through this library's own `Emitter`, so the two
-mix freely in one block.
+## The rough edges found while using it
 
-## How to use it, since the API has two of everything
-
-`addressing.h` contains **two** `struct EA` definitions. The first, around line
-258, is inside a comment block; the live one is at the bottom of the file and
-is a different type with different constructors. Reading the wrong one costs an
-afternoon:
-
-```cpp
-Emitter emitter;
-CodeBlock* block = emitter.create_block(64);
-emitter.set_block(block);
-IA32 assembler(&emitter);
-
-assembler.MOV(EAX, 42u);                          // register, immediate
-assembler.ADD(EAX, EA(static_cast<uint8_t>(EDX))); // register, register
-assembler.MOV(EAX, EA("[RCX]"));                   // register, memory
-assembler.RET();
-reinterpret_cast<int(*)()>(block->address)();
-```
-
-- **A register operand becomes an `EA`** through its one-byte constructor,
-  which is the register-direct form (mod=3). Passing a register enum on its own
-  where an `EA` is wanted is ambiguous - the enum converts to both a register
-  and an immediate - so the cast is what says which was meant.
-- **A memory operand is named by a string** out of the `addressforms` table:
-  `"[RCX]"`, `"[RAX+RCX*4]"` and so on. There is no form carrying a
-  displacement, so build one by hand: take `EA("[RCX]")`, set `mod` to 1 (an
-  8-bit displacement follows) or 2 (32-bit), and set `displacement`.
-- **x64 register operands need the REX-aware overloads** (`Reg64`), which the
-  library supplies; the 32-bit forms zero-extend into the full register the way
-  the hardware does.
-
-## Known rough edges
-
-Found while proving it out in `rec_test`, and worth knowing before trusting a
-part of it that nothing has exercised yet:
-
-- **`MemMgr::offset` is never initialised** (`mem_mgr.h`), so its `alloc` walks
-  from a garbage offset. `Emitter::create_block` does not use it - it calls
-  `VirtualAlloc` per block - so nothing here touches it, but do not reach for
-  `MemMgr` without fixing that first.
-- **`Emitter::execute_block` casts to `void(*)()`**, which is fine for a
-  smoke test and useless for a block that takes arguments. `rec_test` casts the
-  block's address itself instead, which is what a recompiler will do anyway.
-- **Pages are allocated RWX.** That is the simple thing and it works; a later
-  pass may want W^X (write, then `VirtualProtect` to execute) if only to stop
-  the emulator tripping exploit-protection policies on someone's machine.
 - **`EA::mode_string_to_vars` walks off the end of its table** if the form
   string is not in it: the loop is `for (auto ptr = &addressforms[0]; ptr !=
-  nullptr; ++ptr)`, and that pointer is never null, so a typo in a form string
-  reads past the array until something compares equal. Use only strings that
-  exist in `addressforms`, and treat a mistyped one as undefined behaviour
-  rather than an error you will be told about.
-- **`MOV(EA, void*)` truncates the pointer** - `ia32_m.cpp` casts it to
-  `int32_t` (warning C4311 when built here). Fine on IA32, wrong on x64: load a
-  64-bit address through `MOV(Reg64, uint64_t)` instead.
+  nullptr; ++ptr)`, and that pointer is never null.
+- **`addressing.h` has two `struct EA` definitions**, the first inside a comment
+  block around line 258 and the live one at the bottom - a different type with
+  different constructors. Reading the wrong one costs an afternoon.
+- **`MemMgr::offset` is never initialised** (`mem_mgr.h`), so its `alloc` walks
+  from a garbage offset. `create_block` does not use it.
+- **`MOV(EA, void*)` truncates the pointer** to `int32_t` in `ia32_m.cpp` - fine
+  on IA32, wrong on x64.
+- **`execute_block` casts to `void(*)()`**, which is useless for a block that
+  takes arguments.

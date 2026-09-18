@@ -187,6 +187,7 @@ struct Options {
   bool quiet;
   bool recompiler;
   int recompiler_toggle;
+  bool recompiler_diff;
   int frame_log;
   float volume;
   std::vector<Press> presses;
@@ -577,6 +578,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       // Emulation menu, and the menu cannot be clicked from a headless harness -
       // so this is how "safe to change at any time" gets tested at all.
       options->recompiler_toggle = atoi(argv[++i]);
+    } else if (strcmp(arg, "--recompiler-diff") == 0) {
+      options->recompiler_diff = true;
     } else if (arg[0] == '-') {
       fprintf(stderr, "unknown option: %s\n", arg);
       return false;
@@ -594,6 +597,256 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   return options->bios != nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// --recompiler-diff: the two CPUs, side by side
+// ---------------------------------------------------------------------------
+//
+// Docs/Recompiler-Plan.md has asked for this from the beginning: run every
+// block both ways and compare, so that a disagreement names the instruction it
+// happened at instead of turning up as a different framebuffer four hundred
+// frames later.
+//
+// It runs **two whole machines**, not one machine twice. The plan's original
+// sketch was to snapshot the CPU, run a block compiled, restore, run it
+// interpreted and compare - but that performs every store twice, and a store
+// to the GPU's FIFO or the SPU is not something to do twice. Two machines cost
+// eight megabytes and have no such problem.
+//
+// They are aligned by pc, which is what makes the comparison meaningful: the
+// recompiled machine runs a whole block at a time, so the interpreted one is
+// stepped until it reaches wherever that block ended, and both are then in the
+// same place by construction. Everything else - all 32 registers, HI, LO - has
+// to agree there or something is wrong.
+//
+// **What a divergence here does and does not prove.** The two machines tick
+// their devices differently (compiled code charges its cycles in a lump), so an
+// interrupt can land on a different instruction in one than the other, and the
+// two will then legitimately part company without either CPU being wrong. The
+// report says whether an interrupt was taken just before the split, which is
+// what tells those two cases apart.
+
+struct DiffState {
+  uint32_t pc;
+  uint32_t reg[32];
+  uint32_t low;
+  uint32_t high;
+};
+
+DiffState CaptureDiff(System* system) {
+  DiffState state;
+  const emulation::psx::CpuContext* context = system->cpu().context();
+  state.pc = context->pc;
+  for (int i = 0; i < 32; ++i)
+    state.reg[i] = context->gp.reg[i];
+  state.low = context->low;
+  state.high = context->high;
+
+  // A load still in the pipeline belongs to this state even though it is not
+  // in the register file yet: it reaches its register before the next
+  // instruction runs, and compiled code has already written it out by the time
+  // its block ends. Without this the two machines look different every time a
+  // block's last-but-one instruction is a load - which is most of them, and is
+  // exactly what this harness reported first.
+  uint32_t index = 0;
+  uint32_t value = 0;
+  if (system->cpu().GetPendingLoad(&index, &value) && index != 0)
+    state.reg[index] = value;
+  return state;
+}
+
+const char* kRegisterNames[32] = {
+    "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+    "t0",   "t1", "t2", "t3", "t4", "t5", "t6", "t7",
+    "s0",   "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+    "t8",   "t9", "k0", "k1", "gp", "sp", "fp", "ra",
+};
+
+bool SetUpDiffMachine(System* system, const Options& options, bool recompiler) {
+  if (system->Initialize(options.bios) != 0)
+    return false;
+  if (options.cd_mechanical)
+    system->config().cdrom_mechanical_timing = true;
+  if (options.disc != nullptr && !system->LoadDisc(options.disc))
+    return false;
+  if (options.boot_disc)
+    system->set_auto_boot(true);
+  if (options.exe != nullptr)
+    system->set_auto_boot_exe(true, options.exe);
+  if (recompiler)
+    system->EnableRecompiler(true);
+  return true;
+}
+
+int RunRecompilerDiff(const Options& options) {
+  printf("recompiler-diff  two machines, one per CPU, compared at every block\n");
+  printf("bios             %s\n", options.bios);
+  if (options.disc != nullptr)
+    printf("disc             %s\n", options.disc);
+
+  System* compiled = new System();
+  System* interpreted = new System();
+  if (!SetUpDiffMachine(compiled, options, true) ||
+      !SetUpDiffMachine(interpreted, options, false)) {
+    fprintf(stderr, "failed to initialise both machines\n");
+    return 1;
+  }
+
+  // A short trail of where each machine has been, for the report. Knowing the
+  // last few blocks is usually what identifies the code involved.
+  const int kTrail = 8;
+  uint32_t trail[kTrail] = {};
+  int trail_next = 0;
+
+  uint64_t blocks = 0;
+  uint64_t instructions = 0;
+  uint64_t interrupts_before = 0;
+  int frames = 0;
+  uint64_t last_frame = 0;
+
+  while (frames < options.frames) {
+    const uint32_t start_pc = compiled->cpu().context()->pc;
+    trail[trail_next % kTrail] = start_pc;
+    ++trail_next;
+
+    const uint64_t taken_before = compiled->interrupts_taken();
+    const uint64_t taken_before_interpreted = interpreted->interrupts_taken();
+
+    // How many guest instructions the compiled machine is about to run, from
+    // both halves of it: the compiled ones, which the engine counts exactly,
+    // and any the engine handed to the interpreter, which Cpu::index counts.
+    const uint64_t compiled_before =
+        compiled->recompiler()->stats().instructions_compiled;
+    const int fallback_before = compiled->cpu().index;
+
+    compiled->StepInstruction();
+    ++blocks;
+    const uint32_t target = compiled->cpu().context()->pc;
+
+    const uint64_t ran =
+        (compiled->recompiler()->stats().instructions_compiled - compiled_before) +
+        static_cast<uint64_t>(compiled->cpu().index - fallback_before);
+
+    // Step the interpreted machine exactly that many instructions - not "until
+    // its pc matches". The first version of this did the latter, and a loop
+    // makes a liar of it: the interpreted machine stops the first time round
+    // while the compiled one has been round five more, and the two are then
+    // compared in different iterations. It reported a divergence in the BIOS
+    // that the framebuffer said was not there, which is the only reason it was
+    // caught.
+    const int before_index = interpreted->cpu().index;
+    while (static_cast<uint64_t>(interpreted->cpu().index - before_index) < ran)
+      interpreted->StepInstruction();
+    instructions += ran;
+
+    const uint64_t interpreted_ran =
+        static_cast<uint64_t>(interpreted->cpu().index - before_index);
+    if (interpreted_ran != ran) {
+      printf("\nDIVERGED: the two ran different amounts\n");
+      printf("  compiled ran %llu instructions from %08X, interpreted %llu\n",
+             static_cast<unsigned long long>(ran), start_pc,
+             static_cast<unsigned long long>(interpreted_ran));
+      printf("  which means a branch delay pair was split, or the block was\n"
+             "  not what the interpreter walked.\n");
+      break;
+    }
+
+    const DiffState a = CaptureDiff(compiled);
+    const DiffState b = CaptureDiff(interpreted);
+    bool same = (a.low == b.low) && (a.high == b.high);
+    for (int i = 0; i < 32 && same; ++i)
+      same = (a.reg[i] == b.reg[i]);
+
+    // The pc is part of the comparison, not the thing that aligned it: both
+    // machines ran the same number of instructions, so they should be in the
+    // same place as well as holding the same values.
+    const uint32_t interpreted_pc = interpreted->cpu().context()->pc;
+    if (!same || interpreted_pc != target) {
+      printf("\nDIVERGED: state at %08X\n", target);
+      printf("  after the block starting at %08X\n", start_pc);
+      if (interpreted_pc != target)
+        printf("  the interpreted machine is at %08X instead\n", interpreted_pc);
+      printf("  %llu blocks, %llu instructions, frame %d\n",
+             static_cast<unsigned long long>(blocks),
+             static_cast<unsigned long long>(instructions), frames);
+      // The confound this harness cannot design away: the two machines tick
+      // their devices differently, so an interrupt can land inside one
+      // machine's window and not the other's. When that happens the two ran
+      // different code and the comparison says nothing about the CPU.
+      const uint64_t compiled_irqs = compiled->interrupts_taken() - taken_before;
+      const uint64_t interpreted_irqs =
+          interpreted->interrupts_taken() - taken_before_interpreted;
+      printf("  interrupts in this window: %llu compiled, %llu interpreted\n",
+             static_cast<unsigned long long>(compiled_irqs),
+             static_cast<unsigned long long>(interpreted_irqs));
+      if (compiled_irqs != interpreted_irqs) {
+        printf("  -> they are not the same, so the two machines ran different\n"
+               "     code here. This is when the interrupt landed, not what the\n"
+               "     CPU computed.\n");
+      } else {
+        printf("  -> the same either way, so the interrupts are not the cause\n");
+        printf("     (the other timing-dependent answer is a load from a\n");
+        printf("      hardware register - 1F801xxx - since the two machines\n");
+        printf("      tick their devices at different granularity. GPUSTAT's\n");
+        printf("      bit 31 is the usual one. Check the listing below before\n");
+        printf("      concluding the CPU is at fault.)\n");
+      }
+      printf("  interrupts so far: %llu compiled, %llu interpreted\n",
+             static_cast<unsigned long long>(compiled->interrupts_taken()),
+             static_cast<unsigned long long>(interpreted->interrupts_taken()));
+      printf("\n  %-6s %-10s %-10s\n", "reg", "compiled", "interpreted");
+      for (int i = 0; i < 32; ++i) {
+        if (a.reg[i] != b.reg[i]) {
+          printf("  %-6s %08X   %08X\n", kRegisterNames[i], a.reg[i], b.reg[i]);
+        }
+      }
+      if (a.low != b.low)
+        printf("  %-6s %08X   %08X\n", "lo", a.low, b.low);
+      if (a.high != b.high)
+        printf("  %-6s %08X   %08X\n", "hi", a.high, b.high);
+
+      // The instructions themselves, which is what turns "these registers
+      // differ" into something to read.
+      printf("\n  the block:\n");
+      for (uint32_t pc = start_pc; pc != target && pc - start_pc < 4 * 80;
+           pc += 4) {
+        const uint32_t word = FetchCode(interpreted, pc);
+        char text[128];
+        tools::Disassemble(pc, word, text, sizeof(text));
+        printf("    %08X  %08X  %s\n", pc, word, text);
+      }
+
+      printf("\n  the blocks leading here:\n");
+      for (int i = 0; i < kTrail; ++i) {
+        const uint32_t pc = trail[(trail_next + i) % kTrail];
+        if (pc != 0)
+          printf("    %08X\n", pc);
+      }
+      delete compiled;
+      delete interpreted;
+      return 1;
+    }
+
+    const uint64_t now = compiled->gpu().frame_count();
+    if (now != last_frame) {
+      last_frame = now;
+      ++frames;
+      if ((frames % 100) == 0) {
+        printf("frame %-5d %llu blocks, %llu instructions, still identical\n",
+               frames, static_cast<unsigned long long>(blocks),
+               static_cast<unsigned long long>(instructions));
+        fflush(stdout);
+      }
+    }
+  }
+
+  printf("\n%llu blocks and %llu instructions over %d frames,\n",
+         static_cast<unsigned long long>(blocks),
+         static_cast<unsigned long long>(instructions), frames);
+  printf("and the two CPUs agreed on every register at every block boundary.\n");
+  delete compiled;
+  delete interpreted;
+  return 0;
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -604,6 +857,10 @@ int main(int argc, char** argv) {
             "                              [--trace n] [--quiet]\n");
     return 2;
   }
+
+  // Two machines rather than one, and nothing else about this run applies.
+  if (options.recompiler_diff)
+    return RunRecompilerDiff(options);
 
   System* system = new System();
   if (system->Initialize(options.bios) != 0) {

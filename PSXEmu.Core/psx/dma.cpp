@@ -525,6 +525,7 @@ void Dma::Dma1() {
     address = (address + step) & 0x1FFFFC;
   }
   ChargeWords(words);
+  NoteRamWritten(ch.madr & 0x1FFFFC, words, step);
   NoteTransfer(1, words, address);
   ch.madr = address;
 }
@@ -655,7 +656,41 @@ void Dma::Dma2() {
   }
 
   ChargeWords(words);
+  if (!from_ram)   // only the GPU-to-RAM direction writes anything
+    NoteRamWritten(channels[2].madr & 0x1FFFFC, words, step);
   channels[2].madr = address;
+}
+
+// Tells whoever is watching for code being overwritten that a transfer has
+// just written a run of RAM.
+//
+// A DMA never goes through Cpu::Store, so without this a game that loads an
+// overlay - the CD channel dropping new code into RAM and jumping to it, which
+// is how the PSX does it - would go on running whatever was compiled from the
+// words that used to be there. Reporting the run once rather than each word is
+// what makes it affordable: a transfer can be tens of thousands of words, and
+// almost all of them are an ordering table or a sound buffer that no code was
+// ever compiled from.
+//
+// Every one of these transfers walks a contiguous run from MADR in one
+// direction. A run that wraps around the end of RAM is reported as the whole of
+// it, which is conservative and rare.
+void Dma::NoteRamWritten(uint32_t start_address, uint32_t words, int32_t step) {
+  if (words == 0)
+    return;
+
+  const uint64_t span = static_cast<uint64_t>(words) * 4;
+  uint64_t lowest = start_address;
+  if (step < 0)
+    lowest = static_cast<uint64_t>(start_address) + 4 - span;
+
+  if (span >= kRamSize || static_cast<int64_t>(lowest) < 0 ||
+      lowest + span > kRamSize) {
+    system_->cpu().NoteBulkWrite(0, kRamSize);
+    return;
+  }
+  system_->cpu().NoteBulkWrite(static_cast<uint32_t>(lowest),
+                               static_cast<uint32_t>(span));
 }
 
 void Dma::NoteTransfer(int channel, uint32_t words, uint32_t end,
@@ -702,6 +737,8 @@ void Dma::Dma3() {
     address = (address + step) & 0x1FFFFC;
   }
   ChargeWords(words);
+  // The overlay case: this is the channel a game loads code with.
+  NoteRamWritten(channels[3].madr & 0x1FFFFC, words, step);
   NoteTransfer(3, words, address, cdrom.delivered_lba(), first_word);
   channels[3].madr = address;
 }
@@ -733,6 +770,8 @@ void Dma::Dma4() {
     address = static_cast<uint32_t>(address + step) & 0x1FFFFC;
   }
   ChargeWords(words);
+  if (!to_spu)   // only the SPU-to-RAM direction writes anything
+    NoteRamWritten(channels[4].madr & 0x1FFFFC, words, step);
   NoteTransfer(4, words, address);
   channels[4].madr = address;
 }
@@ -765,6 +804,7 @@ void Dma::Dma6() {
     address = (address - 4) & 0x1FFFFC;
   }
   ChargeWords(words);
+  NoteRamWritten(channels[6].madr & 0x1FFFFC, words, -4);
   NoteTransfer(6, words, address);
   channels[6].madr = address;
 }

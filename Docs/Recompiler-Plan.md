@@ -271,6 +271,131 @@ switches - the run is byte-identical to both pure runs: checksum
 
 The setting persists as `recompiler` in the ini, and stays off by default.
 
+### Invalidation reaches everything that writes memory, 2026-09-17
+
+The first version of the wiring only heard about the CPU's own stores. That is
+not where code comes from on this machine: **a DMA writes RAM directly**, never
+touching `Cpu::Store`, and the CD channel dropping an overlay into RAM and
+jumping to it is exactly how a PSX game loads code. Blocks compiled from
+whatever used to be there would have gone on running, and nothing in the system
+would have said otherwise.
+
+Closed by generalising the store observer to carry a length, so a bulk writer
+reports its whole range once - a transfer can be tens of thousands of words and
+reporting each one would cost more than the transfer. `Cpu::NoteBulkWrite` is
+the entry point, and it is now called from:
+
+- **every DMA channel that writes RAM** - MDEC-out, GPU-to-RAM, CD-ROM, SPU-to-RAM
+  and the ordering-table clear;
+- **the cache-control write** at `0xFFFE0130`, which is software saying it has
+  replaced code and previously only flushed the instruction cache;
+- **a side-loaded PS-EXE** and **a restored save state**, both of which replace
+  RAM wholesale.
+
+Almost every such range is an ordering table or a sound buffer that no block was
+ever compiled from, so the answer is a handful of bitmap lookups. It costs about
+2% on Wild Arms (3.89x to 3.81x).
+
+**A guess of mine that the measurement refuted.** Wild Arms' framebuffer
+checksum differs between the two CPUs, and it streams overlays off the disc, so
+this looked like the cause and was written up as the likely one. It is not: with
+DMA invalidation in, Wild Arms executes *the same 492,090,429 compiled and
+10,237,334 interpreted instructions as before*, and produces the same differing
+checksum. It does not run DMA'd-over code in those 1,500 frames. The earlier
+explanation - the cycle model, in the timing section below - is back to being
+the likely one, and the honest state is that it is still unexplained.
+
+**And a bug the stats line caught.** Adding the menu's reconciliation in
+`StepInstruction` made `boot_runner --recompiler` a silent no-op: it called
+`EnableRecompiler` directly while the setting stayed false, so the next
+instruction switched it back off. Two verification runs "passed" that way before
+the missing `rec blocks` line gave it away. `EnableRecompiler` now moves the
+setting too. Worth remembering that a run reporting no statistics is a run that
+did not do the thing.
+
+### The differential harness, and what it settled, 2026-09-18
+
+`boot_runner --recompiler-diff` runs **two whole machines**, one on each CPU,
+and compares all 32 registers plus HI, LO and the pc at every block boundary.
+
+Two machines rather than one machine twice. The sketch further down this
+document was to snapshot the CPU, run a block compiled, restore, run it
+interpreted and compare - but that performs every store twice, and a store into
+the GPU's FIFO is not something to do twice. Two machines cost eight megabytes
+and have no such problem.
+
+**It found three things, and the first two were its own.** Both are worth
+recording, because both are the kind of mistake that makes a harness confidently
+wrong:
+
+1. **Aligning by pc is wrong in a loop.** The first version stepped the
+   interpreted machine "until its pc matches". In a loop the interpreted machine
+   stops the first time round while the compiled one has been round five more,
+   and the two are then compared in different iterations - which duly reported
+   two registers differing by exactly five. It aligns by instruction count now.
+2. **A load in flight is part of the state.** Compiled code writes a load's
+   value out before its block ends; the interpreter still has it in the
+   pipeline, landing at the start of the next instruction. Both are correct, and
+   at a block boundary they look different - which they did, every time a
+   block's last-but-one instruction was a load. `CaptureDiff` now applies the
+   pending load before comparing. Without that fix the harness diverged after
+   55,000 blocks; with it, after five million.
+3. **And then the real answer.** On the BIOS the two CPUs agree for **19.2
+   million instructions across 57 frames**, and the first genuine disagreement
+   is a `lw` from `0x1F801814` - GPUSTAT - differing in bit 31, the even/odd
+   field bit. On Wild Arms they agree for **2.87 million instructions**, and the
+   first disagreement is an interrupt landing inside one machine's window and
+   not the other's.
+
+**So the CPU is not the problem, and the timing is.** Both of those divergences
+are the same cause: compiled code charges its cycles in a lump at the end of a
+chain where the interpreter ticks per instruction, so the devices advance at a
+different granularity. Anything that reads a timing-dependent register, or takes
+an interrupt at an instruction boundary, can then part company without either
+CPU having computed anything wrong.
+
+That is the answer to the question this file has been carrying since the wiring
+went in: **Wild Arms' framebuffer differs because of when interrupts land, not
+because a compiled instruction is wrong.** It took two wrong guesses - stale
+compiled code, then a shrug at "sub-frame timing" - before something was built
+that could actually tell.
+
+The harness reports the interrupt counts on both sides and prints the block's
+disassembly, so a future divergence says which of the two kinds it is without
+anyone having to guess again.
+
+### The vendored emitter is gone, 2026-09-17
+
+`PSXEmu.Core/rec/emitter.h` replaces RecCore, and `lib/reccore` is no longer
+built by anything - not the solution, not `build_tools.bat`. The directory and
+its README stay as a record.
+
+It was vendored to supply an x86 emitter, and in the end six functions of it
+were used: allocate executable memory, free it, set a cursor, emit a byte, a
+word, a dword. Every instruction encoding was already written by hand in
+`rec/x86_extras.h`. Two of those six were wrong:
+
+- **`destroy_block` never freed anything.** `VirtualFree(address, size,
+  MEM_DECOMMIT|MEM_RELEASE)` is an invalid combination - `MEM_RELEASE` takes a
+  size of zero and cannot be combined with `MEM_DECOMMIT` - so it returned
+  failure every time, and the result was not checked. Measured before replacing
+  it: 200 allocate/free cycles of 256 KB leaked all 51,200 KB. That was live in
+  the emulator, since every cache-control write releases its arenas.
+- **`emit8` was unchecked**, so running off the end of an arena would have
+  quietly corrupted the block next to it.
+
+`rec_test` now watches the process's own committed memory across 200 cycles, so
+the first of those cannot come back unnoticed. Nothing about speed changed
+(BIOS 3.15x, Wild Arms 3.43x - the same within run-to-run noise), which is the
+expected answer: the emitter runs at compile time, and a whole BIOS boot
+compiles about nine thousand blocks.
+
+**The pages stay RWX**, deliberately. W^X by flipping page protection is
+incompatible with how often linking patches emitted code - nearly two million
+patches in a 1,500-frame run - and doing it properly means mapping the same
+pages twice, writable at one address and executable at another. Worth doing if
+something ever objects to RWX; not worth doing on principle.
+
 ### Three things the core had to grow, and no more
 
 1. `Cpu::exceptions_raised()` - a counter. Compiled code has no pc of its own
@@ -322,10 +447,18 @@ its handler, and finding out what it actually is - rather than guessing a third
 time - is the next piece of work.
 
 Wild Arms is where that shows: same primitives, same pixels, different final
-framebuffer, which is what a sub-frame timing difference looks like. Two other
+framebuffer. **Demonstrated, not guessed** - the differential harness above
+puts the two CPUs in exact agreement for 2.87 million instructions and then
+finds an interrupt landing in one machine's window and not the other's. Two
 differences of the same family, both bounded by the budget of 64 instructions:
 an interrupt raised inside a chain is not seen until the chain ends, and the
 machine advances in bursts rather than one instruction at a time.
+
+Closing it means making compiled code's cycle accounting match what the
+interpreter actually charges - which is still unknown, since the obvious model
+was measured and found wrong. That is the work, and the harness is now the tool
+for checking it: a change that improves the timing should push the first
+divergence later.
 
 **So: correct enough to run, not yet proven equivalent.** The baselines are the
 place to keep checking it, and the twelve-disc table is what should be run

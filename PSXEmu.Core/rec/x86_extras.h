@@ -18,30 +18,26 @@
 *****************************************************************************************************************/
 #pragma once
 
-// The x86-64 forms the vendored RecCore does not have.
+// The x86-64 this recompiler emits.
 //
-// RecCore supplies what this needs most - a block of executable memory, an
-// emit cursor, and the register numbering - but its instruction coverage is
-// uneven: there is ADD, AND, OR, MOV, CMP and RET, and no SUB, XOR, NOT, SHR,
-// SAR, SETcc or MOVZX. Those are needed to compile even the simplest third of
-// the R3000A's instruction set, and step 4 of the plan needed more still -
-// CALL, CMOVcc, PUSH/POP, the stack adjustment a call's shadow space wants,
-// and the sign- and zero-extending moves a byte or halfword load ends with.
-// All of it is written here rather than added to the vendored copy: the
-// library's README asks for it that way round, so that the diff against
-// upstream stays readable.
+// Every encoding here is written out by hand against the instruction reference
+// rather than taken from a library. It started as the forms the vendored
+// RecCore lacked - it had ADD, AND, OR, MOV, CMP and RET, and no SUB, XOR, NOT,
+// SHR, SAR, SETcc or MOVZX - and by the time memory, branches, calls and
+// linking were compiled, all of it was here and none of its assembler was used.
+// The library is no longer built; rec/emitter.h supplies the executable memory
+// and the cursor, which was the only part ever worth having.
 //
 // Everything is the 32-bit form on the low half of a register, which is what
 // the guest's registers are, and which zero-extends into the full 64-bit
 // register exactly as the hardware does. The exceptions are the handful of
-// REX.W forms for moving pointers around. All of it emits through
-// reccore::Emitter, so a caller mixes these and RecCore's own freely.
+// REX.W forms for moving pointers around.
 //
 // The one addressing form used is [base + disp8], because that is all a
 // register file of 32 words needs: the furthest is at offset 124, and the
 // block's own state is smaller than that again.
 
-#include "lib/reccore/reccore.h"
+#include "rec/emitter.h"
 
 #include <cstdint>
 
@@ -61,7 +57,7 @@ inline uint8_t ModRM(uint8_t mod, uint8_t reg, uint8_t rm) {
 // and no diagnostic. Emitting it unconditionally would be correct too, but it
 // would make every byte count in the tests depend on registers that happen to
 // be low.
-inline void EmitRex(reccore::Emitter* e, bool wide, uint8_t reg, uint8_t rm) {
+inline void EmitRex(Emitter* e, bool wide, uint8_t reg, uint8_t rm) {
   const uint8_t rex = static_cast<uint8_t>(0x40 | (wide ? 8 : 0) |
                                            ((reg >= 8) ? 4 : 0) |
                                            ((rm >= 8) ? 1 : 0));
@@ -72,7 +68,7 @@ inline void EmitRex(reccore::Emitter* e, bool wide, uint8_t reg, uint8_t rm) {
 // op r32, [base + disp8]  and  op [base + disp8], r32, for the ALU opcodes
 // whose encoding is uniform: the /r form with the direction bit deciding which
 // operand is memory.
-inline void EmitRegMem8(reccore::Emitter* e, uint8_t opcode, uint8_t reg,
+inline void EmitRegMem8(Emitter* e, uint8_t opcode, uint8_t reg,
                         uint8_t base, int8_t displacement, bool wide = false) {
   EmitRex(e, wide, reg, base);
   e->emit8(opcode);
@@ -80,7 +76,7 @@ inline void EmitRegMem8(reccore::Emitter* e, uint8_t opcode, uint8_t reg,
   e->emit8(static_cast<uint8_t>(displacement));
 }
 
-inline void EmitRegReg(reccore::Emitter* e, uint8_t opcode, uint8_t reg,
+inline void EmitRegReg(Emitter* e, uint8_t opcode, uint8_t reg,
                        uint8_t rm, bool wide = false) {
   EmitRex(e, wide, reg, rm);
   e->emit8(opcode);
@@ -88,25 +84,25 @@ inline void EmitRegReg(reccore::Emitter* e, uint8_t opcode, uint8_t reg,
 }
 
 // mov r32, [base + disp8]
-inline void MovRegMem(reccore::Emitter* e, uint8_t reg, uint8_t base,
+inline void MovRegMem(Emitter* e, uint8_t reg, uint8_t base,
                       int8_t displacement) {
   EmitRegMem8(e, 0x8B, reg, base, displacement);
 }
 
 // mov [base + disp8], r32
-inline void MovMemReg(reccore::Emitter* e, uint8_t reg, uint8_t base,
+inline void MovMemReg(Emitter* e, uint8_t reg, uint8_t base,
                       int8_t displacement) {
   EmitRegMem8(e, 0x89, reg, base, displacement);
 }
 
 // mov r32, r32 - what a guest register kept in a host register costs to read
 // or write, instead of the memory access it replaces.
-inline void MovRegReg(reccore::Emitter* e, uint8_t dest, uint8_t src) {
+inline void MovRegReg(Emitter* e, uint8_t dest, uint8_t src) {
   EmitRegReg(e, 0x8B, dest, src);
 }
 
 // mov r32, imm32
-inline void MovRegImm(reccore::Emitter* e, uint8_t reg, uint32_t value) {
+inline void MovRegImm(Emitter* e, uint8_t reg, uint32_t value) {
   EmitRex(e, false, 0, reg);
   e->emit8(static_cast<uint8_t>(0xB8 + (reg & 7)));
   e->emit32(value);
@@ -114,7 +110,7 @@ inline void MovRegImm(reccore::Emitter* e, uint8_t reg, uint32_t value) {
 
 // mov dword [base + disp8], imm32 - how a block writes a constant guest
 // address into its state without going through a register.
-inline void MovMemImm(reccore::Emitter* e, uint8_t base, int8_t displacement,
+inline void MovMemImm(Emitter* e, uint8_t base, int8_t displacement,
                       uint32_t value) {
   EmitRex(e, false, 0, base);
   e->emit8(0xC7);
@@ -136,12 +132,12 @@ enum class AluOp : uint8_t {
 // op r32, [base + disp8] - the memory operand is the source, which is the
 // shape every guest ALU instruction takes here: the accumulator is a host
 // register and the other operand comes out of the register file.
-inline void AluRegMem(reccore::Emitter* e, AluOp op, uint8_t reg, uint8_t base,
+inline void AluRegMem(Emitter* e, AluOp op, uint8_t reg, uint8_t base,
                       int8_t displacement) {
   EmitRegMem8(e, static_cast<uint8_t>(op), reg, base, displacement);
 }
 
-inline void AluRegReg(reccore::Emitter* e, AluOp op, uint8_t dest, uint8_t src) {
+inline void AluRegReg(Emitter* e, AluOp op, uint8_t dest, uint8_t src) {
   EmitRegReg(e, static_cast<uint8_t>(op), dest, src);
 }
 
@@ -155,7 +151,7 @@ enum class AluImmOp : uint8_t {
   kCmp = 7,
 };
 
-inline void AluRegImm(reccore::Emitter* e, AluImmOp op, uint8_t reg,
+inline void AluRegImm(Emitter* e, AluImmOp op, uint8_t reg,
                       uint32_t value) {
   e->emit8(0x81);
   e->emit8(ModRM(3, static_cast<uint8_t>(op), reg));
@@ -163,7 +159,7 @@ inline void AluRegImm(reccore::Emitter* e, AluImmOp op, uint8_t reg,
 }
 
 // not r32 - the /2 form of group 0xF7.
-inline void NotReg(reccore::Emitter* e, uint8_t reg) {
+inline void NotReg(Emitter* e, uint8_t reg) {
   e->emit8(0xF7);
   e->emit8(ModRM(3, 2, reg));
 }
@@ -175,7 +171,7 @@ enum class ShiftOp : uint8_t {
   kSar = 7,
 };
 
-inline void ShiftRegImm(reccore::Emitter* e, ShiftOp op, uint8_t reg,
+inline void ShiftRegImm(Emitter* e, ShiftOp op, uint8_t reg,
                         uint8_t count) {
   e->emit8(0xC1);
   e->emit8(ModRM(3, static_cast<uint8_t>(op), reg));
@@ -183,32 +179,32 @@ inline void ShiftRegImm(reccore::Emitter* e, ShiftOp op, uint8_t reg,
 }
 
 // The shift group, by CL, for the guest's variable shifts.
-inline void ShiftRegCl(reccore::Emitter* e, ShiftOp op, uint8_t reg) {
+inline void ShiftRegCl(Emitter* e, ShiftOp op, uint8_t reg) {
   e->emit8(0xD3);
   e->emit8(ModRM(3, static_cast<uint8_t>(op), reg));
 }
 
-inline void MovzxRegReg8(reccore::Emitter* e, uint8_t dest, uint8_t src) {
+inline void MovzxRegReg8(Emitter* e, uint8_t dest, uint8_t src) {
   EmitRex(e, false, dest, src);
   e->emit8(0x0F);
   e->emit8(0xB6);
   e->emit8(ModRM(3, dest, src));
 }
 
-inline void MovsxRegReg8(reccore::Emitter* e, uint8_t dest, uint8_t src) {
+inline void MovsxRegReg8(Emitter* e, uint8_t dest, uint8_t src) {
   EmitRex(e, false, dest, src);
   e->emit8(0x0F);
   e->emit8(0xBE);
   e->emit8(ModRM(3, dest, src));
 }
 
-inline void MovzxRegReg16(reccore::Emitter* e, uint8_t dest, uint8_t src) {
+inline void MovzxRegReg16(Emitter* e, uint8_t dest, uint8_t src) {
   e->emit8(0x0F);
   e->emit8(0xB7);
   e->emit8(ModRM(3, dest, src));
 }
 
-inline void MovsxRegReg16(reccore::Emitter* e, uint8_t dest, uint8_t src) {
+inline void MovsxRegReg16(Emitter* e, uint8_t dest, uint8_t src) {
   e->emit8(0x0F);
   e->emit8(0xBF);
   e->emit8(ModRM(3, dest, src));
@@ -216,7 +212,7 @@ inline void MovsxRegReg16(reccore::Emitter* e, uint8_t dest, uint8_t src) {
 
 // mov r64, r64 - the REX.W form, for moving the incoming argument pointer out
 // of the register the shift instructions need.
-inline void Mov64RegReg(reccore::Emitter* e, uint8_t dest, uint8_t src) {
+inline void Mov64RegReg(Emitter* e, uint8_t dest, uint8_t src) {
   EmitRex(e, true, src, dest);
   e->emit8(0x89);
   e->emit8(ModRM(3, src, dest));
@@ -224,7 +220,7 @@ inline void Mov64RegReg(reccore::Emitter* e, uint8_t dest, uint8_t src) {
 
 // mov r64, [base + disp8] - for pulling a pointer out of the block's state:
 // the register file, the callback context, a function address.
-inline void Mov64RegMem(reccore::Emitter* e, uint8_t dest, uint8_t base,
+inline void Mov64RegMem(Emitter* e, uint8_t dest, uint8_t base,
                         int8_t displacement) {
   EmitRegMem8(e, 0x8B, dest, base, displacement, true);
 }
@@ -248,7 +244,7 @@ enum class Cc : uint8_t {
 
 // setcc r8, then movzx r32, r8 - how a comparison becomes the 0 or 1 that slt
 // writes to a register.
-inline void SetCc(reccore::Emitter* e, Cc condition, uint8_t reg) {
+inline void SetCc(Emitter* e, Cc condition, uint8_t reg) {
   EmitRex(e, false, 0, reg);
   e->emit8(0x0F);
   e->emit8(static_cast<uint8_t>(0x90 + static_cast<uint8_t>(condition)));
@@ -258,7 +254,7 @@ inline void SetCc(reccore::Emitter* e, Cc condition, uint8_t reg) {
 // cmovcc r32, r32 - a branch without a branch. Every guest branch here
 // resolves to "one of two addresses", which is a compare and a conditional
 // move; no jump is emitted and nothing has to be patched afterwards.
-inline void CmovRegReg(reccore::Emitter* e, Cc condition, uint8_t dest,
+inline void CmovRegReg(Emitter* e, Cc condition, uint8_t dest,
                        uint8_t src) {
   EmitRex(e, false, dest, src);
   e->emit8(0x0F);
@@ -269,32 +265,32 @@ inline void CmovRegReg(reccore::Emitter* e, Cc condition, uint8_t dest,
 // call r64 - the /2 form of group 0xFF. The address comes out of a register
 // because it is read from the block's state at run time; an immediate call
 // would bake in a displacement that only holds while the code stays put.
-inline void CallReg(reccore::Emitter* e, uint8_t reg) {
+inline void CallReg(Emitter* e, uint8_t reg) {
   EmitRex(e, false, 0, reg);
   e->emit8(0xFF);
   e->emit8(ModRM(3, 2, reg));
 }
 
-inline void Push(reccore::Emitter* e, uint8_t reg) {
+inline void Push(Emitter* e, uint8_t reg) {
   EmitRex(e, false, 0, reg);
   e->emit8(static_cast<uint8_t>(0x50 + (reg & 7)));
 }
 
-inline void Pop(reccore::Emitter* e, uint8_t reg) {
+inline void Pop(Emitter* e, uint8_t reg) {
   EmitRex(e, false, 0, reg);
   e->emit8(static_cast<uint8_t>(0x58 + (reg & 7)));
 }
 
 // sub rsp, imm8 / add rsp, imm8 - the shadow space a called function is
 // entitled to write, and its release.
-inline void SubRspImm8(reccore::Emitter* e, uint8_t bytes) {
+inline void SubRspImm8(Emitter* e, uint8_t bytes) {
   e->emit8(0x48);
   e->emit8(0x83);
   e->emit8(ModRM(3, 5, 4));   // /5 = sub, rm = RSP
   e->emit8(bytes);
 }
 
-inline void AddRspImm8(reccore::Emitter* e, uint8_t bytes) {
+inline void AddRspImm8(Emitter* e, uint8_t bytes) {
   e->emit8(0x48);
   e->emit8(0x83);
   e->emit8(ModRM(3, 0, 4));   // /0 = add
@@ -303,7 +299,7 @@ inline void AddRspImm8(reccore::Emitter* e, uint8_t bytes) {
 
 // cmp dword [base + disp8], imm8 - testing a flag in the block's state without
 // spending a register on it.
-inline void CmpMemImm8(reccore::Emitter* e, uint8_t base, int8_t displacement,
+inline void CmpMemImm8(Emitter* e, uint8_t base, int8_t displacement,
                        uint8_t value) {
   EmitRex(e, false, 0, base);
   e->emit8(0x83);
@@ -314,7 +310,7 @@ inline void CmpMemImm8(reccore::Emitter* e, uint8_t base, int8_t displacement,
 
 // add dword [base + disp8], imm8 - a block adding its cycle cost to the
 // running total on its way out.
-inline void AddMemImm8(reccore::Emitter* e, uint8_t base, int8_t displacement,
+inline void AddMemImm8(Emitter* e, uint8_t base, int8_t displacement,
                        uint8_t value) {
   EmitRex(e, false, 0, base);
   e->emit8(0x83);
@@ -326,7 +322,7 @@ inline void AddMemImm8(reccore::Emitter* e, uint8_t base, int8_t displacement,
 // sub dword [base + disp8], imm8 - the block's budget decrement, and the only
 // instruction here that both reads and writes memory. The immediate is a byte
 // because a block is at most 64 instructions long.
-inline void SubMemImm8(reccore::Emitter* e, uint8_t base, int8_t displacement,
+inline void SubMemImm8(Emitter* e, uint8_t base, int8_t displacement,
                        uint8_t value) {
   EmitRex(e, false, 0, base);
   e->emit8(0x83);
@@ -339,17 +335,17 @@ inline void SubMemImm8(reccore::Emitter* e, uint8_t base, int8_t displacement,
 // instruction, and the rel32 ones are written as zero and filled in afterwards:
 // a link's target is not known when the block that jumps to it is compiled,
 // and may change when a store throws that target away.
-inline void JccRel8(reccore::Emitter* e, Cc condition, int8_t displacement) {
+inline void JccRel8(Emitter* e, Cc condition, int8_t displacement) {
   e->emit8(static_cast<uint8_t>(0x70 + static_cast<uint8_t>(condition)));
   e->emit8(static_cast<uint8_t>(displacement));
 }
 
-inline void JmpRel32(reccore::Emitter* e, int32_t displacement) {
+inline void JmpRel32(Emitter* e, int32_t displacement) {
   e->emit8(0xE9);
   e->emit32(static_cast<uint32_t>(displacement));
 }
 
-inline void Ret(reccore::Emitter* e) { e->emit8(0xC3); }
+inline void Ret(Emitter* e) { e->emit8(0xC3); }
 
 }  // namespace x86
 }  // namespace rec

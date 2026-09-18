@@ -114,6 +114,13 @@ class System {
   bool recompiler_enabled() const { return recompiler_ != nullptr; }
   RecompilerBridge* recompiler() { return recompiler_.get(); }
 
+  // Software saying it has replaced code: the cache-control register at
+  // 0xFFFE0130. Throws away every compiled block, the way that write throws
+  // away the instruction cache. Does nothing when the recompiler is off, and
+  // is defined in system.cpp because only that file knows what a
+  // RecompilerBridge is.
+  void ResetCompiledCode();
+
   uint8_t* ram() { return io_.ram_buffer.u8; }
   uint8_t* bios() { return io_.bios_buffer.u8; }
   double base_freq_hz() { return base_freq_hz_; }

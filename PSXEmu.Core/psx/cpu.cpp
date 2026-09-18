@@ -739,7 +739,7 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
   // Nothing is registered unless the recompiler is switched on, and then this
   // is a predicted call and a bitmap lookup on the far side.
   if (store_observer_ != nullptr)
-    store_observer_(store_observer_context_, address);
+    store_observer_(store_observer_context_, address, static_cast<uint32_t>(size));
 
   // A watched RAM address records who wrote it. "This structure holds garbage"
   // is otherwise a dead end: the write that put it there happened long before

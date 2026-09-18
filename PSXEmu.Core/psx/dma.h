@@ -67,6 +67,14 @@ class Dma : public Component {
     uint32_t counts[7];
   };
   const Stats& stats() const { return stats_; }
+  // RAM is 2 MB. A transfer that would run past the end of it is reported as
+  // having written all of it rather than being unpicked.
+  static const uint32_t kRamSize = 0x200000;
+
+  // Reports a run of RAM a transfer has just written, so compiled code built
+  // from those words is thrown away. See the definition in dma.cpp.
+  void NoteRamWritten(uint32_t start_address, uint32_t words, int32_t step);
+
   void NoteTransfer(int channel, uint32_t words, uint32_t end,
                     uint32_t lba = 0, uint32_t first = 0);
   void Serialise(StateIO& io);

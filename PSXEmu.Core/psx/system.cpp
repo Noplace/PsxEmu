@@ -335,6 +335,10 @@ bool System::LoadPsExeFromMemory(const void* data, size_t size) {
   memcpy(&io_.ram_buffer.u8[offset],
          static_cast<const uint8_t*>(data) + kHeaderRegion, header.t_size);
 
+  // A side-loaded executable is new code arriving in RAM without a single
+  // store, so anything compiled from what used to be there has to go.
+  cpu_.NoteBulkWrite(offset, header.t_size);
+
   cpu_context_.pc = header.pc0;
   cpu_context_.prev_pc = header.pc0;
   cpu_context_.gp.reg[28] = header.gp0;                              // gp
@@ -584,6 +588,11 @@ std::string System::LoadState(const std::string& path) {
   if (!state.error().empty())
     return state.error();
 
+  // Every byte of RAM has just been replaced, so nothing compiled from the
+  // old contents means anything. Save states do not carry compiled code and
+  // never will - it is derived, like the GPU's framebuffer.
+  cpu_.NoteBulkWrite(0, kRamSize);
+
   // Iso9660 is derived from the disc, not saved (the same reasoning as the
   // GPU's framebuffer) - reopen it the way BootDisc does, if the disc
   // Cdrom::Serialise just reopened actually has a filesystem. Some discs
@@ -613,7 +622,17 @@ void System::thread_func(System* sys) {
 // The recompiler is created on demand and destroyed when it is turned off, so
 // with it off the machine carries no trace of it: nothing worth naming in
 // StepInstruction, no store observer on the Cpu, and no compiled code held.
+void System::ResetCompiledCode() {
+  if (recompiler_ != nullptr)
+    recompiler_->Reset();
+}
+
 void System::EnableRecompiler(bool on) {
+  // The setting is the thing StepInstruction reconciles against, so a direct
+  // call has to move it too - otherwise the next instruction would notice the
+  // disagreement and undo this. That is not hypothetical: it made
+  // `boot_runner --recompiler` a silent no-op.
+  config_.recompiler = on;
   if (on == (recompiler_ != nullptr))
     return;
   if (on)
