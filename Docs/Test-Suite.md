@@ -286,11 +286,17 @@ this tool gets pointed at. It depends on nothing, not even the core.
 
     frame_limiter_test
 
-Six checks on `platform/frame_limiter.h`: that a loop is held to 59.29 Hz and
+Eight checks on `platform/frame_limiter.h`: that a loop is held to 59.29 Hz and
 to PAL's 49.76 rather than run flat out, that work done inside the frame comes
 out of the wait rather than on top of it, that a host too slow to make the
 deadline runs slow instead of sprinting to catch up, and that `Reset` and a
 rate of zero both do what they say.
+
+And, since bug 62, that the frames are **evenly spaced** - the 5th and 95th
+percentile intervals within 3 ms of the period, and no single frame half a frame
+late. The six rate checks all passed while frames were arriving 0 to 30 ms
+apart, because the overshoots and the catch-ups averaged out; the audio pump,
+fed once a frame, was the thing that noticed.
 
 It exists because **the front end's speed cannot be measured headlessly at
 all** - it is set by the monitor's refresh rate and the sound device, neither
@@ -332,7 +338,7 @@ harness's own section above says what its groups cover.
 
 Three smaller harnesses cover the `platform/` headers the front end leans on
 and are not counted above, since they test no emulation: `letterbox_test`
-(aspect ratio), `frame_limiter_test` (6 checks, pacing) and
+(aspect ratio), `frame_limiter_test` (8 checks - the average rate, and since bug 62 the spacing between frames too) and
 `speed_resampler_test` (11 checks, the audio arithmetic behind 50-200% speed -
 the frame counts, that a minute at 150% does not drift, and that blocks join
 continuously).

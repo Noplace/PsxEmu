@@ -9,9 +9,11 @@
 
 #include "platform/frame_limiter.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -43,6 +45,28 @@ double MeasureRate(double hz, int frames, int work_ms) {
       std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
           .count();
   return frames / elapsed;
+}
+
+// The spacing between consecutive frames, in milliseconds, sorted.
+//
+// The rate checks above average over many frames, and an average hides the
+// thing that matters most for sound: a limiter that overshoots one frame by 13
+// ms and then runs the next one immediately to catch up is exactly on rate and
+// delivers audio in bursts 0 to 30 ms apart. That is what this one did, on a
+// machine where Sleep(1) really takes 15 ms, and every rate check passed.
+std::vector<double> MeasureSpacing(double hz, int frames) {
+  utilities::FrameLimiter limiter;
+  limiter.Wait(hz);
+  std::vector<double> spacing;
+  auto last = std::chrono::steady_clock::now();
+  for (int i = 0; i < frames; ++i) {
+    limiter.Wait(hz);
+    const auto now = std::chrono::steady_clock::now();
+    spacing.push_back(std::chrono::duration<double, std::milli>(now - last).count());
+    last = now;
+  }
+  std::sort(spacing.begin(), spacing.end());
+  return spacing;
 }
 
 }  // namespace
@@ -89,6 +113,25 @@ int main() {
            rate, elapsed);
     Check(rate > 20.0 && rate < 26.0,
           "a host that cannot keep up runs slow rather than catching up");
+  }
+
+  // Each frame on time, not just the average. The emulator's audio is pumped
+  // once a frame, so a frame 30 ms late is 30 ms with nothing fed to the sound
+  // device - longer than its buffer - and a frame run straight after it to
+  // catch up is a burst. Both are heard.
+  {
+    const double period = 1000.0 / 59.2926;
+    const std::vector<double> spacing = MeasureSpacing(59.2926, 180);
+    const double p5 = spacing[spacing.size() * 5 / 100];
+    const double median = spacing[spacing.size() / 2];
+    const double p95 = spacing[spacing.size() * 95 / 100];
+    const double worst = spacing.back();
+    printf("    frame spacing at 59.2926 Hz (%.2f ms): p5 %.2f  median %.2f  "
+           "p95 %.2f  max %.2f ms\n", period, p5, median, p95, worst);
+    Check(p5 > period - 3.0 && p95 < period + 3.0,
+          "frames are evenly spaced, not bunched to make the average");
+    Check(worst < period + 8.0,
+          "and no frame is late by half a frame or more");
   }
 
   // Disabled by a non-positive rate, which is what a caller with no machine

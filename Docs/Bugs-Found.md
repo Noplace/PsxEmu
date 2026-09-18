@@ -3444,3 +3444,46 @@ The ear that reported the bug is the one that has to confirm the fix.
 test's assumptions cannot find that assumption's bug - the underrun counter
 lived in the same engine and looked at the same cursor. And a measurement of
 the output is only independent if nothing between the two changes the signal.
+
+## 62. The frame limiter held the right average by delivering frames 0 to 30 ms apart
+
+`platform/frame_limiter.h`
+
+**Symptom.** Found while chasing bug 61, and part of it: audio fed in bursts
+with gaps longer than the sound device's buffer. Also uneven frame pacing, and
+a machine running very slightly slow - 58.75 fps against NTSC's 59.29.
+
+**Cause.** The limiter slept off each frame with `sleep_for(1ms)` in a loop,
+under a comment saying "Sleep's granularity is around a millisecond". It is
+not, unless something raises the system timer resolution, and nothing in this
+project does. Measured: `sleep_for(1ms)` took **15.5 ms** at the median, and
+`timeBeginPeriod(1)` did not change it. One such sleep landing near the end of a
+frame put that frame 13 ms late; the deadline arithmetic then ran the next one
+immediately to catch up. Frames came out anywhere from 0 to 30 ms apart.
+
+Every check passed, because every check measured the *average* rate - and the
+overshoots and catch-ups very nearly cancel. The harness had four rate checks
+and nothing about the spacing between two frames, which is the thing the audio
+pump, once a frame, actually depends on.
+
+**Fix.** A high-resolution waitable timer (`CREATE_WAITABLE_TIMER_HIGH_
+RESOLUTION`, Windows 10 1803 and later), which wakes within about half a
+millisecond without changing the timer resolution of the whole system the way
+`timeBeginPeriod` would. The limiter sleeps until a millisecond before the
+deadline and spins the last one. On an older Windows the flag is refused and it
+falls back to the old sleep, keeping the average rate if not the spacing.
+
+**Verified.** `frame_limiter_test` gained a spacing check, which failed against
+the old limiter before the fix went in:
+
+| | p5 | median | p95 | worst | NTSC rate |
+|---|---|---|---|---|---|
+| before | 14.8 ms | 15.9 ms | **29.5 ms** | 31.6 ms | 58.75 fps |
+| after | 16.87 ms | 16.87 ms | 16.87 ms | 16.9 ms | **59.29 fps** |
+
+against a period of 16.87 ms. The cost is the spin: 5% of one core, measured
+over five seconds of an idle loop.
+
+**Worth remembering.** A test of an average cannot see anything that averages
+out, and "exactly on rate" was hiding frames arriving at twice the interval
+followed by frames arriving at none.
