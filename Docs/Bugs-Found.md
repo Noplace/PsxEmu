@@ -3748,3 +3748,62 @@ managed only 47.9 fps. The CPU was clocked at 2.47 of its 4.0 GHz on the
 Balanced power plan, and the build from before this change was just as slow
 (5.3-5.4 s for the 400-frame BIOS boot, against 4.4 s earlier the same day).
 Those two checks measure the host, and they need it at full speed.
+
+## 68. amidog's CPU suite: overflow traps, a faulting load, 28 branch encodings and jalr
+
+amidog's `test/psxtest_cpu` ran to its end with errors in `sub`, `addi`,
+`sltiu`, `lh`/`lhu`/`lw` and their `_d` forms, the four branch-and-link
+groups, `jalr`, and 60 of the 64 `BRA ADV` groups (all but rt 00h/01h), and a final
+`Result: 00000909`. Read by group, they were six separate
+instruction-level bugs. None of them was about timing, which is what
+CPU-Timing-Plan.md phase 0 had expected them to be.
+
+- **`sub` and `addi` never trapped.** Signed overflow has to raise exception
+  0Ch and leave the destination unwritten. `add` already did; its two
+  siblings wrapped silently and wrote the wrapped result.
+- **`sltiu` compared against a zero-extended immediate.** The immediate is
+  sign-extended first and then compared unsigned, so `sltiu rt, rs, -1`
+  compares against `FFFFFFFFh`. The recompiler already did this correctly, so
+  the two CPUs disagreed.
+- **A faulting load still delivered.** A misaligned `lh`/`lhu`/`lw` did raise
+  AdEL (exception 4) with the right BadVaddr. But the instruction then armed
+  the 0 that `Load` returns on a fault, and that overwrote the destination.
+  All five loads now check `LoadFaulted` and deliver nothing.
+- **28 of the 32 REGIMM encodings did nothing.** Only rt 00h/01h/10h/11h were
+  in the table; the rest were `UNKNOWN`, a no-op. On hardware every encoding
+  branches: bit 0 picks BGEZ over BLTZ, and the link happens when
+  `(rt & 1Eh) == 10h`. That was the whole `BRA ADV` column.
+- **`bltzal`/`bgezal` read `rs` after writing `$ra`.** So `bltzal $ra` tested
+  the link address instead of the old `$ra`. The link is also written whether
+  or not the branch is taken.
+- **`jalr` wrote `rd` before reading `rs`.** So `jalr t0, t0` jumped to its own
+  link address. And a misaligned target now faults as the branch is taken:
+  AdEL with EPC and BadVaddr both the target, before the delay slot runs,
+  matching DuckStation's `CPU::Branch`. It previously went nowhere in
+  particular.
+
+**Verified.**
+- **psxtest_cpu:** every group now reports only "Done", and `Result` reads
+  `00000101`. The results screen was sampled by pixel, above the legend row.
+  It contains only black, white, cyan headings, green (OK) and brown (N/A):
+  no yellow warning and no red error anywhere, TIMING column included.
+- **New `cpu_test` group:** `cpuedges`, 24 checks, one or more per fix, with
+  expected values from the hardware rules rather than from this code. Built
+  against the old `cpu.cpp`, 15 of them fail. The other nine hold behaviour
+  that was already right, so a later fix can't break it.
+- **Games:** the twelve-disc table is unchanged, all 36 checksums and every
+  sector count. Every fix is in a path a game reaches only if it would also
+  fault or misbehave on a real console, apart from `sltiu` with a negative
+  immediate, which none of the twelve changed on.
+- **Everything else:** all harnesses pass, including `rec_test` and
+  `host_test`. The BIOS boot and `psxtest_gte`/`psxtest_gpu` checksums are
+  unchanged.
+
+**The recompiler.** It compiles none of the instructions changed here: the
+trapping `add`/`addi`/`sub`, the linking or undocumented REGIMM encodings, and
+anything after a fault all go to the interpreter. Its `sltiu` and `jalr` were
+already right. One case was reasoned about, not tested: a compiled `jr`/`jalr`
+to a misaligned target sets a misaligned pc without going through
+`Cpu::Jump`. Whatever the interpreter then does with that fetch, it is not
+this fault raised at the branch, so EPC can differ from the interpreted case.
+No game jumps to a misaligned address.

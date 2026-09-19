@@ -840,6 +840,15 @@ void Cpu::StageRD() {
 }
 
 void Cpu::Jump(uint32_t address) {
+  // A target that is not word aligned faults as the branch is taken, before
+  // its delay slot: AdEL, with EPC and BadVaddr both the target (amidog's
+  // psxtest_cpu jalr group; DuckStation's CPU::Branch). Only jr and jalr can
+  // produce one - every other branch builds its target in whole words.
+  if ((address & 3) != 0) {
+    context_->ctrl.BadVaddr = address;
+    RaiseException(address, kOtherException, kExceptionCodeAdEL);
+    return;
+  }
   __inside_delay_slot = true;
   context_->branch_flag = true;
   uint32_t prev_cause = context_->ctrl.Cause;
@@ -867,8 +876,24 @@ void Cpu::SPECIAL() {
   (this->*(machine_instruction_special_[funct_]))();
 }
 
+// Every one of the 32 rt encodings is a branch, not just the four documented
+// ones: bit 0 picks BGEZ over BLTZ, and the link happens when rt is 10h or
+// 11h - (rt & 1Eh) == 10h - so rt 12h-1Fh branch without linking. The
+// comparison reads rs before the link writes r31, so bltzal $ra tests the
+// old $ra, and the link is written whether or not the branch is taken
+// (amidog's psxtest_cpu BRA ADV groups b_0x00..b_0x1f; DuckStation's decode).
+// The table used to hold UNKNOWN for the other 28, which did nothing at all.
 void Cpu::REGIMM() {
-  (this->*(machine_instruction_regimm_[rt_]))();
+  const int32_t value = static_cast<int32_t>(context_->gp.reg[rs_]);
+  const bool greater_or_equal = (rt_ & 1) != 0;
+  const bool taken = (value < 0) != greater_or_equal;
+  if ((rt_ & 0x1E) == 0x10)
+    WriteReg(31, context_->pc + 4);
+  if (taken) {
+    Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
+  } else {
+    Tick();
+  }
 }
 
 void Cpu::J() {
@@ -925,8 +950,17 @@ void Cpu::BGTZ() {
   }
 }
 
+// Signed overflow traps, and the destination is left as it was - the same as
+// ADD, which always did this; ADDI and SUB did not.
 void Cpu::ADDI() {
-  WriteReg(rt_, context_->gp.reg[rs_] + immediate_32bit_sign_extended_);
+  const uint32_t a = context_->gp.reg[rs_];
+  const uint32_t b = static_cast<uint32_t>(immediate_32bit_sign_extended_);
+  const uint32_t result = a + b;
+  if ((~(a ^ b) & (a ^ result)) & 0x80000000u) {
+    RaiseException(context_->prev_pc, kOtherException, kExceptionCodeOv);
+  } else {
+    WriteReg(rt_, result);
+  }
   Tick();
 }
 
@@ -940,8 +974,11 @@ void Cpu::SLTI() {
   Tick();
 }
 
+// Unsigned, but the immediate is still sign-extended first: sltiu rt, rs, -1
+// compares against FFFFFFFFh, not FFFFh.
 void Cpu::SLTIU() {
-  WriteReg(rt_, context_->gp.reg[rs_] < immediate_);
+  WriteReg(rt_, context_->gp.reg[rs_] <
+                    static_cast<uint32_t>(immediate_32bit_sign_extended_));
   Tick();
 }
 
@@ -1077,8 +1114,10 @@ void Cpu::SWC2() {
 void Cpu::LB() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
+  const uint64_t faults = exceptions_raised_;
   uint8_t mem = Load(kM8,virtual_address);
   Tick();
+  if (LoadFaulted(faults)) return;
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>((int8_t)mem));
@@ -1088,8 +1127,10 @@ void Cpu::LB() {
 void Cpu::LH() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
+  const uint64_t faults = exceptions_raised_;
   uint16_t mem = Load(kM16,virtual_address);
   Tick();
+  if (LoadFaulted(faults)) return;
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>((int16_t)mem));
@@ -1121,9 +1162,11 @@ void Cpu::LWL() {
 void Cpu::LW() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
+  const uint64_t faults = exceptions_raised_;
   uint32_t mem;
   mem = Load(kM32,virtual_address);
   Tick();
+  if (LoadFaulted(faults)) return;
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>(mem));
@@ -1133,8 +1176,10 @@ void Cpu::LW() {
 void Cpu::LBU() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
+  const uint64_t faults = exceptions_raised_;
   uint32_t mem = Load(kM8,virtual_address);
   Tick();
+  if (LoadFaulted(faults)) return;
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>((uint8_t)mem));
@@ -1144,8 +1189,10 @@ void Cpu::LBU() {
 void Cpu::LHU() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
+  const uint64_t faults = exceptions_raised_;
   uint32_t mem = Load(kM16,virtual_address);
   Tick();
+  if (LoadFaulted(faults)) return;
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>((uint16_t)mem));
@@ -1284,8 +1331,11 @@ void Cpu::JR() {
 }
 
 void Cpu::JALR() {
-  WriteReg(rd_, context_->pc + 4); // rd must be 31
-  Jump(context_->gp.reg[rs_]);
+  // The target is read before the link is written: jalr rd, rs with rd == rs
+  // jumps to the old rs. Any rd links, not only r31.
+  const uint32_t target = context_->gp.reg[rs_];
+  WriteReg(rd_, context_->pc + 4);
+  Jump(target);
   if (context_->prev_pc >= 0xBFC00000)
     inside_bios_call = false;
 
@@ -1428,7 +1478,14 @@ void Cpu::ADDU() {
 }
 
 void Cpu::SUB() {
-  WriteReg(rd_, context_->gp.reg[rs_] - context_->gp.reg[rt_]);
+  const uint32_t a = context_->gp.reg[rs_];
+  const uint32_t b = context_->gp.reg[rt_];
+  const uint32_t result = a - b;
+  if (((a ^ b) & (a ^ result)) & 0x80000000u) {
+    RaiseException(context_->prev_pc, kOtherException, kExceptionCodeOv);
+  } else {
+    WriteReg(rd_, result);
+  }
   Tick();
 }
 

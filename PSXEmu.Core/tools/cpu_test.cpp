@@ -1455,6 +1455,112 @@ void TestBiosConsole(Machine& m) {
   m.system()->EnableRecompiler(false);
 }
 
+// The edges amidog's psxtest_cpu found wrong, one check each so they cannot
+// quietly come back (bug 68). Expected values are the R3000A's, from psx-spx
+// and the suite itself - not from this implementation.
+void TestCpuEdges(Machine& m) {
+  const int kCop0BadVaddr = 8;
+  const uint32_t kUntouched = 0xDEADBEEF;
+
+  BeginTest("sub traps on signed overflow and leaves rd alone");
+  m.Reset();
+  m.set_reg(t0, 0x80000000);
+  m.set_reg(t1, 1);
+  m.set_reg(t2, kUntouched);
+  m.Load({ SUB(t2, t0, t1) });
+  m.Run(1);
+  CheckEqual(m.pc(), kExceptionVector, "vectored");
+  CheckEqual((m.cop0(kCop0Cause) >> 2) & 0x1F, 12, "cause code is Overflow");
+  CheckEqual(m.reg(t2), kUntouched, "the destination was not written");
+
+  BeginTest("sub that does not overflow just subtracts");
+  m.Reset();
+  m.set_reg(t0, 0x80000000);
+  m.set_reg(t1, 0xFFFFFFFF);   // -1: 80000000h - (-1) = 80000001h, no overflow
+  m.Load({ SUB(t2, t0, t1) });
+  m.Run(1);
+  CheckEqual(m.reg(t2), 0x80000001, "80000000h - (-1)");
+
+  BeginTest("addi traps on signed overflow and leaves rt alone");
+  m.Reset();
+  m.set_reg(t0, 0x7FFFFFFF);
+  m.set_reg(t2, kUntouched);
+  m.Load({ ADDI(t2, t0, 1) });
+  m.Run(1);
+  CheckEqual((m.cop0(kCop0Cause) >> 2) & 0x1F, 12, "cause code is Overflow");
+  CheckEqual(m.reg(t2), kUntouched, "the destination was not written");
+
+  BeginTest("sltiu sign-extends its immediate before comparing unsigned");
+  m.Reset();
+  m.set_reg(t0, 0x00010000);
+  m.Load({ SLTIU(t1, t0, -1) });   // compares against FFFFFFFFh, not FFFFh
+  m.Run(1);
+  CheckEqual(m.reg(t1), 1, "10000h < FFFFFFFFh");
+
+  BeginTest("a misaligned lh faults and leaves its destination alone");
+  m.Reset();
+  m.set_reg(t0, kDataBase + 1);
+  m.set_reg(t1, kUntouched);
+  m.Load({ LH(t1, 0, t0) });
+  m.Run(1);
+  m.Settle();
+  CheckEqual((m.cop0(kCop0Cause) >> 2) & 0x1F, 4, "cause code is AdEL");
+  CheckEqual(m.cop0(kCop0BadVaddr), kDataBase + 1, "BadVaddr is the address");
+  CheckEqual(m.reg(t1), kUntouched, "nothing was loaded");
+
+  BeginTest("a misaligned lw faults and leaves its destination alone");
+  m.Reset();
+  m.set_reg(t0, kDataBase + 2);
+  m.set_reg(t1, kUntouched);
+  m.Load({ LW(t1, 0, t0) });
+  m.Run(1);
+  m.Settle();
+  CheckEqual((m.cop0(kCop0Cause) >> 2) & 0x1F, 4, "cause code is AdEL");
+  CheckEqual(m.reg(t1), kUntouched, "nothing was loaded");
+
+  BeginTest("REGIMM rt 12h branches like bltz and does not link");
+  m.Reset();
+  m.set_reg(t0, 0xFFFFFFFF);
+  m.Load({ IType(0x01, t0, 0x12, 8 >> 2), NOP(), NOP(), NOP() });
+  m.Run(1);
+  CheckEqual(m.pc(), kProgramBase + 12, "taken");
+  CheckEqual(m.reg(ra), 0, "r31 untouched");
+
+  BeginTest("REGIMM rt 1Fh branches like bgez and does not link");
+  m.Reset();
+  m.set_reg(t0, 0);
+  m.Load({ IType(0x01, t0, 0x1F, 8 >> 2), NOP(), NOP(), NOP() });
+  m.Run(1);
+  CheckEqual(m.pc(), kProgramBase + 12, "taken");
+  CheckEqual(m.reg(ra), 0, "r31 untouched");
+
+  BeginTest("bgezal $ra tests the old $ra, and links even when not taken");
+  m.Reset();
+  m.set_reg(ra, 0xFFFFFFFF);   // negative: bgez is not taken
+  m.Load({ IType(0x01, ra, 0x11, 8 >> 2), NOP(), NOP(), NOP() });
+  m.Run(1);
+  CheckEqual(m.pc(), kProgramBase + 4, "not taken - the link did not decide it");
+  CheckEqual(m.reg(ra), kProgramBase + 8, "linked anyway");
+
+  BeginTest("jalr with rd == rs jumps to the old rs");
+  m.Reset();
+  m.set_reg(t0, kProgramBase + 16);
+  m.Load({ JALR(t0, t0), NOP(), NOP(), NOP(), NOP() });
+  m.Run(1);
+  CheckEqual(m.pc(), kProgramBase + 16, "jumped to the target");
+  CheckEqual(m.reg(t0), kProgramBase + 8, "then linked");
+
+  BeginTest("a jump to a misaligned address faults at the target");
+  m.Reset();
+  m.set_reg(t0, kProgramBase + 18);
+  m.Load({ JALR(ra, t0), NOP() });
+  m.Run(1);
+  CheckEqual(m.pc(), kExceptionVector, "vectored");
+  CheckEqual((m.cop0(kCop0Cause) >> 2) & 0x1F, 4, "cause code is AdEL");
+  CheckEqual(m.cop0(kCop0Epc), kProgramBase + 18, "EPC is the target");
+  CheckEqual(m.cop0(kCop0BadVaddr), kProgramBase + 18, "BadVaddr is the target");
+}
+
 struct Group {
   const char* name;
   void (*run)(Machine&);
@@ -1477,6 +1583,7 @@ const Group kGroups[] = {
   { "interrupts", TestInterrupts },
   { "cacheisolation", TestCacheIsolation },
   { "biosconsole", TestBiosConsole },
+  { "cpuedges",   TestCpuEdges },
 };
 
 }  // namespace

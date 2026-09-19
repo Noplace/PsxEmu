@@ -15,7 +15,7 @@ Each test assembles a handful of MIPS instructions into RAM, runs them through
 the real CPU, and checks what came out - the same path a game takes. No BIOS,
 no window. A group name runs only that group.
 
-**Current: 263 checks, 0 failures.**
+**Current: 287 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -35,6 +35,7 @@ no window. A group name runs only that group.
 | `interrupts` | I_STAT acknowledge semantics, the three gates that can block an interrupt, and that EPC points at the instruction that has *not* run |
 | `cacheisolation` | a store with Isolate Cache set not reaching the scratchpad, and an ordinary store still landing |
 | `biosconsole` | BIOS putchar/puts calls through the A0h/B0h/C0h vectors reaching the console feed exactly once each, interpreted and then recompiled (bug 66) |
+| `cpuedges` | what amidog's psxtest_cpu found (bug 68): sub/addi trapping on signed overflow without writing their destination, sltiu's sign-extended immediate, a misaligned lh/lw faulting without loading, all 32 REGIMM encodings branching (and linking only for 10h/11h, after reading rs), jalr with rd == rs, and a misaligned jump target faulting at the target |
 
 Two of these are worth reading twice, because both encode a bug that cost real
 time to find the hard way:
@@ -378,12 +379,12 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 263 | | `gpu_test` | 31 |
+| `cpu_test` | 287 | | `gpu_test` | 31 |
 | `gte_test` | 99 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 261 |
 | `sio_test` | 105 | | `spu_test` | 108 |
 
-**1,022 checks, 0 failures**, all eight green. Each harness's own section above
+**1,046 checks, 0 failures**, all eight green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)
@@ -628,10 +629,10 @@ wrong way, and it stays anyway.
   every GTE command's own cost match. Its TIMING column is still red, because
   the test's loop also measures the ordinary CPU instructions around each
   command - [CPU-Timing-Plan.md](CPU-Timing-Plan.md) phases 0 and 3.
-- **amidog's CPU suite** on top of `cpu_test`, which covers the instruction set
-  and, since bug 43, multiply/divide and branch costs. `test/psxtest_cpu/` is
-  present and runs to a results screen unattended - see bug 41 - and its
-  results have not been read precisely yet (CPU-Timing-Plan.md phase 0).
+- **amidog's CPU suite passes.** `test/psxtest_cpu/` (reached with
+  `--auto-boot --exe`) reports no errors in any group, and its results screen
+  is all OK or N/A - sampled by pixel, not by eye, TIMING column included. Bug
+  68 fixed what it found; `cpu_test`'s `cpuedges` group holds each fix.
 - **Memory card round trips.** Cards exist now, and nothing tests them. Per
   the standards document, the *wipe* is the point: write, wipe, read back, or
   a `Serialise()` that stores nothing still appears to work.

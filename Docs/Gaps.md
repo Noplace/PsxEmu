@@ -39,7 +39,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 263, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261 - 1,022
+cpu 287, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261 - 1,046
 checks, no failures (re-run 2026-09-18). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
@@ -323,8 +323,6 @@ a priority.
 
 ### Never run against the reference
 
-- **amidog's CPU suite** (`test/psxtest_cpu/`) runs to its results screen; the
-  results have not been read.
 - **The recompiler against the game table.** It is built and runs the BIOS
   boot identically, but a game's checksum differs between the two CPUs -
   interrupts land at block boundaries rather than instruction boundaries, and

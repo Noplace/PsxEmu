@@ -142,11 +142,14 @@ Bug 42's instrument, generalised:
 
 ## Phases
 
-**Phase 0 - re-read `psxtest_cpu`'s TIMING column properly. Not done.**
-Pixel-sample it the way bug 42 did for `psxtest_gte` rather than eyeball it,
-and get an exact list of which groups fail. This costs an hour and turns
-"looks like branches and load-delay" into a confirmed, specific list -
-possibly with entries this plan has not anticipated.
+**Phase 0 - re-read `psxtest_cpu`'s TIMING column properly. Done (bug 68).**
+Read from its console output and its results screen, and the screen
+pixel-sampled rather than eyeballed. What it found was not timing at all:
+every failing group was an instruction-semantics edge - overflow traps,
+`sltiu`'s immediate, faulting loads, the undocumented REGIMM encodings,
+`jalr`. With those fixed the whole screen, TIMING column included, is OK or
+N/A. The "looks like branches and load-delay" reading this phase was meant to
+confirm was the BRA ADV and MEM DLY groups failing on *values*, not cycles.
 
 **Phase 1 - multiply and divide. Done (bug 43).** The operand-magnitude
 table above was verified against a primary fetch of

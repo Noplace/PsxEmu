@@ -342,6 +342,18 @@ class Cpu : public Component {
   // block stops where it is. See rec/runtime.h.
   uint64_t exceptions_raised() const { return exceptions_raised_; }
 
+  // The interpreter's version of the same question, for a load: if its own
+  // access raised an exception - a misaligned address, a bus error - it
+  // delivers nothing, and the destination keeps what it held. Arming the 0
+  // Load returns on a fault overwrote it (amidog's psxtest_cpu lh/lhu/lw and
+  // their _d forms). Charges the cycle the load would have, then says stop.
+  bool LoadFaulted(uint64_t exceptions_before) {
+    if (exceptions_raised_ == exceptions_before)
+      return false;
+    Tick();
+    return true;
+  }
+
   // Whether a load's value is still on its way to a register. Compiled code
   // resolves the load delay slot when it is compiled, so a block cannot be
   // entered while one is outstanding - it has no way of being told.

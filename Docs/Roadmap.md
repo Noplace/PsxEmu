@@ -139,9 +139,9 @@ implemented directly against D3D11.
 - [x] Multiply/divide costs and the branch-cost question - bug 43.
 - [ ] Memory-region load costs, measured rather than modelled -
       CPU-Timing-Plan.md phase 3.
-- [ ] amidog's CPU suite on top of `cpu_test`. Present (`test/psxtest_cpu/`,
-      reachable via bug 41's `--auto-boot --exe`) and run once, unattended, to
-      a results screen - not yet read precisely. See CPU-Timing-Plan.md.
+- [x] amidog's CPU suite on top of `cpu_test`. `test/psxtest_cpu/` passes
+      every group, TIMING included, confirmed by sampling its results screen
+      pixel by pixel - bug 68.
 
 ## Phase 6 - Settings, save states, memory cards, more front ends
 
@@ -181,8 +181,8 @@ actually is rather than from memory:
       BIOS boot is identical, and a game's checksum is not yet, because
       compiled code's cycle accounting is approximate.
 - [~] **[CPU-Timing-Plan.md](CPU-Timing-Plan.md)** - real per-instruction
-      cycle counts. Phases 1-2 done (bug 43); phase 0 (reading `psxtest_cpu`
-      precisely), phase 3 (memory regions) and phase 4 not.
+      cycle counts. Phases 0-2 done (bugs 43 and 68 - `psxtest_cpu` passes in
+      full); phase 3 (memory regions) and phase 4 not.
 - [x] **[Threading-Plan.md](Threading-Plan.md)** - window, machine, video,
       audio and input threads. Phase 7, a rasteriser thread, not done.
 - [x] **[Emulation-Speed-Plan.md](Emulation-Speed-Plan.md)** - 50-200%.
