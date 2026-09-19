@@ -33,6 +33,7 @@ Dma::~Dma() {
 
 int Dma::Initialize() {
   memset(channels,0,sizeof(channels));
+  channels[6].chcr = kOtcFixed;
   dma_enable.raw = 0;
   interrupt_control.raw = 0;
   master_flag_ = false;
@@ -42,6 +43,9 @@ int Dma::Initialize() {
 
 void Dma::Serialise(StateIO& io) {
   io.Plain(channels);
+  // A state saved before channel 6's register was masked can hold bits it
+  // does not have and lack its fixed one. Idempotent on anything current.
+  channels[6].chcr = (channels[6].chcr & 0x51000000) | kOtcFixed;
   io.Plain(transfer_cycles_);
   io.Plain(dma_enable.raw);
   io.Plain(interrupt_control.raw);
@@ -312,19 +316,36 @@ void Dma::Write(uint32_t address,uint32_t data) {
 
     case 0x1f8010e0:   channels[6].madr=data;  break;
     case 0x1f8010e4:   channels[6].bcr=data;  break;
-    case 0x1f8010e8: 
-	    if (!(channels[6].chcr&0x01000000)) {
-	      channels[6].chcr=data;
-	      if (channels[6].chcr & 0x01000000 && channels[6].enable == true) {
-	        // No acknowledge: this channel has never raised its interrupt
-	        // here, and whether it should is a separate question from how
-	        // long it takes.
-	        RunChannel(6, /*acknowledge=*/false);
-        } else {
-	        channels[6].chcr&=0xfeffffff;
-	      }
-	    }
-	    break;
+    case 0x1f8010e8: {
+      // Channel 6 does one thing - clear an ordering table, backwards - so
+      // most of its control register is not there. Only start/busy (24),
+      // trigger (28) and bit 30 are writable; bit 1, the backwards step, is
+      // wired to 1; everything else reads 0. Direction, step, sync mode and
+      // chopping written here change nothing about the transfer. It used to
+      // store the whole word and run only for exactly 11000002h, PsyQ's
+      // ClearOTagR value, so any other way of asking cleared nothing and
+      // read back bits the hardware does not have (JaCzekanski's
+      // dma/otc-test; DuckStation's OTC_WRITE_MASK is the same).
+      const uint32_t kOtcWritable = 0x51000000;
+      DmaChannel& otc = channels[6];
+      otc.chcr = (otc.chcr & ~kOtcWritable) | (data & kOtcWritable) | kOtcFixed;
+      // Start and trigger together; start alone waits for a request this
+      // channel never gets, which is what "automatic" mode does here.
+      if ((otc.chcr & 0x11000000) == 0x11000000 && otc.enable) {
+        otc.chcr &= ~0x10000000u;   // the trigger clears as the transfer begins
+        // No acknowledge: this channel has never raised its interrupt here,
+        // and whether it should is a separate question from how long it
+        // takes.
+        RunChannel(6, /*acknowledge=*/false);
+        // And it is over before the CPU runs again. The transfer holds the
+        // bus - RunChannel charges its cycles to the CPU as a stall - so
+        // unlike the channels bug 38 is about, nothing can see it busy: the
+        // test reads CHCR straight after starting 32K words and expects the
+        // busy bit already clear, chopping or not.
+        CompletePending(6);
+      }
+      break;
+    }
 
  
     case 0x1F8010F0:
@@ -786,9 +807,6 @@ void Dma::Dma6() {
   // billion - ran off the front of the allocation. Every address is masked
   // into RAM now, and only the low half of BCR is the length.
   auto& ram = system_->io().ram_buffer;
-  if (channels[6].chcr != 0x11000002)
-    return;
-
   uint32_t words = channels[6].bcr & 0xFFFF;
   if (words == 0)
     words = 0x10000;

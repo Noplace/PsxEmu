@@ -3690,3 +3690,61 @@ commands:
 **Not covered.** Anything a program sends to the serial port (SIO1) or the
 expansion port's DUART directly, bypassing the BIOS. PadTest's debug output
 when side-loaded is the first kind (bug 65), and neither port is emulated.
+
+## 67. DMA channel 6 ran only for PsyQ's exact control word, and kept bits the hardware does not have
+
+JaCzekanski's `test/test suite/dma/otc-test` passed 5 of 15 tests. The 10
+failures were of two kinds.
+
+**No transfer.** `Dma6` returned unless CHCR was exactly `11000002h`, the
+value PsyQ's `ClearOTagR` writes. The tests that start the channel the same
+way but with the step set forward, the direction set to "from RAM", or sync
+mode 1, 2 or 3 got no transfer at all, and their buffers came back untouched.
+On hardware none of those bits exist for channel 6. It clears an ordering
+table backwards and nothing else, so what matters is start (bit 24) and
+trigger (bit 28), with the channel enabled in DPCR.
+
+**The wrong register.** The write stored the whole word. Hardware keeps only
+bits 24, 28 and 30, reads bit 1 (the backwards step) as always 1, and reads
+every other bit as 0. The trigger clears when the transfer begins, and the
+busy bit is already clear when the CPU next reads it. Here, writing
+`70770703h` read back as written instead of `50000002h`, and writing 0 read
+back 0 instead of 2. A finished transfer read back its trigger bit still set,
+and its busy bit too, because bug 38 keeps a channel busy for its transfer
+time while the CPU runs on. That is right for some channels, but not for this
+one. `testOtcControlBitsAfterTransfer` reads CHCR immediately after starting
+32K words and expects it idle: an OTC transfer holds the bus, so the CPU
+never sees it running. This holds with chopping on as well.
+
+**The fix.** The CHCR write keeps `51000000h` of what was written and forces
+bit 1 on, from an initial value of `00000002h`. DuckStation's `OTC_WRITE_MASK`
+and `OTC_FIXED_BITS` are the same. Start plus trigger with the channel enabled
+runs the clear whatever the other bits say, clears the trigger, and then
+completes at once. The transfer's cycles are still charged to the CPU as a
+stall. Channel 6 still raises no DMA interrupt on completion, exactly as
+before. Whether it should is a separate question, and this test doesn't ask
+it. Loading an older save state masks the stored CHCR the same way.
+
+**Verified.**
+- **otc-test:** all 15 pass, run as `boot_runner --auto-boot --exe` and read
+  from its `bios console` section.
+- **Other DMA tests:** `dma/dpcr` gives the same results as before
+  (`writeToSPURAM` and `testSPUDMARead` pass, and the same transfers time
+  out). `dma/chopping` and `dma/chain-looping` report timings only, all on
+  channel 2.
+- **Harnesses:** all eight emulation harnesses pass.
+- **BIOS boot:** the checksum is unchanged. It runs 1,667 fewer instructions
+  (97,747,598), because its own wait on a channel 6 clear now ends sooner.
+  `host_test`'s baseline constant and Test-Suite.md are updated to match.
+- **The twelve-disc table:** all 36 checksums are unchanged. Every game clears
+  ordering tables every frame, so this was the real test of the change. The
+  one difference is Area 51 having read 5,510 sectors by frame 3000 instead
+  of 5,511, with identical frames.
+
+**Seen while verifying, not caused by this.** `host_test`'s two real-time
+checks (the frame limiter holding 59.29 Hz, and three seconds of sound with
+nothing short) failed on every run that afternoon. The machine thread
+managed only 47.9 fps. The CPU was clocked at 2.47 of its 4.0 GHz on the
+Balanced power plan, and the build from before this change was just as slow
+(5.3-5.4 s for the 400-frame BIOS boot, against 4.4 s earlier the same day).
+Those two checks measure the host, and they need it at full speed.

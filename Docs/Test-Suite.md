@@ -337,7 +337,7 @@ side, with a sequence number in every item.
   for every one published; mouse motion adding up exactly across a racing
   publisher and taker; a doorbell that does not lose a ring that came first.
 - **The machine's thread.** A threaded BIOS boot lands on **boot_runner's own
-  instruction count and checksum** - 97,749,265 and `c7c8db90c5984798` - which
+  instruction count and checksum** - 97,747,598 and `c7c8db90c5984798` - which
   is the assertion that threading changed nothing about what the machine
   computes. Then again with pause and resume requests thrown at it from another
   thread as fast as it will take them (432 of them, same numbers), and again
@@ -438,7 +438,7 @@ and what they decided, are in the plan's step 6.
 
 | Measure | Value |
 |---|---|
-| instructions | 97,749,265 |
+| instructions | 97,747,598 |
 | resolution | 640x478 |
 | framebuffer checksum | `c7c8db90c5984798` |
 | non-black (visible) | 305,920 of 305,920 |
@@ -452,6 +452,12 @@ and what they decided, are in the plan's step 6.
 | texels 4-bit / 15-bit | 3,159,000 / 0 |
 | CD-ROM commands | 3 |
 | SPU | 297,483 frames, 64 key-ons, peak 28,461/23,222 |
+
+**The instruction count moved on 2026-09-19**, from 97,749,265 to 97,747,598,
+with the checksum and every other number here unchanged. That is bug 67: an
+ordering-table clear on DMA channel 6 now finishes before the CPU runs again,
+so the BIOS's own wait for it ends 1,667 instructions sooner. The twelve-disc
+table below did not move at all.
 
 **What moved since the last refresh, and why.** The instruction count is bug
 43's, unchanged - the CPU side has not moved at all. The checksum has, and

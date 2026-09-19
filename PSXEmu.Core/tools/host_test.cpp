@@ -553,7 +553,7 @@ void MachineChecks(const std::string& bios) {
 
   // boot_runner bios/SCPH1001.BIN --frames 400: Docs/Test-Suite.md's baseline.
   const uint64_t kBaselineChecksum = 0xc7c8db90c5984798ull;
-  const uint64_t kBaselineInstructions = 97749265ull;
+  const uint64_t kBaselineInstructions = 97747598ull;
 
   const Clock::time_point start = Clock::now();
   const MachineRun plain = RunBios(bios, 400);

@@ -70,6 +70,9 @@ class Dma : public Component {
   // RAM is 2 MB. A transfer that would run past the end of it is reported as
   // having written all of it rather than being unpicked.
   static const uint32_t kRamSize = 0x200000;
+  // Channel 6's control register always reads bit 1 - the backwards step,
+  // the only way it can go - as set.
+  static const uint32_t kOtcFixed = 0x00000002;
 
   // Reports a run of RAM a transfer has just written, so compiled code built
   // from those words is thrown away. See the definition in dma.cpp.
