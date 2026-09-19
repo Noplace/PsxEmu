@@ -158,10 +158,12 @@ actually is rather than from memory:
       specified: 900 straight frames and 600-then-save-then-load-then-300
       produce bit-identical framebuffers, with a disc mounted as well as
       without. See bug 44.
-- [~] **[Memory-Cards-Plan.md](Memory-Cards-Plan.md)** - default cards are in:
-      each disc gets its own pair, auto-created under
-      `Documents\My Games\PSXEmu\memcards\<disc>\`. Eject, the per-slot menu
-      and the editor itself are still open.
+- [x] **[Memory-Cards-Plan.md](Memory-Cards-Plan.md)** - DONE (bug 69). Each
+      disc gets its own pair under `Documents\My Games\PSXEmu\memcards\<disc>\`;
+      cards are written whole once a game stops writing; File > Memory Cards
+      inserts, creates and ejects per slot while running; and the Memory Card
+      Editor lists, deletes, undeletes, exports and imports `.mcs`, copies
+      between slots and formats. Covered by `mc_test`.
 - [x] **[Wild-Arms-Press-Start-Plan.md](Wild-Arms-Press-Start-Plan.md)** - DONE.
       Bugs 25 and 26: a seek did not stop the running read, so every read began
       one sector late. Harness input (`--press`) and `--frame-log` came out of it.

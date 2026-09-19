@@ -198,6 +198,33 @@ was still making a noise afterwards, and a voice looping over three times as
 much sample as it should makes a noise perfectly happily. "Still audible" and
 "audible and correct" are not the same measurement.
 
+## mc_test
+
+    mc_test
+    mc_test <card.mcr>
+
+The memory card: the on-card format (`psx/mc_directory.h`), the editor's
+operations, and the card file underneath (`psx/mc.h`). No BIOS, no window. With
+a card's path it lists that card instead - saves, blocks, titles, icons - and
+never writes it.
+
+**Current: 77 checks, 0 failures.**
+
+| Group | Covers |
+|---|---|
+| `format` | a formatted card's header, directory and broken-sector frames, their checksums worked by hand ('M' ^ 'C' = 0Eh, A0h ^ FFh ^ FFh = A0h), the write-test frame, fifteen free blocks |
+| `import and list` | a three-block save written into free blocks as 51h/52h/53h with its links and checksums, its Shift-JIS title narrowed to ASCII and its icon's palette decoded; a duplicate name, a save too big for the space, and a malformed file each refused without changing the card |
+| `export` | a save coming back out as a directory frame and its own blocks |
+| `delete and undelete` | A1h/A2h/A3h with the links kept; undelete giving back the card byte for byte; undelete refused once a block has been reused |
+| `export everything, format, import it back` | the same saves, names, sizes, titles and bytes after a round trip through a formatted card, with a deleted save's hole in the middle |
+| `the card file` | a new card written formatted; a game's write staying in memory until a second passes with none, then flushed atomically; eject saving an unflushed write; the wipe - out of the slot and back in from disk - keeping both; inserting over a card saving the old one; a file that is not 128 KB refused without disturbing the card that is in |
+
+Mutation-tested when written: a flush that wrote nothing failed six of these,
+and a delete that cleared the links (as DuckStation's does) failed the
+byte-for-byte undelete. `mc_test <card>` was also run on copies of real saved
+cards - Wild Arms, Wild Arms 2, Vandal Hearts, NASCAR Thunder 2004 - and listed
+each save with its title, block count and one-to-three-frame icon.
+
 ## boot_runner
 
     boot_runner <bios.bin> [options]
@@ -383,8 +410,9 @@ the most likely answer is the network share rather than the emulator.
 | `gte_test` | 99 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 261 |
 | `sio_test` | 105 | | `spu_test` | 108 |
+| `mc_test` | 77 | | | |
 
-**1,046 checks, 0 failures**, all eight green. Each harness's own section above
+**1,123 checks, 0 failures**, all nine green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)
@@ -633,9 +661,5 @@ wrong way, and it stays anyway.
   `--auto-boot --exe`) reports no errors in any group, and its results screen
   is all OK or N/A - sampled by pixel, not by eye, TIMING column included. Bug
   68 fixed what it found; `cpu_test`'s `cpuedges` group holds each fix.
-- **Memory card round trips.** Cards exist now, and nothing tests them. Per
-  the standards document, the *wipe* is the point: write, wipe, read back, or
-  a `Serialise()` that stores nothing still appears to work.
-  [Memory-Cards-Plan.md](Memory-Cards-Plan.md) sketches an `mc_test`.
 - **Reverb and volume sweeps** in `spu_test` - implemented without a check
   (Gaps.md).

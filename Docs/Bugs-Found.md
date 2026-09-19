@@ -3807,3 +3807,67 @@ to a misaligned target sets a misaligned pc without going through
 `Cpu::Jump`. Whatever the interpreter then does with that fetch, it is not
 this fault raised at the branch, so EPC can differ from the interpreted case.
 No game jumps to a misaligned address.
+
+## 69. Memory cards: written a sector at a time, created unformatted, leaked on insert, and nothing could read one
+
+Built from [Memory-Cards-Plan.md](Memory-Cards-Plan.md). Three of the problems
+it names were bugs in what was already there:
+
+- **Every 128-byte sector opened, wrote and closed the card file.** A one-block
+  save did that 64 times. It was slow, and a crash part-way through left a
+  card with half a save on it. The card is now held in memory and written
+  whole: to a temporary file beside it, then renamed over it, so the file is
+  always either the old card or the new one. A write goes to disk a second
+  after the game stops writing (`MC::OnFrame`, called from the machine
+  thread's loop), and at once on pause, eject, cold boot and exit.
+- **A new card was 128 KB of zeroes.** The BIOS read that as unformatted and
+  offered to format it before a game could save. `CreateFile` now writes a
+  formatted card: the "MC" header, fifteen free directory frames and an empty
+  broken-sector list, each with a valid checksum.
+- **Inserting a card over another leaked the old one.** Worse, anything a game
+  had written to the old card and not yet flushed was dropped. `LoadFile` now
+  ejects the old card first, which saves it.
+
+**What was added.**
+- **Core parsing (`psx/mc_directory.h`):** pure functions over the 128 KB
+  image, with no file or UI. They list saves, with the Shift-JIS title decoded
+  and the icon converted to ARGB, count free blocks, delete, undelete, export
+  and import `.mcs`, and format.
+- **Delete keeps the links.** It marks a save's blocks A1h/A2h/A3h but leaves
+  its next-block links intact, as the BIOS does, so a multi-block save
+  undeletes whole. DuckStation clears the links on delete, which leaves its
+  undelete restoring only the first block.
+- **Front end:** File > Memory Cards has Insert, New and Eject for each slot,
+  all usable while a game runs, plus the Memory Card Editor.
+- **Editing a live card:** the editor gets snapshots of the cards from the
+  machine thread. Every change runs against the live card there, between
+  frames, and then sets the card's "new card" flag, the signal a physical
+  swap gives, so a running game re-reads the directory.
+
+**Verified.**
+- **`mc_test`:** 77 checks. Formatting, with checksums worked out by hand.
+  Import and listing, including a full-width Shift-JIS title and the icon
+  palette. Export. Delete then undelete, giving back the card byte for byte,
+  and undelete refused once a block is reused. An export-format-import round
+  trip. The card file: a write held in memory until the idle flush, a flush on
+  eject, and a round trip out of the slot and back from disk.
+- **Mutation-tested:** a flush that wrote nothing failed six of the checks;
+  a delete that cleared the links failed the byte-for-byte undelete.
+- **Real saves:** `mc_test <card>` listed copies of real cards (Wild Arms,
+  Wild Arms 2, Vandal Hearts, NASCAR Thunder 2004), with the right titles,
+  block counts and one-to-three-frame icons.
+- **The front end, driven by posted commands with a throwaway disc name:**
+  - booting a disc created both per-disc cards already formatted;
+  - the editor opened showing both slots with 15 of 15 blocks free;
+  - Eject emptied slot 1, and the open editor showed it within a second;
+  - the app exited cleanly.
+- **Everything else:** all harnesses pass, including `sio_test`, which covers
+  the card protocol, and `host_test`, which covers the machine loop the flush
+  now runs in. The BIOS baseline is unchanged.
+
+**Not verified.** No game has been played through a save and a load on the
+new write path. The sector protocol and the in-memory image are unchanged,
+and `sio_test` still passes, but the first real save is worth watching.
+Pressing the editor's buttons wasn't driven either, since that needs clicks
+inside its window. The operations behind the buttons are what `mc_test`
+checks.

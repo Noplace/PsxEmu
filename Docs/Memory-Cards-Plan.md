@@ -1,5 +1,15 @@
 # Memory cards: swapping, and an editor
 
+> **Status: built - bug 69** (`Docs/Bugs-Found.md`), covered by `mc_test`. Done
+> as planned: the three fixes (in-memory card flushed whole, formatted new
+> cards, the load error split), eject and insert while running from File >
+> Memory Cards, the parsing in `psx/mc_directory.h`, and the editor with list,
+> delete, undelete, `.mcs` export and import, copy between slots and format.
+> Two differences from the plan: edits go to the live card on the machine
+> thread and flag it as swapped, rather than ejecting it while the editor is
+> open; and the per-slot Recent list was not built. The plan below is kept as
+> it was written.
+
 Two related pieces of work. Swapping is small and unblocks real use; the editor
 is bigger and builds on the same parsing.
 

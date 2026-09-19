@@ -87,6 +87,14 @@ namespace psxemu {
         // Created hidden whether or not it is wanted, so it collects from the first frame and
         // opening it later shows everything already written.
         console_.Create(instance, window_, [this] { SetShowBiosConsole(false); });
+        {
+            MemoryCardEditor::Host host;
+            host.refresh = [this] { RefreshMemoryCardEditor(); };
+            host.edit = [this](int slot, MemoryCardEditor::Edit edit) {
+                EditMemoryCard(slot, std::move(edit));
+            };
+            card_editor_.Create(instance, window_, std::move(host));
+        }
         if (!CreateMachine())
             return false;
 
@@ -769,6 +777,69 @@ namespace psxemu {
         SaveSettingsIfChanged();
     }
 
+    namespace {
+
+        // On the machine's thread: copies of both cards, for the editor to read on its own.
+        std::array<MemoryCardEditor::Snapshot, 2> SnapshotCards(System& system) {
+            std::array<MemoryCardEditor::Snapshot, 2> cards;
+            for (int slot = 0; slot < 2; ++slot) {
+                const emulation::psx::MC& mc = system.mc(slot);
+                cards[slot].inserted = mc.connected();
+                if (mc.connected()) {
+                    cards[slot].filename = mc.filename();
+                    cards[slot].image.assign(mc.data(),
+                                             mc.data() + emulation::psx::mcdir::kCardSize);
+                }
+            }
+            return cards;
+        }
+
+    }   // namespace
+
+    void App::RefreshMemoryCardEditor() {
+        PostToMachine([this](Machine& machine) {
+            auto cards = SnapshotCards(machine.system());
+            PostToUi([this, cards = std::move(cards)] { card_editor_.SetCards(cards); });
+        });
+    }
+
+    // The edit runs against the live card, between frames. If it changed anything the card is
+    // flagged as swapped - so a game re-reads the directory rather than trusting what it read
+    // before - and saved at once, since an editor's change is one the person means to keep.
+    void App::EditMemoryCard(int slot, MemoryCardEditor::Edit edit) {
+        PostToMachine([this, slot, edit = std::move(edit)](Machine& machine) {
+            emulation::psx::MC& mc = machine.system().mc(slot);
+            std::string error;
+            bool ok = false;
+            if (!mc.connected()) {
+                error = "There is no card in slot " + std::to_string(slot + 1) + ".";
+            } else if (edit(mc.data(), &error)) {
+                mc.Modified();
+                ok = mc.Flush();
+                if (!ok)
+                    error = "The change was made, but the card file could not be written.";
+            }
+            auto cards = SnapshotCards(machine.system());
+            PostToUi([this, cards = std::move(cards), ok, error] {
+                card_editor_.SetCards(cards);
+                if (!ok) {
+                    const std::wstring message(error.begin(), error.end());
+                    ShowWarning(window_, message.c_str());
+                }
+            });
+        });
+    }
+
+    void App::EjectMemoryCard(int slot) {
+        PostToMachine([this, slot](Machine& machine) {
+            machine.system().mc(slot).Eject();
+            PostToUi([this] {
+                if (card_editor_.visible())
+                    RefreshMemoryCardEditor();
+            });
+        });
+    }
+
     void App::CollectConsoleText(System& system) {
         emulation::psx::Kernel& kernel = system.kernel();
         const uint32_t session = kernel.session();
@@ -1167,13 +1238,20 @@ namespace psxemu {
                 if (path.empty())
                     break;
                 PostToMachine([this, slot, path](Machine& machine) {
-                    if (machine.system().mc(slot).LoadFile(path.c_str()) != S_OK) {
-                        PostToUi([this] {
+                    // Inserting ejects - and so saves - whatever card was in the slot first.
+                    const bool ok = machine.system().mc(slot).LoadFile(path.c_str()) == S_OK;
+                    PostToUi([this, ok, path] {
+                        if (!ok) {
+                            const bool exists =
+                                GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
                             ShowWarning(window_,
-                                        L"Could not open that memory card. It must be exactly "
-                                        L"128 KB.");
-                        });
-                    }
+                                        exists ? L"That is not a memory card. A card file is "
+                                                 L"exactly 128 KB."
+                                               : L"Could not open that memory card file.");
+                        }
+                        if (card_editor_.visible())
+                            RefreshMemoryCardEditor();
+                    });
                 });
                 break;
             }
@@ -1186,14 +1264,25 @@ namespace psxemu {
                 if (path.empty())
                     break;
                 PostToMachine([this, slot, path](Machine& machine) {
-                    if (machine.system().mc(slot).CreateFile(path.c_str()) != S_OK) {
-                        PostToUi([this] {
+                    const bool ok = machine.system().mc(slot).CreateFile(path.c_str()) == S_OK;
+                    PostToUi([this, ok] {
+                        if (!ok)
                             ShowWarning(window_, L"Could not create that memory card file.");
-                        });
-                    }
+                        if (card_editor_.visible())
+                            RefreshMemoryCardEditor();
+                    });
                 });
                 break;
             }
+
+            case kCommandEjectMemoryCardSlot1:
+            case kCommandEjectMemoryCardSlot2:
+                EjectMemoryCard(command == kCommandEjectMemoryCardSlot1 ? 0 : 1);
+                break;
+
+            case kCommandMemoryCardEditor:
+                card_editor_.Show(true);
+                break;
 
             case kCommandReset:
                 ResetMachine();

@@ -63,13 +63,24 @@ namespace psxemu {
         AppendMenuW(file, MF_STRING, kCommandBootBios, L"Boot &BIOS");
         AppendMenuW(file, MF_STRING, kCommandBootExe, L"Boot PSX-&EXE...");
         AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot1, L"Open Memory Card (Slot 1)...");
-        AppendMenuW(file, MF_STRING, kCommandOpenMemoryCardSlot2, L"Open Memory Card (Slot 2)...");
-        AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot1,
-                    L"Create Memory Card (Slot 1)...");
-        AppendMenuW(file, MF_STRING, kCommandCreateMemoryCardSlot2,
-                    L"Create Memory Card (Slot 2)...");
+
+        // Memory Cards: per slot, insert, create and eject - all of which can happen while a game
+        // runs, as they could on the console - and the editor.
+        HMENU cards = CreatePopupMenu();
+        const int insert_ids[2] = { kCommandOpenMemoryCardSlot1, kCommandOpenMemoryCardSlot2 };
+        const int create_ids[2] = { kCommandCreateMemoryCardSlot1, kCommandCreateMemoryCardSlot2 };
+        const int eject_ids[2] = { kCommandEjectMemoryCardSlot1, kCommandEjectMemoryCardSlot2 };
+        for (int slot = 0; slot < 2; ++slot) {
+            HMENU slot_menu = CreatePopupMenu();
+            AppendMenuW(slot_menu, MF_STRING, insert_ids[slot], L"&Insert Card...");
+            AppendMenuW(slot_menu, MF_STRING, create_ids[slot], L"&New Card...");
+            AppendMenuW(slot_menu, MF_STRING, eject_ids[slot], L"&Eject");
+            AppendMenuW(cards, MF_POPUP, reinterpret_cast<UINT_PTR>(slot_menu),
+                        slot == 0 ? L"Slot &1" : L"Slot &2");
+        }
+        AppendMenuW(cards, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(cards, MF_STRING, kCommandMemoryCardEditor, L"Memory Card &Editor...");
+        AppendMenuW(file, MF_POPUP, reinterpret_cast<UINT_PTR>(cards), L"&Memory Cards");
         AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(file, MF_STRING, kCommandExit, L"E&xit\tAlt+F4");
 

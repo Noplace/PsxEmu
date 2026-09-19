@@ -39,7 +39,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 287, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261 - 1,046
+cpu 287, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261, mc 77 - 1,123
 checks, no failures (re-run 2026-09-18). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
@@ -239,16 +239,26 @@ rate is plausible rather than measured, SetSession assumes one session, and
 GetQ synthesises its Q bytes from the track table rather than a real
 subchannel.
 
-### Memory cards - the format is declared, nothing understands it
+### Memory cards - done, apart from a few edges
 
-Games save and load, and the front end gives each disc its own
-`card1.mcr`/`card2.mcr` under `Documents\My Games\PSXEmu\memcards\<disc>\`.
-Missing: anything that walks the directory, follows a block chain, decodes a
-title or icon, or checks a frame checksum; an eject for a running machine
-(only a cold boot disconnects a card); and a sane write path - `WriteSector`
-opens, seeks, writes and closes the file for every 128 bytes, so a one-block
-save does that 64 times and a crash part-way leaves a half-written card.
-Planned in [Memory-Cards-Plan.md](Memory-Cards-Plan.md).
+Each disc gets its own `card1.mcr`/`card2.mcr` under
+`Documents\My Games\PSXEmu\memcards\<disc>\`, created formatted. Cards are
+held in memory and written whole, atomically, a second after a game stops
+writing (and on pause, eject, cold boot and exit). File > Memory Cards inserts,
+creates and ejects per slot while a game runs, and the Memory Card Editor
+lists both cards with icons and titles and deletes, undeletes, exports and
+imports `.mcs`, copies between slots and formats (bug 69,
+[Memory-Cards-Plan.md](Memory-Cards-Plan.md)). What is left:
+
+- **Only `.mcs` single saves import.** No whole-card formats other than the
+  raw 128 KB (`.gme`, `.vgs`, `.psx` from other tools), and no raw
+  headerless saves.
+- **Card contents are not in save states.** Loading a state leaves the cards
+  as they are, which is the usual choice, but a state saved before a game
+  wrote its save and loaded after it does not undo the save.
+- **A card write that fails is counted, not shown.** `MC::flush_failures()`
+  records it; the front end does not tell anyone.
+- **No per-slot Recent list**, which the plan suggested.
 
 ### Controllers
 

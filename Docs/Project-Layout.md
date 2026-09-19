@@ -47,7 +47,8 @@ PsxEmu/
       dma.h/.cpp               DMA channels
       io_interface.h/.cpp      memory map and hardware registers
       root_counter.h/.cpp      timers
-      mc.h/.cpp                memory card file format
+      mc.h/.cpp                a memory card slot: the card in memory, written to its file whole
+      mc_directory.h/.cpp      what is on a card: list, delete, undelete, export, import, format
       kernel.h/.cpp            BIOS call logging
       debug.h                  BREAKPOINT, and the trap counter behind it
       debug_assist.h/.cpp      _DEBUG-only CSV instruction logger
@@ -69,8 +70,8 @@ PsxEmu/
       build_tools.bat
       boot_runner.cpp          boots a BIOS or disc, reports everything; the checksum baselines
       cpu_test.cpp  gte_test.cpp  gpu_test.cpp  mdec_test.cpp
-      timer_test.cpp  sio_test.cpp  spu_test.cpp  media_test.cpp
-                               the eight emulation harnesses (Docs/Test-Suite.md)
+      timer_test.cpp  sio_test.cpp  spu_test.cpp  media_test.cpp  mc_test.cpp
+                               the nine emulation harnesses (Docs/Test-Suite.md)
       rec_test.cpp  rec_bench.cpp   the recompiler's tests, and its benchmark
       host_test.cpp            the threads and channels in host/
       frame_limiter_test.cpp  speed_resampler_test.cpp  letterbox_test.cpp
@@ -91,6 +92,7 @@ PsxEmu/
     win32_paths.h/.cpp         command line, BIOS, settings file, data root, disc-derived names
     win32_dialogs.h/.cpp       the file pickers and the message boxes
     console_window.h/.cpp      Emulation > BIOS Console: the BIOS's putchar/puts/printf output
+    memcard_editor.h/.cpp      File > Memory Cards > Memory Card Editor, both slots side by side
     keyboard.h                 the keyboard as a digital pad
     gamepad.h                  one XInput slot: buttons, both sticks, both motors
     igraphicsengine.h          what a presenter has to be able to do

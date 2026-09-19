@@ -82,16 +82,25 @@ struct MCFile {
 };
 #pragma pack(pop)
 
+// One memory card slot. The card is held in memory; a game's writes land there and the file is
+// rewritten whole once they stop (Flush), not sector by sector. Everything here belongs to the
+// machine's thread - Docs/Threading-Plan.md, rule 4.
 class MC : public Component {
  public:
   MC();
   ~MC();
   int Initialize();
   int Deinitialize();
+
+  // Inserts the card in `filename`, ejecting - and so saving - whatever was in the slot.
   int LoadFile(const char* filename);
+  // Writes a new, formatted card to `filename` and inserts it.
   int CreateFile(const char* filename);
-  
+  // Takes the card out, saved first. The slot then reports no card.
+  void Eject();
+
   bool connected() const { return mcfile != nullptr; }
+  const std::string& filename() const { return filename_; }
   uint8_t flag() const { return flag_; }
   void clear_flag(uint8_t mask) { flag_ &= ~mask; }
   void set_flag(uint8_t mask) { flag_ |= mask; }
@@ -99,12 +108,32 @@ class MC : public Component {
   bool ReadSector(uint16_t sector, uint8_t* out_buffer);
   bool WriteSector(uint16_t sector, const uint8_t* in_buffer);
 
+  // Once a frame, from the host: saves the card once a second has passed with no writes, so a
+  // save is on disk within about a second of the game finishing it.
+  void OnFrame();
+  // Writes the card to its file now if anything changed. False if that failed.
+  bool Flush();
+  bool dirty() const { return dirty_; }
+  uint64_t flush_failures() const { return flush_failures_; }
+
+  // The raw 128 KB image, for psx/mc_directory.h. Null with no card in. After changing it,
+  // call Modified: the card is saved, and flagged as swapped so a running game re-reads the
+  // directory instead of trusting its copy.
+  uint8_t* data();
+  const uint8_t* data() const;
+  void Modified();
+
+  static const int kFlushAfterIdleFrames = 60;
+
  private:
+  static bool WriteWholeFile(const std::string& path, const MCFile* card);
+
   MCFile* mcfile;
   std::string filename_;
   uint8_t flag_;
-  int ReadMCFile(int index);
-
+  bool dirty_ = false;
+  int idle_frames_ = 0;
+  uint64_t flush_failures_ = 0;
 };
 
 }

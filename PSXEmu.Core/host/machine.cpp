@@ -80,6 +80,9 @@ void Machine::Run() {
       if (!idle) {
         idle = true;
         audio_->set_producing(false);
+        // A save made just before pausing is on disk now, not a second of running later.
+        system_->mc(0).Flush();
+        system_->mc(1).Flush();
         Report(true);
       }
       // Requests ring the bell, so this is only how long an idle machine goes
@@ -100,6 +103,9 @@ void Machine::Run() {
     const Clock::time_point emulated = Clock::now();
     PublishFrame();
     PumpAudio();
+    // Memory cards go to disk a second after the game stops writing them (psx/mc.h).
+    system_->mc(0).OnFrame();
+    system_->mc(1).OnFrame();
     if (hooks_.after_frame)
       hooks_.after_frame(*this);
     const Clock::time_point handed_over = Clock::now();

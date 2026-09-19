@@ -21,7 +21,7 @@ if not exist Temp\tools\obj_boot mkdir Temp\tools\obj_boot
 
 set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp ^
  PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\psx\kernel.cpp ^
- PSXEmu.Core\psx\mc.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
+ PSXEmu.Core\psx\mc.cpp PSXEmu.Core\psx\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
  PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\psx\disc.cpp PSXEmu.Core\psx\sio.cpp ^
  PSXEmu.Core\psx\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
  PSXEmu.Core\psx\state.cpp PSXEmu.Core\psx\debug_assist.cpp
@@ -42,6 +42,11 @@ if errorlevel 1 exit /b 1
 if not exist Temp\tools\obj_cpu mkdir Temp\tools\obj_cpu
 cl %FLAGS% /Fo:Temp\tools\obj_cpu\ /Fe:Temp\tools\cpu_test.exe ^
    PSXEmu.Core\tools\cpu_test.cpp %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
+if not exist Temp\tools\obj_mc mkdir Temp\tools\obj_mc
+cl %FLAGS% /Fo:Temp\tools\obj_mc\ /Fe:Temp\tools\mc_test.exe ^
+   PSXEmu.Core\tools\mc_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_disc mkdir Temp\tools\obj_disc

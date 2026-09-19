@@ -95,6 +95,9 @@ namespace psxemu {
         kCommandPauseInMenus,
         kCommandShowTimings,
         kCommandBiosConsole,
+        kCommandEjectMemoryCardSlot1,
+        kCommandEjectMemoryCardSlot2,
+        kCommandMemoryCardEditor,
         kCommandExit,
     };
 
@@ -213,6 +216,9 @@ namespace psxemu {
         "All files (*.*)\0*.*\0";
     inline constexpr const char* kCardFilter =
         "Memory Card (*.mcr;*.mcd)\0*.mcr;*.mcd\0"
+        "All files (*.*)\0*.*\0";
+    inline constexpr const char* kSaveFilter =
+        "Single Save (*.mcs)\0*.mcs\0"
         "All files (*.*)\0*.*\0";
     inline constexpr const char* kExeFilter =
         "PSX Executables (*.exe;*.psx;*.psexe)\0*.exe;*.psx;*.psexe\0"

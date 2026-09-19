@@ -17,7 +17,7 @@ Working notes for anything spanning more than one sitting. Status per document.
 | [Threading-Plan.md](Threading-Plan.md) | built | **Built 2026-09-18**: a thread each for the window, the machine, video, audio and input, with the channels between them in `PSXEmu.Core/host/` and `host_test` holding them. The standard it follows is DuckStation's, PCSX2's and Dolphin's; phase 7, a thread for the rasteriser, is the part not done |
 | [Recompiler-Plan.md](Recompiler-Plan.md) | live | Dynamic recompilation, on the **Emulation > Recompiler** menu and off by default. 3.0-3.9x real time against the interpreter's 1.5-1.7x; BIOS boot identical. The differential harness has both CPUs agreeing exactly for millions of instructions - what is left is cycle accounting, not correctness |
 | [CPU-Timing-Plan.md](CPU-Timing-Plan.md) | live | Real per-instruction cycle costs. Multiply/divide and branches done (bug 43), and amidog's `psxtest_cpu` passes in full (bug 68); memory-region costs (phase 3) are not |
-| [Memory-Cards-Plan.md](Memory-Cards-Plan.md) | live | Per-disc cards are in; eject, the per-slot menu, the editor and a sane write path are not |
+| [Memory-Cards-Plan.md](Memory-Cards-Plan.md) | built | Per-disc cards, an in-memory card written whole once a game stops writing, insert/create/eject per slot while running, and the Memory Card Editor. Bug 69 |
 | [Disc-Formats-Plan.md](Disc-Formats-Plan.md) | live | `.mds`/`.mdf` and `.ccd`/`.img` done; compressed containers (CHD, ECM, PBP) not started |
 | [Emulation-Speed-Plan.md](Emulation-Speed-Plan.md) | built | 50/100/150/200% speed, and why the audio path was the whole job |
 | [GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md) | measured | Whether the rasteriser or the SPU is the bottleneck. Neither is: 4-13% and 3-4% of a run |
@@ -40,7 +40,7 @@ A PlayStation 1 emulator revived from a 2012-2014 codebase.
 
 - Builds clean under MSVC 14.51 (`v145`), `/std:c++20 /permissive-`, all four
   of Debug/Release x Win32/x64, plus the headless harnesses.
-- **1,046 checks across the eight emulation harnesses, 0 failures**, and more
+- **1,123 checks across the nine emulation harnesses, 0 failures**, and more
   harnesses beside them - the recompiler's 460, the threads' 32, and the three
   around `platform/`. [Test-Suite.md](Test-Suite.md) has the table.
 - The CPU with load delay slots and measured multiply/divide/branch costs; the

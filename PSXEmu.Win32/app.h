@@ -43,6 +43,7 @@
 
 #include "const.h"
 #include "console_window.h"
+#include "memcard_editor.h"
 #include "engine_factory.h"
 #include "host/audio_output.h"
 #include "host/machine.h"
@@ -148,6 +149,13 @@ namespace psxemu {
         // On the machine's thread, after every frame: what the BIOS console gained, posted to the
         // window. Posting keeps it in order with everything else the machine tells the UI.
         void CollectConsoleText(emulation::psx::System& system);
+
+        // The memory card editor's two ways into the machine: fresh copies of both cards, and a
+        // change to one of them. Both run on the machine's thread and answer by posting the
+        // cards back to the editor.
+        void RefreshMemoryCardEditor();
+        void EditMemoryCard(int slot, MemoryCardEditor::Edit edit);
+        void EjectMemoryCard(int slot);
 
         void RefreshBiosMenu();
         void SelectBios(int index);
@@ -291,6 +299,10 @@ namespace psxemu {
         // machine thread's, compared after each frame to notice a boot or a reset.
         ConsoleWindow console_;
         uint32_t console_session_ = 0;
+
+        // File > Memory Cards > Memory Card Editor. The UI thread's; it sees the cards only as
+        // snapshots the machine thread sends it.
+        MemoryCardEditor card_editor_;
     };
 
 }   // namespace psxemu
