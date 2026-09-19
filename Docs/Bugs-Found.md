@@ -3596,3 +3596,49 @@ Captain Tsubasa J's `.mds`/`.mdf` gives a different frame 3000 from the table
 That is the image, not this change: the pre-fix build gives the same numbers
 on it. The table was taken from the `.cue`/`.bin`, whose zeroed subheaders
 (Gaps.md) mean nothing is ever filtered.
+
+## 65. A side-loaded PS-EXE started with the BIOS shell in its uninitialised data
+
+`test/PadTest 1.1/padtest.exe` ran from File > Boot PSX-EXE (and
+`boot_runner --auto-boot --exe`) with the display off and no interrupts. The
+same program booted from `padtest.cue` worked. The disc holds a byte-identical
+`PADTEST.EXE`, so the difference was the machine it started on, not the
+program.
+
+**What the program did.** The first `printf` in `main` goes through a
+wrapper at `800306B8` that tests a word at `800638C0`. If the word is zero,
+the output goes through the BIOS's own `printf` (A0h table). If not, it goes
+to a serial-port routine that spins on SIO1_STAT bit 2 until the transmitter
+is ready. SIO1 is not emulated (Gaps.md), so that bit never sets, and the
+program spent the whole run reading `1F801054`, 13 million times in 600
+frames. `800638C0` is past the end of the executable's text (`80010000` +
+`33000h`), in data the program assumes starts out zero and never clears
+itself: its header has no memfill range.
+
+Booted from the disc, that word was zero. Side-loaded, it was `00001000`,
+because `set_auto_boot_exe` fired when the pc reached `80030000`. That is where
+the BIOS jumps into its shell, after copying the shell's image into RAM from
+`80030000` upward. The executable was copied over the shell's code, but its
+uninitialised data still held the shell's bytes.
+
+**The fix.** Side-load when the BIOS writes POST code 7 to `1F802041`, which
+is what DuckStation does (`Bus::KernelInitializedHook`, fired from the same
+POST write). At that point the kernel is set up and the shell has not been
+copied yet. What bug 41 needed from the BIOS is already done by then: the
+status history shows BEV and Isolate Cache cleared at `BFC0023C`, in the
+BIOS's first few hundred instructions. The program now starts at instruction
+114,044 instead of about 2.2 million.
+
+**Verified.** PadTest side-loaded draws `e1cab1e7d11c00a3`, 17,089 non-black
+pixels at 320x240. That is exactly the frame the disc boot settles on, and it
+takes 593 interrupts, no longer zero. amidog's `psxtest_cpu`, `psxtest_gte`
+and `psxtest_gpu` give byte-identical checksums under the old and new hook
+(`267629a6082f2a88`, `b0c2a767b6b76380`, `c6fbcf66c24453c9`), so bug 41's
+results screen is unaffected. All harnesses pass, and the BIOS baseline is
+unchanged; neither goes through this path.
+
+**Still true.** `LoadPsExe` does not honour the header's memfill
+(`b_addr`/`b_size`) range, and it ignores `s_size` when it sets the stack.
+Neither matters for PadTest, whose header sets neither. Both are small and
+both are what DuckStation's `InjectExecutable` does. A program that reaches
+SIO1 for real will still hang, because SIO1 is still not emulated.

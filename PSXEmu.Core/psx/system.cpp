@@ -212,7 +212,9 @@ void System::StepInstruction() {
     BootDisc(nullptr);
   }
 
-  if (auto_boot_exe_ && cpu_.context()->pc == 0x80030000) {
+  // POST 7: the kernel is initialised and the shell not yet copied into RAM.
+  // See set_auto_boot_exe.
+  if (auto_boot_exe_ && (io_.io.post & 0x0F) == 7) {
     auto_boot_exe_ = false;
     LoadPsExe(auto_boot_exe_path_.c_str());
   }

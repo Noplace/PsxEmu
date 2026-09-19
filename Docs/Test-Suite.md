@@ -204,7 +204,7 @@ much sample as it should makes a noise perfectly happily. "Still audible" and
 | `--disc <path>` | Mount a disc: a `.cue`, an image file, or a drive letter |
 | `--boot-disc` | Read SYSTEM.CNF from the mounted disc and start its executable |
 | `--auto-boot` | Let the BIOS run for real, then take over at pc=80030000 - the point it would hand a game control at |
-| `--exe <file>` | Side-load a PS-EXE. Alone, immediately - before the BIOS has run at all. With `--auto-boot`, deferred to pc=80030000 instead: the BIOS clearing BEV and Isolate Cache and setting up a video mode first, which a standalone test program can assume the same way it could on real hardware |
+| `--exe <file>` | Side-load a PS-EXE. Alone, immediately - before the BIOS has run at all. With `--auto-boot`, deferred until the BIOS writes POST code 7 (kernel initialised): BEV and Isolate Cache cleared and the kernel's tables set up, which a standalone test program can assume, and the shell not yet copied over the program's uninitialised data (bug 65) |
 | `--frames <n>` | Run for n frames, then stop (default 300) |
 | `--ppm <file>` | Write the final visible frame as a PPM |
 | `--vram <file>` | Write the whole 1024x512 of VRAM as a PPM |

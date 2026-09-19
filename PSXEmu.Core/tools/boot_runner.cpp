@@ -7,11 +7,11 @@
 //     --auto-boot        let the BIOS run, then take over at pc=80030000
 //     --exe <file.exe>   side-load a PS-EXE. Combined with --auto-boot, the
 //                        BIOS runs for real first and the side-load happens
-//                        at pc=80030000 instead of immediately - the BIOS
-//                        clearing BEV and Isolate Cache, and setting up a
-//                        video mode, is what a standalone test program can
-//                        assume already happened, the same way it could on
-//                        real hardware. Without --auto-boot the side-load is
+//                        when it reports its kernel initialised (POST 7)
+//                        instead of immediately - the BIOS clearing BEV and
+//                        Isolate Cache and setting up the kernel is what a
+//                        standalone test program can assume already
+//                        happened. Without --auto-boot the side-load is
 //                        immediate, before the BIOS has run at all - for a
 //                        synthetic snippet that sets up everything it needs
 //                        itself and does not want the intro run first.
@@ -929,7 +929,7 @@ int main(int argc, char** argv) {
       printf("auto-boot      armed at pc=80030000\n");
     } else if (defer_exe_to_auto_boot) {
       system->set_auto_boot_exe(true, options.exe);
-      printf("auto-boot      armed at pc=80030000, will side-load %s\n",
+      printf("auto-boot      armed at POST 7, will side-load %s\n",
              options.exe);
     }
 
