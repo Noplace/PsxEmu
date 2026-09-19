@@ -375,6 +375,25 @@ class Cpu : public Component {
     return true;
   }
 
+  // The load the last instruction issued, one stage behind: it reaches its
+  // register at the start of the instruction after next, so the next
+  // instruction still reads the old value. For the debugger's register view.
+  bool GetArmedLoad(uint32_t* index, uint32_t* value) const {
+    if (!armed_load_.active)
+      return false;
+    *index = armed_load_.reg;
+    *value = armed_load_.value;
+    return true;
+  }
+
+  // Drops any load still on its way to register `index` - for the debugger
+  // setting that register by hand, which the load would otherwise overwrite.
+  void CancelLoadsTo(uint32_t index) {
+    if (pending_load_.active && pending_load_.reg == index)
+      pending_load_.active = false;
+    if (armed_load_.active && armed_load_.reg == index)
+      armed_load_.active = false;
+  }
   // Called after anything writes guest memory, so that compiled code built
   // from those words can be thrown away.
   //

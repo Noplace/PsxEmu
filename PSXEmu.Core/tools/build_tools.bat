@@ -24,7 +24,7 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  PSXEmu.Core\psx\mc.cpp PSXEmu.Core\psx\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
  PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\psx\disc.cpp PSXEmu.Core\psx\sio.cpp ^
  PSXEmu.Core\psx\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
- PSXEmu.Core\psx\state.cpp PSXEmu.Core\psx\debug_assist.cpp
+ PSXEmu.Core\psx\state.cpp PSXEmu.Core\psx\debug_assist.cpp PSXEmu.Core\psx\debugger.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
  /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core
@@ -42,6 +42,11 @@ if errorlevel 1 exit /b 1
 if not exist Temp\tools\obj_cpu mkdir Temp\tools\obj_cpu
 cl %FLAGS% /Fo:Temp\tools\obj_cpu\ /Fe:Temp\tools\cpu_test.exe ^
    PSXEmu.Core\tools\cpu_test.cpp %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
+if not exist Temp\tools\obj_debug mkdir Temp\tools\obj_debug
+cl %FLAGS% /Fo:Temp\tools\obj_debug\ /Fe:Temp\tools\debug_test.exe ^
+   PSXEmu.Core\tools\debug_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_mc mkdir Temp\tools\obj_mc

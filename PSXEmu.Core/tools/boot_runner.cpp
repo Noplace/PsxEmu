@@ -40,6 +40,9 @@
 //                        --disc/--boot-disc/--auto-boot/--exe entirely
 //     --save-state <f>   write a save state after the run finishes
 //     --quiet            suppress the per-100-frame progress lines
+//     --break <hex>[,<hex>...]  stop before these addresses run (psx/debugger.h), print the
+//                        registers and the code around the pc, and carry on; repeatable
+//     --break-print <n>  how many hits to print (default 20); the rest are only counted
 //
 // Takes no window, no input and no audio device, so it can be run from a shell
 // and diffed. Prints a framebuffer checksum, which is the cheap regression
@@ -48,7 +51,7 @@
 
 #include "psx/psx.h"
 #include "psx/recompiler_bridge.h"
-#include "tools/disasm.h"
+#include "psx/disasm.h"
 
 #include <cstdio>
 #include <cstring>
@@ -188,6 +191,10 @@ struct Options {
   bool recompiler;
   int recompiler_toggle;
   bool recompiler_diff;
+  // --break: execute breakpoints (psx/debugger.h). Each hit prints the registers and the code
+  // around the pc, up to break_print of them, then carries on.
+  std::vector<uint32_t> breaks;
+  int break_print;
   int frame_log;
   float volume;
   std::vector<Press> presses;
@@ -468,6 +475,30 @@ uint32_t FetchCode(System* system, uint32_t address) {
   return code;
 }
 
+// One --break hit: why it stopped, the registers, and the code around the pc with the pc marked.
+void PrintBreak(System* system, uint64_t hit, uint64_t instructions) {
+  const auto* ctx = system->cpu().context();
+  const emulation::psx::Debugger& debugger = system->debugger();
+  printf("\nbreak %llu at %08X after %llu instructions (breakpoint hits so far:",
+         static_cast<unsigned long long>(hit), ctx->pc,
+         static_cast<unsigned long long>(instructions));
+  for (const auto& bp : debugger.breakpoints())
+    printf(" %08X=%llu", bp.address, static_cast<unsigned long long>(bp.hits));
+  printf(")\n");
+  for (int r = 0; r < 32; ++r) {
+    printf("  %-4s %08X%s", emulation::psx::RegisterName(r), ctx->gp.reg[r], (r % 4 == 3) ? "\n" : "");
+  }
+  printf("  hi   %08X  lo   %08X  sr   %08X  cause %08X  epc %08X\n", ctx->high, ctx->low,
+         ctx->ctrl.SR.raw, ctx->ctrl.Cause, ctx->ctrl.EPC);
+  for (int i = -4; i <= 6; ++i) {
+    const uint32_t address = ctx->pc + static_cast<uint32_t>(i * 4);
+    char text[96];
+    emulation::psx::Disassemble(address, FetchCode(system, address), text, sizeof(text));
+    printf("  %s %08X  %08X  %s\n", i == 0 ? ">" : " ", address, FetchCode(system, address),
+           text);
+  }
+}
+
 bool ParseOptions(int argc, char** argv, Options* options) {
   options->bios = nullptr;
   options->exe = nullptr;
@@ -495,6 +526,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->cd_mechanical = false;
   options->quiet = false;
   options->frame_log = 0;
+  options->break_print = 20;
   options->volume = -1.0f;
   options->load_state = nullptr;
   options->save_state = nullptr;
@@ -580,6 +612,18 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->recompiler_toggle = atoi(argv[++i]);
     } else if (strcmp(arg, "--recompiler-diff") == 0) {
       options->recompiler_diff = true;
+    } else if (strcmp(arg, "--break") == 0 && i + 1 < argc) {
+      // One address or a comma-separated list; the option can be given more than once.
+      const char* list = argv[++i];
+      while (*list != '\0') {
+        char* end = nullptr;
+        options->breaks.push_back(static_cast<uint32_t>(strtoul(list, &end, 16)));
+        list = (*end == ',') ? end + 1 : end;
+        if (end == nullptr || (*end != ',' && *end != '\0'))
+          break;
+      }
+    } else if (strcmp(arg, "--break-print") == 0 && i + 1 < argc) {
+      options->break_print = atoi(argv[++i]);
     } else if (arg[0] == '-') {
       fprintf(stderr, "unknown option: %s\n", arg);
       return false;
@@ -811,7 +855,7 @@ int RunRecompilerDiff(const Options& options) {
            pc += 4) {
         const uint32_t word = FetchCode(interpreted, pc);
         char text[128];
-        tools::Disassemble(pc, word, text, sizeof(text));
+        emulation::psx::Disassemble(pc, word, text, sizeof(text));
         printf("    %08X  %08X  %s\n", pc, word, text);
       }
 
@@ -993,6 +1037,9 @@ int main(int argc, char** argv) {
   // checksum for wherever it happened to be instead - which looked exactly
   // like a hang until raising this uncovered that it was not one.
   const uint64_t kInstructionLimit = 20000000000ull;
+  for (uint32_t address : options.breaks)
+    system->debugger().AddBreakpoint(address);
+  uint64_t break_hits = 0;
   while (frames < options.frames && instructions < kInstructionLimit) {
     if (options.hot > 0)
       ++pc_counts[system->cpu().context()->pc];
@@ -1018,7 +1065,7 @@ int main(int argc, char** argv) {
         instructions < options.trace_skip + options.trace) {
       const auto* ctx = system->cpu().context();
       char text[96];
-      tools::Disassemble(ctx->pc, FetchCode(system, ctx->pc), text,
+      emulation::psx::Disassemble(ctx->pc, FetchCode(system, ctx->pc), text,
                          sizeof(text));
       // Show the registers this instruction actually reads or writes rather
       // than a fixed set, which is what makes a trace readable.
@@ -1028,11 +1075,21 @@ int main(int argc, char** argv) {
       const uint32_t rd = (code >> 11) & 0x1F;
       printf("%09llu %08X  %-30s %s=%08X %s=%08X %s=%08X\n",
              static_cast<unsigned long long>(instructions), ctx->pc, text,
-             tools::RegisterName(rs), ctx->gp.reg[rs],
-             tools::RegisterName(rt), ctx->gp.reg[rt],
-             tools::RegisterName(rd), ctx->gp.reg[rd]);
+             emulation::psx::RegisterName(rs), ctx->gp.reg[rs],
+             emulation::psx::RegisterName(rt), ctx->gp.reg[rt],
+             emulation::psx::RegisterName(rd), ctx->gp.reg[rd]);
     }
     system->StepInstruction();
+    if (system->debugger().halted()) {
+      // Nothing ran: not an instruction, and not a visit to this address either.
+      if (options.hot > 0)
+        --pc_counts[system->cpu().context()->pc];
+      if (break_hits < static_cast<uint64_t>(options.break_print))
+        PrintBreak(system, break_hits + 1, instructions);
+      ++break_hits;
+      system->debugger().Resume();
+      continue;
+    }
     ++instructions;
 
     const uint64_t now = system->gpu().frame_count();
@@ -1115,6 +1172,12 @@ int main(int argc, char** argv) {
   printf("\n");
   printf("instructions   %llu\n", static_cast<unsigned long long>(instructions));
   printf("frames         %d\n", frames);
+  if (!options.breaks.empty()) {
+    printf("breaks         %llu hits, %llu printed\n",
+           static_cast<unsigned long long>(break_hits),
+           static_cast<unsigned long long>(
+               std::min<uint64_t>(break_hits, static_cast<uint64_t>(options.break_print))));
+  }
   if (system->recompiler_enabled()) {
     const emulation::rec::Recompiler::Stats& rec = system->recompiler()->stats();
     printf("rec blocks     %llu compiled, %llu entries, %llu invalidated\n",
@@ -1579,7 +1642,7 @@ int main(int argc, char** argv) {
       const uint32_t address = start + i * 4;
       const uint32_t code = FetchCode(system, address);
       char text[96];
-      tools::Disassemble(address, code, text, sizeof(text));
+      emulation::psx::Disassemble(address, code, text, sizeof(text));
       printf("  %08X  %08X  %s\n", address, code, text);
     }
   }

@@ -225,6 +225,35 @@ byte-for-byte undelete. `mc_test <card>` was also run on copies of real saved
 cards - Wild Arms, Wild Arms 2, Vandal Hearts, NASCAR Thunder 2004 - and listed
 each save with its title, block count and one-to-three-frame icon.
 
+## debug_test
+
+    debug_test
+
+The debugger's core (`psx/debugger.h`, Docs/Debugger-Plan.md phases 0 and 1),
+on small hand-assembled programs in RAM - no BIOS, no disc, no window. The window
+itself is checked the way the other front-end windows are: driven from outside
+the process (bug 72).
+
+**Current: 105 checks, 0 failures.**
+
+| Group | Covers |
+|---|---|
+| `breakpoints` | halting *before* the instruction at the address runs, taking no cycles; a step while halted doing nothing and not counting the hit again; resume running that instruction rather than halting on it forever; a disabled breakpoint not firing; KSEG0/KSEG1/KUSEG aliases of one address matching; a loop hitting three times |
+| `step into` | one instruction a step; a taken branch landing on its target with its delay slot already run |
+| `step over` | a `jal` stepped over landing after its delay slot with the function run |
+| `step out` | out of a function to its caller, including a function that makes its own call and keeps `ra` in `s0` |
+| `run to, break, and the exception vector` | run to an address; a break request; a breakpoint on 80000080h caught by a `syscall`, with EPC pointing at it |
+| `the recompiler` | a breakpoint halting at exactly the same instruction with the recompiler on (it is bypassed while the debugger is armed), and compiled code coming back once a plain continue disarms it |
+| `the snapshot the window is shown` | registers, pc, halt reason and breakpoint hits; the load delay at each stage - right after a `lw` its value in flight and the register still old, one instruction on landing, then in the register; the disassembly window centred where asked, a `beq zero, zero` shown as `b` with its target, only its delay slot marked; no wrap below address 0, a KSEG1 centre listing KSEG1 addresses, a hardware register not read at all; a state load ending a halt and keeping the breakpoints |
+| `memory: reading without side effects, and writing` | RAM bytes across a word boundary and through KUSEG; I_STAT, a timer's mode (without clearing the reached flag a real read clears), GPUSTAT, an SPU register and the cache control register peeked as state; the CD-ROM, GPUREAD, SIO and MDEC, and an address nothing answers at, not read; writes to RAM (only the bytes asked for) and the scratchpad; the BIOS and a hardware register refused whole, with the reason; a write off the end of RAM wrapping into its mirror; the snapshot carrying the memory view |
+| `patched code runs as patched` | a loop halted, its add patched, and let go: the new instruction runs, interpreted and with the recompiler - where the block compiled before the patch has to be dropped. Mutation-tested: without the write's `NoteBulkWrite`, the recompiler case fails |
+| `editing registers` | a register set while a load to it is in flight keeps the new value (the load is dropped); zero stays zero; hi and lo; a misaligned pc refused; a new pc moving the halt with it, and resuming from there without running what it skipped |
+| `the disassembler` | `psx/disasm.h`: a `jal` target, REGIMM aliases named by what they do (only rt 10h/11h link), a GTE command and a Cop0 register by name, a GTE control register numbered 32-63 |
+
+Mutation-tested: without the guard that keeps a halted machine halted, a
+second `StepInstruction` counted the same breakpoint twice, and the
+"does not count the breakpoint again" check failed (2, wanting 1).
+
 ## boot_runner
 
     boot_runner <bios.bin> [options]
@@ -244,6 +273,8 @@ each save with its title, block count and one-to-three-frame icon.
 |  `--trace-irq` | Start tracing when the first hardware interrupt is taken |
 | `--hot <n>` | Print the n most-executed addresses |
 | `--dis <hex>:<n>` | Disassemble n instructions from an address (RAM or BIOS) |
+| `--break <hex>[,<hex>]` | Execute breakpoints (repeatable). At each hit, before the instruction runs: hit counts, the 32 registers, hi/lo/SR/Cause/EPC and a disassembly around the pc - then it carries on. The run's numbers are those of a run without them (Docs/Debugger-Plan.md) |
+| `--break-print <n>` | Print only the first n hits (default 20); the rest are counted |
 | `--watch-vram x,y,w,h` | Report which GP0 command wrote each pixel into a VRAM area |
 | `--wav <file>` | Write everything the SPU produced as a 44100 Hz stereo WAV |
 | `--press b@f[+h]` | Press a button at frame f, holding h frames |
@@ -351,7 +382,7 @@ enough that only a real regression should cross them.
 
     host_test [bios]
 
-Thirty-two checks on `PSXEmu.Core/host/` - the channels the front end's threads
+Thirty-three checks on `PSXEmu.Core/host/` - the channels the front end's threads
 talk through, and the threads themselves (Docs/Threading-Plan.md). Every other
 harness here is single-threaded by construction, and a checksum cannot see a
 race: a lost sample, a frame read while it was being written, a request run out
@@ -370,6 +401,10 @@ side, with a sequence number in every item.
   computes. Then again with pause and resume requests thrown at it from another
   thread as fast as it will take them (432 of them, same numbers), and again
   through a state saved at frame 200 and loaded into a fresh machine by request.
+  And again with the debugger in it: a breakpoint on the B0 vector from frame
+  100, the machine halting mid-frame 60 times (31 at the breakpoint, the rest
+  single steps), each halt let go by a request from another thread - same
+  numbers.
 - **Stopping.** Forty machines stopped mid-frame, mid-pace and paused; the
   slowest came back in 17 ms. A paused machine answers a request in under a
   millisecond, because it waits on its doorbell rather than polling.
@@ -410,9 +445,9 @@ the most likely answer is the network share rather than the emulator.
 | `gte_test` | 99 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 261 |
 | `sio_test` | 105 | | `spu_test` | 108 |
-| `mc_test` | 77 | | | |
+| `mc_test` | 77 | | `debug_test` | 105 |
 
-**1,123 checks, 0 failures**, all nine green. Each harness's own section above
+**1,228 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)
@@ -422,7 +457,7 @@ are not counted above, since they test no emulation: `letterbox_test` (12
 checks, aspect ratio), `frame_limiter_test` (8 checks - the average rate, and since bug 62 the
 spacing between frames too), `speed_resampler_test` (11 checks, the audio
 arithmetic behind 50-200% speed - the frame counts, that a minute at 150% does
-not drift, and that blocks join continuously) and `host_test` (32 checks, the
+not drift, and that blocks join continuously) and `host_test` (33 checks, the
 threads and the channels between them - its own section above).
 
 `rec_test` (460 checks) is not counted either, and for a different reason: it

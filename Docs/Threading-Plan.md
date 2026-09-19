@@ -295,7 +295,7 @@ The machine stays single-threaded, so **every checksum in Test-Suite.md had to
 be unchanged** - and is. That proves the machine computes the same thing, and
 nothing at all about the threads. What was done for those:
 
-- **`host_test`, 32 checks** (Test-Suite.md has the list): every channel under
+- **`host_test`, 33 checks** (Test-Suite.md has the list): every channel under
   two threads with sequence numbers in each item; the machine's thread landing
   on `boot_runner`'s exact instruction count and checksum, again under 432
   pause and resume requests, and again across a state saved and reloaded;

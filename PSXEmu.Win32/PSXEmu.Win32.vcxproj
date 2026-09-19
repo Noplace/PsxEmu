@@ -83,6 +83,8 @@
     <ClCompile Include="app.cpp" />
     <ClCompile Include="console_window.cpp" />
     <ClCompile Include="memcard_editor.cpp" />
+    <ClCompile Include="key_bindings_window.cpp" />
+    <ClCompile Include="debugger_window.cpp" />
     <ClCompile Include="d3d11_presenter.cpp" />
     <ClCompile Include="d3d12_graphics_engine.cpp" />
     <ClCompile Include="engine_factory.cpp" />
@@ -97,6 +99,8 @@
     <ClInclude Include="app.h" />
     <ClInclude Include="console_window.h" />
     <ClInclude Include="memcard_editor.h" />
+    <ClInclude Include="key_bindings_window.h" />
+    <ClInclude Include="debugger_window.h" />
     <ClInclude Include="const.h" />
     <ClInclude Include="d3d11_presenter.h" />
     <ClInclude Include="d3d12_graphics_engine.h" />

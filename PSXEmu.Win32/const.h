@@ -98,6 +98,11 @@ namespace psxemu {
         kCommandEjectMemoryCardSlot1,
         kCommandEjectMemoryCardSlot2,
         kCommandMemoryCardEditor,
+        kCommandRecentDiscFirst,
+        kCommandRecentDiscLast = kCommandRecentDiscFirst + 7,   // kMaxRecentDiscs
+        kCommandClearRecentDiscs,
+        kCommandKeyBindings,
+        kCommandDebugger,
         kCommandExit,
     };
 
@@ -259,35 +264,44 @@ namespace psxemu {
     // tag replaced it: the BIOS list can now move anywhere without anything having to be told.
     inline constexpr ULONG_PTR kBiosMenuTag = 0x42494F53;   // 'BIOS'
 
+    // File > Recent Discs: the other menu filled at runtime, found the same way.
+    inline constexpr ULONG_PTR kRecentDiscsMenuTag = 0x52435344;   // 'RCSD'
+    inline constexpr int kMaxRecentDiscs = 8;
+
     // ---------------------------------------------------------------------------------------------
     // Input
     // ---------------------------------------------------------------------------------------------
 
-    // Keyboard to digital pad. Arbitrary but conventional; a real settings file belongs here once
-    // the core has one.
+    // Keyboard to digital pad: the pad's fourteen buttons, the default key for each, the key it
+    // is stored under in psxemu.ini, and what Settings > Input > Keyboard Bindings calls it. The
+    // keys themselves are the person's to change - see keyboard.h - and this is only where they
+    // start.
     struct KeyBinding {
         int key;
         uint16_t button;
+        const char* setting;
+        const wchar_t* label;
     };
 
     // clang-format off
     inline constexpr KeyBinding kKeyBindings[] = {
-        { VK_UP,     emulation::psx::Sio::kUp },
-        { VK_DOWN,   emulation::psx::Sio::kDown },
-        { VK_LEFT,   emulation::psx::Sio::kLeft },
-        { VK_RIGHT,  emulation::psx::Sio::kRight },
-        { 'X',       emulation::psx::Sio::kCross },
-        { 'Z',       emulation::psx::Sio::kSquare },
-        { 'S',       emulation::psx::Sio::kCircle },
-        { 'A',       emulation::psx::Sio::kTriangle },
-        { 'Q',       emulation::psx::Sio::kL1 },
-        { 'W',       emulation::psx::Sio::kR1 },
-        { '1',       emulation::psx::Sio::kL2 },
-        { '2',       emulation::psx::Sio::kR2 },
-        { VK_RETURN, emulation::psx::Sio::kStart },
-        { VK_SHIFT,  emulation::psx::Sio::kSelect },
+        { VK_UP,     emulation::psx::Sio::kUp,       "key_up",       L"Up" },
+        { VK_DOWN,   emulation::psx::Sio::kDown,     "key_down",     L"Down" },
+        { VK_LEFT,   emulation::psx::Sio::kLeft,     "key_left",     L"Left" },
+        { VK_RIGHT,  emulation::psx::Sio::kRight,    "key_right",    L"Right" },
+        { 'X',       emulation::psx::Sio::kCross,    "key_cross",    L"Cross" },
+        { 'Z',       emulation::psx::Sio::kSquare,   "key_square",   L"Square" },
+        { 'S',       emulation::psx::Sio::kCircle,   "key_circle",   L"Circle" },
+        { 'A',       emulation::psx::Sio::kTriangle, "key_triangle", L"Triangle" },
+        { 'Q',       emulation::psx::Sio::kL1,       "key_l1",       L"L1" },
+        { 'W',       emulation::psx::Sio::kR1,       "key_r1",       L"R1" },
+        { '1',       emulation::psx::Sio::kL2,       "key_l2",       L"L2" },
+        { '2',       emulation::psx::Sio::kR2,       "key_r2",       L"R2" },
+        { VK_RETURN, emulation::psx::Sio::kStart,    "key_start",    L"Start" },
+        { VK_SHIFT,  emulation::psx::Sio::kSelect,   "key_select",   L"Select" },
     };
     // clang-format on
+    inline constexpr int kPadButtons = static_cast<int>(std::size(kKeyBindings));
 
     // How long a port stays empty when the Input menu swaps its controller for a different kind,
     // before the new one is plugged in - see App::SetControllerType. About a second, roughly what

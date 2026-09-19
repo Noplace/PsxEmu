@@ -92,6 +92,10 @@ class System {
   IOInterface& io() { return io_; };
   MC& mc(int slot) { return mc_[slot]; }
   Kernel& kernel() { return kernel_; };
+  // Breakpoints and stepping (psx/debugger.h). After StepInstruction, debugger().halted() says
+  // the step was a halt - nothing ran - and whoever is running the machine stops and does not
+  // count it.
+  Debugger& debugger() { return debugger_; }
   GTE& gte() { return gte_; };
   // The user-facing settings. Read rather than cached, so a change takes
   // effect without anything needing to be told about it.
@@ -202,6 +206,7 @@ class System {
   IOInterface io_;
   MC mc_[2];
   Kernel kernel_;
+  Debugger debugger_{this};
   GTE gte_;
   Iso9660 iso_;
   EmuConfig config_;

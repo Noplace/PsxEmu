@@ -43,7 +43,9 @@
 
 #include "const.h"
 #include "console_window.h"
+#include "debugger_window.h"
 #include "memcard_editor.h"
+#include "key_bindings_window.h"
 #include "engine_factory.h"
 #include "host/audio_output.h"
 #include "host/machine.h"
@@ -51,6 +53,7 @@
 #include "input_thread.h"
 #include "video_presenter.h"
 
+#include <atomic>
 #include <functional>
 
 namespace psxemu {
@@ -156,6 +159,26 @@ namespace psxemu {
         void RefreshMemoryCardEditor();
         void EditMemoryCard(int slot, MemoryCardEditor::Edit edit);
         void EjectMemoryCard(int slot);
+
+        // Emulation > Debugger. On the machine's thread: a snapshot of the debugger around
+        // `center` (DebuggerWindow::kAtPc for the pc), posted to the window. `from_halt` says the
+        // machine has just halted, which brings the window up. The second form is for anything
+        // that moves the machine somewhere else - a boot, a reset, a state loaded - and does
+        // nothing unless the window is open.
+        void SendDebuggerSnapshot(emulation::host::Machine& machine, uint32_t center,
+                                  bool from_halt);
+        void RefreshDebuggerIfOpen(emulation::host::Machine& machine);
+
+        // File > Recent Discs. Kept in the settings file as recent_disc_1..8 beside the core's
+        // own keys - it is the front end's memory, nothing the machine reads.
+        void LoadRecentDiscs();
+        void NoteRecentDisc(const std::string& path);
+        void SaveRecentDiscs();
+
+        // Settings > Input > Keyboard Bindings. Kept in the settings file as key_up, key_cross
+        // and so on, and handed to the input thread whenever they change.
+        void LoadKeyBindings();
+        void SetKeyBindings(const KeyMap& map);
 
         void RefreshBiosMenu();
         void SelectBios(int index);
@@ -303,6 +326,16 @@ namespace psxemu {
         // File > Memory Cards > Memory Card Editor. The UI thread's; it sees the cards only as
         // snapshots the machine thread sends it.
         MemoryCardEditor card_editor_;
+
+        // Emulation > Debugger. The window is the UI thread's; whether it is open is read on the
+        // machine's thread too, so a boot or a state load knows whether to send it a snapshot.
+        DebuggerWindow debugger_;
+        std::atomic<bool> debugger_open_{false};
+
+        std::vector<std::string> recent_discs_;   // most recent first
+
+        KeyMap key_map_ = DefaultKeyMap();
+        KeyBindingsWindow key_bindings_;
     };
 
 }   // namespace psxemu

@@ -44,6 +44,9 @@ namespace psxemu {
     void PopulateBiosMenu(HWND window, const std::vector<std::string>& files,
                           const std::string& current);
 
+    // Fills in File > Recent Discs, most recent first - the first entry is the last disc played.
+    void PopulateRecentDiscsMenu(HWND window, const std::vector<std::string>& discs);
+
     // ---------------------------------------------------------------------------------------------
     // Ticks
     // ---------------------------------------------------------------------------------------------

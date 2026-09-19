@@ -82,6 +82,7 @@ int System::InitializeWithoutBios() {
   mc_[0].Initialize();
   mc_[1].Initialize();
   kernel_.Initialize();
+  debugger_.Reset();
   gte_.Initialize();
   //mc_[0].LoadFile("D:\\Personal\\Projects\\PsxEmu\\test\\ff7.mcr");
   
@@ -184,6 +185,13 @@ void System::StepInstruction() {
     }
   }
 
+  // The debugger (psx/debugger.h) may stop the machine here, before the instruction at the pc
+  // runs - after any interrupt has moved the pc, so a breakpoint on an exception vector fires
+  // however the vector was reached, and before the BIOS-call hook, so a halted step records
+  // nothing. A halted step does nothing at all: no instruction, no time.
+  if (debugger_.armed() && debugger_.ShouldHalt(cpu_.context()->pc))
+    return;
+
   // A BIOS call is a jump to A0h, B0h or C0h with the function number in t1.
   // It is noticed here, before the instruction at the vector runs and after
   // any interrupt has moved the pc, so that both CPUs go through it: the
@@ -205,7 +213,9 @@ void System::StepInstruction() {
   //
   // What compiled code ran is charged to the rest of the machine afterwards:
   // it does not tick as it goes, the way ExecuteInstruction does.
-  if (recompiler_ != nullptr && !gte_command_first) {
+  // While the debugger could halt the machine, it runs interpreted: a compiled chain is many
+  // instructions per step, and a breakpoint in the middle of one would never be seen.
+  if (recompiler_ != nullptr && !gte_command_first && !debugger_.armed()) {
     const uint32_t cycles = recompiler_->Step();
     if (cycles > 0)
       cpu_.TickCycles(cycles);
@@ -578,6 +588,10 @@ std::string System::LoadState(const std::string& path) {
     iso_.Open(&io_.cdrom.disc());
   else
     iso_.Close();
+
+  // The machine is somewhere else now: a halt, or a step half taken, was about the old one. The
+  // breakpoints stay, as they do across a reset.
+  debugger_.Reset();
 
   return "";
 }

@@ -75,6 +75,10 @@ void Machine::Run() {
     requests_.Drain(*this);
     if (stop_.load(std::memory_order_acquire))
       break;
+    // The debugger's pause follows the debugger: a request that stepped, resumed or reset the
+    // machine has un-halted it, and that is all it needs to do to set it running again.
+    if ((pause_reasons_ & kPausedByDebugger) != 0 && !system_->debugger().halted())
+      pause_reasons_ &= ~kPausedByDebugger;
 
     if (pause_reasons_ != 0) {
       if (!idle) {
@@ -101,6 +105,13 @@ void Machine::Run() {
     const Clock::time_point input_taken = Clock::now();
     RunOneFrame();
     const Clock::time_point emulated = Clock::now();
+    if (system_->debugger().halted()) {
+      // Mid-frame: nothing to publish, no sound to pump, no pace to keep.
+      SetPaused(kPausedByDebugger, true);
+      if (hooks_.halted)
+        hooks_.halted(*this);
+      continue;
+    }
     PublishFrame();
     PumpAudio();
     // Memory cards go to disk a second after the game stops writing them (psx/mc.h).
@@ -126,12 +137,18 @@ void Machine::Run() {
 // boot_runner runs, which is what makes the two comparable.
 void Machine::RunOneFrame() {
   const uint64_t target = system_->gpu().frame_count() + 1;
-  uint64_t guard = 0;
-  while (system_->gpu().frame_count() < target && guard < kMaxInstructionsPerFrame) {
+  psx::Debugger& debugger = system_->debugger();
+  while (system_->gpu().frame_count() < target &&
+         frame_instructions_ < kMaxInstructionsPerFrame) {
     system_->StepInstruction();
-    ++guard;
+    // A halt ran nothing, so it is not an instruction; the frame carries on from here when the
+    // debugger lets it, towards the same frame boundary.
+    if (debugger.halted())
+      return;
+    ++frame_instructions_;
+    ++instructions_;
   }
-  instructions_ += guard;
+  frame_instructions_ = 0;
 }
 
 // The frame is resolved at the start of vblank, which is exactly when

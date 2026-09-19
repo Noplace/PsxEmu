@@ -39,8 +39,8 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 287, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261, mc 77 - 1,123
-checks, no failures (re-run 2026-09-18). The two that were failing when this document was last
+cpu 287, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261, mc 77, debug 105 - 1,228
+checks, no failures (re-run 2026-09-19). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
@@ -294,9 +294,11 @@ Missing or unproven:
 `graphics_backend` (D3D11 or D3D12), `video_filter`, controller type and input
 source per port, the multitap player sources, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `bios_file`,
-`emulation_speed`, `pause_in_menus` and `show_timings`. The last disc and the
-key bindings are not remembered; the bindings are a compiled-in table in
-`const.h`.
+`emulation_speed`, `pause_in_menus`, `show_timings` and `show_bios_console`.
+Beside those, the front end keeps its own keys in the same file: the eight
+most recent discs (`recent_disc_1`..`8`, File > Recent Discs) and the keyboard
+bindings (`key_up`, `key_cross` and so on, Settings > Input > Keyboard
+Bindings) - bug 70.
 
 `bios_file` is a filename rather than a path: the images live in
 `Documents\My Games\PSXEmu\bios`, which Settings > BIOS lists (anything in it
@@ -312,7 +314,13 @@ which BIOS to boot and how fast to run (50-200%), D3D11 and D3D12 presenters,
 keyboard/XInput/mouse input, and a speed readout in the title bar (bug 49) that
 Emulation > Show Timings expands into where each frame's time went, and a BIOS
 console window (Emulation > BIOS Console, bug 66) showing what software prints
-through the BIOS. No binding editor, no debugger, no settings dialog. Output a
+through the BIOS, a memory card editor (bug 69), recent discs and a keyboard
+binding editor (bug 70), and a CPU debugger with a memory view and editor (Emulation >
+Debugger, bugs 71-73) - watchpoints
+still to come, planned in
+[Debugger-Plan.md](Debugger-Plan.md) - and no settings dialog, deliberately:
+every setting is already in the menus. Only the keyboard is rebindable; an
+XInput pad's layout is fixed. Output a
 program sends to the serial port or the expansion port's DUART directly, rather
 than through the BIOS, is not shown: SIO1 is not emulated, and the DUART
 registers trap.

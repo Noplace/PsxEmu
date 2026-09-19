@@ -41,6 +41,7 @@ namespace host {
 enum PauseReason : uint32_t {
   kPausedByUser = 1u << 0,    // Space, Emulation > Pause - and nothing booted yet
   kPausedForMenu = 1u << 1,   // a menu is open and EmuConfig::pause_in_menus asks for it
+  kPausedByDebugger = 1u << 2,   // halted at a breakpoint or a step - psx/debugger.h
 };
 
 // Means per emulated frame over the last second or so - the title's readout.
@@ -71,6 +72,10 @@ class Machine {
 
     // About once a second while running, and once on pausing.
     std::function<void(const MachineReport&)> report;
+    // The debugger halted the machine - mid-frame, before the instruction at its pc. The machine
+    // is paused for kPausedByDebugger and keeps answering requests; the half-run frame is not
+    // published. To go on, a request steps or resumes the debugger and clears that reason.
+    std::function<void(class Machine&)> halted;
   };
 
   // `video` and `audio` are the output threads' inboxes. `system` must outlive
@@ -159,6 +164,9 @@ class Machine {
   std::vector<int16_t> resampled_;   // the same, stretched for the speed
   uint64_t frame_number_ = 0;        // frames published
   uint64_t instructions_ = 0;
+  // Instructions into the frame being run. Kept across a debugger halt, which returns from
+  // RunOneFrame mid-frame: restarting it would reset the per-frame guard on every step.
+  uint64_t frame_instructions_ = 0;
 
   Clock::time_point report_since_;
   int report_frames_ = 0;

@@ -3871,3 +3871,329 @@ and `sio_test` still passes, but the first real save is worth watching.
 Pressing the editor's buttons wasn't driven either, since that needs clicks
 inside its window. The operations behind the buttons are what `mc_test`
 checks.
+
+## 70. Recent discs and keyboard bindings, and a list index held across a message box
+
+Two front-end features, and one bug they turned up.
+
+**File > Recent Discs** lists the last eight discs played, most recent first,
+so the first entry is always the last disc played. A disc is added once it has
+actually mounted: from Boot disc, from Swap disc, or from the command line.
+One whose image has since gone (an offline share, a renamed folder) is dropped
+from the list with a warning, instead of booting into an empty drive. The list
+lives in `psxemu.ini` as `recent_disc_1`..`8`, beside the core's keys. It's a
+front-end preference, so it isn't part of `EmuConfig`.
+
+**Settings > Input > Keyboard Bindings.** Before this, the keyboard map was a
+table compiled into `const.h`; it is now only the defaults.
+- **Changing a binding:** double-click a button, or select it and press Set
+  Key, then press the key. Escape cancels.
+- **One key per button:** giving a key to one button takes it from any other,
+  and the window says which.
+- **Refused keys:** the ones the window already uses (Space, F1-F8).
+- **Storage:** the map is saved as readable names (`key_cross = X`,
+  `key_start = Return`). A button missing from the file keeps its default; one
+  present but empty stays unbound, so clearing a key survives a restart.
+- **Threading:** the input thread holds the map as fourteen atomics, so a
+  change applies from its next poll without a lock.
+
+**The bug, found by the test that drove it.** Picking a recent disc that no
+longer existed showed the warning *first* and removed the entry *after*. A
+message box runs its own message loop, so commands still arrive while it is
+up. The test sent Clear Recent Discs during the warning, and it ran, emptying
+the list. When the box closed, the code would then have erased entry 2 of an
+empty list. The entry is now removed before the warning appears. The same
+shape (a list index, or anything else that can change, held across a modal box
+on the UI thread) is worth checking for wherever a warning follows a lookup.
+
+**Verified** through a scratch build with its own `psxemu.ini`, driven by
+posted commands and read back from outside the process (the menu through the
+menu API, the bindings list through a buffer in the target process):
+- **Recent Discs:**
+  - the menu listed the seeded discs;
+  - picking the missing one warned, and the entry was already gone from the
+    menu and the ini while the box was up;
+  - Clear emptied both.
+- **Keyboard Bindings:**
+  - the window loaded all fourteen buttons right, including an edited key, a
+    missing one (its default) and an empty one ("(none)");
+  - binding V to Cross, then V to Circle, took it from Cross and said so;
+  - Space was refused while still waiting for a key, and Escape then left
+    Triangle as it was;
+  - the ini ended with exactly those changes.
+
+**Not verified:** a game played with rebound keys. The input thread's side is
+a straight read of the new map, but nobody has pressed a rebound key in a game
+yet.
+
+
+## 71. A debugger's core: breakpoints and stepping that halt the machine without changing it
+
+Phase 0 of [Debugger-Plan.md](Debugger-Plan.md). This is a feature, not a fix,
+recorded here for what it changed in the core and the two bugs its test found
+before they shipped.
+
+**What is in.** `psx/debugger.h`, owned by `System` and so by the machine thread.
+- **Execute breakpoints** match on the physical address, so KSEG0, KSEG1 and
+  KUSEG aliases are one breakpoint. They can be disabled, and each counts its hits.
+- **Stepping:** into, over and out, plus run-to and a break request.
+  - Step over targets the instruction after the call's delay slot, at the same
+    call depth. A `syscall` counts as a call.
+  - Step out halts on the `jr ra` that leaves the current function, counting
+    calls in and out. A linking REGIMM branch counts as a call only if it is taken.
+- **Where the check runs:** in `System::StepInstruction`, after interrupts and
+  before the BIOS-call hook. A halt runs nothing, so it takes no cycles.
+- **The recompiler** is bypassed while the debugger is armed (DuckStation does
+  the same). A plain continue disarms it, and compiled code comes straight back.
+- **`host::Machine`:** a halt mid-frame returns from `RunOneFrame` without
+  counting an instruction, and pauses for a new reason, `kPausedByDebugger`. The
+  frame is not published. Any request that un-halts the debugger clears the
+  pause, and the frame carries on towards the same boundary.
+- **`boot_runner --break`** prints the registers and a disassembly at each hit,
+  then carries on.
+
+**The two bugs `debug_test` found:**
+- A plain continue left the debugger armed forever, because the one-shot "let
+  the halted instruction run" flag was cleared without re-computing `armed`.
+  The machine stayed on the interpreter for no reason.
+- A second `StepInstruction` while halted counted the same breakpoint again.
+  It now returns straight away while halted. Mutation-tested: without that
+  guard, the check sees 2 hits, where it wants 1.
+
+**Verified, 2026-09-19:**
+- **Determinism:** the BIOS boot, 400 frames, ended on 97,747,598 instructions
+  and `c7c8db90c5984798`, with a 339-character BIOS console, in each run:
+  - with no breakpoints;
+  - with `--break B0` (1,259 hits);
+  - with `--break BFC02B68` (426,288 hits);
+  - with both and the recompiler on (427,547 hits).
+- **Threaded:** a `host_test` run halted mid-frame 60 times (31 at a breakpoint,
+  the rest single steps), each let go from another thread, and it too ended on
+  those numbers.
+- **The harnesses:** `debug_test` 48 checks, and every other harness green.
+  `host_test`'s real-time audio check failed once in four runs, as it has
+  before on this machine when the host CPU is throttled. It is unrelated.
+- **The twelve-disc table:** all 36 checksums (frames 1000, 2000 and 3000)
+  unchanged. With nothing armed, the only new work on the hot path is one
+  `armed()` test per instruction.
+- **The build:** the front end builds.
+
+**Not verified:** there is no window yet, so nothing in the GUI can set a
+breakpoint. The machine-thread halt path is covered only by `host_test`.
+
+## 72. The debugger window, and what a load in flight looks like from outside the CPU
+
+Phase 1 of [Debugger-Plan.md](Debugger-Plan.md): **Emulation > Debugger**.
+
+**What it shows.**
+- **Disassembly:** 256 instructions around the pc.
+  - Markers: the pc is marked ►, an enabled breakpoint ●, a disabled one ○.
+  - Colours: the pc's line is yellow, an enabled breakpoint's line red, and
+    delay slots and anything that is not memory are grey.
+  - Moving about: Go To takes an address (Ctrl+G), and Enter or the context
+    menu follows a branch. Arrowing or paging off either end fetches the next
+    stretch.
+- **Registers:** the 32, then hi, lo, pc, SR, Cause, EPC and BadVaddr.
+  - SR and Cause are decoded (IEc, IM, IsC, BEV; ExcCode by name, IP, BD).
+  - What the last step changed is in red.
+  - A load still on its way is shown against its register.
+- **Breakpoints:** a list with hit counts and a checkbox to disable each.
+- **Controls:** Continue F5, Break (Ctrl+Break or Pause), Step Into F11,
+  Step Over F10, Step Out Shift+F11, Run to Cursor Ctrl+F10, and F9 or a
+  double-click to toggle a breakpoint.
+
+**How it is built.**
+- **Snapshots and requests:** the plan's decision 1. The window never reads the
+  machine. It sends requests, and the machine thread answers each with
+  `Debugger::Capture`, a copy of the registers, the breakpoints and the
+  disassembly (disassembled there). A halt sends one unasked, through
+  `Machine::Hooks::halted`, which also brings the window forward.
+- **Refreshes:** a boot, a reset or a state load refreshes an open window.
+- **The disassembler** moved from `tools/` into Core as `psx/disasm.h`, and now
+  names every encoding the CPU runs:
+  - REGIMM aliases, named by what they do (bug 68);
+  - GTE commands;
+  - Cop0 registers;
+  - cop2 moves.
+  `boot_runner` uses it too.
+
+**The load delay.** A register view of this CPU can mislead, because a load's
+value is not in its register yet. `Cpu` models this in two stages. The window
+shows both, on the register they are headed for:
+- "loading X - next instr sees it" is the stage that is written before the next
+  instruction runs;
+- "loading X - after next instr" is the one written a step later.
+
+`debug_test` walks one `lw` through both stages and into the register.
+
+**Decisions that differ from the plan, or that it left open:**
+- **The registers while running.** They are greyed: the last halt's values,
+  as the plan says. The disassembly and the breakpoint list do refresh while
+  running, because a breakpoint set while the game runs has to appear.
+- **No flicker.** A single step would briefly grey the window. It doesn't
+  grey unless no halt comes back within 150 ms.
+- **The changed-register red is per halt.** A snapshot asked for while still
+  halted (a breakpoint toggled) is the same machine, so it keeps the red rather
+  than comparing the state with itself.
+- **Closing the window while halted continues the machine.** A game frozen
+  behind a closed window helps nobody. The breakpoints stay, and the next one
+  to hit opens the window again.
+- **Loading a save state ends a halt** (`System::LoadState` calls
+  `Debugger::Reset`). The machine is somewhere else, and a half-taken step
+  means nothing there. Breakpoints stay, as across a reset.
+
+**Step Out is only as good as the code's returns.** Stepping out of the B0
+dispatcher during a BIOS boot stopped somewhere other than the caller. The
+call was B0:17h, ReturnFromException, which reloads `ra` from the saved
+context and leaves through `rfe`. It never returns to its caller, so "run
+until this function returns" stops at the next `jr ra` at that depth, which
+belongs to the interrupted code. That is right by the definition, but not what
+a person expects. The same goes for longjmp.
+
+**Verified, 2026-09-19:**
+- **`debug_test`:** 75 checks. The new groups are the snapshot (registers,
+  both load stages, the listing's centre, delay-slot and branch-target marking,
+  no wrap below 0, no hardware-register reads, a state load ending a halt) and
+  the disassembler.
+- **A real BIOS boot, from outside the process.** A scratch build with its own
+  ini (volume 0) was driven by posted commands and keys, reading the window's
+  lists and status back:
+  - opened while running, it showed "Running" with the steps disabled;
+  - a breakpoint set on B0 from the address box halted there with hits=1;
+  - the main title read "paused";
+  - F11 walked B0, B4, B8 and then through `jr t0` to 5E0;
+  - F10 stepped;
+  - Step Out came back as above;
+  - F5 hit the breakpoint again (hits=2);
+  - unticking it let the machine run at 59.6 fps;
+  - Break halted on the interrupt vector;
+  - Run to Cursor stopped at its target, matched physically (800000A8 reached
+    as 000000A8);
+  - Go To BFC00000 centred there;
+  - closing the window while halted left the game running at 59.8 fps;
+  - the app exited cleanly.
+- **The front end builds,** with no new warnings.
+- **The harnesses and determinism:** every harness is green. The BIOS boot
+  still ends on 97,747,598 instructions and `c7c8db90c5984798`, with and
+  without `--break` and with the recompiler.
+
+**Not verified:**
+- The twelve-disc table was not re-run. Nothing on the per-instruction path
+  changed in this phase: the snapshot is taken only on request or at a halt.
+- What the window looks like: colours, fonts, layout at other DPIs.
+- A real F10 or Ctrl+Break from a keyboard. The test posted the keys; a
+  physical F10 arrives as WM_SYSKEYDOWN, which the code handles but which
+  nothing drove.
+- Anything but the BIOS: no game has been debugged with it yet.
+
+## 73. The debugger's memory view, and which hardware registers can be looked at
+
+Phase 2 of [Debugger-Plan.md](Debugger-Plan.md): a memory pane in Emulation >
+Debugger, memory and register editing, and a peek path that never disturbs
+the machine.
+
+**What it does.**
+- **The memory pane:** 32 rows of 16 bytes, hex and ASCII.
+  - Moving about: View takes an address, Prev and Next move by half a page,
+    and arrowing off either end moves too. Right-click follows any of a row's
+    four words, into the pane or the disassembly.
+  - Colour: rows whose bytes changed since the last snapshot are red.
+  - Live: while the machine runs, the pane refreshes twice a second, so a
+    counter or a player's health can be watched. The registers still don't
+    refresh (bug 72).
+- **Writing memory:** double-click a row to put its address and bytes in the
+  edit boxes, change them, and press Write. Bytes are in memory order. It works
+  whether the machine is running or halted.
+- **Editing registers:** double-click a register and Set it. That covers the 31
+  that aren't zero, hi, lo and the pc. It only works while halted: a new value
+  between two frames of a running game means nothing anyone could predict.
+  Right-click shows a register's value in the memory pane or the listing.
+
+**Reading without side effects (`Debugger::PeekData`).** The plan's warning
+was right, and it applies to more than the CD-ROM:
+- a timer's mode read clears its reached flags;
+- the CD-ROM, SIO and MDEC registers and GPUREAD pop FIFOs;
+- the timer counter and DMA read paths first run the pending batch of cycles,
+  which moves the machine on.
+
+So the peek never calls a device's read. It copies the state behind the
+register:
+- memory control, RAM_SIZE, I_STAT and I_MASK, and the cache control register;
+- the DMA registers and GPUSTAT (their reads were checked and are pure);
+- the timers' three fields, read directly: `mode.raw`, not `ReadMode()`;
+- the SPU (its read is a pure lookup);
+- the expansion region.
+
+Everything else shows `??`. A timer's count and a DMA channel's busy bit can
+be a batch of cycles stale, which is the price of not running the machine to
+look at it.
+
+**Writing (`Debugger::WriteMemory`).**
+- **What it writes:** RAM, the scratchpad and the expansion region, all or
+  nothing. The BIOS is refused as read-only. Every hardware register is
+  refused, because writing one does more than store a value. The window shows
+  the reason.
+- **Invalidation:** RAM written this way is reported through `NoteBulkWrite`,
+  as a DMA is, so compiled code built from it is dropped.
+  `debug_test` patches a running loop and checks the new instruction runs with
+  the recompiler on. Without the `NoteBulkWrite`, that check fails.
+- **The plan said** writes would go "through the same store path a CPU store
+  does". They don't: the CPU's store path has side effects of its own
+  (Isolate Cache turns a store into a cache invalidation) and the bulk report
+  is what DMA already uses.
+
+**A test that could not fail, removed.** The first version also invalidated
+the instruction cache's lines, with a test that ran the patched loop with the
+cache enabled. With the invalidation removed, that test still passed. The
+reason: instruction fetch is a plain `Load` from RAM, and the icache model's
+data is never read ("The instruction and data caches are not modelled" in
+[Gaps.md](Gaps.md)). There was no cached copy to go stale. The invalidation
+and its test were removed rather than kept as a test that passes either way.
+
+**Registers (`Debugger::SetRegister`).**
+- **A load in flight is dropped.** Setting a register while a load to it is
+  still in flight drops the load. Otherwise the load lands a step later on top
+  of the edit. That needed `Cpu::CancelLoadsTo`.
+- **A new pc moves the halt with it.** Resuming runs from there, and whatever
+  was skipped never runs.
+- **Refused:** a misaligned pc, and register zero.
+
+**Verified, 2026-09-19:**
+- **`debug_test`:** 105 checks. The new groups are memory, patched code
+  (interpreter and recompiler), and register editing. The recompiler case was
+  mutation-tested as above.
+- **A real BIOS boot, from outside the process.** A scratch build was driven
+  by posted commands, reading the memory pane back row by row:
+  - 80000000 showed the exception vector's code;
+  - I_STAT and I_MASK read 1 and 9;
+  - the CD-ROM row was all `??`;
+  - at 1F801810, GPUREAD was `??` and GPUSTAT beside it read 1C4E220A;
+  - SPU voice 0's registers read;
+  - timer 2's counter differed between two refreshes a second apart while
+    running, and stayed the same while halted;
+  - DE AD BE EF 01 02 written to 80100000 while running read back;
+  - writes to BFC00000 and to I_MASK were refused, with those reasons in a
+    warning;
+  - Set was disabled while running;
+  - after Break, t0 and hi took new values, zero stayed zero, and a misaligned
+    pc was refused;
+  - Continue ran on at 59.7 fps.
+- **The harnesses and determinism:** every harness is green. The BIOS boot
+  still ends on 97,747,598 instructions and `c7c8db90c5984798`, with and
+  without `--break` and with the recompiler. The front end builds with no new
+  warnings.
+- **`host_test`'s two real-time checks** (the frame limiter and three seconds
+  of sound) failed for a stretch, then passed twice in a row once the machine
+  was quieter. They depend on wall-clock speed, and this machine was loaded:
+  - `boot_runner` swung between 1.28x and 1.66x real time from run to run;
+  - yesterday's pre-debugger binary did the same.
+
+  Timed alternately, best of six: 4.42 s for the old binary, 4.53 s for this
+  one, about 2.5% apart, inside that noise. Phase 2 adds nothing per
+  instruction; phase 0's `armed()` test is the only debugger cost there.
+
+**Not verified:** the context menus (following a word, showing a register's
+value) and double-click filling the edit boxes were not driven. A test can't
+easily post those from outside the process. What they call (`ViewMemory`,
+`GoTo`, the edit boxes) was driven directly. The window's look is unseen, as
+before.

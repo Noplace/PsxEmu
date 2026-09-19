@@ -38,7 +38,9 @@ namespace psxemu {
     }   // namespace
 
     InputThread::InputThread(emulation::host::InputExchange* exchange, HWND main_window)
-        : exchange_(exchange), main_window_(main_window) {}
+        : exchange_(exchange), main_window_(main_window) {
+        SetKeyMap(DefaultKeyMap());
+    }
 
     InputThread::~InputThread() {
         Stop();
@@ -107,7 +109,10 @@ namespace psxemu {
 
             emulation::host::HostInput reading;
             reading.focused = (GetForegroundWindow() == main_window_);
-            reading.keyboard = ReadKeyboardPad();
+            KeyMap keys;
+            for (int i = 0; i < kPadButtons; ++i)
+                keys[i] = keys_[i].load(std::memory_order_relaxed);
+            reading.keyboard = ReadKeyboardPad(keys);
             for (int i = 0; i < emulation::host::HostInput::kPads; ++i) {
                 const Gamepad::State state = gamepads_[i].Poll();
                 reading.pads[i].connected = gamepads_[i].connected();

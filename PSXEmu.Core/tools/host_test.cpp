@@ -504,7 +504,8 @@ struct MachineRun {
 MachineRun RunBios(const std::string& bios, int frames,
                    const std::function<void(Machine&)>& at_frame = nullptr,
                    const std::function<void(Machine&)>& during = nullptr,
-                   const std::string& load_state_first = std::string()) {
+                   const std::string& load_state_first = std::string(),
+                   const std::function<void(Machine&)>& on_halt = nullptr) {
   MachineRun result;
   // On the heap: a System is far too big for a thread's stack.
   std::unique_ptr<System> system_owner = std::make_unique<System>();
@@ -526,6 +527,7 @@ MachineRun RunBios(const std::string& bios, int frames,
       reached = true;
     }
   };
+  hooks.halted = on_halt;
   Machine machine(&system, &mailbox, &ring, hooks);
   if (!load_state_first.empty()) {
     machine.Post([load_state_first](Machine& m) {
@@ -580,6 +582,55 @@ void MachineChecks(const std::string& bios) {
     Check(interrupted.ok && interrupted.instructions == kBaselineInstructions &&
               interrupted.checksum == kBaselineChecksum,
           "pausing and resuming at random from another thread changes nothing");
+  }
+
+  // The debugger halting the machine mid-frame, and another thread letting it go again - by a
+  // plain continue or a single step - must not change what it computes (Docs/Debugger-Plan.md).
+  {
+    std::mt19937 random(5);
+    std::atomic<bool> waiting{false};
+    std::atomic<int> halts{0};
+    int frame = 0;
+    uint32_t hits = 0;
+    const MachineRun debugged = RunBios(
+        bios, 400,
+        [&](Machine& machine) {
+          if (++frame == 100)
+            machine.system().debugger().AddBreakpoint(0xB0);   // the BIOS's B0 call vector
+        },
+        [&](Machine& machine) {
+          // Cleared before the request goes, so a halt that follows it is never missed.
+          if (!waiting.exchange(false)) {
+            std::this_thread::sleep_for(std::chrono::microseconds(200));
+            return;
+          }
+          std::this_thread::sleep_for(std::chrono::microseconds(random() % 2000));
+          const int n = halts.load();
+          machine.Post([n, &hits](Machine& m) {
+            emulation::psx::Debugger& debugger = m.system().debugger();
+            if (n >= 60) {
+              if (!debugger.breakpoints().empty())
+                hits = debugger.breakpoints()[0].hits;
+              debugger.ClearBreakpoints();
+              debugger.Resume();
+            } else if (n % 2 == 0) {
+              debugger.StepInto();
+            } else {
+              debugger.Resume();
+            }
+          });
+        },
+        std::string(),
+        [&](Machine&) {
+          ++halts;
+          waiting = true;
+        });
+    printf("    %d halts mid-frame, %u of them at the breakpoint, each let go from another thread\n",
+           halts.load(), hits);
+    Check(debugged.ok && halts.load() >= 60 && hits > 0 &&
+              debugged.instructions == kBaselineInstructions &&
+              debugged.checksum == kBaselineChecksum,
+          "halting at a breakpoint and stepping from another thread changes nothing");
   }
 
   // A state saved on the machine's thread at frame 200 and loaded - by

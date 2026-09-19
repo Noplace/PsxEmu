@@ -58,6 +58,8 @@ namespace psxemu {
     HMENU CreateMainMenu() {
         HMENU file = CreatePopupMenu();
         AppendMenuW(file, MF_STRING, kCommandBootDisc, L"&Boot disc...");
+        // Filled by PopulateRecentDiscsMenu from the settings file, once it is read.
+        AppendTaggedPopup(file, CreatePopupMenu(), L"&Recent Discs", kRecentDiscsMenuTag);
         AppendMenuW(file, MF_STRING, kCommandSwapDisc, L"S&wap disc...");
         AppendMenuW(file, MF_STRING, kCommandEjectDisc, L"&Eject disc");
         AppendMenuW(file, MF_STRING, kCommandBootBios, L"Boot &BIOS");
@@ -127,6 +129,8 @@ namespace psxemu {
                     L"Show &Timings in Title Bar");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandBiosConsole),
                     L"BIOS &Console");
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandDebugger),
+                    L"&Debugger...");
 
         // Volume. The labels carry a literal percent sign, so they are built with the doubled form
         // the table stores rather than passed through a formatter.
@@ -218,6 +222,9 @@ namespace psxemu {
                     L"&Multitap Port 1");
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(multitap_port[1]),
                     L"M&ultitap Port 2");
+        AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(input, MF_STRING, static_cast<UINT_PTR>(kCommandKeyBindings),
+                    L"&Keyboard Bindings...");
 
         // Which API the sound goes out through. Beside the volume rather than in place of it, the
         // way Video holds Renderer and Filter side by side.
@@ -294,6 +301,41 @@ namespace psxemu {
         AppendMenuW(bios, MF_STRING, static_cast<UINT_PTR>(kCommandRescanBios), L"&Rescan folder");
         AppendMenuW(bios, MF_STRING, static_cast<UINT_PTR>(kCommandOpenBiosFolder),
                     L"&Open folder...");
+        DrawMenuBar(window);
+    }
+
+    void PopulateRecentDiscsMenu(HWND window, const std::vector<std::string>& discs) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        HMENU recent = FindTaggedPopup(bar, kRecentDiscsMenuTag);
+        if (recent == nullptr)
+            return;
+        while (DeleteMenu(recent, 0, MF_BYPOSITION) != 0) {
+        }
+
+        const int count = std::min(static_cast<int>(discs.size()), kMaxRecentDiscs);
+        for (int i = 0; i < count; ++i) {
+            // Numbered for the keyboard, and shown as the image's own name: the folders are long
+            // and mostly the same, and the name is what tells two games apart.
+            const size_t slash = discs[i].find_last_of("/\\");
+            const std::string name =
+                (slash == std::string::npos) ? discs[i] : discs[i].substr(slash + 1);
+            std::wstring label = L"&" + std::to_wstring(i + 1) + L"  " + Widen(name);
+            // A literal ampersand in a game's name would otherwise underline the next letter.
+            for (size_t at = label.find(L'&', 1); at != std::wstring::npos;
+                 at = label.find(L'&', at + 2))
+                label.insert(at, 1, L'&');
+            AppendMenuW(recent, MF_STRING, static_cast<UINT_PTR>(kCommandRecentDiscFirst + i),
+                        label.c_str());
+        }
+        if (discs.empty()) {
+            AppendMenuW(recent, MF_STRING | MF_GRAYED, 0, L"(none yet)");
+        } else {
+            AppendMenuW(recent, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(recent, MF_STRING, static_cast<UINT_PTR>(kCommandClearRecentDiscs),
+                        L"&Clear Recent Discs");
+        }
         DrawMenuBar(window);
     }
 

@@ -33,6 +33,7 @@
 #include "framework.h"
 
 #include "gamepad.h"
+#include "keyboard.h"
 #include "host/input_exchange.h"
 #include "mouse.h"
 
@@ -58,6 +59,14 @@ namespace psxemu {
         // "is the input thread alive at all".
         uint64_t polls() const { return polls_.load(std::memory_order_relaxed); }
 
+        // Any thread: the keyboard's pad buttons from the next poll on. One atomic per button, so
+        // a poll racing a change reads each button's old key or its new one - never a torn one -
+        // and nothing waits.
+        void SetKeyMap(const KeyMap& map) {
+            for (int i = 0; i < kPadButtons; ++i)
+                keys_[i].store(map[i], std::memory_order_relaxed);
+        }
+
      private:
         void Run();
         static LRESULT CALLBACK RawInputWindowProc(HWND window, UINT message, WPARAM wparam,
@@ -73,6 +82,7 @@ namespace psxemu {
         std::thread thread_;
         std::atomic<bool> stop_{ false };
         std::atomic<uint64_t> polls_{ 0 };
+        std::array<std::atomic<int>, kPadButtons> keys_{};
     };
 
 }   // namespace psxemu

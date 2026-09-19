@@ -95,16 +95,47 @@ namespace psxemu {
             };
             card_editor_.Create(instance, window_, std::move(host));
         }
+        {
+            DebuggerWindow::Host host;
+            host.request = [this](DebuggerWindow::Change change, uint32_t center) {
+                PostToMachine([this, change = std::move(change), center](Machine& machine) {
+                    if (change)
+                        change(machine.system().debugger());
+                    if (center != DebuggerWindow::kNoSnapshot)
+                        SendDebuggerSnapshot(machine, center, false);
+                });
+            };
+            host.write_memory = [this](uint32_t address, std::vector<uint8_t> bytes,
+                                       uint32_t center) {
+                PostToMachine([this, address, bytes = std::move(bytes), center](Machine& machine) {
+                    std::string error;
+                    if (!machine.system().debugger().WriteMemory(
+                            address, bytes.data(), static_cast<uint32_t>(bytes.size()), &error)) {
+                        const std::wstring message(error.begin(), error.end());
+                        PostToUi([this, message] {
+                            ShowWarning(debugger_.window(), message.c_str());
+                        });
+                    }
+                    SendDebuggerSnapshot(machine, center, false);
+                });
+            };
+            host.on_closed = [this] { debugger_open_ = false; };
+            debugger_.Create(instance, window_, std::move(host));
+        }
         if (!CreateMachine())
             return false;
 
         ApplySettings();
         RefreshBiosMenu();
+        LoadRecentDiscs();
+        LoadKeyBindings();
+        key_bindings_.Create(instance, window_, [this](const KeyMap& map) { SetKeyBindings(map); });
 
         // Before the threads start, so this is still the only thread touching the machine.
         if (!command_line.disc.empty() && system_->LoadDisc(command_line.disc.c_str())) {
             SetWindowTitleForPath(command_line.disc);
             LoadOrCreateMemoryCardsForDisc(*system_, command_line.disc);
+            NoteRecentDisc(command_line.disc);
         }
 
         StartThreads();
@@ -298,12 +329,16 @@ namespace psxemu {
         };
         hooks.report = [this](const MachineReport& report) { OnMachineReport(report); };
         hooks.after_frame = [this](Machine& machine) { CollectConsoleText(machine.system()); };
+        hooks.halted = [this](Machine& machine) {
+            SendDebuggerSnapshot(machine, DebuggerWindow::kAtPc, true);
+        };
         // Still the only thread: the boot already set up is the one the console starts in, and
         // needs no marker above it.
         console_session_ = system_->kernel().session();
         machine_ = std::make_unique<Machine>(system_.get(), &video_->frames(), &audio_->samples(),
                                              hooks);
         input_ = std::make_unique<InputThread>(&machine_->input(), window_);
+        input_->SetKeyMap(key_map_);
 
         input_->Start();
         audio_->Start(config_.audio_backend);
@@ -360,6 +395,10 @@ namespace psxemu {
     int App::MainLoop() {
         MSG message = {};
         while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+            // The debugger's keys, while it has the focus - F10 among them, which translated
+            // would be a system key.
+            if (debugger_.PreTranslate(message))
+                continue;
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
@@ -857,6 +896,25 @@ namespace psxemu {
         });
     }
 
+    // On the machine's thread, like everything the debugger window asks for.
+    void App::SendDebuggerSnapshot(Machine& machine, uint32_t center, bool from_halt) {
+        emulation::psx::Debugger& debugger = machine.system().debugger();
+        if (center == DebuggerWindow::kAtPc)
+            center = machine.system().cpu().context()->pc;
+        auto snapshot = std::make_shared<emulation::psx::Debugger::Snapshot>();
+        debugger.Capture(snapshot.get(), center, DebuggerWindow::kLines);
+        PostToUi([this, snapshot, from_halt] {
+            if (from_halt)
+                debugger_open_ = true;
+            debugger_.SetSnapshot(*snapshot, from_halt);
+        });
+    }
+
+    void App::RefreshDebuggerIfOpen(Machine& machine) {
+        if (debugger_open_.load())
+            SendDebuggerSnapshot(machine, DebuggerWindow::kAtPc, false);
+    }
+
     // ---------------------------------------------------------------------------------------------
     // The machine
     // ---------------------------------------------------------------------------------------------
@@ -876,6 +934,7 @@ namespace psxemu {
             }
             system.set_auto_boot(false);
             machine.ResetPacing();
+            RefreshDebuggerIfOpen(machine);
         });
     }
 
@@ -915,10 +974,12 @@ namespace psxemu {
             LoadOrCreateMemoryCardsForDisc(system, path);
 
             machine.ResetPacing();
+            RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
             PostToUi([this, path] {
                 paused_by_user_ = false;
                 SetWindowTitleForPath(path);
+                NoteRecentDisc(path);
             });
         });
     }
@@ -937,6 +998,7 @@ namespace psxemu {
             system.set_auto_boot(false);
             system.EjectDisc();
             machine.ResetPacing();
+            RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
             PostToUi([this] {
                 paused_by_user_ = false;
@@ -970,6 +1032,7 @@ namespace psxemu {
             system.EjectDisc();
             system.set_auto_boot_exe(true, path);
             machine.ResetPacing();
+            RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
             PostToUi([this, path] {
                 paused_by_user_ = false;
@@ -1163,8 +1226,10 @@ namespace psxemu {
                 const std::string path = SaveStateSlotPath(machine.system(), slot);
                 const std::string error = save ? machine.system().SaveState(path)
                                                : machine.system().LoadState(path);
-                if (!save)
+                if (!save) {
                     machine.ResetPacing();
+                    RefreshDebuggerIfOpen(machine);
+                }
                 if (!error.empty()) {
                     const std::wstring message(error.begin(), error.end());
                     PostToUi([this, message] { ShowError(window_, message.c_str()); });
@@ -1204,7 +1269,10 @@ namespace psxemu {
                         });
                         return;
                     }
-                    PostToUi([this, path] { SetWindowTitleForPath(path); });
+                    PostToUi([this, path] {
+                        SetWindowTitleForPath(path);
+                        NoteRecentDisc(path);
+                    });
                 });
                 break;
             }
@@ -1275,6 +1343,15 @@ namespace psxemu {
                 break;
             }
 
+            case kCommandKeyBindings:
+                key_bindings_.Show(key_map_);
+                break;
+
+            case kCommandClearRecentDiscs:
+                recent_discs_.clear();
+                SaveRecentDiscs();
+                break;
+
             case kCommandEjectMemoryCardSlot1:
             case kCommandEjectMemoryCardSlot2:
                 EjectMemoryCard(command == kCommandEjectMemoryCardSlot1 ? 0 : 1);
@@ -1300,8 +1377,10 @@ namespace psxemu {
                     const std::string path = SaveStateSlotPath(machine.system(), slot);
                     const std::string error = save ? machine.system().SaveState(path)
                                                    : machine.system().LoadState(path);
-                    if (!save)
+                    if (!save) {
                         machine.ResetPacing();
+                        RefreshDebuggerIfOpen(machine);
+                    }
                     if (!error.empty()) {
                         const std::wstring message(error.begin(), error.end());
                         PostToUi([this, message] { ShowError(window_, message.c_str()); });
@@ -1347,6 +1426,11 @@ namespace psxemu {
                 break;
             case kCommandBiosConsole:
                 SetShowBiosConsole(!config_.show_bios_console);
+                break;
+
+            case kCommandDebugger:
+                debugger_open_ = true;
+                debugger_.Show(true);
                 break;
 
             case kCommandRescanBios:
@@ -1413,9 +1497,98 @@ namespace psxemu {
                     // the nth image the last scan found, which SelectBios bounds-checks against
                     // the list it holds - the folder can have changed since the menu was filled.
                     SelectBios(command - kCommandBiosFirst);
+                } else if (command >= kCommandRecentDiscFirst &&
+                           command <= kCommandRecentDiscLast) {
+                    const size_t index = static_cast<size_t>(command - kCommandRecentDiscFirst);
+                    if (index >= recent_discs_.size())
+                        break;
+                    const std::string path = recent_discs_[index];
+                    // An image that has moved or gone - a share that is offline, a renamed
+                    // folder - is said so and dropped, rather than booting into an empty drive.
+                    if (GetFileAttributesA(path.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                        // Removed before the warning, not after: the message box pumps messages,
+                        // so another command - Clear, another pick from this list - can run while
+                        // it is up, and an index held across it would point at the wrong entry
+                        // or past the end.
+                        recent_discs_.erase(recent_discs_.begin() + index);
+                        SaveRecentDiscs();
+                        const std::wstring message =
+                            L"That disc image is no longer there, so it has been removed from "
+                            L"Recent Discs:\n\n" + Widen(path);
+                        ShowWarning(window_, message.c_str());
+                        break;
+                    }
+                    BootDiscFromFile(path);
                 }
                 break;
         }
+    }
+
+    // A button missing from the file keeps its default; one present but empty stays unbound -
+    // clearing a key in the editor has to survive a restart.
+    void App::LoadKeyBindings() {
+        for (int i = 0; i < kPadButtons; ++i) {
+            const std::string name = settings_.GetString(
+                kKeyBindings[i].setting, KeyName(kKeyBindings[i].key));
+            key_map_[i] = KeyFromName(name);
+        }
+    }
+
+    void App::SetKeyBindings(const KeyMap& map) {
+        key_map_ = map;
+        if (input_ != nullptr)
+            input_->SetKeyMap(key_map_);
+        if (settings_path_.empty())
+            return;
+        emulation::psx::SettingsFile updated = settings_;
+        for (int i = 0; i < kPadButtons; ++i)
+            updated.SetString(kKeyBindings[i].setting, KeyName(key_map_[i]));
+        if (updated.Serialise() == settings_.Serialise())
+            return;
+        settings_ = updated;
+        settings_.Save(settings_path_);
+    }
+
+    void App::LoadRecentDiscs() {
+        recent_discs_.clear();
+        for (int i = 1; i <= kMaxRecentDiscs; ++i) {
+            const std::string key = "recent_disc_" + std::to_string(i);
+            const std::string path = settings_.GetString(key.c_str(), std::string());
+            if (!path.empty())
+                recent_discs_.push_back(path);
+        }
+        PopulateRecentDiscsMenu(window_, recent_discs_);
+    }
+
+    void App::NoteRecentDisc(const std::string& path) {
+        for (size_t i = 0; i < recent_discs_.size(); ++i) {
+            if (_stricmp(recent_discs_[i].c_str(), path.c_str()) == 0) {
+                recent_discs_.erase(recent_discs_.begin() + i);
+                break;
+            }
+        }
+        recent_discs_.insert(recent_discs_.begin(), path);
+        if (recent_discs_.size() > static_cast<size_t>(kMaxRecentDiscs))
+            recent_discs_.resize(kMaxRecentDiscs);
+        SaveRecentDiscs();
+    }
+
+    // Every slot is written, the unused ones empty, so a shortened list does not leave its old
+    // tail behind in the file for the next load to pick up.
+    void App::SaveRecentDiscs() {
+        PopulateRecentDiscsMenu(window_, recent_discs_);
+        if (settings_path_.empty())
+            return;
+        emulation::psx::SettingsFile updated = settings_;
+        for (int i = 1; i <= kMaxRecentDiscs; ++i) {
+            const std::string key = "recent_disc_" + std::to_string(i);
+            const size_t at = static_cast<size_t>(i - 1);
+            updated.SetString(key.c_str(), at < recent_discs_.size() ? recent_discs_[at] : "");
+        }
+        if (updated.Serialise() == settings_.Serialise())
+            return;
+        settings_ = updated;
+        settings_.Save(settings_path_);
     }
 
 }   // namespace psxemu
