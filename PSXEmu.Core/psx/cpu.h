@@ -386,6 +386,12 @@ class Cpu : public Component {
     return true;
   }
 
+  // Whether the debugger has a watchpoint to match data accesses against
+  // (psx/debugger.h). While it does, every load and store - and every word a
+  // DMA channel writes - is reported to it; while it does not, this flag is
+  // the whole cost.
+  void set_debug_watch(bool on) { debug_watch_ = on; }
+
   // Drops any load still on its way to register `index` - for the debugger
   // setting that register by hand, which the load would otherwise overwrite.
   void CancelLoadsTo(uint32_t index) {
@@ -542,6 +548,15 @@ class Cpu : public Component {
   uint32_t watch_count_ = 0;
   uint32_t watch_address_ = 0;
   void set_watch_address(uint32_t address) { watch_address_ = address; }
+
+  // The debugger's watchpoints (set_debug_watch). `merging_store_` marks the
+  // read SWL and SWR make of the word they merge into: that is this
+  // emulator's way of doing a partial store, not a read the program made, and
+  // a read watchpoint must not see it.
+  bool debug_watch_ = false;
+  bool merging_store_ = false;
+  void WatchLoad(MemorySize size, uint32_t address);
+  void WatchStore(MemorySize size, uint32_t address, uint32_t data);
   // Records a write that did not come from the CPU - a DMA channel moving data
   // into RAM behind its back. `tag` stands in for the pc and names the channel.
   void NoteExternalWrite(uint32_t tag, uint32_t byte_address, uint32_t value);

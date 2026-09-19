@@ -234,7 +234,7 @@ on small hand-assembled programs in RAM - no BIOS, no disc, no window. The windo
 itself is checked the way the other front-end windows are: driven from outside
 the process (bug 72).
 
-**Current: 105 checks, 0 failures.**
+**Current: 174 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -248,6 +248,11 @@ the process (bug 72).
 | `memory: reading without side effects, and writing` | RAM bytes across a word boundary and through KUSEG; I_STAT, a timer's mode (without clearing the reached flag a real read clears), GPUSTAT, an SPU register and the cache control register peeked as state; the CD-ROM, GPUREAD, SIO and MDEC, and an address nothing answers at, not read; writes to RAM (only the bytes asked for) and the scratchpad; the BIOS and a hardware register refused whole, with the reason; a write off the end of RAM wrapping into its mirror; the snapshot carrying the memory view |
 | `patched code runs as patched` | a loop halted, its add patched, and let go: the new instruction runs, interpreted and with the recompiler - where the block compiled before the patch has to be dropped. Mutation-tested: without the write's `NoteBulkWrite`, the recompiler case fails |
 | `editing registers` | a register set while a load to it is in flight keeps the new value (the load is dropped); zero stays zero; hi and lo; a misaligned pc refused; a new pc moving the halt with it, and resuming from there without running what it skipped |
+| `watchpoints`, and again with the recompiler on | a store halting after it has happened, on the next instruction, naming the CPU, the store's pc, address, size and value; resuming; a read watchpoint catching an `lw` and an `lb` with the value read, not a store beside it; the bytes either side of a range not tripping it, its last byte through KSEG1 watched through a RAM mirror doing so; `swl` not tripping a read watchpoint (its merge read is the emulator's, not the program's) but tripping a write one; a store in a delay slot reported at the slot and halted at the branch target; an isolated-cache store tripping nothing; DMA channel 6, started by a CPU store, tripping it with the channel and the link it wrote; fifty stores in a loop, fifty halts, and the loop still counting to fifty; a disabled watchpoint disarming. Mutation-tested three ways: without the `swl` guard, without the DMA hook, and with the store check ahead of the isolated-cache return, each fails its checks |
+| `the BIOS call log, and breaking on a call` | two calls through B0h logged whether or not anything is armed, with the function, a0 and the return address; `BiosCallName` naming B0h:3Dh and C0h:1Ch without the CSV quotes, and a number with no name; a break on B0h:3Fh passing B0h:3Dh and halting at the vector for 3Fh before that call is logged, which logs once on resuming |
+| `the call stack` | main calls A, A calls B (keeping `ra` in `s0`): two frames inside B with the right call sites and targets, both gone back in main; tracking arming the debugger and turning it off disarming. Mutation-tested: returns that never pop fail the second check |
+| `labels` | a label on its line and against a `jal` to it; found through KSEG1; an empty name removing it |
+| `the device panes` | every section described (DPCR and seven DMA channels, three timers, 24 SPU voices, the GPU, the CD-ROM, the interrupts), a register just written showing in its row, and describing the timers not clearing the flag a mode read would |
 | `the disassembler` | `psx/disasm.h`: a `jal` target, REGIMM aliases named by what they do (only rt 10h/11h link), a GTE command and a Cop0 register by name, a GTE control register numbered 32-63 |
 
 Mutation-tested: without the guard that keeps a halted machine halted, a
@@ -274,7 +279,9 @@ second `StepInstruction` counted the same breakpoint twice, and the
 | `--hot <n>` | Print the n most-executed addresses |
 | `--dis <hex>:<n>` | Disassemble n instructions from an address (RAM or BIOS) |
 | `--break <hex>[,<hex>]` | Execute breakpoints (repeatable). At each hit, before the instruction runs: hit counts, the 32 registers, hi/lo/SR/Cause/EPC and a disassembly around the pc - then it carries on. The run's numbers are those of a run without them (Docs/Debugger-Plan.md) |
-| `--break-print <n>` | Print only the first n hits (default 20); the rest are counted |
+| `--watchpoint <hex>[:<len>][:r\|w\|rw]` | A watchpoint (repeatable): stop after a read or write of the range - by the CPU, or a DMA channel's write - print it as a break does, with who made the access and the value, then carry on. Four bytes and writes unless said otherwise. The summary gives each watchpoint's access count |
+| `--track-calls` | Keep the debugger's approximate call stack for the whole run (which runs it through the checked step) and print the innermost frames at the end. Every run also prints `bios calls`, the number of A0h/B0h/C0h calls the debugger's log saw |
+| `--break-print <n>` | Print only the first n halts, from breakpoints and watchpoints together (default 20); the rest are counted |
 | `--watch-vram x,y,w,h` | Report which GP0 command wrote each pixel into a VRAM area |
 | `--wav <file>` | Write everything the SPU produced as a 44100 Hz stereo WAV |
 | `--press b@f[+h]` | Press a button at frame f, holding h frames |
@@ -445,9 +452,9 @@ the most likely answer is the network share rather than the emulator.
 | `gte_test` | 99 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 261 |
 | `sio_test` | 105 | | `spu_test` | 108 |
-| `mc_test` | 77 | | `debug_test` | 105 |
+| `mc_test` | 77 | | `debug_test` | 174 |
 
-**1,228 checks, 0 failures**, all ten green. Each harness's own section above
+**1,297 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)

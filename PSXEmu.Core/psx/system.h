@@ -49,7 +49,17 @@ class System {
   // One instruction, plus whatever interrupt it lets through. Deterministic
   // and free of any wall-clock throttling, so a headless harness can drive it
   // directly and get the same answer every run.
-  void StepInstruction();
+  //
+  // False when the debugger halted the machine instead (psx/debugger.h): nothing ran, and the
+  // caller should stop and not count it.
+  bool StepInstruction() { return StepImpl<true>(); }
+
+  // The same instruction with the debugger's check compiled out. Only for a caller that has
+  // seen debugger().armed() is false and knows nothing can arm it before it looks again -
+  // host::Machine, for a frame: the window's requests run between frames, never inside one.
+  // An idle debugger then costs one test a frame rather than one an instruction, which on the
+  // BIOS boot measured about 2.5% of the interpreter's time.
+  void StepInstructionUnarmed() { StepImpl<false>(); }
 
   void LoadBiosFromMemory(const void* buffer);
   bool LoadBiosFromFile(const char* filename);
@@ -188,6 +198,10 @@ class System {
   std::string LoadState(const std::string& path);
 
  private:
+  // StepInstruction and StepInstructionUnarmed: one body, with and without the debugger.
+  template <bool kDebugger>
+  bool StepImpl();
+
   std::unique_ptr<RecompilerBridge> recompiler_;
   double base_freq_hz_;
   uint64_t interrupts_taken_;

@@ -18,8 +18,13 @@
 *****************************************************************************************************************/
 #include "debugger_window.h"
 
+#include "const.h"
+#include "win32_dialogs.h"
+
+#include "psx/bios_calls.h"
 #include "psx/disasm.h"
 
+#include <cstdio>
 #include <cwchar>
 #include <string>
 
@@ -40,6 +45,25 @@ namespace psxemu {
         const int kIdMemoryAddress = 205;
         const int kIdMemoryBytes = 206;
         const int kIdRegisterValue = 207;
+        const int kIdWatchAddress = 208;
+        const int kIdWatchLength = 209;
+        const int kIdWatchKind = 210;
+        const int kIdWatchpoints = 211;
+        const int kIdTab = 212;
+        const int kIdBiosList = 213;
+        const int kIdStackTrack = 214;
+        const int kIdStackList = 215;
+        const int kIdDevices = 216;
+        const int kIdLabel = 217;
+
+        const wchar_t* const kTabNames[] = { L"Memory", L"BIOS Calls", L"Call Stack", L"Devices" };
+
+        // The watch kind combo box's entries, in order.
+        const wchar_t* const kWatchKinds[] = { L"Write", L"Read", L"Either" };
+
+        const wchar_t* const kDmaChannelNames[7] = {
+            L"MDEC in", L"MDEC out", L"GPU", L"CD-ROM", L"SPU", L"PIO", L"OTC",
+        };
 
         const UINT_PTR kGreyTimer = 1;
         const UINT kGreyMs = 150;
@@ -49,7 +73,9 @@ namespace psxemu {
         // The context menus' commands - returned by TrackPopupMenu, never posted.
         enum MenuCommand {
             kMenuToggle = 1, kMenuRunTo, kMenuFollow, kMenuGoToPc,
-            kMenuShowMemory, kMenuShowCode, kMenuEdit,
+            kMenuShowMemory, kMenuShowCode, kMenuEdit, kMenuWatchWrites, kMenuWatchEither,
+            kMenuBreakOnCall, kMenuStopBreakOnCall, kMenuShowCaller, kMenuLoadLabels,
+            kMenuSaveLabels, kMenuClearLabels,
             kMenuFollowWord = 20,   // + word index 0-3, into memory; + 4-7, into the listing
         };
 
@@ -61,7 +87,19 @@ namespace psxemu {
             L"Continue (F5)", L"Break", L"Step Into (F11)", L"Step Over (F10)",
             L"Step Out (Shift+F11)", L"Run to Cursor", L"Go To", L"PC", L"Toggle Breakpoint",
             L"Remove", L"Remove All", L"View", L"< Prev", L"Next >", L"Write", L"Set",
+            L"Watch", L"Remove", L"Name", L"Labels...", L"Clear BIOS Breaks",
         };
+
+        std::wstring Wide(const std::string& text) {
+            return std::wstring(text.begin(), text.end());
+        }
+
+        // "B0h:3Dh".
+        std::wstring CallKey(uint32_t vector, uint32_t function) {
+            wchar_t text[16];
+            swprintf_s(text, L"%02Xh:%02Xh", vector & 0xFF, function & 0xFF);
+            return text;
+        }
 
         bool ParseHex(const wchar_t* text, uint32_t* value) {
             while (*text == L' ')
@@ -121,6 +159,8 @@ namespace psxemu {
                 case Reason::kStep:       return L"step";
                 case Reason::kRunTo:      return L"run to cursor";
                 case Reason::kRequested:  return L"break";
+                case Reason::kWatchpoint: return L"watchpoint";
+                case Reason::kBiosCall:   return L"BIOS call";
                 default:                  return L"";
             }
         }
@@ -203,7 +243,7 @@ namespace psxemu {
         }
 
         window_ = CreateWindowExW(0, kDebuggerClass, L"PSXEmu - Debugger", WS_OVERLAPPEDWINDOW,
-                                  CW_USEDEFAULT, CW_USEDEFAULT, 1100, 860, owner, nullptr,
+                                  CW_USEDEFAULT, CW_USEDEFAULT, 1200, 900, owner, nullptr,
                                   instance, this);
         if (window_ == nullptr)
             return false;
@@ -254,8 +294,8 @@ namespace psxemu {
         AddColumn(code_, 0, L"", 44);
         AddColumn(code_, 1, L"Address", 84);
         AddColumn(code_, 2, L"Word", 84);
-        AddColumn(code_, 3, L"Instruction", 320);
-        AddColumn(code_, 4, L"", 90);
+        AddColumn(code_, 3, L"Instruction", 330);
+        AddColumn(code_, 4, L"Label", 150);
 
         registers_ = make_list(kIdRegisters, 0);
         AddColumn(registers_, 0, L"Register", 74);
@@ -299,7 +339,68 @@ namespace psxemu {
         SendMessageW(register_value_, EM_SETLIMITTEXT, 10, 0);
         SendMessageW(register_value_, EM_SETCUEBANNER, TRUE,
                      reinterpret_cast<LPARAM>(L"new value (hex)"));
-        for (HWND edit : { memory_address_, memory_bytes_, register_value_ }) {
+        watchpoints_label_ = make(L"STATIC", L"Watchpoints", SS_LEFT, -1);
+        watch_list_ = make_list(kIdWatchpoints, LVS_EX_CHECKBOXES);
+        AddColumn(watch_list_, 0, L"Address", 110);
+        AddColumn(watch_list_, 1, L"Bytes", 50);
+        AddColumn(watch_list_, 2, L"On", 60);
+        AddColumn(watch_list_, 3, L"Hits", 90);
+        watch_address_ = make(L"EDIT", L"", ES_AUTOHSCROLL | ES_UPPERCASE | WS_TABSTOP,
+                              kIdWatchAddress, WS_EX_CLIENTEDGE);
+        SendMessageW(watch_address_, EM_SETLIMITTEXT, 8, 0);
+        SendMessageW(watch_address_, EM_SETCUEBANNER, TRUE, reinterpret_cast<LPARAM>(L"address"));
+        watch_length_ = make(L"EDIT", L"4", ES_AUTOHSCROLL | WS_TABSTOP, kIdWatchLength,
+                             WS_EX_CLIENTEDGE);
+        SendMessageW(watch_length_, EM_SETLIMITTEXT, 8, 0);
+        watch_kind_ = make(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                           kIdWatchKind);
+        for (const wchar_t* kind : kWatchKinds)
+            SendMessageW(watch_kind_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(kind));
+        SendMessageW(watch_kind_, CB_SETCURSEL, 0, 0);
+
+        label_edit_ = make(L"EDIT", L"", ES_AUTOHSCROLL | WS_TABSTOP, kIdLabel, WS_EX_CLIENTEDGE);
+        SendMessageW(label_edit_, EM_SETLIMITTEXT, 64, 0);
+        SendMessageW(label_edit_, EM_SETCUEBANNER, TRUE,
+                     reinterpret_cast<LPARAM>(L"label for the selected line"));
+
+        // The tabs under the listing. Created before their pages, so the pages sit on top.
+        tab_ = make(WC_TABCONTROLW, L"", WS_CLIPSIBLINGS | WS_TABSTOP, kIdTab);
+        for (int t = 0; t < kTabCount; ++t) {
+            TCITEMW item = {};
+            item.mask = TCIF_TEXT;
+            item.pszText = const_cast<wchar_t*>(kTabNames[t]);
+            TabCtrl_InsertItem(tab_, t, &item);
+        }
+        SetWindowPos(tab_, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+
+        bios_note_ = make(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, -1);
+        bios_list_ = make_list(kIdBiosList, 0);
+        AddColumn(bios_list_, 0, L"Call", 80);
+        AddColumn(bios_list_, 1, L"Function", 260);
+        AddColumn(bios_list_, 2, L"a0", 76);
+        AddColumn(bios_list_, 3, L"a1", 76);
+        AddColumn(bios_list_, 4, L"a2", 76);
+        AddColumn(bios_list_, 5, L"Returns to", 84);
+        AddColumn(bios_list_, 6, L"Cycle", 100);
+
+        stack_track_ = make(L"BUTTON",
+                            L"Track calls (the machine runs interpreted while this is on)",
+                            BS_AUTOCHECKBOX | WS_TABSTOP, kIdStackTrack);
+        stack_list_ = make_list(kIdStackList, 0);
+        AddColumn(stack_list_, 0, L"#", 36);
+        AddColumn(stack_list_, 1, L"Function", 220);
+        AddColumn(stack_list_, 2, L"Called from", 90);
+        AddColumn(stack_list_, 3, L"Returns to", 90);
+        AddColumn(stack_list_, 4, L"sp at entry", 90);
+
+        devices_list_ = make_list(kIdDevices, 0);
+        AddColumn(devices_list_, 0, L"Device", 80);
+        AddColumn(devices_list_, 1, L"", 130);
+        AddColumn(devices_list_, 2, L"Value", 290);
+        AddColumn(devices_list_, 3, L"", 320);
+
+        for (HWND edit : { memory_address_, memory_bytes_, register_value_, watch_address_,
+                           watch_length_ }) {
             if (mono_ != nullptr)
                 SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(mono_), FALSE);
         }
@@ -307,6 +408,7 @@ namespace psxemu {
         RECT client = {};
         GetClientRect(window_, &client);
         Layout(client.right, client.bottom);
+        ShowTab(kTabMemory);
         UpdateControls();
         UpdateStatus();
         return true;
@@ -352,7 +454,9 @@ namespace psxemu {
         for (size_t i = 0; same_listing && i < snapshot.lines.size(); ++i) {
             same_listing = snapshot.lines[i].address == snapshot_.lines[i].address &&
                            snapshot.lines[i].word == snapshot_.lines[i].word &&
-                           snapshot.lines[i].readable == snapshot_.lines[i].readable;
+                           snapshot.lines[i].readable == snapshot_.lines[i].readable &&
+                           snapshot.lines[i].label == snapshot_.lines[i].label &&
+                           snapshot.lines[i].target_label == snapshot_.lines[i].target_label;
         }
         for (size_t i = 0; same_listing && i < snapshot.breakpoints.size(); ++i) {
             same_listing = snapshot.breakpoints[i].address == snapshot_.breakpoints[i].address &&
@@ -396,8 +500,19 @@ namespace psxemu {
                 waiting_ = false;
                 break_requested_ = false;
                 KillTimer(window_, kGreyTimer);
+                // A watchpoint: the listing goes to the instruction that made the access (the pc
+                // is the one after it), and the memory pane to the address it touched.
+                const Debugger::WatchHit& hit = snapshot.watch_hit;
+                const bool watch = snapshot.reason == Debugger::HaltReason::kWatchpoint &&
+                                   hit.valid;
                 if (select_ == kNoSnapshot)
-                    select_ = snapshot.pc;
+                    select_ = watch && hit.dma_channel < 0 ? hit.pc : snapshot.pc;
+                if (watch) {
+                    const uint32_t shown = hit.address & 0x1FFFFFFF;
+                    const uint32_t view = Physical(memory_view_);
+                    if (shown < view || shown >= view + kMemoryBytes)
+                        ViewMemory(hit.dma_channel >= 0 ? (0x80000000u | shown) : hit.address);
+                }
             }
         } else if (!waiting_) {
             running_ = true;
@@ -409,7 +524,11 @@ namespace psxemu {
             FillCode();
         FillRegisters();
         FillBreakpoints();
+        FillWatchpoints();
         FillMemoryPane(old_memory_address, old_memory);
+        FillBiosLog();
+        FillCallStack();
+        FillDevices();
         UpdateControls();
         UpdateStatus();
 
@@ -454,12 +573,21 @@ namespace psxemu {
             SetText(code_, i, 1, Hex(line.address));
             if (line.readable) {
                 SetText(code_, i, 2, Hex(line.word));
-                SetText(code_, i, 3, Widen(line.text));
-                if (line.delay_slot)
-                    SetText(code_, i, 4, L"delay slot");
+                std::wstring text = Widen(line.text);
+                if (!line.target_label.empty())
+                    text += L"   <" + Widen(line.target_label) + L">";
+                SetText(code_, i, 3, text);
             } else {
                 SetText(code_, i, 3, L"(not memory - not read)");
             }
+            // The last column: the line's own label, and whether it is a delay slot.
+            std::wstring note;
+            if (!line.label.empty())
+                note = Widen(line.label) + L":";
+            if (line.delay_slot)
+                note += note.empty() ? L"delay slot" : L"  (delay slot)";
+            if (!note.empty())
+                SetText(code_, i, 4, note);
         }
 
         // What to select: an address asked for, else what was selected before.
@@ -567,6 +695,305 @@ namespace psxemu {
         filling_ = false;
     }
 
+    void DebuggerWindow::FillWatchpoints() {
+        filling_ = true;
+        const std::vector<Debugger::Watchpoint>& list = snapshot_.watchpoints;
+        const bool same_count = ListView_GetItemCount(watch_list_) == static_cast<int>(list.size());
+        if (!same_count)
+            ListView_DeleteAllItems(watch_list_);
+        for (size_t i = 0; i < list.size(); ++i) {
+            const int row = static_cast<int>(i);
+            const Debugger::Watchpoint& wp = list[i];
+            if (!same_count)
+                InsertRow(watch_list_, row, Hex(wp.address), row);
+            else
+                SetText(watch_list_, row, 0, Hex(wp.address));
+            SetText(watch_list_, row, 1, std::to_wstring(wp.length));
+            SetText(watch_list_, row, 2, wp.read && wp.write ? L"either" : wp.read ? L"read"
+                                                                                : L"write");
+            SetText(watch_list_, row, 3, std::to_wstring(wp.hits));
+            const bool checked = ListView_GetCheckState(watch_list_, row) != FALSE;
+            if (!same_count || checked != wp.enabled)
+                ListView_SetCheckState(watch_list_, row, wp.enabled ? TRUE : FALSE);
+        }
+        filling_ = false;
+    }
+
+    std::wstring DebuggerWindow::DescribeWatchHit() const {
+        const Debugger::WatchHit& hit = snapshot_.watch_hit;
+        std::wstring who;
+        if (hit.dma_channel >= 0 && hit.dma_channel < 7) {
+            who = L"DMA channel " + std::to_wstring(hit.dma_channel) + L" (" +
+                  kDmaChannelNames[hit.dma_channel] + L")";
+        } else {
+            who = L"the instruction at " + Hex(hit.pc);
+        }
+        wchar_t value[32];
+        if (!hit.value_known)
+            swprintf_s(value, L"(a register not safe to peek)");
+        else if (hit.size == 1)
+            swprintf_s(value, L"%02X", hit.value);
+        else if (hit.size == 2)
+            swprintf_s(value, L"%04X", hit.value);
+        else
+            swprintf_s(value, L"%08X", hit.value);
+        return L"watchpoint " + Hex(hit.watchpoint) + L": " + who +
+               (hit.write ? L" wrote " : L" read ") + value + (hit.write ? L" to " : L" from ") +
+               Hex(hit.address) + L".";
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Phase 4: the BIOS call log, the call stack, the devices, and labels
+    // ---------------------------------------------------------------------------------------------
+
+    void DebuggerWindow::FillBiosLog() {
+        const std::vector<Debugger::BiosCallRecord>& log = snapshot_.bios_log;
+        // Only when a call has been made since last time: the live refresh asks twice a second.
+        if (snapshot_.bios_calls != shown_bios_calls_ ||
+            ListView_GetItemCount(bios_list_) != static_cast<int>(log.size())) {
+            shown_bios_calls_ = snapshot_.bios_calls;
+            SendMessageW(bios_list_, WM_SETREDRAW, FALSE, 0);
+            ListView_DeleteAllItems(bios_list_);
+            // Newest first.
+            for (size_t i = 0; i < log.size(); ++i) {
+                const Debugger::BiosCallRecord& call = log[log.size() - 1 - i];
+                const int row = static_cast<int>(i);
+                InsertRow(bios_list_, row, CallKey(call.vector, call.function),
+                          static_cast<LPARAM>(log.size() - 1 - i));
+                SetText(bios_list_, row, 1,
+                        Wide(emulation::psx::BiosCallName(call.vector, call.function)));
+                SetText(bios_list_, row, 2, Hex(call.args[0]));
+                SetText(bios_list_, row, 3, Hex(call.args[1]));
+                SetText(bios_list_, row, 4, Hex(call.args[2]));
+                SetText(bios_list_, row, 5, Hex(call.ra));
+                SetText(bios_list_, row, 6, std::to_wstring(call.cycle));
+            }
+            SendMessageW(bios_list_, WM_SETREDRAW, TRUE, 0);
+            InvalidateRect(bios_list_, nullptr, TRUE);
+        }
+
+        std::wstring note = std::to_wstring(snapshot_.bios_calls) +
+                            L" calls since boot, the last " + std::to_wstring(log.size()) +
+                            L" here, newest first. Right-click one to break on it.";
+        if (!snapshot_.bios_breaks.empty()) {
+            note += L"   Breaking on:";
+            for (uint32_t key : snapshot_.bios_breaks)
+                note += L" " + CallKey(key >> 8, key & 0xFF);
+        }
+        SetWindowTextW(bios_note_, note.c_str());
+    }
+
+    void DebuggerWindow::FillCallStack() {
+        const bool checked = SendMessageW(stack_track_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        if (checked != snapshot_.call_tracking) {
+            SendMessageW(stack_track_, BM_SETCHECK,
+                         snapshot_.call_tracking ? BST_CHECKED : BST_UNCHECKED, 0);
+        }
+        const std::vector<Debugger::CallFrame>& stack = snapshot_.call_stack;
+        SendMessageW(stack_list_, WM_SETREDRAW, FALSE, 0);
+        ListView_DeleteAllItems(stack_list_);
+        // The innermost call first, as a debugger's call stack reads.
+        for (size_t i = 0; i < stack.size(); ++i) {
+            const Debugger::CallFrame& frame = stack[stack.size() - 1 - i];
+            const int row = static_cast<int>(i);
+            InsertRow(stack_list_, row, std::to_wstring(stack.size() - 1 - i),
+                      static_cast<LPARAM>(stack.size() - 1 - i));
+            std::wstring function = Hex(frame.target);
+            for (const Debugger::Line& line : snapshot_.lines) {
+                if (line.address == frame.target && !line.label.empty())
+                    function += L"  " + Widen(line.label);
+            }
+            SetText(stack_list_, row, 1, function);
+            SetText(stack_list_, row, 2, Hex(frame.call_pc));
+            SetText(stack_list_, row, 3, Hex(frame.return_to));
+            SetText(stack_list_, row, 4, Hex(frame.sp));
+        }
+        SendMessageW(stack_list_, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(stack_list_, nullptr, TRUE);
+    }
+
+    void DebuggerWindow::FillDevices() {
+        const std::vector<Debugger::DeviceRow>& rows = snapshot_.devices;
+        const bool same_count = ListView_GetItemCount(devices_list_) == static_cast<int>(rows.size());
+        SendMessageW(devices_list_, WM_SETREDRAW, FALSE, 0);
+        if (!same_count)
+            ListView_DeleteAllItems(devices_list_);
+        std::string previous_section;
+        for (size_t i = 0; i < rows.size(); ++i) {
+            const Debugger::DeviceRow& row = rows[i];
+            const int r = static_cast<int>(i);
+            // The section's name on its first row only, so the list reads as groups.
+            const std::wstring section =
+                row.section != previous_section ? Wide(row.section) : std::wstring();
+            previous_section = row.section;
+            if (!same_count)
+                InsertRow(devices_list_, r, section, r);
+            else
+                SetText(devices_list_, r, 0, section);
+            SetText(devices_list_, r, 1, Wide(row.name));
+            SetText(devices_list_, r, 2, Wide(row.value));
+            SetText(devices_list_, r, 3, Wide(row.note));
+        }
+        SendMessageW(devices_list_, WM_SETREDRAW, TRUE, 0);
+        InvalidateRect(devices_list_, nullptr, FALSE);
+    }
+
+    void DebuggerWindow::ShowTab(int tab) {
+        tab_index_ = tab;
+        TabCtrl_SetCurSel(tab_, tab);
+        const int memory_controls[] = { kMemoryView, kMemoryPrevious, kMemoryNext, kMemoryWrite };
+        const bool memory = tab == kTabMemory;
+        for (HWND h : { memory_label_, memory_, memory_address_, memory_bytes_ })
+            ShowWindow(h, memory ? SW_SHOW : SW_HIDE);
+        for (int c : memory_controls)
+            ShowWindow(controls_[c], memory ? SW_SHOW : SW_HIDE);
+        for (HWND h : { bios_note_, bios_list_, controls_[kClearBiosBreaks] })
+            ShowWindow(h, tab == kTabBios ? SW_SHOW : SW_HIDE);
+        for (HWND h : { stack_track_, stack_list_ })
+            ShowWindow(h, tab == kTabStack ? SW_SHOW : SW_HIDE);
+        ShowWindow(devices_list_, tab == kTabDevices ? SW_SHOW : SW_HIDE);
+    }
+
+    void DebuggerWindow::ShowBiosMenu(int x, int y) {
+        const int row = ListView_GetNextItem(bios_list_, -1, LVNI_SELECTED);
+        if (row < 0)
+            return;
+        LVITEMW item = {};
+        item.mask = LVIF_PARAM;
+        item.iItem = row;
+        if (!ListView_GetItem(bios_list_, &item) ||
+            item.lParam >= static_cast<LPARAM>(snapshot_.bios_log.size()))
+            return;
+        const Debugger::BiosCallRecord call = snapshot_.bios_log[static_cast<size_t>(item.lParam)];
+        const uint32_t key = (call.vector << 8) | call.function;
+        bool breaking = false;
+        for (uint32_t b : snapshot_.bios_breaks)
+            breaking = breaking || b == key;
+        const std::wstring name =
+            CallKey(call.vector, call.function) + L" " +
+            Wide(emulation::psx::BiosCallName(call.vector, call.function));
+        HMENU menu = CreatePopupMenu();
+        if (breaking)
+            AppendMenuW(menu, MF_STRING, kMenuStopBreakOnCall, (L"Stop Breaking on " + name).c_str());
+        else
+            AppendMenuW(menu, MF_STRING, kMenuBreakOnCall, (L"&Break on " + name).c_str());
+        AppendMenuW(menu, MF_STRING, kMenuShowCaller, L"Show the &Caller\tDouble-click");
+        const int chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, 0,
+                                          window_, nullptr);
+        DestroyMenu(menu);
+        const uint32_t vector = call.vector, function = call.function;
+        if (chosen == kMenuBreakOnCall) {
+            Request([vector, function](Debugger& d) { d.AddBiosBreak(vector, function); },
+                    ListingCenter());
+        } else if (chosen == kMenuStopBreakOnCall) {
+            Request([vector, function](Debugger& d) { d.RemoveBiosBreak(vector, function); },
+                    ListingCenter());
+        } else if (chosen == kMenuShowCaller) {
+            GoTo(call.ra - 8);
+        }
+    }
+
+    void DebuggerWindow::ShowLabelsMenu() {
+        RECT rect = {};
+        GetWindowRect(controls_[kLabels], &rect);
+        HMENU menu = CreatePopupMenu();
+        AppendMenuW(menu, MF_STRING, kMenuLoadLabels, L"&Load Labels...");
+        AppendMenuW(menu, MF_STRING | (snapshot_.label_count > 0 ? 0 : MF_GRAYED),
+                    kMenuSaveLabels, L"&Save Labels...");
+        AppendMenuW(menu, MF_STRING | (snapshot_.label_count > 0 ? 0 : MF_GRAYED),
+                    kMenuClearLabels, L"&Clear Labels");
+        const int chosen = TrackPopupMenu(menu, TPM_RETURNCMD, rect.left, rect.bottom, 0, window_,
+                                          nullptr);
+        DestroyMenu(menu);
+        if (chosen == kMenuLoadLabels)
+            LoadLabels();
+        else if (chosen == kMenuSaveLabels)
+            SaveLabels();
+        else if (chosen == kMenuClearLabels)
+            Request([](Debugger& d) { d.ClearLabels(); }, ListingCenter());
+    }
+
+    // A text file, one label a line: a hex address, then the name. Blank lines and lines
+    // starting with # or ; are skipped, and so is anything else that does not parse.
+    void DebuggerWindow::LoadLabels() {
+        const std::string path = ChooseFile(window_, FileDialog::kOpen, kLabelFilter, nullptr);
+        if (path.empty())
+            return;
+        FILE* fp = fopen(path.c_str(), "r");
+        if (fp == nullptr) {
+            ShowWarning(window_, L"Could not open that file.");
+            return;
+        }
+        std::vector<std::pair<uint32_t, std::string>> labels;
+        int skipped = 0;
+        char line[512];
+        while (fgets(line, sizeof(line), fp) != nullptr) {
+            char* at = line;
+            while (*at == ' ' || *at == '\t')
+                ++at;
+            if (*at == '\0' || *at == '\n' || *at == '\r' || *at == '#' || *at == ';')
+                continue;
+            char* end = nullptr;
+            const unsigned long address = strtoul(at, &end, 16);
+            if (end == at || (*end != ' ' && *end != '\t')) {
+                ++skipped;
+                continue;
+            }
+            while (*end == ' ' || *end == '\t')
+                ++end;
+            std::string name = end;
+            while (!name.empty() && (name.back() == '\n' || name.back() == '\r' ||
+                                     name.back() == ' ' || name.back() == '\t'))
+                name.pop_back();
+            if (name.empty()) {
+                ++skipped;
+                continue;
+            }
+            labels.emplace_back(static_cast<uint32_t>(address), name);
+        }
+        fclose(fp);
+        if (labels.empty()) {
+            ShowWarning(window_, L"No labels found in that file.\n\n"
+                                 L"Each line should be a hex address and a name, such as\n"
+                                 L"80012340 UpdatePlayer");
+            return;
+        }
+        Request([labels](Debugger& d) {
+                    for (const auto& label : labels)
+                        d.SetLabel(label.first, label.second);
+                },
+                ListingCenter());
+        std::wstring message = std::to_wstring(labels.size()) + L" labels loaded";
+        if (skipped > 0)
+            message += L", " + std::to_wstring(skipped) + L" lines skipped";
+        SetWindowTextW(status_, (message + L".").c_str());
+    }
+
+    // Written on the machine's thread, where the labels are; addresses as a program sees them -
+    // RAM in KSEG0, the BIOS in KSEG1.
+    void DebuggerWindow::SaveLabels() {
+        const std::string path = ChooseFile(window_, FileDialog::kSave, kLabelFilter, "txt");
+        if (path.empty())
+            return;
+        Request([path](Debugger& d) {
+                    FILE* fp = fopen(path.c_str(), "w");
+                    if (fp == nullptr) {
+                        MessageBeep(MB_ICONWARNING);
+                        return;
+                    }
+                    for (const auto& label : d.labels()) {
+                        uint32_t address = label.first;
+                        if (address < 0x00800000)
+                            address |= 0x80000000;
+                        else if (address >= 0x1FC00000 && address < 0x1FC80000)
+                            address |= 0xA0000000;
+                        fprintf(fp, "%08X %s\n", address, label.second.c_str());
+                    }
+                    fclose(fp);
+                },
+                kNoSnapshot);
+    }
+
     void DebuggerWindow::UpdateControls() {
         const bool halted = have_snapshot_ && snapshot_.halted && !running_ && !waiting_;
         EnableWindow(controls_[kContinue], halted);
@@ -584,6 +1011,8 @@ namespace psxemu {
         EnableWindow(controls_[kRemoveBreakpoint],
                      ListView_GetNextItem(breakpoint_list_, -1, LVNI_SELECTED) >= 0);
         EnableWindow(controls_[kRemoveAll], any);
+        EnableWindow(controls_[kRemoveWatchpoint],
+                     ListView_GetNextItem(watch_list_, -1, LVNI_SELECTED) >= 0);
     }
 
     void DebuggerWindow::UpdateStatus() {
@@ -594,6 +1023,16 @@ namespace psxemu {
                        ReasonText(snapshot_.reason),
                        static_cast<unsigned long long>(snapshot_.cycles));
             text = line;
+            if (snapshot_.reason == Debugger::HaltReason::kWatchpoint && snapshot_.watch_hit.valid)
+                text = L"Halted at " + Hex(snapshot_.pc) + L" - " + DescribeWatchHit();
+            if (snapshot_.reason == Debugger::HaltReason::kBiosCall) {
+                // At the vector, before the function runs: t1 says which, ra where from.
+                const uint32_t vector = snapshot_.pc & 0xFF, function = snapshot_.gpr[9] & 0xFF;
+                text = L"Halted at " + Hex(snapshot_.pc) + L" - BIOS call " +
+                       CallKey(vector, function) + L" " +
+                       Wide(emulation::psx::BiosCallName(vector, function)) +
+                       L", returning to " + Hex(snapshot_.gpr[31]) + L".";
+            }
         } else if (break_requested_) {
             text = L"Break requested - the machine halts at its next instruction once it runs.";
         } else {
@@ -856,6 +1295,59 @@ namespace psxemu {
                     host_.write_memory(address, std::move(bytes), ListingCenter());
                 break;
             }
+            case kName: {
+                // The label box's text for the selected line; empty takes the label away.
+                if (!SelectedLine(&address)) {
+                    MessageBeep(MB_ICONWARNING);
+                    break;
+                }
+                wchar_t text[80] = {};
+                GetWindowTextW(label_edit_, text, 80);
+                std::string name;
+                for (const wchar_t* c = text; *c != 0; ++c)
+                    name += (*c < 0x80) ? static_cast<char>(*c) : '?';
+                select_ = address;
+                Request([address, name](Debugger& d) { d.SetLabel(address, name); },
+                        ListingCenter());
+                break;
+            }
+            case kLabels:
+                ShowLabelsMenu();
+                break;
+            case kClearBiosBreaks:
+                Request([](Debugger& d) { d.ClearBiosBreaks(); }, ListingCenter());
+                break;
+            case kAddWatchpoint: {
+                wchar_t text[16] = {};
+                GetWindowTextW(watch_address_, text, 16);
+                wchar_t length_text[16] = {};
+                GetWindowTextW(watch_length_, length_text, 16);
+                wchar_t* end = nullptr;
+                const unsigned long length = wcstoul(length_text, &end, 0);
+                const int kind = static_cast<int>(SendMessageW(watch_kind_, CB_GETCURSEL, 0, 0));
+                if (!ParseHex(text, &address) || end == nullptr || *end != 0 || length == 0 ||
+                    length > 0x200000 || kind < 0) {
+                    MessageBeep(MB_ICONWARNING);
+                    break;
+                }
+                const bool read = kind == 1 || kind == 2;
+                const bool write = kind == 0 || kind == 2;
+                const uint32_t bytes = static_cast<uint32_t>(length);
+                Request([address, bytes, read, write](Debugger& debugger) {
+                            debugger.AddWatchpoint(address, bytes, read, write);
+                        },
+                        ListingCenter());
+                break;
+            }
+            case kRemoveWatchpoint: {
+                const int row = ListView_GetNextItem(watch_list_, -1, LVNI_SELECTED);
+                if (row >= 0 && row < static_cast<int>(snapshot_.watchpoints.size())) {
+                    address = snapshot_.watchpoints[static_cast<size_t>(row)].address;
+                    Request([address](Debugger& debugger) { debugger.RemoveWatchpoint(address); },
+                            ListingCenter());
+                }
+                break;
+            }
             case kSetRegister: {
                 const int row = ListView_GetNextItem(registers_, -1, LVNI_SELECTED);
                 const int index = EditableRegister(row);
@@ -961,6 +1453,8 @@ namespace psxemu {
         AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(code), L"Show in the &Disassembly");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kMenuEdit, L"&Edit Row...\tDouble-click");
+        AppendMenuW(menu, MF_STRING, kMenuWatchWrites, L"&Watch Row for Writes");
+        AppendMenuW(menu, MF_STRING, kMenuWatchEither, L"Watch Row for Reads &or Writes");
         const int chosen = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, 0,
                                           window_, nullptr);
         DestroyMenu(menu);   // and the submenu with it
@@ -970,6 +1464,15 @@ namespace psxemu {
             GoTo(words[chosen - kMenuFollowWord - 4]);
         else if (chosen == kMenuEdit)
             EditMemoryRow(row);
+        else if (chosen == kMenuWatchWrites || chosen == kMenuWatchEither) {
+            const uint32_t address =
+                snapshot_.memory_address + static_cast<uint32_t>(row * kMemoryRow);
+            const bool read = chosen == kMenuWatchEither;
+            Request([address, read](Debugger& debugger) {
+                        debugger.AddWatchpoint(address, kMemoryRow, read, true);
+                    },
+                    ListingCenter());
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1023,6 +1526,14 @@ namespace psxemu {
                 }
                 if (message.hwnd == register_value_) {
                     OnControl(kSetRegister);
+                    return true;
+                }
+                if (message.hwnd == watch_address_ || message.hwnd == watch_length_) {
+                    OnControl(kAddWatchpoint);
+                    return true;
+                }
+                if (message.hwnd == label_edit_) {
+                    OnControl(kName);
                     return true;
                 }
                 if (message.hwnd == code_) {
@@ -1151,6 +1662,68 @@ namespace psxemu {
                     return 0;
             }
         }
+        if (header->hwndFrom == tab_ && header->code == TCN_SELCHANGE) {
+            ShowTab(TabCtrl_GetCurSel(tab_));
+            return 0;
+        }
+        if (header->hwndFrom == bios_list_) {
+            if (header->code == NM_RCLICK) {
+                POINT point = {};
+                GetCursorPos(&point);
+                ShowBiosMenu(point.x, point.y);
+            } else if (header->code == NM_DBLCLK) {
+                const NMITEMACTIVATE* item = reinterpret_cast<NMITEMACTIVATE*>(header);
+                LVITEMW lv = {};
+                lv.mask = LVIF_PARAM;
+                lv.iItem = item->iItem;
+                if (item->iItem >= 0 && ListView_GetItem(bios_list_, &lv) &&
+                    lv.lParam < static_cast<LPARAM>(snapshot_.bios_log.size()))
+                    GoTo(snapshot_.bios_log[static_cast<size_t>(lv.lParam)].ra - 8);
+            }
+            return 0;
+        }
+        if (header->hwndFrom == stack_list_ && header->code == NM_DBLCLK) {
+            // A frame: to the function it entered.
+            const NMITEMACTIVATE* item = reinterpret_cast<NMITEMACTIVATE*>(header);
+            LVITEMW lv = {};
+            lv.mask = LVIF_PARAM;
+            lv.iItem = item->iItem;
+            if (item->iItem >= 0 && ListView_GetItem(stack_list_, &lv) &&
+                lv.lParam < static_cast<LPARAM>(snapshot_.call_stack.size()))
+                GoTo(snapshot_.call_stack[static_cast<size_t>(lv.lParam)].target);
+            return 0;
+        }
+        if (header->hwndFrom == watch_list_) {
+            switch (header->code) {
+                case LVN_ITEMCHANGED: {
+                    const NMLISTVIEW* change = reinterpret_cast<NMLISTVIEW*>(header);
+                    if (!filling_ && (change->uChanged & LVIF_STATE) != 0 &&
+                        ((change->uNewState ^ change->uOldState) & LVIS_STATEIMAGEMASK) != 0 &&
+                        change->iItem >= 0 &&
+                        change->iItem < static_cast<int>(snapshot_.watchpoints.size())) {
+                        const uint32_t address =
+                            snapshot_.watchpoints[static_cast<size_t>(change->iItem)].address;
+                        const bool enabled =
+                            ListView_GetCheckState(watch_list_, change->iItem) != FALSE;
+                        Request([address, enabled](Debugger& debugger) {
+                                    debugger.SetWatchpointEnabled(address, enabled);
+                                },
+                                ListingCenter());
+                    }
+                    UpdateControls();
+                    return 0;
+                }
+                case NM_DBLCLK: {
+                    const NMITEMACTIVATE* item = reinterpret_cast<NMITEMACTIVATE*>(header);
+                    if (item->iItem >= 0 &&
+                        item->iItem < static_cast<int>(snapshot_.watchpoints.size()))
+                        ViewMemory(snapshot_.watchpoints[static_cast<size_t>(item->iItem)].address);
+                    return 0;
+                }
+                default:
+                    return 0;
+            }
+        }
         if (header->hwndFrom == memory_) {
             switch (header->code) {
                 case NM_CUSTOMDRAW:
@@ -1232,6 +1805,12 @@ namespace psxemu {
         x += 40 + gap;
         MoveWindow(controls_[kAddBreakpoint], x, y2, 124, row, TRUE);
         x += 124 + gap * 2;
+        MoveWindow(label_edit_, x, y2 + 2, 150, row - 4, TRUE);
+        x += 150 + gap;
+        MoveWindow(controls_[kName], x, y2, 54, row, TRUE);
+        x += 54 + gap;
+        MoveWindow(controls_[kLabels], x, y2, 74, row, TRUE);
+        x += 74 + gap * 2;
         MoveWindow(status_, x, y2 + 5, width - x - margin, row - 6, TRUE);
 
         const int top = y2 + row + gap;
@@ -1246,12 +1825,32 @@ namespace psxemu {
         MoveWindow(code_label_, margin, top, left_width, label, TRUE);
         MoveWindow(code_, margin, top + label, left_width, code_height - label, TRUE);
 
-        const int memory_top = top + code_height + gap;
-        const int memory_controls_y = height - margin - row;
-        MoveWindow(memory_label_, margin, memory_top, left_width, label, TRUE);
-        MoveWindow(memory_, margin, memory_top + label, left_width,
+        // Under it, the tabs: each page fills the tab control's display area.
+        const int tab_top = top + code_height + gap;
+        MoveWindow(tab_, margin, tab_top, left_width, height - margin - tab_top, TRUE);
+        RECT page = { margin, tab_top, margin + left_width, height - margin };
+        TabCtrl_AdjustRect(tab_, FALSE, &page);
+        const int page_x = page.left + 2, page_w = page.right - page.left - 4;
+        const int page_top = page.top + 2, page_bottom = page.bottom - 2;
+
+        const int memory_top = page_top;
+        const int memory_controls_y = page_bottom - row;
+        MoveWindow(memory_label_, page_x, memory_top, page_w, label, TRUE);
+        MoveWindow(memory_, page_x, memory_top + label, page_w,
                    memory_controls_y - gap - (memory_top + label), TRUE);
-        x = margin;
+
+        MoveWindow(bios_note_, page_x, page_top + 4, page_w - 130 - gap, label, TRUE);
+        MoveWindow(controls_[kClearBiosBreaks], page_x + page_w - 130, page_top, 130, row, TRUE);
+        MoveWindow(bios_list_, page_x, page_top + row + gap, page_w,
+                   page_bottom - (page_top + row + gap), TRUE);
+
+        MoveWindow(stack_track_, page_x, page_top, page_w, row, TRUE);
+        MoveWindow(stack_list_, page_x, page_top + row + gap, page_w,
+                   page_bottom - (page_top + row + gap), TRUE);
+
+        MoveWindow(devices_list_, page_x, page_top, page_w, page_bottom - page_top, TRUE);
+
+        x = page_x;
         MoveWindow(memory_address_, x, memory_controls_y + 2, 90, row - 4, TRUE);
         x += 90 + gap;
         MoveWindow(controls_[kMemoryView], x, memory_controls_y, 50, row, TRUE);
@@ -1262,12 +1861,12 @@ namespace psxemu {
         x += 60 + gap * 3;
         const int write_width = 60;
         MoveWindow(memory_bytes_, x, memory_controls_y + 2,
-                   margin + left_width - write_width - gap - x, row - 4, TRUE);
-        MoveWindow(controls_[kMemoryWrite], margin + left_width - write_width, memory_controls_y,
+                   page_x + page_w - write_width - gap - x, row - 4, TRUE);
+        MoveWindow(controls_[kMemoryWrite], page_x + page_w - write_width, memory_controls_y,
                    write_width, row, TRUE);
 
-        // Right: the registers with their edit box, then the breakpoints.
-        const int registers_height = (lists_height * 60) / 100;
+        // Right: the registers with their edit box, the breakpoints, then the watchpoints.
+        const int registers_height = (lists_height * 50) / 100;
         MoveWindow(registers_label_, right_x, top, right_width, label, TRUE);
         const int registers_list_height = registers_height - label - row - gap;
         MoveWindow(registers_, right_x, top + label, right_width, registers_list_height, TRUE);
@@ -1275,13 +1874,32 @@ namespace psxemu {
         MoveWindow(register_value_, right_x, set_y + 2, right_width - 60 - gap, row - 4, TRUE);
         MoveWindow(controls_[kSetRegister], right_x + right_width - 60, set_y, 60, row, TRUE);
 
+        // What is left is split between the two lists, each with a row of controls under it.
         const int bp_top = top + registers_height + gap;
+        const int rest = height - margin - bp_top;
+        const int bp_block = rest / 2;
         MoveWindow(breakpoints_label_, right_x, bp_top, right_width, label, TRUE);
-        const int bp_list_height = height - margin - row - gap - (bp_top + label);
+        const int bp_list_height = bp_block - label - row - gap * 2;
         MoveWindow(breakpoint_list_, right_x, bp_top + label, right_width, bp_list_height, TRUE);
-        const int buttons_y = height - margin - row;
-        MoveWindow(controls_[kRemoveBreakpoint], right_x, buttons_y, 90, row, TRUE);
-        MoveWindow(controls_[kRemoveAll], right_x + 90 + gap, buttons_y, 100, row, TRUE);
+        const int bp_buttons_y = bp_top + label + bp_list_height + gap;
+        MoveWindow(controls_[kRemoveBreakpoint], right_x, bp_buttons_y, 90, row, TRUE);
+        MoveWindow(controls_[kRemoveAll], right_x + 90 + gap, bp_buttons_y, 100, row, TRUE);
+
+        const int wp_top = bp_top + bp_block;
+        MoveWindow(watchpoints_label_, right_x, wp_top, right_width, label, TRUE);
+        const int wp_controls_y = height - margin - row;
+        MoveWindow(watch_list_, right_x, wp_top + label, right_width,
+                   wp_controls_y - gap - (wp_top + label), TRUE);
+        x = right_x;
+        MoveWindow(watch_address_, x, wp_controls_y + 2, 84, row - 4, TRUE);
+        x += 84 + gap;
+        MoveWindow(watch_length_, x, wp_controls_y + 2, 44, row - 4, TRUE);
+        x += 44 + gap;
+        MoveWindow(watch_kind_, x, wp_controls_y, 72, 200, TRUE);   // the drop-down's height
+        x += 72 + gap;
+        MoveWindow(controls_[kAddWatchpoint], x, wp_controls_y, 56, row, TRUE);
+        MoveWindow(controls_[kRemoveWatchpoint], right_x + right_width - 70, wp_controls_y, 70,
+                   row, TRUE);
     }
 
     LRESULT CALLBACK DebuggerWindow::WindowProc(HWND window, UINT message, WPARAM wparam,
@@ -1314,6 +1932,12 @@ namespace psxemu {
                 if (id >= kIdControlBase && id < kIdControlBase + kControlCount &&
                     HIWORD(wparam) == BN_CLICKED)
                     self->OnControl(static_cast<Control>(id - kIdControlBase));
+                if (id == kIdStackTrack && HIWORD(wparam) == BN_CLICKED) {
+                    const bool on =
+                        SendMessageW(self->stack_track_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                    self->Request([on](Debugger& d) { d.SetCallTracking(on); },
+                                  self->ListingCenter());
+                }
                 return 0;
             }
 

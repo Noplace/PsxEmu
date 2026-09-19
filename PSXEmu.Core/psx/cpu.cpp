@@ -173,8 +173,28 @@ void Cpu::Serialise(StateIO& io) {
   io.Plain(hilo_busy_until_cycles_);
 }
 
+// The debugger's side of Load and Store, kept out of line: the call and its
+// arguments inside those two - the hottest functions in the interpreter -
+// cost about 3% of the BIOS boot with no watchpoint set, by changing how the
+// compiler laid out the rest of them. Behind a never-inlined call the flag
+// test is all that is left there.
+__declspec(noinline) void Cpu::WatchLoad(MemorySize size, uint32_t address) {
+  if (current_stage == 1 || merging_store_)
+    return;
+  const uint32_t bytes = (size == kM8) ? 1u : (size == kM16) ? 2u : 4u;
+  system_->debugger().OnCpuAccess(context_->prev_pc, address, bytes, false, 0);
+}
+
+__declspec(noinline) void Cpu::WatchStore(MemorySize size, uint32_t address, uint32_t data) {
+  const uint32_t bytes = (size == kM8) ? 1u : (size == kM16) ? 2u : 4u;
+  system_->debugger().OnCpuAccess(context_->prev_pc, address, bytes, true, data);
+}
+
 void Cpu::NoteExternalWrite(uint32_t tag, uint32_t byte_address,
                             uint32_t value) {
+  // The DMA channels tag their writes D0h plus the channel.
+  if (debug_watch_ && (tag & 0xF0) == 0xD0)
+    system_->debugger().OnDmaWrite(static_cast<int>(tag & 0x0F), byte_address, value);
   if (watch_address_ == 0)
     return;
   const uint32_t low = byte_address & 0x1FFFFF;
@@ -622,8 +642,11 @@ uint32_t Cpu::Load(MemorySize size, uint32_t address) {
   if ((context_->ctrl.SR.IsC) && current_stage != 1) {
     return 0;
   }
-  
-  
+
+  // A read the debugger is watching for. Not a fetch, and not SWL/SWR's merge.
+  if (debug_watch_) [[unlikely]]
+    WatchLoad(size, address);
+
 
   // Decode on the physical address, not the virtual one. Every register has
   // three virtual addresses - KUSEG 0x1F80xxxx, KSEG0 0x9F80xxxx and KSEG1
@@ -768,6 +791,10 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
     icache.InvalidateLine(address);
     return;
   }
+
+  // A write the debugger is watching for - after the isolated-cache case, which writes nothing.
+  if (debug_watch_) [[unlikely]]
+    WatchStore(size, address, data);
 
   // Same physical-address decode as Load; see the comment there.
   const uint32_t physical = AddressTranslation(address);
@@ -1244,7 +1271,9 @@ void Cpu::SWL() {
   // has to be read before the register is merged into it. Leaving `data`
   // uninitialised here corrupted three bytes out of every four, which broke
   // every unaligned copy the BIOS makes.
+  merging_store_ = true;
   uint32_t data = Load(kM32, virtual_address & ~0x03);
+  merging_store_ = false;
   switch (virtual_address & 0x3) {
     case 0:
       data = (data & 0xFFFFFF00) | (context_->gp.reg[rt_] >> 24);
@@ -1275,7 +1304,9 @@ void Cpu::SWR() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
   // Same as SWL: the uncovered bytes have to be preserved, so read first.
+  merging_store_ = true;
   uint32_t data = Load(kM32, virtual_address & ~0x03);
+  merging_store_ = false;
   switch (virtual_address & 0x3) {
     case 0:
       data = context_->gp.reg[rt_];

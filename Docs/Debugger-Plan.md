@@ -1,20 +1,24 @@
 # A debugger
 
-**Status: phases 0-2 done, 2026-09-19** (bugs 71-73).
+**Status: done, 2026-09-19** (bugs 71-75).
 - **Phase 0, the core:** `psx/debugger.h` - execute breakpoints, step
   into/over/out, run to, break, the machine halting mid-frame, `debug_test` and
   `boot_runner --break`. It passed the determinism test below.
 - **Phase 1, the window:** Emulation > Debugger - disassembly, registers with
   the load delay shown, the breakpoint list, and the controls. The
   disassembler moved to `psx/disasm.h`.
-
 - **Phase 2, memory:** a memory pane reading through a side-effect-free
   peek (`Debugger::PeekData`), writing RAM and the scratchpad, and editing
   registers while halted (bug 73).
+- **Phase 3, watchpoints:** read and write, by the CPU and by every DMA channel
+  that writes RAM, in the window and as `boot_runner --watchpoint` (bug 74).
+- **Phase 4, the rest:** a BIOS call log with breaks on a particular call,
+  an approximate call stack, labels loaded from and saved to text files,
+  and read-only device panes. PsyQ's binary `.SYM` files are not read: there
+  was no sample to test a parser against (bug 75).
 
-Phases 3-4, watchpoints onward, are not started. The rest of this document is
-the plan as proposed; where a phase came out differently, its bug entry says
-how.
+The rest of this document is the plan as proposed; where a phase came out
+differently, its bug entry says how.
 
 ## The conclusion first
 
@@ -187,8 +191,8 @@ second would be noise.
 | 0 | Core: `psx/debugger.h`, execute breakpoints, halt mid-frame, step into/over/out, interpreter-while-armed; `debug_test`; `boot_runner --break` | **done** (bug 71) |
 | 1 | Window: disassembly, registers, controls, breakpoint list | **done** (bug 72) |
 | 2 | Memory view and editing, with side-effect-free peeks | **done** (bug 73) |
-| 3 | Read/write watchpoints, CPU and DMA | half a day |
-| 4 | BIOS call log, approximate call stack, labels, device panes | open-ended, each piece small |
+| 3 | Read/write watchpoints, CPU and DMA | **done** (bug 74) |
+| 4 | BIOS call log, approximate call stack, labels, device panes | **done** (bug 75), without PsyQ `.SYM` |
 
 Phase 0 alone is useful - `boot_runner --break` is a better `--trace-at` - and
 nothing after it is started until the determinism test passes.

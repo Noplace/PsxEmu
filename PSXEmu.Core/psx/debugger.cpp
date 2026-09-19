@@ -20,6 +20,8 @@
 #include "psx/disasm.h"
 
 #include <algorithm>
+#include <cstdarg>
+#include <cstdio>
 
 namespace emulation {
 namespace psx {
@@ -69,6 +71,364 @@ void Debugger::SetBreakpointEnabled(uint32_t address, bool enabled) {
 void Debugger::ClearBreakpoints() {
   breakpoints_.clear();
   UpdateArmed();
+}
+
+// ---- Watchpoints ------------------------------------------------------------------------------
+
+namespace {
+
+// A watchpoint's idea of an address: physical, and RAM folded onto its first 2 MB, since the
+// same byte is reached through all four mirrors.
+uint32_t Folded(uint32_t address) {
+  const uint32_t physical = address & 0x1FFFFFFF;
+  return physical < 0x00800000 ? (physical & 0x1FFFFF) : physical;
+}
+
+}  // namespace
+
+void Debugger::AddWatchpoint(uint32_t address, uint32_t length, bool read, bool write) {
+  if (length == 0)
+    length = 1;
+  for (Watchpoint& wp : watchpoints_) {
+    if (Folded(wp.address) == Folded(address)) {
+      wp.length = length;
+      wp.read = read;
+      wp.write = write;
+      wp.enabled = true;
+      UpdateArmed();
+      return;
+    }
+  }
+  Watchpoint wp;
+  wp.address = address;
+  wp.length = length;
+  wp.read = read;
+  wp.write = write;
+  watchpoints_.push_back(wp);
+  UpdateArmed();
+}
+
+void Debugger::RemoveWatchpoint(uint32_t address) {
+  for (size_t i = 0; i < watchpoints_.size(); ++i) {
+    if (Folded(watchpoints_[i].address) == Folded(address)) {
+      watchpoints_.erase(watchpoints_.begin() + i);
+      break;
+    }
+  }
+  UpdateArmed();
+}
+
+void Debugger::SetWatchpointEnabled(uint32_t address, bool enabled) {
+  for (Watchpoint& wp : watchpoints_) {
+    if (Folded(wp.address) == Folded(address))
+      wp.enabled = enabled;
+  }
+  UpdateArmed();
+}
+
+void Debugger::ClearWatchpoints() {
+  watchpoints_.clear();
+  UpdateArmed();
+}
+
+void Debugger::OnCpuAccess(uint32_t pc, uint32_t address, uint32_t size, bool write,
+                           uint32_t value) {
+  bool known = true;
+  if (!write) {
+    // What the read is about to fetch. A peek, so a register whose read has a side effect is
+    // reported without its value rather than read twice.
+    uint32_t word = 0;
+    known = PeekData(address & ~3u, &word);
+    value = word >> ((address & 3) * 8);
+  }
+  if (size < 4)
+    value &= (1u << (size * 8)) - 1;
+  Watch(-1, pc, address, size, write, value, known);
+}
+
+void Debugger::OnDmaWrite(int channel, uint32_t ram_offset, uint32_t value) {
+  Watch(channel, 0, ram_offset & 0x1FFFFC, 4, true, value, true);
+}
+
+void Debugger::Watch(int dma_channel, uint32_t pc, uint32_t address, uint32_t size, bool write,
+                     uint32_t value, bool value_known) {
+  const uint32_t start = Folded(address);
+  const uint32_t end = start + size;
+  for (Watchpoint& wp : watchpoints_) {
+    if (!wp.enabled || !(write ? wp.write : wp.read))
+      continue;
+    const uint32_t wp_start = Folded(wp.address);
+    if (end <= wp_start || start >= wp_start + wp.length)
+      continue;
+    ++wp.hits;
+    // The first access this instruction (or this transfer) made is the one reported; a DMA
+    // writing a thousand watched words is one halt, not a thousand.
+    if (!watch_pending_) {
+      watch_pending_ = true;
+      watch_hit_.valid = true;
+      watch_hit_.dma_channel = dma_channel;
+      watch_hit_.pc = pc;
+      watch_hit_.address = address;
+      watch_hit_.size = size;
+      watch_hit_.write = write;
+      watch_hit_.value = value;
+      watch_hit_.value_known = value_known;
+      watch_hit_.watchpoint = wp.address;
+    }
+    return;
+  }
+}
+
+// ---- The BIOS call log ------------------------------------------------------------------------
+
+void Debugger::OnBiosCall() {
+  const CpuContext* context = system_->cpu().context();
+  BiosCallRecord& record = bios_log_[bios_calls_ % kBiosLogSize];
+  record.vector = context->pc & 0xFF;
+  record.function = context->gp.t1 & 0xFF;
+  record.args[0] = context->gp.a0;
+  record.args[1] = context->gp.a1;
+  record.args[2] = context->gp.a2;
+  record.args[3] = context->gp.a3;
+  record.ra = context->gp.ra;
+  record.cycle = context->cycles;
+  ++bios_calls_;
+}
+
+std::vector<Debugger::BiosCallRecord> Debugger::BiosLog() const {
+  const uint64_t kept = std::min<uint64_t>(bios_calls_, kBiosLogSize);
+  std::vector<BiosCallRecord> log;
+  log.reserve(static_cast<size_t>(kept));
+  for (uint64_t i = bios_calls_ - kept; i < bios_calls_; ++i)
+    log.push_back(bios_log_[i % kBiosLogSize]);
+  return log;
+}
+
+void Debugger::AddBiosBreak(uint32_t vector, uint32_t function) {
+  const uint32_t key = ((vector & 0xFF) << 8) | (function & 0xFF);
+  if (std::find(bios_breaks_.begin(), bios_breaks_.end(), key) == bios_breaks_.end())
+    bios_breaks_.push_back(key);
+  UpdateArmed();
+}
+
+void Debugger::RemoveBiosBreak(uint32_t vector, uint32_t function) {
+  const uint32_t key = ((vector & 0xFF) << 8) | (function & 0xFF);
+  bios_breaks_.erase(std::remove(bios_breaks_.begin(), bios_breaks_.end(), key),
+                     bios_breaks_.end());
+  UpdateArmed();
+}
+
+void Debugger::ClearBiosBreaks() {
+  bios_breaks_.clear();
+  UpdateArmed();
+}
+
+// ---- The call stack ---------------------------------------------------------------------------
+
+void Debugger::SetCallTracking(bool on) {
+  if (on && !call_tracking_)
+    call_stack_.clear();   // what came before tracking began is unknown, not empty
+  call_tracking_ = on;
+  UpdateArmed();
+}
+
+void Debugger::TrackCall(uint32_t call_pc, uint32_t target) {
+  if (call_stack_.size() >= static_cast<size_t>(kMaxCallDepth))
+    call_stack_.erase(call_stack_.begin());   // the oldest goes: a runaway recursion, or a leak
+  CallFrame frame;
+  frame.call_pc = call_pc;
+  frame.target = target;
+  frame.return_to = call_pc + 8;
+  frame.sp = system_->cpu().context()->gp.sp;
+  call_stack_.push_back(frame);
+}
+
+void Debugger::TrackReturn(uint32_t to) {
+  // Back to the frame this returns into - which drops any frames above it that never returned
+  // properly. A return into no frame at all changes nothing.
+  for (size_t i = call_stack_.size(); i-- > 0;) {
+    if (Folded(call_stack_[i].return_to) == Folded(to)) {
+      call_stack_.resize(i);
+      return;
+    }
+  }
+}
+
+// ---- Labels -----------------------------------------------------------------------------------
+
+void Debugger::SetLabel(uint32_t address, const std::string& name) {
+  if (name.empty())
+    labels_.erase(Folded(address));
+  else
+    labels_[Folded(address)] = name;
+}
+
+void Debugger::ClearLabels() { labels_.clear(); }
+
+const std::string* Debugger::Label(uint32_t address) const {
+  const auto found = labels_.find(Folded(address));
+  return found == labels_.end() ? nullptr : &found->second;
+}
+
+// ---- Device panes -----------------------------------------------------------------------------
+
+namespace {
+
+std::string Format(const char* format, ...) {
+  char text[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(text, sizeof(text), format, args);
+  va_end(args);
+  return text;
+}
+
+const char* CdCommandName(uint32_t command) {
+  switch (command) {
+    case 0x01: return "Getstat";   case 0x02: return "Setloc";   case 0x03: return "Play";
+    case 0x04: return "Forward";   case 0x05: return "Backward"; case 0x06: return "ReadN";
+    case 0x07: return "MotorOn";   case 0x08: return "Stop";     case 0x09: return "Pause";
+    case 0x0A: return "Init";      case 0x0B: return "Mute";     case 0x0C: return "Demute";
+    case 0x0D: return "Setfilter"; case 0x0E: return "Setmode";  case 0x0F: return "Getparam";
+    case 0x10: return "GetlocL";   case 0x11: return "GetlocP";  case 0x12: return "SetSession";
+    case 0x13: return "GetTN";     case 0x14: return "GetTD";    case 0x15: return "SeekL";
+    case 0x16: return "SeekP";     case 0x19: return "Test";     case 0x1A: return "GetID";
+    case 0x1B: return "ReadS";     case 0x1C: return "Reset";    case 0x1D: return "GetQ";
+    case 0x1E: return "ReadTOC";
+    default:   return "?";
+  }
+}
+
+}  // namespace
+
+void Debugger::DescribeDevices(std::vector<DeviceRow>* rows) const {
+  auto add = [rows](const char* section, std::string name, std::string value, std::string note) {
+    DeviceRow row;
+    row.section = section;
+    row.name = std::move(name);
+    row.value = std::move(value);
+    row.note = std::move(note);
+    rows->push_back(std::move(row));
+  };
+  auto peek = [this](uint32_t address) {
+    uint32_t word = 0;
+    PeekData(address, &word);
+    return word;
+  };
+  IOInterface& io = system_->io();
+
+  // Interrupts.
+  static const char* const kSources[11] = {
+    "VBLANK", "GPU", "CD-ROM", "DMA", "Timer 0", "Timer 1", "Timer 2", "Pad/card", "SIO", "SPU",
+    "Lightpen",
+  };
+  const uint32_t stat = io.io.interrupt_stat;
+  const uint32_t mask = io.io.interrupt_mask;
+  add("Interrupts", "I_STAT / I_MASK", Format("%04X / %04X", stat & 0xFFFF, mask & 0xFFFF),
+      (stat & mask) != 0 ? "one is pending and enabled" : "");
+  for (int i = 0; i < 11; ++i) {
+    const bool pending = (stat >> i) & 1;
+    const bool enabled = (mask >> i) & 1;
+    if (pending || enabled)
+      add("Interrupts", kSources[i], pending ? "pending" : "-", enabled ? "enabled" : "masked");
+  }
+
+  // DMA.
+  static const char* const kChannels[7] = {
+    "0 MDEC in", "1 MDEC out", "2 GPU", "3 CD-ROM", "4 SPU", "5 PIO", "6 OTC",
+  };
+  static const char* const kSync[4] = { "burst", "slice", "linked list", "sync 3" };
+  const uint32_t dpcr = peek(0x1F8010F0);
+  const uint32_t dicr = peek(0x1F8010F4);
+  add("DMA", "DPCR / DICR", Format("%08X / %08X", dpcr, dicr),
+      (dicr & 0x80000000u) ? "master interrupt flag set" : "");
+  for (int c = 0; c < 7; ++c) {
+    const uint32_t base = 0x1F801080 + static_cast<uint32_t>(c) * 0x10;
+    const uint32_t madr = peek(base), bcr = peek(base + 4), chcr = peek(base + 8);
+    const bool on = (dpcr >> (c * 4 + 3)) & 1;
+    add("DMA", kChannels[c], Format("MADR %08X  BCR %08X  CHCR %08X", madr, bcr, chcr),
+        Format("%s, %s RAM, %s%s", on ? "on" : "off", (chcr & 1) ? "from" : "to",
+               kSync[(chcr >> 9) & 3], (chcr & 0x01000000) ? ", busy" : ""));
+  }
+
+  // Timers.
+  static const char* const kTimers[3] = { "Timer 0 (dot)", "Timer 1 (hblank)", "Timer 2 (1/8)" };
+  for (int t = 0; t < 3; ++t) {
+    const RootCounter& rc = io.rootcounter_[t];
+    const uint32_t mode = rc.mode.raw;
+    std::string note = Format("clock %u", (mode >> 8) & 3);
+    if (mode & 1) note += Format(", sync mode %u", (mode >> 1) & 3);
+    if (mode & 8) note += ", wraps at target";
+    if (mode & 0x10) note += ", IRQ at target";
+    if (mode & 0x20) note += ", IRQ at FFFFh";
+    if (mode & 0x40) note += " (repeat)";
+    if ((mode & 0x400) == 0) note += ", IRQ requested";
+    if (mode & 0x800) note += ", reached target";
+    if (mode & 0x1000) note += ", reached FFFFh";
+    add("Timers", kTimers[t],
+        Format("count %04X  target %04X  mode %04X", rc.counter & 0xFFFF, rc.target & 0xFFFF,
+               mode & 0xFFFF),
+        note);
+  }
+
+  // GPU.
+  Gpu& gpu = system_->gpu();
+  const uint32_t gpustat = gpu.status_raw();
+  static const int kWidths[4] = { 256, 320, 512, 640 };
+  const int width = (gpustat & (1u << 16)) ? 368 : kWidths[(gpustat >> 17) & 3];
+  const bool interlaced = (gpustat >> 22) & 1;
+  const int height = ((gpustat >> 19) & 1) && interlaced ? 480 : 240;
+  add("GPU", "GPUSTAT", Format("%08X", gpustat),
+      Format("%dx%d, %s, %s%s%s", width, height, (gpustat & (1u << 20)) ? "PAL" : "NTSC",
+             (gpustat & (1u << 21)) ? "24-bit" : "15-bit", interlaced ? ", interlaced" : "",
+             (gpustat & (1u << 23)) ? ", display off" : ""));
+  add("GPU", "Display", Format("VRAM %u,%u", gpu.display_vram_x(), gpu.display_vram_y()),
+      Format("dots %u-%u, scanline %u, %.2f Hz", gpu.horizontal_display_start(),
+             gpu.horizontal_display_end(), gpu.scanline(), gpu.refresh_hz()));
+  add("GPU", "Texture page", Format("%u,%u", (gpustat & 0xF) * 64, ((gpustat >> 4) & 1) * 256),
+      Format("%s-bit, semi-transparency %u%s",
+             ((gpustat >> 7) & 3) == 0 ? "4" : ((gpustat >> 7) & 3) == 1 ? "8" : "15",
+             (gpustat >> 5) & 3, (gpustat & (1u << 9)) ? ", dithered" : ""));
+  add("GPU", "Frames", Format("%llu", static_cast<unsigned long long>(gpu.frame_count())),
+      Format("%llu primitives, %llu GP0 words",
+             static_cast<unsigned long long>(gpu.stats().primitives),
+             static_cast<unsigned long long>(gpu.stats().gp0_words)));
+
+  // CD-ROM.
+  const Cdrom& cd = io.cdrom;
+  const Cdrom::Stats& cs = cd.stats();
+  add("CD-ROM", "Disc", cd.disc_loaded() ? "in" : "none",
+      cd.disc_loaded() ? Format("last sector delivered %u", cd.delivered_lba()) : "");
+  add("CD-ROM", "Last command", Format("%02X %s", cs.last_command, CdCommandName(cs.last_command)),
+      Format("%llu commands, %llu unknown", static_cast<unsigned long long>(cs.commands),
+             static_cast<unsigned long long>(cs.unknown_commands)));
+  add("CD-ROM", "Sectors", Format("%llu read", static_cast<unsigned long long>(cs.sectors_read)),
+      Format("%llu XA (%llu filtered out), %llu CD-DA",
+             static_cast<unsigned long long>(cs.xa_sectors),
+             static_cast<unsigned long long>(cs.xa_filtered),
+             static_cast<unsigned long long>(cs.cdda_sectors)));
+
+  // SPU.
+  const uint32_t control = peek(0x1F801DA8) >> 16;         // 1F801DAAh
+  const uint32_t status = peek(0x1F801DAC) >> 16;          // 1F801DAEh
+  const uint32_t endx = peek(0x1F801D9C);
+  add("SPU", "Control / status", Format("%04X / %04X", control, status),
+      Format("%s%s%s", (control & 0x8000) ? "on" : "off", (control & 0x4000) ? ", unmuted" : ", muted",
+             (control & 0x0080) ? ", reverb" : ""));
+  for (int v = 0; v < 24; ++v) {
+    const uint32_t base = 0x1F801C00 + static_cast<uint32_t>(v) * 16;
+    const uint32_t volumes = peek(base), pitch_start = peek(base + 4), adsr = peek(base + 8),
+                   level_repeat = peek(base + 12);
+    const uint32_t pitch = pitch_start & 0xFFFF;
+    const uint32_t start = (pitch_start >> 16) * 8;
+    const uint32_t level = level_repeat & 0xFFFF;
+    const uint32_t repeat = (level_repeat >> 16) * 8;
+    add("SPU", Format("Voice %d", v),
+        Format("pitch %04X  start %05X  repeat %05X  level %04X", pitch, start, repeat, level),
+        Format("%u Hz, vol %04X/%04X, ADSR %08X%s%s", pitch * 44100 / 4096, volumes & 0xFFFF,
+               volumes >> 16, adsr, level != 0 ? ", sounding" : "",
+               ((endx >> v) & 1) ? ", ended" : ""));
+  }
 }
 
 // ---- Stepping ---------------------------------------------------------------------------------
@@ -133,6 +493,12 @@ void Debugger::Reset() {
   break_requested_ = false;
   depth_ = 0;
   previous_ = Kind::kOther;
+  watch_pending_ = false;
+  watch_hit_ = WatchHit();
+  // A new boot's calls are nothing to do with the old one's. The BIOS breaks, the tracking
+  // setting and the labels stay, like the breakpoints.
+  call_stack_.clear();
+  bios_calls_ = 0;
   UpdateArmed();
 }
 
@@ -150,21 +516,34 @@ bool Debugger::ShouldHalt(uint32_t pc) {
   bool returned = false;
   if (previous_ == Kind::kCall) {
     ++depth_;
+    if (call_tracking_)
+      TrackCall(previous_pc_, pc);
   } else if (previous_ == Kind::kReturn) {
     if (depth_ == 0)
       returned = true;
     else
       --depth_;
+    if (call_tracking_)
+      TrackReturn(pc);
   }
   previous_ = Kind::kOther;
 
   if (skip_first_) {
     skip_first_ = false;
     previous_ = Classify(pc);
+    previous_pc_ = pc;
     // A plain continue with nothing else set is disarmed from here on, so compiled code comes
     // straight back - rather than the machine staying interpreted because of one skipped check.
     UpdateArmed();
     return false;
+  }
+
+  // An access the last instruction made (or a DMA during it) tripped a watchpoint. First, ahead
+  // of any step or breakpoint here: it is about what already happened.
+  if (watch_pending_) {
+    watch_pending_ = false;
+    Halt(pc, HaltReason::kWatchpoint);
+    return true;
   }
 
   if (break_requested_) {
@@ -209,7 +588,16 @@ bool Debugger::ShouldHalt(uint32_t pc) {
     }
   }
 
+  if (!bios_breaks_.empty() && (physical == 0xA0 || physical == 0xB0 || physical == 0xC0)) {
+    const uint32_t key = (physical << 8) | (system_->cpu().context()->gp.t1 & 0xFF);
+    if (std::find(bios_breaks_.begin(), bios_breaks_.end(), key) != bios_breaks_.end()) {
+      Halt(pc, HaltReason::kBiosCall);
+      return true;
+    }
+  }
+
   previous_ = Classify(pc);
+  previous_pc_ = pc;
   return false;
 }
 
@@ -227,7 +615,15 @@ void Debugger::UpdateArmed() {
   enabled_count_ = 0;
   for (const Breakpoint& bp : breakpoints_)
     enabled_count_ += bp.enabled ? 1 : 0;
-  armed_ = enabled_count_ > 0 || mode_ != Mode::kRun || break_requested_ || skip_first_;
+  enabled_watchpoints_ = 0;
+  for (const Watchpoint& wp : watchpoints_)
+    enabled_watchpoints_ += wp.enabled ? 1 : 0;
+  armed_ = enabled_count_ > 0 || enabled_watchpoints_ > 0 || mode_ != Mode::kRun ||
+           break_requested_ || skip_first_ || watch_pending_ || !bios_breaks_.empty() ||
+           call_tracking_;
+  // The CPU and the DMA channels report accesses only while there is something to match them
+  // against: one flag, tested per load and store.
+  system_->cpu().set_debug_watch(enabled_watchpoints_ > 0);
 }
 
 // ---- Reading the program without disturbing it ------------------------------------------------
@@ -436,6 +832,16 @@ void Debugger::Capture(Snapshot* out, uint32_t center, int count) const {
   out->landing = cpu.GetPendingLoad(&out->landing_reg, &out->landing_value);
   out->in_flight = cpu.GetArmedLoad(&out->in_flight_reg, &out->in_flight_value);
   out->breakpoints = breakpoints_;
+  out->watchpoints = watchpoints_;
+  out->watch_hit = watch_hit_;
+  out->bios_log = BiosLog();
+  out->bios_calls = bios_calls_;
+  out->bios_breaks = bios_breaks_;
+  out->call_tracking = call_tracking_;
+  out->call_stack = call_stack_;
+  out->label_count = labels_.size();
+  out->devices.clear();
+  DescribeDevices(&out->devices);
   out->memory_address = memory_view_;
   out->memory.assign(memory_view_length_, 0);
   out->memory_readable.assign(memory_view_length_, 0);
@@ -463,11 +869,19 @@ void Debugger::Capture(Snapshot* out, uint32_t center, int count) const {
     line.address = first + static_cast<uint32_t>(i) * 4;
     line.readable = Peek(line.address, &line.word);
     line.delay_slot = previous_readable && HasDelaySlot(previous);
+    if (!labels_.empty()) {
+      if (const std::string* name = Label(line.address))
+        line.label = *name;
+    }
     if (line.readable) {
       char text[96];
       Disassemble(line.address, line.word, text, sizeof(text));
       line.text = text;
       line.has_target = StaticTarget(line.address, line.word, &line.target);
+      if (line.has_target && !labels_.empty()) {
+        if (const std::string* name = Label(line.target))
+          line.target_label = *name;
+      }
     } else {
       line.word = 0;
     }

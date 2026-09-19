@@ -37,6 +37,7 @@
 // and a breakpoint *on* a delay slot fires only if that instruction is reached some other way.
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -53,7 +54,63 @@ class Debugger {
     uint64_t hits = 0;
   };
 
-  enum class HaltReason { kNone, kBreakpoint, kStep, kRunTo, kRequested };
+  enum class HaltReason { kNone, kBreakpoint, kStep, kRunTo, kRequested, kWatchpoint, kBiosCall };
+
+  // ---- Phase 4 --------------------------------------------------------------------------------
+
+  // One call into the BIOS through A0h, B0h or C0h: which function, its first four arguments,
+  // where it was called from, and when.
+  struct BiosCallRecord {
+    uint32_t vector = 0;       // A0h, B0h or C0h
+    uint32_t function = 0;     // t1
+    uint32_t args[4] = {};     // a0-a3
+    uint32_t ra = 0;           // where it returns to - just past the call in the caller
+    uint64_t cycle = 0;
+  };
+  static const int kBiosLogSize = 256;
+
+  // One frame of the approximate call stack: a call taken and not yet returned from.
+  struct CallFrame {
+    uint32_t call_pc = 0;      // the jal, jalr or linking branch
+    uint32_t target = 0;       // where it went
+    uint32_t return_to = 0;    // call_pc + 8
+    uint32_t sp = 0;           // at entry
+  };
+  static const int kMaxCallDepth = 256;
+
+  // One line of the device panes: a register or a piece of state, already in words.
+  struct DeviceRow {
+    std::string section;       // "Interrupts", "DMA", "Timers", "GPU", "CD-ROM", "SPU"
+    std::string name;
+    std::string value;
+    std::string note;
+  };
+
+  // A range of memory to stop on when it is read, written, or either - by the CPU, or (writes
+  // only) by a DMA channel. Matched physically, and RAM's four 2 MB mirrors are one RAM.
+  struct Watchpoint {
+    uint32_t address = 0;
+    uint32_t length = 4;
+    bool read = false;
+    bool write = true;
+    bool enabled = true;
+    uint64_t hits = 0;
+  };
+
+  // The access that tripped a watchpoint. The machine halts at the next instruction boundary,
+  // after the access - the instruction that made it has finished, so `pc` is where it was and
+  // the halt is on whatever comes next.
+  struct WatchHit {
+    bool valid = false;
+    int dma_channel = -1;         // -1: the CPU, at `pc`; 0-6: that DMA channel
+    uint32_t pc = 0;
+    uint32_t address = 0;         // as accessed
+    uint32_t size = 0;            // bytes
+    bool write = false;
+    uint32_t value = 0;           // what was written, or what was there to be read
+    bool value_known = false;     // a read of a register the debugger cannot peek
+    uint32_t watchpoint = 0;      // the watchpoint's address
+  };
 
   explicit Debugger(System* system) : system_(system) {}
 
@@ -64,6 +121,59 @@ class Debugger {
   void SetBreakpointEnabled(uint32_t address, bool enabled);
   void ClearBreakpoints();
   const std::vector<Breakpoint>& breakpoints() const { return breakpoints_; }
+
+  // ---- Watchpoints - phase 3 ------------------------------------------------------------------
+  // One per start address: adding one where one starts already replaces its length and kinds
+  // and enables it.
+  void AddWatchpoint(uint32_t address, uint32_t length, bool read, bool write);
+  void RemoveWatchpoint(uint32_t address);
+  void SetWatchpointEnabled(uint32_t address, bool enabled);
+  void ClearWatchpoints();
+  const std::vector<Watchpoint>& watchpoints() const { return watchpoints_; }
+  // The access behind the last watchpoint halt.
+  const WatchHit& watch_hit() const { return watch_hit_; }
+
+  // From Cpu::Load and Cpu::Store, while any watchpoint is enabled: a data access by the
+  // instruction at `pc`. `value` is what a write stores; a read's is peeked here.
+  void OnCpuAccess(uint32_t pc, uint32_t address, uint32_t size, bool write, uint32_t value);
+  // From the DMA channels, through Cpu::NoteExternalWrite: one word written to RAM.
+  void OnDmaWrite(int channel, uint32_t ram_offset, uint32_t value);
+
+  // ---- The BIOS call log, and breaking on a call - phase 4 -----------------------------------
+  // Every call is logged, armed or not: it is noticed at the same point the kernel's console
+  // capture is, and costs a few stores per call. The last kBiosLogSize are kept.
+  void OnBiosCall();   // from System::StepInstruction, at A0h/B0h/C0h
+  std::vector<BiosCallRecord> BiosLog() const;   // oldest first
+  uint64_t bios_calls() const { return bios_calls_; }
+  // Halt at the vector - before the function runs - when this function is called.
+  void AddBiosBreak(uint32_t vector, uint32_t function);
+  void RemoveBiosBreak(uint32_t vector, uint32_t function);
+  void ClearBiosBreaks();
+  // Each as (vector << 8) | function.
+  const std::vector<uint32_t>& bios_breaks() const { return bios_breaks_; }
+
+  // ---- The call stack, approximate - phase 4 --------------------------------------------------
+  // MIPS keeps no frame chain, so this is the calls taken and not yet returned from, recorded
+  // while tracking is on - which arms the debugger, so the machine runs interpreted. A return
+  // pops back to the frame it returns into; one that matches no frame (a longjmp, a return
+  // through an exception) leaves the stack alone. Only right for calls made since tracking began.
+  void SetCallTracking(bool on);
+  bool call_tracking() const { return call_tracking_; }
+  const std::vector<CallFrame>& call_stack() const { return call_stack_; }
+
+  // ---- Labels - phase 4 -----------------------------------------------------------------------
+  // Names for addresses, shown in the listing and against branch targets. Matched like
+  // watchpoints: physically, RAM's mirrors as one. An empty name removes the label.
+  void SetLabel(uint32_t address, const std::string& name);
+  void ClearLabels();
+  const std::string* Label(uint32_t address) const;
+  // Every label, keyed by folded address.
+  const std::map<uint32_t, std::string>& labels() const { return labels_; }
+
+  // ---- Device panes - phase 4 -----------------------------------------------------------------
+  // The interrupt controller, DMA, the timers, the GPU, the CD-ROM and the SPU, described in
+  // rows. Read through PeekData and the devices' const accessors, so it changes nothing.
+  void DescribeDevices(std::vector<DeviceRow>* rows) const;
 
   // ---- Stepping - all of these run the machine on and halt again ------------------------------
   // One step: one instruction, or a branch and its delay slot.
@@ -109,6 +219,8 @@ class Debugger {
     bool has_target = false;    // a branch or jump whose destination is in the word
     uint32_t target = 0;
     std::string text;
+    std::string label;          // this address's label, if it has one
+    std::string target_label;   // the branch target's, if it has one
   };
 
   struct Snapshot {
@@ -127,11 +239,21 @@ class Debugger {
     bool in_flight = false;
     uint32_t in_flight_reg = 0, in_flight_value = 0;
     std::vector<Breakpoint> breakpoints;
+    std::vector<Watchpoint> watchpoints;
+    WatchHit watch_hit;         // meaningful when reason is kWatchpoint
     std::vector<Line> lines;    // `count` instructions, starting at `first`
     // The memory view: memory_length bytes from memory_address, and which could be read.
     uint32_t memory_address = 0;
     std::vector<uint8_t> memory;
     std::vector<uint8_t> memory_readable;
+    // Phase 4.
+    std::vector<BiosCallRecord> bios_log;
+    uint64_t bios_calls = 0;
+    std::vector<uint32_t> bios_breaks;
+    bool call_tracking = false;
+    std::vector<CallFrame> call_stack;
+    size_t label_count = 0;
+    std::vector<DeviceRow> devices;
   };
 
   // Fills `out` with the machine's state, `count` instructions of disassembly around `center` -
@@ -209,6 +331,28 @@ class Debugger {
 
   uint32_t memory_view_ = 0x80000000;
   uint32_t memory_view_length_ = 0;
+
+  void Watch(int dma_channel, uint32_t pc, uint32_t address, uint32_t size, bool write,
+             uint32_t value, bool value_known);
+
+  std::vector<Watchpoint> watchpoints_;
+  int enabled_watchpoints_ = 0;
+  bool watch_pending_ = false;    // an access tripped one; halt at the next boundary
+  WatchHit watch_hit_;
+
+  // Phase 4.
+  void TrackCall(uint32_t call_pc, uint32_t target);
+  void TrackReturn(uint32_t to);
+
+  // On the heap: inline, its 12 KB moved the members System keeps after the debugger - the
+  // config read every step among them - and the BIOS boot measured 5% slower for it.
+  std::vector<BiosCallRecord> bios_log_ = std::vector<BiosCallRecord>(kBiosLogSize);
+  uint64_t bios_calls_ = 0;
+  std::vector<uint32_t> bios_breaks_;
+  bool call_tracking_ = false;
+  std::vector<CallFrame> call_stack_;
+  uint32_t previous_pc_ = 0;      // the pc previous_ was classified at
+  std::map<uint32_t, std::string> labels_;
 };
 
 }  // namespace psx

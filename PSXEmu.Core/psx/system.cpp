@@ -110,7 +110,11 @@ int System::Deinitialize() {
 
 // One instruction, with any pending interrupt taken before the next one. No
 // wall clock is consulted, so a headless run is reproducible.
-void System::StepInstruction() {
+//
+// Two copies: kDebugger false is StepInstructionUnarmed, with the debugger's
+// check compiled out rather than tested and skipped.
+template <bool kDebugger>
+bool System::StepImpl() {
   // The one safe point to change CPU: here, between instructions, on the
   // thread that runs the machine. Switching the recompiler off frees the
   // compiled code, and the menu that asks for it runs on the message thread -
@@ -189,8 +193,10 @@ void System::StepInstruction() {
   // runs - after any interrupt has moved the pc, so a breakpoint on an exception vector fires
   // however the vector was reached, and before the BIOS-call hook, so a halted step records
   // nothing. A halted step does nothing at all: no instruction, no time.
-  if (debugger_.armed() && debugger_.ShouldHalt(cpu_.context()->pc))
-    return;
+  if constexpr (kDebugger) {
+    if (debugger_.armed() && debugger_.ShouldHalt(cpu_.context()->pc))
+      return false;
+  }
 
   // A BIOS call is a jump to A0h, B0h or C0h with the function number in t1.
   // It is noticed here, before the instruction at the vector runs and after
@@ -201,8 +207,10 @@ void System::StepInstruction() {
   // never reaches - with the recompiler on, the BIOS console recorded nothing.
   {
     const uint32_t pc = cpu_.context()->pc;
-    if (pc == 0xA0 || pc == 0xB0 || pc == 0xC0)
+    if (pc == 0xA0 || pc == 0xB0 || pc == 0xC0) {
       kernel_.Call();
+      debugger_.OnBiosCall();   // the call log (psx/debugger.h) - every call, armed or not
+    }
   }
 
   // With the recompiler on, one step is a chain of compiled blocks rather than
@@ -215,7 +223,7 @@ void System::StepInstruction() {
   // it does not tick as it goes, the way ExecuteInstruction does.
   // While the debugger could halt the machine, it runs interpreted: a compiled chain is many
   // instructions per step, and a breakpoint in the middle of one would never be seen.
-  if (recompiler_ != nullptr && !gte_command_first && !debugger_.armed()) {
+  if (recompiler_ != nullptr && !gte_command_first && !(kDebugger && debugger_.armed())) {
     const uint32_t cycles = recompiler_->Step();
     if (cycles > 0)
       cpu_.TickCycles(cycles);
@@ -241,7 +249,11 @@ void System::StepInstruction() {
     auto_boot_exe_ = false;
     LoadPsExe(auto_boot_exe_path_.c_str());
   }
+  return true;
 }
+
+template bool System::StepImpl<true>();
+template bool System::StepImpl<false>();
 
 void System::LoadBiosFromMemory(const void* buffer) {
   memcpy(io_.bios_buffer.u8, buffer, kBiosSize);

@@ -52,6 +52,7 @@ PsxEmu/
       kernel.h/.cpp            BIOS call logging
       debugger.h/.cpp          breakpoints and stepping: halts the machine before an instruction
       disasm.h                 MIPS disassembler - boot_runner and the debugger window
+      bios_calls.h/.cpp        the A0h/B0h/C0h functions by name, for the debugger's call log
       debug.h                  BREAKPOINT, and the trap counter behind it
       debug_assist.h/.cpp      _DEBUG-only CSV instruction logger
       emu.h/.cpp               superseded by system.*; kept, not built

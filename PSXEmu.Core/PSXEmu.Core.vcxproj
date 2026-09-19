@@ -97,6 +97,7 @@
     <ClCompile Include="psx\mc.cpp" />
     <ClCompile Include="psx\mc_directory.cpp" />
     <ClCompile Include="psx\debugger.cpp" />
+    <ClCompile Include="psx\bios_calls.cpp" />
     <ClCompile Include="psx\root_counter.cpp" />
     <ClCompile Include="psx\sio.cpp" />
     <ClCompile Include="psx\spu.cpp" />
@@ -141,6 +142,7 @@
     <ClInclude Include="psx\mc_directory.h" />
     <ClInclude Include="psx\debugger.h" />
     <ClInclude Include="psx\disasm.h" />
+    <ClInclude Include="psx\bios_calls.h" />
     <ClInclude Include="psx\psx.h" />
     <ClInclude Include="psx\root_counter.h" />
     <ClInclude Include="psx\sio.h" />

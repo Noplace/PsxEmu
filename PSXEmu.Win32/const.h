@@ -225,6 +225,11 @@ namespace psxemu {
     inline constexpr const char* kSaveFilter =
         "Single Save (*.mcs)\0*.mcs\0"
         "All files (*.*)\0*.*\0";
+
+    // The debugger's labels: text, one "address name" per line.
+    inline constexpr const char* kLabelFilter =
+        "Labels (*.txt;*.sym)\0*.txt;*.sym\0"
+        "All files (*.*)\0*.*\0";
     inline constexpr const char* kExeFilter =
         "PSX Executables (*.exe;*.psx;*.psexe)\0*.exe;*.psx;*.psexe\0"
         "All files (*.*)\0*.*\0";

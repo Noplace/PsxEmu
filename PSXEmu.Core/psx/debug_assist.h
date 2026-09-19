@@ -21,12 +21,6 @@
 namespace emulation {
 namespace psx {
 
-struct BiosCall
-{
-    int address;
-    int operation;
-    const char *prototype;
-};
 
 class DebugAssist {
  public:
@@ -40,7 +34,6 @@ class DebugAssist {
   static const char* machine_instruction_regimm_[32];
   static const char* machine_instruction_cop0_[64];
   static const char* machine_instruction_cop2_[64];
-  static BiosCall bios_call_[3][256];
   System* system_;
   FILE* fp;
   DebugAssist(void);

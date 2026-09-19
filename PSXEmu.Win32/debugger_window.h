@@ -22,6 +22,14 @@
 // the controls that step and continue (phase 1 of Docs/Debugger-Plan.md) - and memory, viewed and
 // edited, with registers edited too (phase 2).
 //
+// Phase 4 put tabs under the listing: the memory pane, the BIOS call log (and breaking on a
+// particular call), the approximate call stack, and the devices' state; and labels, named in the
+// toolbar and loaded from or saved to a text file.
+//
+// Watchpoints (phase 3) stop the machine after a read or write of a range, by the CPU or by a DMA
+// channel; the halt names which, and the listing and the memory pane go to the two places that
+// matter - the instruction that made the access, and the address it touched.
+//
 // The memory pane reads through Debugger::PeekData, so a hardware register whose read has a side
 // effect shows as ?? rather than being read. While the machine runs, the memory pane refreshes
 // twice a second - watching a value change is what a memory view is for - but the registers do
@@ -43,6 +51,7 @@
 #include <commctrl.h>
 
 #include <functional>
+#include <string>
 #include <vector>
 
 namespace psxemu {
@@ -100,8 +109,13 @@ namespace psxemu {
             kContinue, kBreak, kStepInto, kStepOver, kStepOut, kRunToCursor,
             kGoTo, kGoToPc, kAddBreakpoint, kRemoveBreakpoint, kRemoveAll,
             kMemoryView, kMemoryPrevious, kMemoryNext, kMemoryWrite, kSetRegister,
+            kAddWatchpoint, kRemoveWatchpoint,
+            kName, kLabels, kClearBiosBreaks,
             kControlCount,
         };
+
+        // The tabs under the listing (phase 4 added all but the first).
+        enum Tab { kTabMemory, kTabBios, kTabStack, kTabDevices, kTabCount };
 
         static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
                                            LPARAM lparam);
@@ -118,6 +132,17 @@ namespace psxemu {
         void FillCode();
         void FillRegisters();
         void FillBreakpoints();
+        void FillWatchpoints();
+        void FillBiosLog();
+        void FillCallStack();
+        void FillDevices();
+        void ShowTab(int tab);
+        void ShowBiosMenu(int x, int y);
+        void ShowLabelsMenu();
+        void LoadLabels();
+        void SaveLabels();
+        // What tripped the last watchpoint, in words: "the instruction at 80012340 wrote ...".
+        std::wstring DescribeWatchHit() const;
         void FillMemoryPane(uint32_t old_address, const std::vector<uint8_t>& old_bytes);
 
         // The memory pane at a new address: the window's own record of where it is, and the
@@ -159,6 +184,20 @@ namespace psxemu {
         HWND memory_address_ = nullptr;
         HWND memory_bytes_ = nullptr;
         HWND register_value_ = nullptr;
+        HWND watch_list_ = nullptr;
+        HWND watchpoints_label_ = nullptr;
+        HWND watch_address_ = nullptr;
+        HWND watch_length_ = nullptr;
+        HWND watch_kind_ = nullptr;   // a combo box: writes, reads, either
+        HWND label_edit_ = nullptr;
+        HWND tab_ = nullptr;
+        HWND bios_list_ = nullptr;
+        HWND bios_note_ = nullptr;
+        HWND stack_track_ = nullptr;  // a check box: track calls
+        HWND stack_list_ = nullptr;
+        HWND devices_list_ = nullptr;
+        int tab_index_ = kTabMemory;
+        uint64_t shown_bios_calls_ = ~0ull;   // the call count the BIOS list was last filled at
         HFONT font_ = nullptr;
         HFONT mono_ = nullptr;
         Host host_;

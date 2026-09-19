@@ -91,7 +91,7 @@ void Kernel::Call() {
       system().cpu().inside_bios_call = true;
       system().cpu().bios_logged[((call_type & 0x7F) >> 4) - 2][call_index] = true;
     }
-    BiosCall call = system_->csvlog.bios_call_[((call_type & 0x7F) >> 4) - 2][call_index];
+    BiosCall call = kBiosCalls[((call_type & 0x7F) >> 4) - 2][call_index];
     if (system_->csvlog.fp) {
       fprintf(system_->csvlog.fp,"0x%08X,0x%08X,%s,0x%02X,0x%02X\n",system().cpu().index,context->prev_pc,call.prototype,call.address,call.operation);
     }

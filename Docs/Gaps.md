@@ -39,7 +39,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 287, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261, mc 77, debug 105 - 1,228
+cpu 287, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261, mc 77, debug 174 - 1,297
 checks, no failures (re-run 2026-09-19). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
@@ -315,10 +315,10 @@ keyboard/XInput/mouse input, and a speed readout in the title bar (bug 49) that
 Emulation > Show Timings expands into where each frame's time went, and a BIOS
 console window (Emulation > BIOS Console, bug 66) showing what software prints
 through the BIOS, a memory card editor (bug 69), recent discs and a keyboard
-binding editor (bug 70), and a CPU debugger with a memory view and editor (Emulation >
-Debugger, bugs 71-73) - watchpoints
-still to come, planned in
-[Debugger-Plan.md](Debugger-Plan.md) - and no settings dialog, deliberately:
+binding editor (bug 70), and a CPU debugger (Emulation > Debugger, bugs 71-75) with
+memory, watchpoints, a BIOS call log, a call stack, labels and device panes (see
+[Debugger-Plan.md](Debugger-Plan.md); PsyQ `.SYM` symbol files are not read yet) -
+and no settings dialog, deliberately:
 every setting is already in the menus. Only the keyboard is rebindable; an
 XInput pad's layout is fixed. Output a
 program sends to the serial port or the expansion port's DUART directly, rather

@@ -4190,10 +4190,209 @@ and its test were removed rather than kept as a test that passes either way.
 
   Timed alternately, best of six: 4.42 s for the old binary, 4.53 s for this
   one, about 2.5% apart, inside that noise. Phase 2 adds nothing per
-  instruction; phase 0's `armed()` test is the only debugger cost there.
+  instruction. (Bug 74 corrects the rest of this: timed against a build with
+  the debugger's checks compiled out, rather than an older binary, the
+  `armed()` test turned out not to be the cost. Bug 74 found and removed the
+  real one.)
 
 **Not verified:** the context menus (following a word, showing a register's
 value) and double-click filling the edit boxes were not driven. A test can't
 easily post those from outside the process. What they call (`ViewMemory`,
 `GoTo`, the edit boxes) was driven directly. The window's look is unseen, as
 before.
+
+## 74. Watchpoints; an idle debugger that cost 3%; and three boot_runner options with no default
+
+Phase 3 of [Debugger-Plan.md](Debugger-Plan.md): stop when memory is read or
+written, by the CPU or by DMA.
+
+**What it does.**
+- **A watchpoint:** a range (start and length), set to catch writes, reads or
+  either. Each can be enabled and counts its accesses.
+- **In Emulation > Debugger:** a list under the breakpoints, with a row of
+  controls. A memory row's context menu can also watch that row.
+- **Headless:** `boot_runner --watchpoint <hex>[:<len>][:r|w|rw]`.
+- **The halt comes after the access,** before the next instruction. The
+  instruction that made the access has finished, so nothing is left half done.
+  That is the same determinism rule the breakpoints keep.
+- **The halt says who:**
+  - "the instruction at 00002710 wrote FFFFFFFF to 1F801070", or "DMA channel
+    3 (CD-ROM) wrote ...";
+  - the listing selects the accessing instruction;
+  - the memory pane goes to the address.
+
+**Where accesses are caught.**
+- **The CPU:** `Cpu::Load` and `Cpu::Store`, behind one flag
+  (`set_debug_watch`) that is set only while a watchpoint is enabled.
+- **DMA:** every channel that writes RAM (1, 2, 3, 4 and 6) already reported
+  each word through `Cpu::NoteExternalWrite`, tagged D0h plus the channel, for
+  `--watch-ram`. The debugger hooks in there, so every channel is covered by one
+  line.
+- **Matching:** addresses are matched physically, and RAM's four 2 MB mirrors
+  count as one.
+
+Three details are easy to get wrong, and each has a test that failed when its
+fix was taken out:
+- **SWL and SWR read the word they merge into.** That is how this emulator does
+  a partial store, not a read the program made, so it must not trip a read
+  watchpoint (`merging_store_`).
+- **A store with the cache isolated writes nothing** (the BIOS uses it to flush
+  the instruction cache). So the write check comes after that case returns.
+  Placed before it, the isolated store tripped the watchpoint, and every other
+  store was counted twice.
+- **The DMA hook:** without it, the CD-ROM and OTC writes go unseen.
+
+**An idle debugger cost about 3%, and now costs nothing measurable.** The
+plan asked for zero cost when nothing is armed. A build with every debugger
+check compiled out ran the BIOS boot about 2.5-3% faster, consistently.
+Isolating each check showed where the cost was:
+- **The step's `armed()` test:** not it. `StepInstruction` now returns false
+  on a halt, so callers don't ask `halted()` afterwards. `host::Machine` also
+  checks `armed()` once per frame and runs an unarmed frame through
+  `StepInstructionUnarmed`, a second copy with the check compiled out. That's
+  safe because nothing can arm the debugger mid-frame: the window's requests
+  run between frames. boot_runner without `--break` or `--watchpoint` does the
+  same.
+- **The watch hook in `Load`/`Store`:** this was the cost. A build with only
+  that hook removed matched the check-free build. The flag test itself is
+  cheap. The cost came from the call it guarded: setting up its arguments
+  inside the interpreter's two hottest functions changed how the compiler laid
+  out the rest of them.
+
+The call moved into never-inlined helpers (`WatchLoad`, `WatchStore`) behind
+an `[[unlikely]]` flag test. Best of eight BIOS boots, alternating: 4.26 s for
+this build, 4.30 s with every debugger check compiled out, medians 4.31 s and
+4.32 s. That is inside the noise.
+
+**Three boot_runner options with no default.** Adding `--watchpoint` added a
+member to boot_runner's `Options`. After that, a plain `--watchpoint` run came
+up in `--recompiler-diff` mode and stopped with "DIVERGED". `ParseOptions`
+never set `recompiler`, `recompiler_toggle` or `recompiler_diff`. `Options`
+lives on the stack, so they held whatever was there. That happened to be
+zero until the layout moved. All three now have defaults. The other fields
+were checked against the default list and all have one; the vectors construct
+themselves.
+
+**Verified, 2026-09-19:**
+- **`debug_test`:** 149 checks. The watchpoint group runs twice, once
+  interpreted and once with the recompiler on. It is mutation-tested three ways,
+  as above. It also found a bug in the test itself: the harness's `Reset`
+  cleared breakpoints but not watchpoints, so the sub-tests had been sharing
+  them.
+- **Determinism, BIOS boot:** these runs all end on 97,747,598 instructions
+  and `c7c8db90c5984798`:
+  - `--watchpoint 1F801070:4:w`, which halts on 1,974 I_STAT writes;
+  - the same with the recompiler;
+  - that plus breakpoints on B0 and BFC02B68, 429,521 halts in all.
+- **Determinism, with DMA:** Ridge Racer to frame 3000 with `--watchpoint
+  80010000:0x100:w`:
+  - DMA channel 3 (CD-ROM) was named twice, writing the executable;
+  - then a BIOS store to the same range;
+  - 67 halts, ending on `e363f0b4ab4b87eb`, the table's frame-3000 value.
+- **The window, from outside the process, on a BIOS boot:**
+  - an I_STAT write watchpoint set from the controls halted with the store's
+    pc and value, selected the store in the listing, and moved the memory pane
+    to 1F801070;
+  - two more continues caught a word and a halfword write;
+  - unticking it ran on at 59.6 fps;
+  - a GPUSTAT watchpoint on either kind caught a read with its value;
+  - removing it worked.
+- **The phase 1 smoke test** was rerun after the machine loop changed, with the
+  same results as bug 72.
+- **The hot path changed** (`Cpu::Load`/`Store` and the step). Checked after
+  that change:
+  - the twelve-disc table: all 36 checksums unchanged;
+  - every harness green, `host_test` included;
+  - `--recompiler` on the BIOS: the same 9,161,469 steps and checksum as the
+    build with every debugger check compiled out.
+- **The front end builds.**
+
+## 75. A BIOS call log, a call stack, labels and device panes, and 12 KB that cost 5%
+
+Phase 4, the last, of [Debugger-Plan.md](Debugger-Plan.md). The debugger's
+window gains four tabs under the listing (Memory, BIOS Calls, Call Stack,
+Devices) and labels.
+
+**What it does.**
+- **The BIOS call log.** Every call through A0h, B0h or C0h is recorded, armed
+  or not, where the kernel's console capture already notices them. It keeps the
+  last 256, newest first, with the function by name, a0-a2, where it returns to,
+  and the cycle.
+  - Right-click a call to break on that function: the machine halts at the
+    vector, before the function runs, and the status line names it.
+  - Double-click a call to go to its caller.
+  - The names come from the table that used to exist only in debug builds
+    (`debug_assist.cpp`, under `_DEBUG`). It now lives in `psx/bios_calls.cpp`,
+    built everywhere, and the debug build's CSV log uses it from there.
+- **The call stack, approximate.** Every call taken and not yet returned from,
+  innermost first. Double-click a frame to go to the function it entered.
+  - It is recorded only while "Track calls" is on, which arms the debugger, so
+    the machine runs interpreted.
+  - A return pops back to the frame it returns into. A return into no frame (a
+    longjmp, a return through an exception) leaves it alone.
+  - As the plan says, it is a guess, and says so.
+- **Labels.** Select a line, type a name, press Name. The label shows on its
+  line and against every branch to it. Labels load from and save to a text
+  file, one hex address and name per line. Blank lines, `#` and `;` comments,
+  and anything that doesn't parse are skipped.
+- **Devices,** read-only, through the same side-effect-free peek as the memory
+  pane:
+  - the interrupt sources, pending or enabled;
+  - DPCR and DICR, and each DMA channel's registers and mode;
+  - the three timers, with their mode decoded;
+  - GPUSTAT decoded (resolution, video mode, depth, interlace), the display
+    area, the texture page and frame counts;
+  - the CD-ROM's disc, last command by name, and sector counts;
+  - the SPU's control and status, and all 24 voices (pitch in Hz, start and
+    repeat, envelope level, sounding or ended).
+- **`boot_runner --track-calls`** keeps the stack for a whole run and prints
+  the innermost frames at the end.
+
+**Left out.**
+- **PsyQ `.SYM` files.** No sample exists locally or on the share to test a
+  parser against. A parser written from a description of the format, tested
+  only against files made from the same description, would prove nothing.
+  Labels load from text until a real `.SYM` file turns up.
+- **The CD-ROM command log the plan mentions.** `Cdrom::Stats` keeps the
+  *first* 4,000 events, which is right for boot_runner's end-of-run report. It
+  is wrong for a live pane, which wants the latest. The pane shows the last
+  command and the counters instead.
+
+**12 KB that cost 5%.** With the log first written as a 256-entry array inside
+`Debugger`, the BIOS boot ran 5% slower than the build with every debugger
+check compiled out: 4.57 s against 4.36 s, best of six. Phase 3 had left
+them level, and nothing new ran per instruction. `Debugger` sits inside
+`System`, before the GTE and the config, and the config is read on every
+step. The inline array pushed those members 12 KB further along. With the
+array moved to the heap, the two builds are level again: 4.39 s against 4.41 s,
+best of eight.
+
+**Verified, 2026-09-19:**
+- **`debug_test`:** 174 checks. The new groups are the call log and BIOS-call
+  breaks, the call stack, labels, and the devices. The call stack is
+  mutation-tested: returns that never pop fail it.
+- **Determinism, BIOS boot:** these all end on 97,747,598 instructions and
+  `c7c8db90c5984798`, with a 12-deep stack at the end:
+  - `--track-calls`, interpreted;
+  - `--track-calls` with the recompiler;
+  - `--track-calls` with a breakpoint and a watchpoint, 3,233 halts.
+
+  The debugger's log counted 20,758 BIOS calls, the same as the kernel's own
+  tally.
+- **The disc table:** all 36 checksums unchanged, before the log moved to the
+  heap. After the move, a change of layout only, the harnesses and the BIOS
+  determinism runs were repeated.
+- **The window, from outside the process, on a BIOS boot:**
+  - the BIOS Calls tab listed 256 named calls;
+  - the tabs switched by mouse and by arrow keys;
+  - the Devices tab showed its 46 rows with live values;
+  - with tracking on, a Break showed a four- or five-deep stack;
+  - naming a line labelled it;
+  - Labels > Load Labels went through the real file dialog and labelled
+    BFC00000 and 80000080, skipping the malformed line;
+  - Labels > Save Labels wrote both back out, RAM in KSEG0 and the BIOS in
+    KSEG1;
+  - a right-click break on B0h:17h (ReturnFromException) halted at 000000B0
+    with the call named, and again on Continue.
+
+**Not verified:** PsyQ `.SYM` (not built), the window's look, and any game.

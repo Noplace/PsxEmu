@@ -54,6 +54,7 @@
 #include "psx/root_counter.h"
 #include "psx/dma.h"
 #include "psx/io_interface.h"
+#include "psx/bios_calls.h"
 #include "psx/kernel.h"
 #include "psx/debugger.h"
 #include "psx/mc.h"

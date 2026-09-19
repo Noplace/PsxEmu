@@ -42,7 +42,11 @@
 //     --quiet            suppress the per-100-frame progress lines
 //     --break <hex>[,<hex>...]  stop before these addresses run (psx/debugger.h), print the
 //                        registers and the code around the pc, and carry on; repeatable
-//     --break-print <n>  how many hits to print (default 20); the rest are only counted
+//     --watchpoint <hex>[:<len>][:r|w|rw]  stop after a read or write of a range - by the CPU,
+//                        or a DMA channel's write - print it as a break does, and carry on;
+//                        four bytes and writes unless said otherwise; repeatable
+//     --track-calls      keep the debugger's approximate call stack all run, and print it
+//     --break-print <n>  how many halts to print (default 20); the rest are only counted
 //
 // Takes no window, no input and no audio device, so it can be run from a shell
 // and diffed. Prints a framebuffer checksum, which is the cheap regression
@@ -194,6 +198,17 @@ struct Options {
   // --break: execute breakpoints (psx/debugger.h). Each hit prints the registers and the code
   // around the pc, up to break_print of them, then carries on.
   std::vector<uint32_t> breaks;
+  // --watchpoint: stop after a read or write of a range, by the CPU or a DMA channel. Printed
+  // and counted with the breaks.
+  struct Watch {
+    uint32_t address;
+    uint32_t length;
+    bool read;
+    bool write;
+  };
+  std::vector<Watch> watches;
+  // --track-calls: keep the debugger's approximate call stack for the whole run.
+  bool track_calls;
   int break_print;
   int frame_log;
   float volume;
@@ -485,6 +500,17 @@ void PrintBreak(System* system, uint64_t hit, uint64_t instructions) {
   for (const auto& bp : debugger.breakpoints())
     printf(" %08X=%llu", bp.address, static_cast<unsigned long long>(bp.hits));
   printf(")\n");
+  if (debugger.halt_reason() == emulation::psx::Debugger::HaltReason::kWatchpoint) {
+    const auto& hit = debugger.watch_hit();
+    char who[48];
+    if (hit.dma_channel >= 0)
+      snprintf(who, sizeof(who), "DMA channel %d", hit.dma_channel);
+    else
+      snprintf(who, sizeof(who), "the instruction at %08X", hit.pc);
+    printf("  watchpoint %08X: %s %s %u bytes at %08X, value %08X%s\n", hit.watchpoint, who,
+           hit.write ? "wrote" : "read", hit.size, hit.address, hit.value,
+           hit.value_known ? "" : " (not peekable)");
+  }
   for (int r = 0; r < 32; ++r) {
     printf("  %-4s %08X%s", emulation::psx::RegisterName(r), ctx->gp.reg[r], (r % 4 == 3) ? "\n" : "");
   }
@@ -525,6 +551,12 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->auto_boot = false;
   options->cd_mechanical = false;
   options->quiet = false;
+  // These three had no default, so they held whatever the stack did - false by luck until
+  // --watchpoint added a member and moved them, and --recompiler-diff came on by itself.
+  options->recompiler = false;
+  options->recompiler_toggle = 0;
+  options->recompiler_diff = false;
+  options->track_calls = false;
   options->frame_log = 0;
   options->break_print = 20;
   options->volume = -1.0f;
@@ -622,6 +654,29 @@ bool ParseOptions(int argc, char** argv, Options* options) {
         if (end == nullptr || (*end != ',' && *end != '\0'))
           break;
       }
+    } else if (strcmp(arg, "--track-calls") == 0) {
+      options->track_calls = true;
+    } else if (strcmp(arg, "--watchpoint") == 0 && i + 1 < argc) {
+      // <hex>[:<length>][:r|w|rw] - four bytes and writes unless said otherwise.
+      const char* spec = argv[++i];
+      char* end = nullptr;
+      Options::Watch watch = { static_cast<uint32_t>(strtoul(spec, &end, 16)), 4, false, true };
+      if (end != nullptr && *end == ':') {
+        const char* part = end + 1;
+        if (*part >= '0' && *part <= '9') {
+          watch.length = static_cast<uint32_t>(strtoul(part, &end, 0));
+          part = (*end == ':') ? end + 1 : end;
+        }
+        if (*part != '\0') {
+          watch.read = strchr(part, 'r') != nullptr;
+          watch.write = strchr(part, 'w') != nullptr;
+        }
+      }
+      if (watch.length == 0 || (!watch.read && !watch.write)) {
+        fprintf(stderr, "--watchpoint wants <hex>[:<length>][:r|w|rw]\n");
+        return false;
+      }
+      options->watches.push_back(watch);
     } else if (strcmp(arg, "--break-print") == 0 && i + 1 < argc) {
       options->break_print = atoi(argv[++i]);
     } else if (arg[0] == '-') {
@@ -1039,6 +1094,12 @@ int main(int argc, char** argv) {
   const uint64_t kInstructionLimit = 20000000000ull;
   for (uint32_t address : options.breaks)
     system->debugger().AddBreakpoint(address);
+  for (const Options::Watch& watch : options.watches)
+    system->debugger().AddWatchpoint(watch.address, watch.length, watch.read, watch.write);
+  if (options.track_calls)
+    system->debugger().SetCallTracking(true);
+  const bool debugging =
+      !options.breaks.empty() || !options.watches.empty() || options.track_calls;
   uint64_t break_hits = 0;
   while (frames < options.frames && instructions < kInstructionLimit) {
     if (options.hot > 0)
@@ -1079,8 +1140,10 @@ int main(int argc, char** argv) {
              emulation::psx::RegisterName(rt), ctx->gp.reg[rt],
              emulation::psx::RegisterName(rd), ctx->gp.reg[rd]);
     }
-    system->StepInstruction();
-    if (system->debugger().halted()) {
+    // With no --break or --watchpoint nothing can arm the debugger, so it is not asked.
+    const bool ran = debugging ? system->StepInstruction()
+                               : (system->StepInstructionUnarmed(), true);
+    if (!ran) {
       // Nothing ran: not an instruction, and not a visit to this address either.
       if (options.hot > 0)
         --pc_counts[system->cpu().context()->pc];
@@ -1172,11 +1235,22 @@ int main(int argc, char** argv) {
   printf("\n");
   printf("instructions   %llu\n", static_cast<unsigned long long>(instructions));
   printf("frames         %d\n", frames);
-  if (!options.breaks.empty()) {
-    printf("breaks         %llu hits, %llu printed\n",
+  if (!options.breaks.empty() || !options.watches.empty()) {
+    printf("breaks         %llu halts, %llu printed\n",
            static_cast<unsigned long long>(break_hits),
            static_cast<unsigned long long>(
                std::min<uint64_t>(break_hits, static_cast<uint64_t>(options.break_print))));
+  }
+  if (options.track_calls) {
+    const auto& stack = system->debugger().call_stack();
+    printf("call stack     %zu deep at the end", stack.size());
+    for (size_t i = stack.size(); i-- > 0 && stack.size() - i <= 4;)
+      printf("%s%08X", i + 1 == stack.size() ? ": " : " < ", stack[i].target);
+    printf("\n");
+  }
+  for (const auto& wp : system->debugger().watchpoints()) {
+    printf("watchpoint     %08X+%u %s%s: %llu accesses\n", wp.address, wp.length,
+           wp.read ? "r" : "", wp.write ? "w" : "", static_cast<unsigned long long>(wp.hits));
   }
   if (system->recompiler_enabled()) {
     const emulation::rec::Recompiler::Stats& rec = system->recompiler()->stats();

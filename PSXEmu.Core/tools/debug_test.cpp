@@ -57,6 +57,12 @@ uint32_t JAL(uint32_t target) { return (0x03u << 26) | ((target >> 2) & 0x03FFFF
 uint32_t JR(int s) { return RType(0, s, 0, 0, 0x08); }
 uint32_t SYSCALL() { return 0x0000000C; }
 uint32_t LW(int t, int s, int imm) { return IType(0x23, s, t, imm); }
+uint32_t LB(int t, int s, int imm) { return IType(0x20, s, t, imm); }
+uint32_t SW(int t, int s, int imm) { return IType(0x2B, s, t, imm); }
+uint32_t SB(int t, int s, int imm) { return IType(0x28, s, t, imm); }
+uint32_t SWL(int t, int s, int imm) { return IType(0x2A, s, t, imm); }
+uint32_t LUI(int t, int imm) { return IType(0x0F, 0, t, imm); }
+uint32_t ORI(int t, int s, int imm) { return IType(0x0D, s, t, imm); }
 
 const uint32_t kBase = 0x80001000;
 const uint32_t kVector = 0x80000080;
@@ -81,6 +87,9 @@ class Machine {
     context->prev_pc = kBase;
     memset(system_->ram(), 0, 0x200000);
     debugger().ClearBreakpoints();
+    debugger().ClearWatchpoints();
+    debugger().ClearBiosBreaks();
+    debugger().SetCallTracking(false);
     debugger().Reset();
     system_->EnableRecompiler(false);
   }
@@ -513,6 +522,278 @@ void TestRegisters(Machine& m) {
         "resuming runs from the new pc - the skipped instruction never ran");
 }
 
+void TestWatchpoints(Machine& m, bool recompiler) {
+  Group(recompiler ? "watchpoints (recompiler on)" : "watchpoints");
+  const uint32_t kData = 0x80002000;
+
+  // A write: halts after the store has happened, at the next instruction, and says who.
+  m.Reset();
+  m.system().EnableRecompiler(recompiler);
+  m.Load(kBase, { ADDIU(t1, zero, 0x55), SW(t1, t0, 0), ADDIU(t2, zero, 1), NOP(), NOP() });
+  m.set_reg(t0, kData);
+  m.debugger().AddWatchpoint(kData, 4, false, true);
+  Check(m.debugger().armed(), "a watchpoint arms the debugger");
+  const int ran = m.RunUntilHalt(10);
+  const Debugger::WatchHit& hit = m.debugger().watch_hit();
+  Check(m.debugger().halted() && m.debugger().halt_reason() == Debugger::HaltReason::kWatchpoint,
+        "a store to it halts, as a watchpoint");
+  CheckEqual(ran, 2, "after the store and the instruction before it");
+  CheckEqual(m.pc(), kBase + 8, "on the instruction after the store");
+  CheckEqual(m.reg(t2), 0, "which has not run");
+  CheckEqual(*reinterpret_cast<uint32_t*>(m.system().ram() + 0x2000), 0x55,
+             "the store itself happened");
+  Check(hit.valid && hit.dma_channel == -1 && hit.pc == kBase + 4 && hit.write &&
+            hit.address == kData && hit.size == 4 && hit.value == 0x55,
+        "the hit: the CPU, the store's pc, address, size and value");
+  Check(m.debugger().watchpoints()[0].hits == 1, "one hit counted");
+  m.debugger().Resume();
+  m.RunUntilHalt(3);
+  Check(!m.debugger().halted() && m.reg(t2) == 1, "resuming runs on");
+
+  // Reads, and the kinds kept apart.
+  m.Reset();
+  m.system().EnableRecompiler(recompiler);
+  m.Load(kData, { 0x12345678 });
+  m.Load(kBase, { LW(t1, t0, 0), NOP(), SW(t1, t0, 4), NOP(), LB(t2, t0, 3), NOP(), NOP() });
+  m.set_reg(t0, kData);
+  m.debugger().AddWatchpoint(kData, 4, true, false);
+  m.RunUntilHalt(10);
+  Check(m.debugger().halted() && m.debugger().watch_hit().pc == kBase &&
+            !m.debugger().watch_hit().write && m.debugger().watch_hit().value == 0x12345678 &&
+            m.debugger().watch_hit().value_known,
+        "a read watchpoint catches a lw, with the value it reads");
+  m.debugger().Resume();
+  m.RunUntilHalt(10);
+  Check(m.debugger().halted() && m.debugger().watch_hit().pc == kBase + 16 &&
+            m.debugger().watch_hit().size == 1 && m.debugger().watch_hit().value == 0x12,
+        "and an lb of its last byte - not the sw beside it, which is a write and outside it");
+
+  // Range edges and RAM's mirrors.
+  m.Reset();
+  m.system().EnableRecompiler(recompiler);
+  m.set_reg(t0, kData);
+  m.set_reg(t3, 0xA0002000);   // KSEG1
+  m.Load(kBase, { SB(t1, t0, 4), SB(t1, t0, -1), SB(t1, t3, 3), NOP(), NOP() });
+  m.debugger().AddWatchpoint(0x00202000, 4, false, true);   // a KUSEG mirror of kData
+  m.RunUntilHalt(10);
+  Check(m.debugger().halted() && m.debugger().watch_hit().pc == kBase + 8,
+        "the bytes either side of the range do not trip it; its last byte, through KSEG1 and "
+        "watched through a mirror, does");
+
+  // SWL reads the word it merges into - an emulator detail, not a read by the program.
+  m.Reset();
+  m.system().EnableRecompiler(recompiler);
+  m.set_reg(t0, kData);
+  m.Load(kBase, { SWL(t1, t0, 1), NOP(), NOP() });
+  m.debugger().AddWatchpoint(kData, 4, true, false);
+  m.RunUntilHalt(5);
+  Check(!m.debugger().halted(), "swl does not trip a read watchpoint");
+  m.Reset();
+  m.system().EnableRecompiler(recompiler);
+  m.set_reg(t0, kData);
+  m.Load(kBase, { SWL(t1, t0, 1), NOP(), NOP() });
+  m.debugger().AddWatchpoint(kData, 4, false, true);
+  m.RunUntilHalt(5);
+  Check(m.debugger().halted() && m.debugger().watch_hit().write, "but trips a write one");
+
+  // In a delay slot: the slot's own pc, and the halt at the branch target.
+  m.Reset();
+  m.system().EnableRecompiler(recompiler);
+  m.set_reg(t0, kData);
+  m.Load(kBase, { BEQ(zero, zero, 12), SW(t1, t0, 0), NOP(), NOP(), NOP(), NOP() });
+  m.debugger().AddWatchpoint(kData, 4, false, true);
+  m.RunUntilHalt(5);
+  Check(m.debugger().halted() && m.debugger().watch_hit().pc == kBase + 4 &&
+            m.pc() == kBase + 16,
+        "a store in a delay slot: reported at the slot, halted at the branch target");
+
+  // A store with the cache isolated writes nothing, and trips nothing.
+  m.Reset();
+  m.system().EnableRecompiler(recompiler);
+  m.set_reg(t0, kData);
+  m.system().cpu().context()->ctrl.SR.raw |= 0x10000;   // IsC
+  m.Load(kBase, { SW(t1, t0, 0), NOP(), NOP() });
+  m.debugger().AddWatchpoint(kData, 4, false, true);
+  m.RunUntilHalt(5);
+  Check(!m.debugger().halted(), "an isolated-cache store does not trip a write watchpoint");
+  m.system().cpu().context()->ctrl.SR.raw &= ~0x10000u;
+
+  // A DMA write: channel 6 clearing an ordering table over the watched word, started by a CPU
+  // store to its control register.
+  m.Reset();
+  m.system().EnableRecompiler(recompiler);
+  auto& dma = m.system().io().dma;
+  dma.Write(0x1F8010F0, 0x08000000);                  // DPCR: channel 6 on
+  dma.Write(0x1F8010E0, (kData & 0x1FFFFF) + 0x3C);   // MADR: the table's last entry
+  dma.Write(0x1F8010E4, 16);                          // 16 entries, down to kData
+  m.Load(kBase, { LUI(t2, 0x1F80), ORI(t2, t2, 0x10E8), LUI(t1, 0x1100), ORI(t1, t1, 2),
+                  SW(t1, t2, 0), NOP(), NOP() });
+  m.debugger().AddWatchpoint(kData + 0x10, 4, false, true);
+  m.RunUntilHalt(10);
+  const Debugger::WatchHit& dhit = m.debugger().watch_hit();
+  Check(m.debugger().halted() && dhit.dma_channel == 6 && dhit.write &&
+            (dhit.address & 0x1FFFFF) == (kData & 0x1FFFFF) + 0x10,
+        "a DMA write trips it, and names channel 6");
+  CheckEqual(m.pc(), kBase + 20, "halted after the store that started the transfer");
+  CheckEqual(dhit.value, (kData & 0x1FFFFF) + 0x0C, "with the link the channel wrote");
+
+  // Determinism: a loop storing to a watched word, halting each time round and let go, ends
+  // exactly where it would have with nothing watched.
+  m.Reset();
+  m.system().EnableRecompiler(recompiler);
+  m.set_reg(t0, kData);
+  m.set_reg(t3, 50);
+  m.Load(kBase, { ADDIU(t1, t1, 1), SW(t1, t0, 0), BNE(t1, t3, -12), NOP(), ADDIU(t2, zero, 9),
+                  NOP(), NOP() });
+  m.debugger().AddWatchpoint(kData, 4, false, true);
+  int halts = 0;
+  for (int i = 0; i < 1000 && m.reg(t2) != 9; ++i) {
+    m.RunUntilHalt(1000);
+    if (m.debugger().halted()) {
+      ++halts;
+      m.debugger().Resume();
+    }
+  }
+  CheckEqual(halts, 50, "fifty stores, fifty halts");
+  Check(m.reg(t1) == 50 && *reinterpret_cast<uint32_t*>(m.system().ram() + 0x2000) == 50,
+        "and the loop still counts to fifty");
+  m.debugger().SetWatchpointEnabled(kData, false);
+  Check(!m.debugger().armed(), "a disabled watchpoint disarms");
+  m.debugger().ClearWatchpoints();
+  m.system().EnableRecompiler(false);
+}
+
+uint32_t JALR(int d, int s) { return RType(0, s, 0, d, 0x09); }
+
+void TestBiosCalls(Machine& m) {
+  Group("the BIOS call log, and breaking on a call");
+  // A call the way games make one: the function number in t1, a jump to B0h. At B0h a stand-in
+  // for the BIOS that just returns.
+  m.Reset();
+  m.Load(0x800000B0, { JR(ra), NOP() });
+  m.Load(kBase, { ADDIU(t1, zero, 0x3D), ADDIU(4, zero, 0x41), ADDIU(t2, zero, 0xB0),
+                  JALR(ra, t2), NOP(), ADDIU(t1, zero, 0x3F), JALR(ra, t2), NOP(), NOP(), NOP() });
+  const uint64_t before = m.debugger().bios_calls();
+  m.RunUntilHalt(8);
+  Check(m.debugger().bios_calls() == before + 2, "both calls are logged, armed or not");
+  const std::vector<Debugger::BiosCallRecord> log = m.debugger().BiosLog();
+  Check(!log.empty(), "(the log has them)");
+  if (log.size() >= 2) {
+    const Debugger::BiosCallRecord& call = log[log.size() - 2];
+    Check(call.vector == 0xB0 && call.function == 0x3D && call.args[0] == 0x41 &&
+              call.ra == kBase + 20,
+          "the first: B0h:3Dh, its argument, and where it returns to");
+    CheckEqual(log.back().function, 0x3F, "the second, after it");
+  }
+  Check(emulation::psx::BiosCallName(0xB0, 0x3D) == "putchar(char ch)",
+        "B0h:3Dh is putchar, without the CSV's quotes");
+  Check(emulation::psx::BiosCallName(0xC0, 0x1C) == "PatchA0Table()", "C0h:1Ch by name");
+  Check(emulation::psx::BiosCallName(0xB0, 0xFE) == "B0(FEh)", "a number with no name");
+
+  // Break on B0h:3Fh only.
+  m.Reset();
+  m.Load(0x800000B0, { JR(ra), NOP() });
+  m.Load(kBase, { ADDIU(t1, zero, 0x3D), ADDIU(t2, zero, 0xB0), JALR(ra, t2), NOP(),
+                  ADDIU(t1, zero, 0x3F), JALR(ra, t2), NOP(), NOP(), NOP() });
+  m.debugger().AddBiosBreak(0xB0, 0x3F);
+  Check(m.debugger().armed(), "a BIOS-call break arms the debugger");
+  const uint64_t at_start = m.debugger().bios_calls();
+  m.RunUntilHalt(20);
+  Check(m.debugger().halted() && m.debugger().halt_reason() == Debugger::HaltReason::kBiosCall &&
+            m.pc() == 0xB0,
+        "halts at the vector for B0h:3Fh - B0h:3Dh went past");
+  CheckEqual(static_cast<uint32_t>(m.debugger().bios_calls() - at_start), 1,
+             "before the call it halted on is logged");
+  m.debugger().Resume();
+  m.RunUntilHalt(3);
+  CheckEqual(static_cast<uint32_t>(m.debugger().bios_calls() - at_start), 2,
+             "and logged once, when it goes on");
+  m.debugger().RemoveBiosBreak(0xB0, 0x3F);
+  Check(m.debugger().bios_breaks().empty(), "removed");
+}
+
+void TestCallStack(Machine& m) {
+  Group("the call stack");
+  // main calls A, A calls B; A keeps ra in s0.
+  m.Reset();
+  m.debugger().SetCallTracking(true);
+  Check(m.debugger().armed(), "tracking arms the debugger");
+  m.Load(kBase, { JAL(kBase + 0x40), NOP(), ADDIU(t3, zero, 7), NOP(), NOP(), NOP() });
+  m.Load(kBase + 0x40, { ADDU(s0, ra, zero), JAL(kBase + 0x80), NOP(), ADDU(ra, s0, zero),
+                         JR(ra), NOP() });
+  m.Load(kBase + 0x80, { ADDIU(t2, zero, 5), NOP(), JR(ra), NOP() });
+  m.debugger().AddBreakpoint(kBase + 0x84);
+  m.RunUntilHalt(20);
+  const std::vector<Debugger::CallFrame>& stack = m.debugger().call_stack();
+  Check(m.debugger().halted() && stack.size() == 2, "two deep inside B");
+  if (stack.size() == 2) {
+    Check(stack[0].call_pc == kBase && stack[0].target == kBase + 0x40 &&
+              stack[0].return_to == kBase + 8,
+          "main's call of A");
+    Check(stack[1].call_pc == kBase + 0x44 && stack[1].target == kBase + 0x80,
+          "A's call of B");
+  }
+  m.debugger().ClearBreakpoints();
+  m.debugger().AddBreakpoint(kBase + 8);
+  m.debugger().Resume();
+  m.RunUntilHalt(20);
+  Check(m.debugger().halted() && m.pc() == kBase + 8 && m.debugger().call_stack().empty(),
+        "back in main, both returned");
+  m.debugger().SetCallTracking(false);
+  m.debugger().ClearBreakpoints();
+  Check(!m.debugger().armed(), "tracking off, and nothing else set, disarms");
+}
+
+void TestLabels(Machine& m) {
+  Group("labels");
+  m.Reset();
+  m.Load(kBase, { JAL(kBase + 0x40), NOP() });
+  m.debugger().SetLabel(kBase + 0x40, "UpdatePlayer");
+  Debugger::Snapshot snap;
+  m.debugger().Capture(&snap, kBase + 0x20, 32);
+  bool on_line = false, on_target = false;
+  for (const Debugger::Line& line : snap.lines) {
+    if (line.address == kBase + 0x40 && line.label == "UpdatePlayer")
+      on_line = true;
+    if (line.address == kBase && line.target_label == "UpdatePlayer")
+      on_target = true;
+  }
+  Check(on_line, "a label shows on its line");
+  Check(on_target, "and against a jal to it");
+  Check(m.debugger().Label(0xA0001040) != nullptr, "found through KSEG1 too");
+  m.debugger().SetLabel(kBase + 0x40, "");
+  Check(m.debugger().Label(kBase + 0x40) == nullptr, "an empty name removes it");
+  m.debugger().ClearLabels();
+}
+
+void TestDevices(Machine& m) {
+  Group("the device panes");
+  m.Reset();
+  auto& io = m.system().io();
+  io.dma.Write(0x1F8010E0, 0x1234);
+  io.rootcounter_[2].mode.raw = 0;
+  io.rootcounter_[2].mode.reached_target = 1;
+  std::vector<Debugger::DeviceRow> rows;
+  m.debugger().DescribeDevices(&rows);
+  int dma = 0, timers = 0, voices = 0, gpu = 0, cd = 0, irq = 0;
+  bool otc = false;
+  for (const Debugger::DeviceRow& row : rows) {
+    if (row.section == "DMA") ++dma;
+    if (row.section == "Timers") ++timers;
+    if (row.section == "SPU" && row.name.rfind("Voice", 0) == 0) ++voices;
+    if (row.section == "GPU") ++gpu;
+    if (row.section == "CD-ROM") ++cd;
+    if (row.section == "Interrupts") ++irq;
+    if (row.name == "6 OTC" && row.value.find("MADR 00001234") != std::string::npos)
+      otc = true;
+  }
+  Check(dma == 8 && timers == 3 && voices == 24 && gpu == 4 && cd == 3 && irq >= 1,
+        "every section: DPCR and seven channels, three timers, 24 voices, the GPU and CD-ROM");
+  Check(otc, "a register just written shows in its row");
+  Check(io.rootcounter_[2].mode.reached_target == 1,
+        "describing the timers does not clear the flag a mode read would");
+}
+
 void TestDisassembler() {
   Group("the disassembler");
   using emulation::psx::Disassemble;
@@ -551,6 +832,12 @@ int main() {
   TestPatchingCode(m, false);
   TestPatchingCode(m, true);
   TestRegisters(m);
+  TestWatchpoints(m, false);
+  TestWatchpoints(m, true);
+  TestBiosCalls(m);
+  TestCallStack(m);
+  TestLabels(m);
+  TestDevices(m);
   TestDisassembler();
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

@@ -137,13 +137,23 @@ void Machine::Run() {
 // boot_runner runs, which is what makes the two comparable.
 void Machine::RunOneFrame() {
   const uint64_t target = system_->gpu().frame_count() + 1;
-  psx::Debugger& debugger = system_->debugger();
+  // Nothing arms the debugger in the middle of a frame - the window's requests are drained
+  // between frames - so an unarmed one is asked once here, not once an instruction.
+  if (!system_->debugger().armed()) {
+    while (system_->gpu().frame_count() < target &&
+           frame_instructions_ < kMaxInstructionsPerFrame) {
+      system_->StepInstructionUnarmed();
+      ++frame_instructions_;
+      ++instructions_;
+    }
+    frame_instructions_ = 0;
+    return;
+  }
   while (system_->gpu().frame_count() < target &&
          frame_instructions_ < kMaxInstructionsPerFrame) {
-    system_->StepInstruction();
     // A halt ran nothing, so it is not an instruction; the frame carries on from here when the
     // debugger lets it, towards the same frame boundary.
-    if (debugger.halted())
+    if (!system_->StepInstruction())
       return;
     ++frame_instructions_;
     ++instructions_;
