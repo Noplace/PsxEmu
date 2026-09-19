@@ -224,6 +224,12 @@ struct EmuConfig {
   // presenting, sound, input - on top of the frame rate. Docs/Threading-
   // Plan.md's phase 0: the numbers the threading work is measured by.
   bool show_timings = false;
+
+  // Whether the BIOS console window is open: everything software writes
+  // through the BIOS's putchar/puts/printf, as it arrives. Nothing in the
+  // machine reads this - the text is recorded either way (Kernel) - so it is
+  // purely which windows the front end has up.
+  bool show_bios_console = false;
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer

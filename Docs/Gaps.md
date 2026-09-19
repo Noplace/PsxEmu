@@ -39,7 +39,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 251, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 259 - 1,008
+cpu 263, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261 - 1,022
 checks, no failures (re-run 2026-09-18). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
@@ -300,8 +300,12 @@ to boot.
 A window, menus for disc, reset, pause, volume, video filter, controllers,
 which BIOS to boot and how fast to run (50-200%), D3D11 and D3D12 presenters,
 keyboard/XInput/mouse input, and a speed readout in the title bar (bug 49) that
-Emulation > Show Timings expands into where each frame's time went. No binding
-editor, no debugger, no settings dialog.
+Emulation > Show Timings expands into where each frame's time went, and a BIOS
+console window (Emulation > BIOS Console, bug 66) showing what software prints
+through the BIOS. No binding editor, no debugger, no settings dialog. Output a
+program sends to the serial port or the expansion port's DUART directly, rather
+than through the BIOS, is not shown: SIO1 is not emulated, and the DUART
+registers trap.
 
 It *can* be driven from an agent session after all - launched, sent
 `WM_COMMAND`s, and read back through its title bar (Test-Suite.md's host_test

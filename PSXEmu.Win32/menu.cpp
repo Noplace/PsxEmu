@@ -114,6 +114,8 @@ namespace psxemu {
                     L"Pause &While in Menus");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandShowTimings),
                     L"Show &Timings in Title Bar");
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandBiosConsole),
+                    L"BIOS &Console");
 
         // Volume. The labels carry a literal percent sign, so they are built with the doubled form
         // the table stores rather than passed through a formatter.
@@ -459,6 +461,14 @@ namespace psxemu {
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandShowTimings),
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickBiosConsole(HWND window, bool on) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandBiosConsole),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
     }
 

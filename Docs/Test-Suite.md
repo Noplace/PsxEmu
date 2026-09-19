@@ -15,7 +15,7 @@ Each test assembles a handful of MIPS instructions into RAM, runs them through
 the real CPU, and checks what came out - the same path a game takes. No BIOS,
 no window. A group name runs only that group.
 
-**Current: 251 checks, 0 failures.**
+**Current: 263 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -33,6 +33,8 @@ no window. A group name runs only that group.
 | `memory` | RAM through KUSEG/KSEG0/KSEG1, RAM mirroring, the scratchpad, hardware registers through all three windows, the BIOS being read-only, and $zero staying zero |
 | `exceptions` | syscall and break vectoring, the Cop0 status stack pushing and popping, mfc0/mtc0 |
 | `interrupts` | I_STAT acknowledge semantics, the three gates that can block an interrupt, and that EPC points at the instruction that has *not* run |
+| `cacheisolation` | a store with Isolate Cache set not reaching the scratchpad, and an ordinary store still landing |
+| `biosconsole` | BIOS putchar/puts calls through the A0h/B0h/C0h vectors reaching the console feed exactly once each, interpreted and then recompiled (bug 66) |
 
 Two of these are worth reading twice, because both encode a bug that cost real
 time to find the hard way:
@@ -120,7 +122,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 259 checks, 0 failures.**
+**Current: 261 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -376,12 +378,12 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 251 | | `gpu_test` | 31 |
+| `cpu_test` | 263 | | `gpu_test` | 31 |
 | `gte_test` | 99 | | `mdec_test` | 85 |
-| `timer_test` | 70 | | `media_test` | 259 |
+| `timer_test` | 70 | | `media_test` | 261 |
 | `sio_test` | 105 | | `spu_test` | 108 |
 
-**1,008 checks, 0 failures**, all eight green. Each harness's own section above
+**1,022 checks, 0 failures**, all eight green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)

@@ -3642,3 +3642,51 @@ unchanged; neither goes through this path.
 Neither matters for PadTest, whose header sets neither. Both are small and
 both are what DuckStation's `InjectExecutable` does. A program that reaches
 SIO1 for real will still hang, because SIO1 is still not emulated.
+
+## 66. With the recompiler on, the BIOS console recorded nothing, and the interpreter recorded format strings nobody printed
+
+Found while adding a BIOS console window (Emulation > BIOS Console). The core
+already recorded the BIOS's console calls, putchar (A0h:3Ch, B0h:3Dh) and puts
+(A0h:3Eh, B0h:3Fh), in `Kernel::Call`, for `boot_runner`'s `bios console`
+section. The window needed that feed live, and it turned out to be wrong in
+two ways.
+
+**Recompiled, it recorded nothing.** The hook was at the end of
+`Cpu::ExecuteInstruction`: if the pc had just landed on A0h, B0h or C0h, it
+called `Kernel::Call`. Compiled code never goes through `ExecuteInstruction`,
+so `boot_runner --recompiler` printed no `bios console` section at all.
+
+**Interpreted, it recorded too much.** A 400-frame BIOS boot captured 427
+characters. That included raw format strings, such as `%s` on a line of its
+own and `System Controller ROM Version %02x/%02x/%02x %02x`, next to the
+formatted lines they produced, and the `ResetCallback` line twice. The BIOS
+never printed those. They came from checking where the pc ended up, at the end
+of an instruction, rather than what was about to run.
+
+**The fix.** `System::StepInstruction` checks the pc before the step, after
+any interrupt has moved it. That is the one place both CPUs pass through. The
+recompiler bridge's `Fetch` also refuses to compile at the three vectors, so
+compiled code has to come back to that point before a call runs. Measured,
+that refusal is not needed today: software reaches the vectors by `jr`, and an
+indirect jump already ends a compiled chain. It guards against a block running
+into a vector, and against indirect jumps being linked in the future. The
+kernel also gained a drainable feed (`TakeConsoleText`) and a session counter,
+which the front end uses to put a separator between boots.
+
+**Verified.** Both CPUs now record the same 339 characters over the BIOS boot:
+every line once, fully formatted. The checksum is unchanged
+(`c7c8db90c5984798`), because recording a call has no effect on the machine.
+A new `cpu_test` group, `biosconsole` (12 checks), makes putchar, puts and a
+C0h call through bare `jr ra` stubs, on each CPU in turn. It checks the text
+and that each call was counted exactly once. With the new hook removed, the
+interpreted half fails. The front end was driven end to end with posted menu
+commands:
+- the window opens from the menu and fills with the BIOS's output;
+- a separator appears on each reset, on the interpreter and on the recompiler;
+- closing the window with its X unticks the menu and saves
+  `show_bios_console = 0`;
+- the app exits cleanly.
+
+**Not covered.** Anything a program sends to the serial port (SIO1) or the
+expansion port's DUART directly, bypassing the BIOS. PadTest's debug output
+when side-loaded is the first kind (bug 65), and neither port is emulated.

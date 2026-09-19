@@ -90,6 +90,7 @@ PsxEmu/
     input_thread.h/.cpp        the input thread: pads, keyboard, raw mouse at 1 kHz
     win32_paths.h/.cpp         command line, BIOS, settings file, data root, disc-derived names
     win32_dialogs.h/.cpp       the file pickers and the message boxes
+    console_window.h/.cpp      Emulation > BIOS Console: the BIOS's putchar/puts/printf output
     keyboard.h                 the keyboard as a digital pad
     gamepad.h                  one XInput slot: buttons, both sticks, both motors
     igraphicsengine.h          what a presenter has to be able to do

@@ -281,16 +281,9 @@ void Cpu::ExecuteInstruction() {
   __inside_instruction = true;
   (this->*(machine_instruction_main_[opcode_]))();
   __inside_instruction = false;
-
-
-
-    if (context_->pc == 0xa0 || 
-        context_->pc == 0xb0 || 
-        context_->pc == 0xc0) {
-          //bios call
-          system_->kernel().Call();
-          int a= 1;
-    }
+  // A BIOS call arriving at A0h/B0h/C0h is noticed by System::StepInstruction,
+  // before the instruction there runs - not here, where compiled code would
+  // never pass.
 }
 
 // Is the instruction the pc is sitting on a GTE command? Peeked rather than

@@ -35,6 +35,8 @@ Kernel::~Kernel() {
 
 void Kernel::Initialize() {
   memset(&stats_, 0, sizeof(stats_));
+  console_pending_.clear();
+  ++session_;
   #if defined(_DEBUG) && defined(KERNEL_DEBUG)
     //debug.Open("kernel system calls.txt");
   #endif
@@ -173,6 +175,15 @@ void Kernel::Call() {
 void Kernel::RecordTty(char c) {
   if (stats_.tty_length + 1 < Stats::kTtyCapacity)
     stats_.tty[stats_.tty_length++] = c;
+  if (console_pending_.size() < kConsolePendingCapacity)
+    console_pending_.push_back(c);
+  else
+    ++console_dropped_;
+}
+
+void Kernel::TakeConsoleText(std::string* out) {
+  out->clear();
+  out->swap(console_pending_);
 }
 
 void Kernel::putc(char c,int fd) {

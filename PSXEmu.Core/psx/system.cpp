@@ -184,6 +184,19 @@ void System::StepInstruction() {
     }
   }
 
+  // A BIOS call is a jump to A0h, B0h or C0h with the function number in t1.
+  // It is noticed here, before the instruction at the vector runs and after
+  // any interrupt has moved the pc, so that both CPUs go through it: the
+  // recompiler bridge never compiles a block at those three addresses, so
+  // compiled code always comes back to this point before one runs. It used to
+  // be checked at the end of Cpu::ExecuteInstruction, which compiled code
+  // never reaches - with the recompiler on, the BIOS console recorded nothing.
+  {
+    const uint32_t pc = cpu_.context()->pc;
+    if (pc == 0xA0 || pc == 0xB0 || pc == 0xC0)
+      kernel_.Call();
+  }
+
   // With the recompiler on, one step is a chain of compiled blocks rather than
   // one instruction - but only when nothing about the machine's state makes
   // that unsafe. A GTE command has to be the interpreter's, because the

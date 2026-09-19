@@ -1596,6 +1596,18 @@ void TestSettingsFile(const std::string& directory) {
           "pausing in menus and showing timings survive the round trip");
   }
 
+  // The BIOS console window: closed by default, and remembered open.
+  {
+    EmuConfig config;
+    Check(!config.show_bios_console, "the BIOS console is closed by default");
+    config.show_bios_console = true;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.show_bios_console, "an open BIOS console survives the round trip");
+  }
+
   // A key this build does not know about is preserved rather than dropped, so
   // a file written by a newer build survives being loaded and saved by an
   // older one.

@@ -179,6 +179,7 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetFloat("emulation_speed", c.emulation_speed);
   f.SetBool("pause_in_menus", c.pause_in_menus);
   f.SetBool("show_timings", c.show_timings);
+  f.SetBool("show_bios_console", c.show_bios_console);
 }
 
 inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
@@ -254,6 +255,7 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
 
   c.pause_in_menus = f.GetBool("pause_in_menus", c.pause_in_menus);
   c.show_timings = f.GetBool("show_timings", c.show_timings);
+  c.show_bios_console = f.GetBool("show_bios_console", c.show_bios_console);
 }
 
 }

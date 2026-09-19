@@ -111,6 +111,9 @@ namespace psxemu {
     void TickPauseInMenus(HWND window, bool on);
     void TickShowTimings(HWND window, bool on);
 
+    // EmuConfig::show_bios_console - whether the BIOS console window is open.
+    void TickBiosConsole(HWND window, bool on);
+
     // ---------------------------------------------------------------------------------------------
     // Settings keys
     // ---------------------------------------------------------------------------------------------

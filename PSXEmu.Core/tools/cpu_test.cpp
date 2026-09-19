@@ -1391,6 +1391,70 @@ void TestCacheIsolation(Machine& m) {
   CheckEqual(scratchpad.u32[0], 0xDEADBEEFu, "an ordinary store still lands");
 }
 
+// The BIOS console: a call is a jump to A0h/B0h/C0h with the function number
+// in t1, and the putchar and puts calls are what the front end's console
+// window shows. No BIOS here, so each vector holds a bare `jr ra` - what
+// matters is that the call is noticed, once, on the way in.
+//
+// Run on both CPUs. The check used to live at the end of the interpreter's
+// ExecuteInstruction, which compiled code never reaches, so with the
+// recompiler on the console recorded nothing at all; and the interpreter's
+// version recorded format strings the BIOS never printed. Counting the calls
+// catches both: too few, or more than were made.
+void TestBiosConsole(Machine& m) {
+  const uint32_t kString = kDataBase;
+  for (int pass = 0; pass < 2; ++pass) {
+    const bool compiled = (pass == 1);
+    m.Reset();
+    m.system()->EnableRecompiler(compiled);
+    m.system()->kernel().Initialize();
+    for (uint32_t vector : { 0xA0u, 0xB0u, 0xC0u }) {
+      m.WriteWord(vector, JR(ra));
+      m.WriteWord(vector + 4, NOP());
+    }
+    const char text[] = "ok\n";
+    uint32_t packed = 0;
+    memcpy(&packed, text, 4);   // "ok\n" and its terminator
+    m.WriteWord(kString, packed);
+    m.Load({
+      ADDIU(t2, zero, 0xB0),     // B0(3Dh) putchar 'H'
+      ADDIU(t1, zero, 0x3D),
+      JALR(ra, t2),
+      ADDIU(a0, zero, 'H'),
+      JALR(ra, t2),              // and again, 'i'
+      ADDIU(a0, zero, 'i'),
+      ADDIU(t2, zero, 0xA0),     // A0(3Eh) puts "ok\n"
+      ADDIU(t1, zero, 0x3E),
+      LUI(a0, kString >> 16),
+      JALR(ra, t2),
+      ORI(a0, a0, kString & 0xFFFF),
+      ADDIU(t2, zero, 0xC0),     // C0h: counted, prints nothing
+      JALR(ra, t2),
+      ADDIU(t1, zero, 0x00),
+    });
+    m.Run(40);   // the rest of RAM is NOPs
+
+    std::string console;
+    m.system()->kernel().TakeConsoleText(&console);
+    const auto& stats = m.system()->kernel().stats();
+    Check(console == "Hiok\n", compiled ? "recompiled: the console reads \"Hiok\\n\""
+                                        : "interpreted: the console reads \"Hiok\\n\"");
+    CheckEqual(stats.b0[0x3D], 2, compiled ? "recompiled: two putchar calls, not more"
+                                           : "interpreted: two putchar calls, not more");
+    CheckEqual(stats.a0[0x3E], 1, compiled ? "recompiled: one puts call"
+                                           : "interpreted: one puts call");
+    CheckEqual(stats.c0[0x00], 1, compiled ? "recompiled: the C0h call is seen too"
+                                           : "interpreted: the C0h call is seen too");
+    CheckEqual(static_cast<uint32_t>(stats.total), 4,
+               compiled ? "recompiled: four calls in all" : "interpreted: four calls in all");
+    std::string again;
+    m.system()->kernel().TakeConsoleText(&again);
+    Check(again.empty(), compiled ? "recompiled: taking the text leaves nothing behind"
+                                  : "interpreted: taking the text leaves nothing behind");
+  }
+  m.system()->EnableRecompiler(false);
+}
+
 struct Group {
   const char* name;
   void (*run)(Machine&);
@@ -1412,6 +1476,7 @@ const Group kGroups[] = {
   { "exceptions", TestExceptions },
   { "interrupts", TestInterrupts },
   { "cacheisolation", TestCacheIsolation },
+  { "biosconsole", TestBiosConsole },
 };
 
 }  // namespace

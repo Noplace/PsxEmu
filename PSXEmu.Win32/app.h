@@ -42,6 +42,7 @@
 #include "framework.h"
 
 #include "const.h"
+#include "console_window.h"
 #include "engine_factory.h"
 #include "host/audio_output.h"
 #include "host/machine.h"
@@ -143,6 +144,10 @@ namespace psxemu {
         void SetAudioBackend(const std::string& key);
         void SetPauseInMenus(bool on);
         void SetShowTimings(bool on);
+        void SetShowBiosConsole(bool on);
+        // On the machine's thread, after every frame: what the BIOS console gained, posted to the
+        // window. Posting keeps it in order with everything else the machine tells the UI.
+        void CollectConsoleText(emulation::psx::System& system);
 
         void RefreshBiosMenu();
         void SelectBios(int index);
@@ -161,6 +166,7 @@ namespace psxemu {
         void UpdateAudioBackendMenu();
         void UpdatePauseInMenusMenu();
         void UpdateShowTimingsMenu();
+        void UpdateBiosConsoleMenu();
 
         // ---------------------------------------------------------------------------------------
         // The machine, asked for from here and done there
@@ -280,6 +286,11 @@ namespace psxemu {
         // plugged in - see SetControllerType. Zero is the steady state.
         std::array<int, 2> replug_frames_ = { 0, 0 };
         std::array<std::string, 2> plugged_type_ = { "", "" };
+
+        // Emulation > BIOS Console. The window is the UI thread's; the session number is the
+        // machine thread's, compared after each frame to notice a boot or a reset.
+        ConsoleWindow console_;
+        uint32_t console_session_ = 0;
     };
 
 }   // namespace psxemu

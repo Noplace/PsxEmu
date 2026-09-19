@@ -149,6 +149,14 @@ class RecompilerBridge {
     if ((pc & 3) != 0)
       return false;
     const uint32_t physical = pc & 0x1FFFFFFF;
+    // The BIOS call vectors stay the interpreter's, so that the pc arriving at
+    // one comes back to System::StepInstruction, which records the call. Today
+    // that happens anyway - software reaches them by `jr`, and an indirect
+    // jump ends a chain - so this is the guard for what would not: a block
+    // running into a vector from the word before it, or indirect jumps being
+    // linked one day. cpu_test's biosconsole group is what would notice.
+    if (physical == 0xA0 || physical == 0xB0 || physical == 0xC0)
+      return false;
     IOInterface& io = system_->io();
     if (physical <= 0x001FFFFF) {
       *word = io.ram_buffer.u32[physical >> 2];

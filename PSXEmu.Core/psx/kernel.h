@@ -45,8 +45,26 @@ class Kernel : public Component {
   };
   const Stats& stats() const { return stats_; }
 
+  // The live feed of the same console text, for a front end to show as it
+  // arrives: whatever was written since the last call, moved into `out`.
+  // Stats::tty is the whole run for a harness to print at the end and stops
+  // at its capacity; this is drained every frame and never fills in normal
+  // use. It is capped anyway, so text nobody collects cannot grow without
+  // bound - and what the cap turned away is counted, not silently lost.
+  void TakeConsoleText(std::string* out);
+  uint64_t console_text_dropped() const { return console_dropped_; }
+
+  // Incremented by every Initialize - a cold boot or a reset. A front end
+  // compares it against the last value it saw to mark where one boot's
+  // console output ends and the next one's begins.
+  uint32_t session() const { return session_; }
+
  private:
    Stats stats_;
+   std::string console_pending_;
+   uint64_t console_dropped_ = 0;
+   uint32_t session_ = 0;
+   static const size_t kConsolePendingCapacity = 1 << 20;
    void putc(char c,int fd);
    // Appends one character to the captured console output.
    void RecordTty(char c);

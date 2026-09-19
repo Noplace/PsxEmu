@@ -84,6 +84,9 @@ namespace psxemu {
 
         if (!CreateAppWindow(instance))
             return false;
+        // Created hidden whether or not it is wanted, so it collects from the first frame and
+        // opening it later shows everything already written.
+        console_.Create(instance, window_, [this] { SetShowBiosConsole(false); });
         if (!CreateMachine())
             return false;
 
@@ -100,6 +103,8 @@ namespace psxemu {
 
         ShowWindow(window_, show_command);
         UpdateWindow(window_);
+        if (config_.show_bios_console)
+            console_.Show(true);
         return true;
     }
 
@@ -157,6 +162,7 @@ namespace psxemu {
         UpdateRecompilerMenu();
         UpdatePauseInMenusMenu();
         UpdateShowTimingsMenu();
+        UpdateBiosConsoleMenu();
         UpdateFilterMenu();
         UpdateRendererMenu();
         UpdateAudioBackendMenu();
@@ -283,6 +289,10 @@ namespace psxemu {
             ApplyInput(system, input);
         };
         hooks.report = [this](const MachineReport& report) { OnMachineReport(report); };
+        hooks.after_frame = [this](Machine& machine) { CollectConsoleText(machine.system()); };
+        // Still the only thread: the boot already set up is the one the console starts in, and
+        // needs no marker above it.
+        console_session_ = system_->kernel().session();
         machine_ = std::make_unique<Machine>(system_.get(), &video_->frames(), &audio_->samples(),
                                              hooks);
         input_ = std::make_unique<InputThread>(&machine_->input(), window_);
@@ -747,6 +757,33 @@ namespace psxemu {
         SaveSettingsIfChanged();
         SendConfigToMachine();
         UpdateTitle();
+    }
+
+    void App::UpdateBiosConsoleMenu() { TickBiosConsole(window_, config_.show_bios_console); }
+
+    // Nothing to tell the machine: the core records the console whether or not anyone looks.
+    void App::SetShowBiosConsole(bool on) {
+        config_.show_bios_console = on;
+        console_.Show(on);
+        UpdateBiosConsoleMenu();
+        SaveSettingsIfChanged();
+    }
+
+    void App::CollectConsoleText(System& system) {
+        emulation::psx::Kernel& kernel = system.kernel();
+        const uint32_t session = kernel.session();
+        const bool new_boot = (session != console_session_);
+        console_session_ = session;
+
+        std::string text;
+        kernel.TakeConsoleText(&text);
+        if (!new_boot && text.empty())
+            return;
+        PostToUi([this, new_boot, text = std::move(text)] {
+            if (new_boot)
+                console_.AppendMarker(L"restart");
+            console_.Append(text);
+        });
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1218,6 +1255,9 @@ namespace psxemu {
 
             case kCommandShowTimings:
                 SetShowTimings(!config_.show_timings);
+                break;
+            case kCommandBiosConsole:
+                SetShowBiosConsole(!config_.show_bios_console);
                 break;
 
             case kCommandRescanBios:

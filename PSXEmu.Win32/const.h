@@ -94,6 +94,7 @@ namespace psxemu {
         kCommandSpeedLast = kCommandSpeedFirst + 3,   // 50, 100, 150, 200%
         kCommandPauseInMenus,
         kCommandShowTimings,
+        kCommandBiosConsole,
         kCommandExit,
     };
 
