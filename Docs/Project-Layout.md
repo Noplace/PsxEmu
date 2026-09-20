@@ -76,6 +76,7 @@ PsxEmu/
       timer_test.cpp  sio_test.cpp  spu_test.cpp  media_test.cpp  mc_test.cpp  debug_test.cpp
                                the ten emulation harnesses (Docs/Test-Suite.md)
       rec_test.cpp  rec_bench.cpp   the recompiler's tests, and its benchmark
+      timing_test.cpp          bus timing against a real console (cpu/access-time)
       host_test.cpp            the threads and channels in host/
       frame_limiter_test.cpp  speed_resampler_test.cpp  letterbox_test.cpp
       wav_pitch.cpp            the note in a WAV boot_runner wrote

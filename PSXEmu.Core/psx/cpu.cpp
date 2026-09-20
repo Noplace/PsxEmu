@@ -664,13 +664,43 @@ uint32_t Cpu::Load(MemorySize size, uint32_t address) {
   //
   // Instruction fetches are excluded: those come through the instruction
   // cache, which is a separate cost and is not modelled here.
-  if (current_stage != 1) {
+  //
+  // The stall is everything a load costs beyond the one cycle every
+  // instruction does, so a load's whole cost is 1 + stall, interpreted or
+  // compiled. Checked against a real console by JaCzekanski's cpu/access-time,
+  // which timing_test runs against this core (Test-Suite.md):
+  //   - RAM 5, the scratchpad 1, the on-die registers 3 and the cache control
+  //     register 1 are fixed costs, measured.
+  //   - The BIOS ROM, the expansion regions, the CD-ROM and the SPU sit on 8-
+  //     or 16-bit buses whose delays the BIOS programs into 1F801008h-
+  //     1F801020h; their costs come from those registers and the width of the
+  //     read (IOInterface::UpdateBusTiming). A word from the 8-bit ROM is four
+  //     bus accesses: 25 cycles, where a byte is 7.
+  //
+  // SWL and SWR read the word they merge into, but that is this emulator's
+  // way of doing a partial store, not a bus read: it costs nothing, and the
+  // store costs what a store does.
+  if (current_stage != 1 && !merging_store_) {
+    const IOInterface& io = system_->io();
+    const uint32_t width = (size == kM8) ? 0 : (size == kM16) ? 1 : 2;
     uint32_t stall = 0;
-    if (physical <= 0x007FFFFF)                                   stall = 3;
-    else if (physical >= 0x1F800000 && physical <= 0x1F8003FF)    stall = 0;
-    else if (physical >= 0x1F801000 && physical <= 0x1F802FFF)    stall = 3;
-    else if (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF)    stall = 5;
-    else                                                          stall = 5;
+    if (address >= 0xFFFE0000)                                    stall = 0;   // cache control
+    else if (physical <= 0x007FFFFF)                              stall = 4;   // RAM
+    else if (physical >= 0x1F800000 && physical <= 0x1F8003FF)    stall = 0;   // scratchpad
+    else if (physical >= 0x1F801800 && physical <= 0x1F80180F)
+      stall = io.bus_stall(IOInterface::kBusCdrom, width);
+    else if (physical >= 0x1F801C00 && physical <= 0x1F801FFF)
+      stall = io.bus_stall(IOInterface::kBusSpu, width);
+    else if (physical >= 0x1F802000 && physical <= 0x1F802FFF)
+      stall = io.bus_stall(IOInterface::kBusExp2, width);
+    else if (physical >= 0x1F801000 && physical <= 0x1F801FFF)    stall = 2;   // on-die registers
+    else if (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF)
+      stall = io.bus_stall(IOInterface::kBusBios, width);
+    else if (physical >= 0x1F000000 && physical <= 0x1F7FFFFF)
+      stall = io.bus_stall(IOInterface::kBusExp1, width);
+    else if (physical >= 0x1FA00000 && physical <= 0x1FBFFFFF)
+      stall = io.bus_stall(IOInterface::kBusExp3, width);
+    else                                                          stall = 6;   // nothing there
     for (uint32_t i = 0; i < stall; ++i)
       Tick();
   }
@@ -867,6 +897,11 @@ void Cpu::StageRD() {
 }
 
 void Cpu::Jump(uint32_t address) {
+  // The branch's own cycle; the delay slot below charges its own. Every taken
+  // branch, jump and jr/jalr comes through here, so the pair costs 2 - what
+  // timers.exe's branch loops read on a real console, and what psxtest_gte's
+  // TIMING checks expect of its loops (bug 78).
+  Tick();
   // A target that is not word aligned faults as the branch is taken, before
   // its delay slot: AdEL, with EPC and BadVaddr both the target (amidog's
   // psxtest_cpu jalr group; DuckStation's CPU::Branch). Only jr and jalr can
@@ -924,25 +959,20 @@ void Cpu::REGIMM() {
 }
 
 void Cpu::J() {
-  Tick();
   Jump((context_->pc & 0xF0000000) | (target_ << 2));
 }
 
 void Cpu::JAL() {
   WriteReg(31, context_->pc + 4);
-  Tick();
   Jump((context_->pc & 0xF0000000) | (target_ << 2));
 }
 
-// A taken branch costs nothing beyond its delay slot's own cycle - the
-// R3000A resolves the branch in decode, so the delay-slot instruction that
-// Jump() runs already accounts for the whole pair (confirmed by measuring
-// this core's own SQR-loop cycles against amidog's psxtest_gte, bug 42/43).
-// A *not-taken* branch has no delay-slot Jump() to tick through, though: the
-// instruction after it still runs (psx-spx: "the instruction following the
-// branch will always be executed"), but as an ordinary next fetch, not
-// through here. Without a Tick() of its own, the branch's decode cycle was
-// silently uncharged - every other non-branch instruction charges 1.
+// A branch costs one cycle whether or not it is taken. Taken, Jump() charges
+// it; not taken, the instruction after it runs as an ordinary next fetch
+// rather than through Jump(), so the branch has to charge its own here.
+// (Taken branches were once charged nothing beyond the delay slot, on the
+// strength of an SQR-loop figure that had itself been derived from this
+// core's own costs - bugs 43 and 78.)
 void Cpu::BEQ() {
   if (context_->gp.reg[rs_] == context_->gp.reg[rt_]) {
     Jump(context_->pc + (immediate_32bit_sign_extended_ << 2));
@@ -1079,11 +1109,18 @@ void Cpu::COP2() {
   // until [it] has finished" - psx-spx. MFC2/CFC2 are the register reads;
   // MTC2/CTC2 load new operands and are not documented to wait on this.
   const bool reads_register = !is_command && (rs == 0x00 || rs == 0x02);
+  //
+  // A hold costs one cycle more than the wait: the CPU restarts the cycle
+  // after the command finishes. An access that arrives exactly as it
+  // finishes holds for nothing. Both are how psxtest_gte's TIMING checks
+  // score its loops - an SQR (5) with 0 or 1 nops before CFC2 costs the same
+  // 11 cycles a pass, with 4 nops it costs 10 (bug 78) - and DuckStation's
+  // AddGTETicks carries the same extra cycle.
 
   if ((is_command || reads_register) &&
       context_->cycles < gte_busy_until_cycles_) {
     TickCycles(
-        static_cast<uint32_t>(gte_busy_until_cycles_ - context_->cycles));
+        static_cast<uint32_t>(gte_busy_until_cycles_ - context_->cycles) + 1);
   }
 
   if (is_command) {
@@ -1148,7 +1185,6 @@ void Cpu::LB() {
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>((int8_t)mem));
-  Tick();
 }
 
 void Cpu::LH() {
@@ -1161,7 +1197,6 @@ void Cpu::LH() {
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>((int16_t)mem));
-  Tick();
 }
 
 void Cpu::LWL() {
@@ -1183,7 +1218,6 @@ void Cpu::LWL() {
       ArmLoad(rt_, mem);
       break;
   }
-  Tick();
 }
 
 void Cpu::LW() {
@@ -1197,7 +1231,6 @@ void Cpu::LW() {
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>(mem));
-  Tick();
 }
 
 void Cpu::LBU() {
@@ -1210,7 +1243,6 @@ void Cpu::LBU() {
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>((uint8_t)mem));
-  Tick();
 }
 
 void Cpu::LHU() {
@@ -1223,7 +1255,6 @@ void Cpu::LHU() {
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>((uint16_t)mem));
-  Tick();
 }
 
 void Cpu::LWR() {
@@ -1245,7 +1276,6 @@ void Cpu::LWR() {
       ArmLoad(rt_, (ReadRegForwarded(rt_) & 0xFFFFFF00) | (mem>>24));
       break;
   }
-  Tick();
 }
 
 void Cpu::SB() {

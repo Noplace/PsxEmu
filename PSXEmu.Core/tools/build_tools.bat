@@ -50,6 +50,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_debug\ /Fe:Temp\tools\debug_test.exe ^
    PSXEmu.Core\tools\debug_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_timing mkdir Temp\tools\obj_timing
+cl %FLAGS% /Fo:Temp\tools\obj_timing\ /Fe:Temp\tools\timing_test.exe ^
+   PSXEmu.Core\tools\timing_test.cpp %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
 if not exist Temp\tools\obj_mc mkdir Temp\tools\obj_mc
 cl %FLAGS% /Fo:Temp\tools\obj_mc\ /Fe:Temp\tools\mc_test.exe ^
    PSXEmu.Core\tools\mc_test.cpp %CORE% %LIBS%

@@ -148,19 +148,27 @@ the mask instead.
 ### Cycle timing - partly measured, memory regions still modelled
 
 [CPU-Timing-Plan.md](CPU-Timing-Plan.md) tracks this. Done: multiply and
-divide charge psx-spx's measured 6/9/13/36 cycles, a not-taken branch costs a
-cycle (bug 43), and every GTE command charges its documented cost with the
-hardware's stall when the next one comes too soon (bug 42) - recovered from
-inside amidog's own test loop, matching the table for every opcode.
+divide charge psx-spx's measured 6/9/13/36 cycles (bug 43), every GTE command
+charges its documented cost with the hardware's stall when the next one comes
+too soon (bug 42), and a branch costs a cycle whether or not it is taken, with
+a GTE hold costing one more to restart (bug 78). amidog's `psxtest_gte` TIMING
+group passes for all 22 opcodes, and timers.exe's delay loops read within 2
+cycles of a real console's at every length.
 
-Still modelled: `Cpu::Load`'s per-region stall (3 cycles RAM, 0 scratchpad, 3
-I/O, 5 BIOS ROM). Primary sources put hardware at 1 / 5 / 7 and a
-*programmable* 27-33 for the ROM, set by a memory-control register this core
-does not use as a timing input, with a load's cost partly overlapping the
-instructions after it. That is phase 3, deliberately left for its own pass
-because bug 16 is what a wrong number here does. amidog's GTE suite's TIMING
-column stays red until phase 0 (sampling the column itself) and phase 3 are
-done.
+Measured for loads: memory access costs (bugs 76-77). `timing_test` runs
+JaCzekanski's `cpu/access-time` against the table it recorded on a real
+console, and 42 of 51 cells match.
+- **Fixed costs:** RAM, the scratchpad, the on-die registers and the cache
+  control register.
+- **From the memory-control registers:** the BIOS ROM and the expansion,
+  CD-ROM and SPU buses, by psx-spx's formula and the width of the read.
+- **Still off:**
+  - the CD-ROM by one cycle, the SPU and expansion 2 by 3 or 4: that is the
+    formula's own error, not fitted over;
+  - a partial `lwl`/`lwr` from a narrow bus, charged a whole word where the
+    console seems to read only what it needs.
+- **Not modelled:** a slow load overlapping the instructions after it.
+- **Unmeasured:** stores.
 
 ### DMA data moves eagerly; only the completion is paced
 
@@ -196,10 +204,12 @@ that code changed - see [Recompiler-Plan.md](Recompiler-Plan.md).
 
 ### GTE - values and flags agree with hardware; one matrix is guessed
 
-All 22 commands pass amidog's `psxtest_gte` REG and COMPLEX groups, and games
-issue tens of thousands of commands with none unrecognised. The MVMVA garbage
-matrix (matrix select 3) is written from the description, not measured. Its
-TIMING group is the cycle-timing entry above.
+All 22 commands pass amidog's `psxtest_gte` REG, COMPLEX and TIMING groups,
+and games issue tens of thousands of commands with none unrecognised. Its
+OPCODE group does not pass: RTPS and RTPT fail on value, and NCS, NCT, NCCS,
+NCCT, CC, CDP, NCDS, NCDT and MVMVA on flags (bug 78). Not yet investigated.
+The MVMVA garbage matrix (matrix select 3) is written from the description,
+not measured.
 
 ## Present but incomplete
 

@@ -162,8 +162,12 @@ boundary for both directions, `DIV`/`DIVU`'s fixed 36, and the busy-wait.
 phase 4); `cpu_test`, `gte_test` and all other harnesses stayed green, and
 the BIOS boot checksum did not move.
 
-**Phase 2 - the one-cycle branch/loop-overhead question. Answered (bug
-43): the discrepancy was never real.** Reconstructing bug 42's exact SQR
+**Phase 2 - the one-cycle branch/loop-overhead question. Answered wrongly
+here, and corrected by phase 4 (bug 78):** a taken branch does cost its own
+cycle. The "hardware-recovered" 9 below had been derived from this core's own
+costs, so matching it proved nothing. What follows is kept as the record.
+
+**The original answer (bug 43): the discrepancy was never real.** Reconstructing bug 42's exact SQR
 loop directly in `cpu_test` (`sqrloop` group) and measuring this core's own
 cycles gives exactly 9.000 cycles/iteration, matching the hardware-recovered
 value precisely - no branch-timing code changed. The naive flat-count's
@@ -179,7 +183,28 @@ conditional branch. `J`/`JAL` still charge 2 for branch+delay-slot where
 "fixed" on inference, since this measurement doesn't reach jumps; a genuine
 open question for whoever can measure it next.
 
-**Phase 3 - memory region costs. Not done - still the riskiest phase.**
+**Phase 3 - memory region costs. Done for loads (2026-09-19, bugs 76-77).**
+Bug 77 took the last step: the BIOS ROM, the expansion regions, the CD-ROM
+and the SPU are timed from the memory-control registers by psx-spx's formula,
+so a wider read of a narrow bus costs several bus cycles. 42 of 51 cells now
+match. The rest are the documented formula's error for regions with a
+recovery or pre-strobe period, and one `lwl`/`lwr` pair (Test-Suite.md,
+`timing_test`). Stores are still unmeasured. Here is how the phase went
+before that:
+- **The instrument:** `timing_test` runs JaCzekanski's `cpu/access-time`
+  against the table that suite recorded on a real console (Test-Suite.md has
+  it).
+- **Done:** a load now costs 1 + the region's stall, interpreted and compiled
+  alike. The load instructions used to tick twice. The scratchpad, the on-die
+  registers and the cache control register are at their measured 1, 3 and 1
+  cycles. RAM (5), the BIOS and the expansion regions (7) are unchanged.
+  SWL/SWR no longer pay a read stall for their merge. 35 of 51 cells match,
+  up from 5.
+- **Left:** the 8- and 16-bit devices (BIOS ROM, expansion regions, CD-ROM,
+  SPU) should get dearer with the width of the read, by delays the BIOS
+  programs into 1F801000h-1F801020h. Stores are still unmeasured.
+
+The original scope of this phase follows.
 Verify the RAM/scratchpad/I/O/BIOS
 figures against a primary psx-spx fetch (not a search-result summary), check
 whether stores need their own table distinct from loads, and re-derive
@@ -218,11 +243,30 @@ drop-in table swap:
   stall, documented as approximate) or take on modelling the overlap, rather
   than drifting into it unstated.
 
-**Phase 4 - re-run both suites, in full, pixel-sampled.** The goal is not
-"green," it is an honest count: which of the 22 GTE opcodes and which
-`psxtest_cpu` groups now pass, and a precise description of whatever still
-does not - matching how bug 42 itself was written up, not declaring victory
-early.
+**Phase 4 - re-run both suites, in full, pixel-sampled. Done (2026-09-19,
+bug 78).** The count:
+- **`psxtest_gte` TIMING: 22 of 22** opcodes pass, from 0. Phase 3 alone
+  moved nothing here: the screen was pixel-identical before and after it.
+- **`psxtest_cpu`: unchanged,** every group OK or N/A, TIMING included, and
+  `Result: 00000101`.
+- **timers.exe** (JaCzekanski's, with a real console's log beside it): 1013
+  and 5013 against the console's 1011 and 5011, a fixed 2-cycle offset at
+  every length.
+
+What it took was not in phases 1-3. Disassembling the test's own check code
+gave its expected cycles for every loop shape, and set against this core's
+counts they showed two errors:
+- **A taken branch cost nothing of its own.** Every loop was short by exactly
+  one cycle a pass. timers.exe showed the same gap growing with the loop
+  count.
+- **A GTE hold ended one cycle early.** A read that arrives before the
+  command finishes resumes the cycle after it, and a read that lands exactly
+  on completion doesn't wait at all. The loops with 0 or 1 nops before the
+  read were short by two cycles.
+
+What still fails is not timing. `psxtest_gte`'s OPCODE group has value
+errors for RTPS and RTPT and flag errors for nine more commands, unchanged by
+any of this and not yet investigated.
 
 ## What this will not do
 
