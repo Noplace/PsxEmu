@@ -56,7 +56,7 @@ Unit tests for the geometry coprocessor. No BIOS, no window. Registers are
 loaded, a command word is executed, and the results are checked - the same path
 a game takes, through the same MFC2/MTC2/CFC2/CTC2 semantics.
 
-**Current: 99 checks, 0 failures.**
+**Current: 106 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -68,6 +68,7 @@ a game takes, through the same MFC2/MTC2/CFC2/CTC2 semantics.
 | `arithmetic` | SQR, OP as a cross product, GPF scaling by IR0, GPL adding to the accumulator |
 | `mvmva` | each matrix, each vector including IR, each translation, and the documented broken far-colour case |
 | `colour` | the lighting chain, CODE passing through the colour FIFO untouched, the FIFO shifting, and component saturation |
+| `opcode` | what amidog's OPCODE group caught (bug 79): a translated product checking the 44-bit accumulator after *each* partial sum, in MVMVA, RTPS and the lighting chain's background step, and RTPS taking IR0 from the full depth-cue sum rather than from wrapped MAC0 |
 | `unknown` | an unrecognised command being counted rather than silently ignored |
 
 Expected values are derived from the hardware description, not from this
@@ -76,8 +77,9 @@ changed. NCLIP's area, OP's cross product and AVSZ's weighted sum are each
 computed by hand in the test.
 
 These tests say the implementation agrees with the description. That it agrees
-with the hardware is amidog's `psxtest_gte` (`test/psxtest_gte/`): its REG and
-COMPLEX groups pass for all 22 commands. Its TIMING group is bug 42 and
+with the hardware is amidog's `psxtest_gte` (`test/psxtest_gte/`): its REG,
+COMPLEX and OPCODE groups pass for all 22 commands - OPCODE since bug 79, which
+is what the `opcode` group above holds. Its TIMING group is bug 42 and
 [CPU-Timing-Plan.md](CPU-Timing-Plan.md). The BIOS shell issues zero GTE
 commands, so the BIOS baseline below says nothing about the GTE; the game table
 does.
@@ -449,12 +451,12 @@ the most likely answer is the network share rather than the emulator.
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
 | `cpu_test` | 287 | | `gpu_test` | 31 |
-| `gte_test` | 99 | | `mdec_test` | 85 |
+| `gte_test` | 106 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 261 |
 | `sio_test` | 105 | | `spu_test` | 108 |
 | `mc_test` | 77 | | `debug_test` | 174 |
 
-**1,297 checks, 0 failures**, all ten green. Each harness's own section above
+**1,304 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)
@@ -695,8 +697,10 @@ wrong way, and it stays anyway.
 
 - **amidog's GTE suite has run** (`test/psxtest_gte/` - see bug 41 for how
   to reach it, `--auto-boot --exe` or the Win32 front end's Boot PSX-EXE menu
-  command). Values and flags agree with hardware outright, and bug 42 made
-  every GTE command's own cost match. Its TIMING column is still red, because
+  command). Values and flags agree with hardware in REG, COMPLEX and - since
+  bug 79 - OPCODE, the group that runs each command in its other encodings,
+  and bug 42 made every GTE command's own cost match. Its TIMING column is
+  still red, because
   the test's loop also measures the ordinary CPU instructions around each
   command - [CPU-Timing-Plan.md](CPU-Timing-Plan.md) phases 0 and 3.
 - **amidog's CPU suite passes.** `test/psxtest_cpu/` (reached with

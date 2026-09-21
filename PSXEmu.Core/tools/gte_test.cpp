@@ -654,6 +654,66 @@ void TestColour(Machine& m) {
   CheckEqual(m.Data(RGB2) & 0xFF, 0xFFu, "red clamped to 255");
 }
 
+// What amidog's psxtest_gte OPCODE group caught (bug 79): the translated
+// products check the 44-bit accumulator after every partial sum, and RTPS's
+// IR0 saturates from the full depth-cue sum rather than from wrapped MAC0.
+void TestOpcode(Machine& m) {
+  // TRX*1000h = 2^43 - 4096. Adding RT11*VX = 7FFFh*7FFFh = 3FFF0001h passes
+  // 2^43 - 1, so the first partial sum overflows positive and wraps to about
+  // -2^43. Adding RT12*VY = -8000h*7FFFh = -3FFF8000h then passes -2^43 the
+  // other way. The final sum, 2^43 - 36863, is back in range - so a check made
+  // only at the end sees nothing, while the hardware has set both bits.
+  const uint32_t kBothWays = (1u << 30) | (1u << 27);
+
+  BeginTest("MVMVA checks the accumulator after each partial sum");
+  m.Reset();
+  m.SetControl(RT11RT12, Pack16(0x7FFF, -0x8000));
+  m.SetControl(TRX, 0x7FFFFFFF);
+  m.SetData(VXY0, Pack16(0x7FFF, 0x7FFF));
+  m.Run(Command(0x12, true, false, 0, 0, 0));   // RT * V0 + TR, sf=1
+  CheckEqual(m.Control(FLAG), 0x80000000u | kBothWays | (1u << 24),
+             "MAC1 overflowed both ways on the way, and IR1 saturated");
+  CheckEqual(m.Data(MAC1), 0x7FFFFFF7u,
+             "the value is the true sum, (2^43 - 36863) >> 12");
+
+  BeginTest("RTPS checks the accumulator after each partial sum");
+  m.Reset();
+  m.SetControl(RT11RT12, Pack16(0x7FFF, -0x8000));
+  m.SetControl(TRX, 0x7FFFFFFF);
+  m.SetData(VXY0, Pack16(0x7FFF, 0x7FFF));
+  m.SetControl(H, 1000);
+  m.Run(Command(0x01));                          // sf=0, the OPCODE group's form
+  CheckEqual(m.Control(FLAG) & kBothWays, kBothWays,
+             "MAC1 overflowed both ways on the way");
+
+  BeginTest("NCS's background-colour step checks each partial sum");
+  m.Reset();
+  // The light matrix passes V0 through (sf=0), leaving IR1 = IR2 = 7FFFh for
+  // the colour matrix, whose first row and RBK repeat the numbers above.
+  m.SetControl(L11L12, Pack16(1, 0));
+  m.SetControl(L22L23, Pack16(1, 0));
+  m.SetControl(LR1LR2, Pack16(0x7FFF, -0x8000));
+  m.SetControl(RBK, 0x7FFFFFFF);
+  m.SetData(VXY0, Pack16(0x7FFF, 0x7FFF));
+  m.Run(Command(0x1E));                          // NCS, sf=0
+  CheckEqual(m.Control(FLAG) & kBothWays, kBothWays,
+             "MAC1 overflowed both ways on the way");
+
+  BeginTest("RTPS takes IR0 from the full depth-cue sum, not wrapped MAC0");
+  m.Reset();
+  m.SetIdentityRotation();
+  m.SetData(VZ0, 1000);
+  m.SetControl(H, 1000);                         // the divide gives about 10000h
+  m.SetControl(DQA, 0x7FFF);
+  m.SetControl(DQB, 0x7FFFFFFF);
+  m.Run(Command(0x01, true));
+  // 10000h*7FFFh + 7FFFFFFFh is about 2^32: MAC0 overflows and wraps to a
+  // small negative number, but IR0 is that sum >> 12, far above 1000h.
+  Check((m.Control(FLAG) & (1u << 16)) != 0, "MAC0 overflow flagged");
+  CheckEqual(m.Data(IR0), 0x1000u, "IR0 saturates high, not low");
+  Check((m.Control(FLAG) & (1u << 12)) != 0, "and IR0 saturation flagged");
+}
+
 void TestUnknown(Machine& m) {
   BeginTest("an unrecognised command is counted rather than ignored");
   m.Reset();
@@ -677,6 +737,7 @@ const Group kGroups[] = {
   { "arithmetic", TestArithmetic },
   { "mvmva",      TestMvmva },
   { "colour",     TestColour },
+  { "opcode",     TestOpcode },
   { "unknown",    TestUnknown },
 };
 

@@ -4396,3 +4396,104 @@ best of eight.
     with the call named, and again on Continue.
 
 **Not verified:** PsyQ `.SYM` (not built), the window's look, and any game.
+
+## 79. The GTE accumulator was checked only at the end of a sum, and RTPS's IR0 came from a wrapped MAC0
+
+amidog's `psxtest_gte` OPCODE group, the one after OFFICIAL TIMING, failed
+where REG, COMPLEX and TIMING passed:
+
+- value errors: RTPS and RTPT;
+- flag errors: NCS, NCT, NCCS, NCCT, CC, CDP, NCDS, NCDT and MVMVA.
+
+That group runs each command in its other encodings - the sf, lm, mx, v and cv
+fields and the unused bits - with register values that reach the accumulator's
+limits. REG and COMPLEX never go near them, which is how two bugs sat under a
+green screen for as long as they did. Both were found by reading this core
+against DuckStation's `gte.cpp` side by side rather than from the test's own
+expectations; the test then said which red letter each one was.
+
+### The accumulator is checked after every partial sum, not once at the end
+
+Every translated product - RTPS's `TR*1000h + RT*V`, MVMVA's chosen
+translation, and the `BK*1000h + LCM*IR` step at the heart of the whole
+lighting chain - is built a term at a time, and the hardware checks MAC1-3 for
+44-bit overflow *after each partial sum*, wrapping as it goes. This core
+formed the whole sum in a 64-bit temporary and checked it once at the end.
+
+The values are the same either way, which is why this is a flag-only failure
+for nine of the eleven commands: wrapping at 44 bits is modular, so wrapping
+after every term and wrapping once at the end leave the same result. What
+differs is what is recorded on the way. A translation large enough that one
+product carries the sum past 2^43-1 and the next brings it back sets both the
+positive and the negative overflow bit on a real console, and set neither
+here.
+
+`Gte::TranslatedDot` now builds those rows a term at a time, and RTPS, MVMVA
+and `MultiplyMatrixByVector` all go through it. The commands that add no
+translation are left alone: two products of two 16-bit values cannot reach 44
+bits, so there is nothing a mid-sum check could catch.
+
+### RTPS's IR0 was computed from MAC0 after MAC0 had wrapped
+
+The depth-cue step is `MAC0 = divide*DQA + DQB`, then `IR0 = MAC0 >> 12`
+saturated to 0..1000h. MAC0 is 32 bits and that sum is not: DQA at its limit
+against a divide result of up to 1FFFFh overflows it. This core stored the
+truncated MAC0 and shifted *that* down by 12, so a sum that had just
+overflowed positive came back as a small negative number and IR0 saturated to
+0 - where the hardware, shifting the full sum, saturates to 1000h. That is the
+far end of the range from the right answer, and it is the whole of RTPS's and
+RTPT's V column. DuckStation and Mednafen both take IR0 from the untruncated
+sum.
+
+**The two bugs hid each other in RTPS.** Before the fix RTPS and RTPT showed a
+red V and a *green* F. With only the IR0 fix in, V goes green and F turns red:
+the flag bug was in RTPS all along, and the test had simply reported the value
+mismatch first. Neither fix alone makes those two rows pass.
+
+### Verified, 2026-09-20
+
+- **`psxtest_gte`:** ALL DONE, with all 22 OPCODE rows green on X, F and V and
+  their T column N/A. TOTAL's X, F and V are green; its T is red because this
+  branch does not carry the timing work of bugs 76-78.
+- **The whole suite passes with bugs 76-78 alongside.** That work was
+  committed while this was in progress, so the two were built together in a
+  scratch tree - its commit with this branch's `gte.cpp`, `gte.h` and
+  `gte_test.cpp` copied over - and run interpreted, 700,000 frames. ALL DONE
+  with **TOTAL green on X, F, V and T**: every group of amidog's GTE suite,
+  timing included. Every harness in that tree is green too, `timing_test`'s 19
+  checks among them.
+- **`gte_test`:** a new `opcode` group, 7 checks, 106 in total, 0 failures.
+  Built against the old `gte.cpp`, 4 of them fail - at least one per fix - so
+  each holds a real difference rather than a description of this code. The
+  expected values are worked out in the test's own comments from the 44-bit
+  rule, not read off this implementation.
+- **Every harness:** green. 1,304 checks across the ten counted harnesses,
+  `rec_test`'s 460, and the host-side four.
+- **The BIOS boot:** 97,747,598 instructions and `c7c8db90c5984798`,
+  unchanged. The shell issues no GTE commands, so that says only that nothing
+  else moved.
+- **The twelve discs,** base build against this one, 3,000 frames each: all 36
+  checksums identical, and every instruction count and sector count with them.
+  Games that issue tens of thousands of GTE commands a run - Ridge Racer's 3.8
+  million - never push the accumulator past 44 bits or overflow the depth cue,
+  which is what one would expect of code written for the console it ran on.
+  (Area 51 read 5,510 sectors on both builds where the table says 5,511; that
+  predates this change.)
+
+**The OPCODE group is far slower to pass than to fail.** A failing opcode
+stops early; a passing one runs every shape. Before the fix the whole screen
+reached ALL DONE inside 60,000 frames. After it, 60,000 frames reach only
+DPCT, and ALL DONE takes 557,805 - past `boot_runner`'s 20-billion-instruction
+safety net, which ends the run early and leaves a screen that looks like a
+hang on whichever opcode it stopped inside. That is worth knowing before
+reading a half-finished screen as a failure.
+
+The screen above was reached twice, and the two agree to the pixel
+(`e8cb67ca5f009df3`):
+
+- `--recompiler`, 557,805 frames, inside the net at 376 fps. The recompiler
+  hands every COP2 instruction to the interpreter, so this is the same `Gte`
+  code either way;
+- interpreted, 700,000 frames and 310 billion instructions, with the net
+  raised in a scratch build - three hours at 62 fps, and the reason the
+  recompiler is the one to reach for here.

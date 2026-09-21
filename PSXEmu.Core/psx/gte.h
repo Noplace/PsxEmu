@@ -127,6 +127,8 @@ class Gte : public Component {
   uint32_t Divide(uint16_t numerator, uint16_t denominator);
 
   // ---- shared steps ------------------------------------------------------
+  int64_t TranslatedDot(int index, int32_t translation, const int16_t row[3],
+                        const int16_t vector[3]);
   void SetMacAndIr(int64_t x, int64_t y, int64_t z, bool lm);
   void PushScreenXy(int32_t x, int32_t y);
   void PushScreenZ(uint16_t z);

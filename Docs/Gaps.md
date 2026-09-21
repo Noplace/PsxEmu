@@ -196,10 +196,12 @@ that code changed - see [Recompiler-Plan.md](Recompiler-Plan.md).
 
 ### GTE - values and flags agree with hardware; one matrix is guessed
 
-All 22 commands pass amidog's `psxtest_gte` REG and COMPLEX groups, and games
-issue tens of thousands of commands with none unrecognised. The MVMVA garbage
-matrix (matrix select 3) is written from the description, not measured. Its
-TIMING group is the cycle-timing entry above.
+All 22 commands pass amidog's `psxtest_gte` REG, COMPLEX and OPCODE groups -
+OPCODE since bug 79, which is where the 44-bit accumulator's mid-sum overflow
+and RTPS's IR0 were found - and games issue tens of thousands of commands with
+none unrecognised. The MVMVA garbage matrix (matrix select 3) is written from
+the description, not measured. Its TIMING group is the cycle-timing entry
+above.
 
 ## Present but incomplete
 

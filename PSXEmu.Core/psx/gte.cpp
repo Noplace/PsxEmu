@@ -268,6 +268,20 @@ uint32_t Gte::Divide(uint16_t numerator, uint16_t denominator) {
 // Shared steps
 // ---------------------------------------------------------------------------
 
+// One row of translation*1000h + M*V, the sum every translated product (RTPS,
+// MVMVA, the lighting chain's BK step) is built from. The accumulator is
+// checked - and wraps at 44 bits - after each partial sum, not only at the end:
+// a large translation that one product overflows and the next brings back
+// into range still leaves its overflow flag set, and the wrapped intermediate
+// is what the rest of the sum is added to. The final check is the caller's.
+int64_t Gte::TranslatedDot(int index, int32_t translation, const int16_t row[3],
+                           const int16_t vector[3]) {
+  int64_t sum = CheckMac(index, (static_cast<int64_t>(translation) << 12) +
+                                    static_cast<int64_t>(row[0]) * vector[0]);
+  sum = CheckMac(index, sum + static_cast<int64_t>(row[1]) * vector[1]);
+  return sum + static_cast<int64_t>(row[2]) * vector[2];
+}
+
 void Gte::SetMacAndIr(int64_t x, int64_t y, int64_t z, bool lm) {
   mac_[1] = static_cast<int32_t>(CheckMac(1, x) >> sf_);
   mac_[2] = static_cast<int32_t>(CheckMac(2, y) >> sf_);
@@ -317,13 +331,8 @@ void Gte::MultiplyMatrixByVector(int matrix, const int16_t vector[3],
   int64_t result[3];
 
   for (int row = 0; row < 3; ++row) {
-    int64_t sum = 0;
-    if (translation < 3)
-      sum = static_cast<int64_t>(translation_[translation][row]) << 12;
-    sum += static_cast<int64_t>(m[row][0]) * vector[0];
-    sum += static_cast<int64_t>(m[row][1]) * vector[1];
-    sum += static_cast<int64_t>(m[row][2]) * vector[2];
-    result[row] = sum;
+    const int32_t t = translation < 3 ? translation_[translation][row] : 0;
+    result[row] = TranslatedDot(row + 1, t, m[row], vector);
   }
   SetMacAndIr(result[0], result[1], result[2], lm);
 }
@@ -356,18 +365,9 @@ void Gte::Rtps(int vector_index, bool compute_ir0) {
   const int16_t* v = v_[vector_index];
   const int16_t (*rt)[3] = matrix_[0];
 
-  int64_t x = (static_cast<int64_t>(translation_[0][0]) << 12) +
-              static_cast<int64_t>(rt[0][0]) * v[0] +
-              static_cast<int64_t>(rt[0][1]) * v[1] +
-              static_cast<int64_t>(rt[0][2]) * v[2];
-  int64_t y = (static_cast<int64_t>(translation_[0][1]) << 12) +
-              static_cast<int64_t>(rt[1][0]) * v[0] +
-              static_cast<int64_t>(rt[1][1]) * v[1] +
-              static_cast<int64_t>(rt[1][2]) * v[2];
-  int64_t z = (static_cast<int64_t>(translation_[0][2]) << 12) +
-              static_cast<int64_t>(rt[2][0]) * v[0] +
-              static_cast<int64_t>(rt[2][1]) * v[1] +
-              static_cast<int64_t>(rt[2][2]) * v[2];
+  int64_t x = TranslatedDot(1, translation_[0][0], rt[0], v);
+  int64_t y = TranslatedDot(2, translation_[0][1], rt[1], v);
+  int64_t z = TranslatedDot(3, translation_[0][2], rt[2], v);
 
   x = CheckMac(1, x);
   y = CheckMac(2, y);
@@ -402,7 +402,9 @@ void Gte::Rtps(int vector_index, bool compute_ir0) {
   if (compute_ir0) {
     const int64_t depth = static_cast<int64_t>(divided) * dqa_ + dqb_;
     mac_[0] = CheckMac0(depth);
-    ir_[0] = SaturateIr0(mac_[0] >> 12);
+    // IR0 comes from the full sum, not from MAC0: when the sum overflows 32
+    // bits MAC0 wraps, but IR0 still saturates the way the true value says.
+    ir_[0] = SaturateIr0(static_cast<int32_t>(depth >> 12));
   }
 }
 
@@ -490,13 +492,8 @@ void Gte::Mvmva(uint32_t command) {
 
   int64_t result[3];
   for (int row = 0; row < 3; ++row) {
-    int64_t sum = 0;
-    if (translation_index < 3)
-      sum = static_cast<int64_t>(translation_[translation_index][row]) << 12;
-    sum += static_cast<int64_t>(m[row][0]) * vector[0];
-    sum += static_cast<int64_t>(m[row][1]) * vector[1];
-    sum += static_cast<int64_t>(m[row][2]) * vector[2];
-    result[row] = sum;
+    const int32_t t = translation_index < 3 ? translation_[translation_index][row] : 0;
+    result[row] = TranslatedDot(row + 1, t, m[row], vector);
   }
   SetMacAndIr(result[0], result[1], result[2], lm_);
 }
