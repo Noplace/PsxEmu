@@ -39,8 +39,8 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 287, gte 99, timer 70, sio 105, spu 108, gpu 31, mdec 85, media 261, mc 77, debug 174 - 1,297
-checks, no failures (re-run 2026-09-19). The two that were failing when this document was last
+cpu 287, gte 106, timer 70, sio 146, spu 108, gpu 31, mdec 85, media 263, mc 77, debug 174 - 1,347
+checks, no failures (re-run 2026-09-21, bugs 78 and 79 together). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
@@ -148,19 +148,27 @@ the mask instead.
 ### Cycle timing - partly measured, memory regions still modelled
 
 [CPU-Timing-Plan.md](CPU-Timing-Plan.md) tracks this. Done: multiply and
-divide charge psx-spx's measured 6/9/13/36 cycles, a not-taken branch costs a
-cycle (bug 43), and every GTE command charges its documented cost with the
-hardware's stall when the next one comes too soon (bug 42) - recovered from
-inside amidog's own test loop, matching the table for every opcode.
+divide charge psx-spx's measured 6/9/13/36 cycles (bug 43), every GTE command
+charges its documented cost with the hardware's stall when the next one comes
+too soon (bug 42), and a branch costs a cycle whether or not it is taken, with
+a GTE hold costing one more to restart (bug 78). amidog's `psxtest_gte` TIMING
+group passes for all 22 opcodes, and timers.exe's delay loops read within 2
+cycles of a real console's at every length.
 
-Still modelled: `Cpu::Load`'s per-region stall (3 cycles RAM, 0 scratchpad, 3
-I/O, 5 BIOS ROM). Primary sources put hardware at 1 / 5 / 7 and a
-*programmable* 27-33 for the ROM, set by a memory-control register this core
-does not use as a timing input, with a load's cost partly overlapping the
-instructions after it. That is phase 3, deliberately left for its own pass
-because bug 16 is what a wrong number here does. amidog's GTE suite's TIMING
-column stays red until phase 0 (sampling the column itself) and phase 3 are
-done.
+Measured for loads: memory access costs (bugs 76-77). `timing_test` runs
+JaCzekanski's `cpu/access-time` against the table it recorded on a real
+console, and 42 of 51 cells match.
+- **Fixed costs:** RAM, the scratchpad, the on-die registers and the cache
+  control register.
+- **From the memory-control registers:** the BIOS ROM and the expansion,
+  CD-ROM and SPU buses, by psx-spx's formula and the width of the read.
+- **Still off:**
+  - the CD-ROM by one cycle, the SPU and expansion 2 by 3 or 4: that is the
+    formula's own error, not fitted over;
+  - a partial `lwl`/`lwr` from a narrow bus, charged a whole word where the
+    console seems to read only what it needs.
+- **Not modelled:** a slow load overlapping the instructions after it.
+- **Unmeasured:** stores.
 
 ### DMA data moves eagerly; only the completion is paced
 
@@ -196,12 +204,11 @@ that code changed - see [Recompiler-Plan.md](Recompiler-Plan.md).
 
 ### GTE - values and flags agree with hardware; one matrix is guessed
 
-All 22 commands pass amidog's `psxtest_gte` REG, COMPLEX and OPCODE groups -
-OPCODE since bug 79, which is where the 44-bit accumulator's mid-sum overflow
-and RTPS's IR0 were found - and games issue tens of thousands of commands with
-none unrecognised. The MVMVA garbage matrix (matrix select 3) is written from
-the description, not measured. Its TIMING group is the cycle-timing entry
-above.
+All 22 commands pass amidog's `psxtest_gte` REG, COMPLEX, TIMING and OPCODE
+groups - TIMING since bug 78, OPCODE since bug 79, which is where the 44-bit
+accumulator's mid-sum overflow and RTPS's IR0 were found - and games issue
+tens of thousands of commands with none unrecognised. The MVMVA garbage matrix
+(matrix select 3) is written from the description, not measured.
 
 ## Present but incomplete
 
@@ -228,6 +235,31 @@ above.
   stream sector (its `.mdf` does not), so XA audio sectors are not recognised as
   audio and reach the CPU as data. Nothing detects this or offers the
   descriptor-backed image instead.
+
+### Serial port (SIO1) - a port with nothing plugged into it
+
+`1F801050`-`1F80105F` is decoded and behaves as a port with no cable
+(`psx/sio1.h`, bug 80): the registers keep what software writes and read back
+what hardware would, the status reports no device on /DSR or CTS and an empty
+receive FIFO, the baud-rate timer counts, and a transmit with the transmitter
+enabled raises IRQ8 if it is armed. `sio1_to_console` copies what it transmits
+into the BIOS console, which is how homebrew that prints over the port is read
+here.
+
+What is not there is anything on the other end:
+
+- **No link cable.** Two emulator instances cannot be joined, so the handful of
+  games with a link mode (Doom, Ridge Racer Revolution, Destruction Derby and
+  a couple of dozen more) see an unplugged port - which is what they see on
+  one console anyway. DuckStation does not emulate a link either.
+- **No host serial port**, so PC-side tools cannot talk to the machine.
+- **A byte is transmitted instantly** rather than taking its ten or so bit
+  periods at the programmed baud rate. With nothing receiving, the only
+  difference is how soon the transmit interrupt arrives.
+- **Unverified against hardware.** JaCzekanski's suite has no SIO1 test, so
+  `sio_test`'s `sio1` group checks this against psx-spx and DuckStation, not
+  against a console. The unplugged /DSR and CTS levels are where the two
+  disagree: DuckStation reports both asserted, this reports neither.
 
 ### Physical drives - data tracks only
 
@@ -282,8 +314,6 @@ Missing or unproven:
   and its divide-by-4 on raw input is a guess.
 
 ## Barely started
-
-- **Serial port (SIO1)** - `1F801050`-`1F80105F` is not decoded at all.
 - **Parallel / expansion port** - a readable buffer with nothing behind it.
 - **DMA channel 5 (PIO)** - accepts register writes and raises its interrupt;
   transfers nothing.
@@ -296,7 +326,8 @@ Missing or unproven:
 `graphics_backend` (D3D11 or D3D12), `video_filter`, controller type and input
 source per port, the multitap player sources, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `bios_file`,
-`emulation_speed`, `pause_in_menus`, `show_timings` and `show_bios_console`.
+`emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console` and
+`sio1_to_console`.
 Beside those, the front end keeps its own keys in the same file: the eight
 most recent discs (`recent_disc_1`..`8`, File > Recent Discs) and the keyboard
 bindings (`key_up`, `key_cross` and so on, Settings > Input > Keyboard
@@ -322,9 +353,10 @@ memory, watchpoints, a BIOS call log, a call stack, labels and device panes (see
 [Debugger-Plan.md](Debugger-Plan.md); PsyQ `.SYM` symbol files are not read yet) -
 and no settings dialog, deliberately:
 every setting is already in the menus. Only the keyboard is rebindable; an
-XInput pad's layout is fixed. Output a
-program sends to the serial port or the expansion port's DUART directly, rather
-than through the BIOS, is not shown: SIO1 is not emulated, and the DUART
+XInput pad's layout is fixed. Output a program sends to the serial port is
+shown when Emulation > Serial Port to Console is ticked, which puts it in the
+BIOS console window beside what the BIOS itself printed (bug 80). What a
+program sends to the expansion port's DUART directly is still not shown: those
 registers trap.
 
 It *can* be driven from an agent session after all - launched, sent

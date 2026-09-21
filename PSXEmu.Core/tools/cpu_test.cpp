@@ -584,13 +584,11 @@ void TestBranches(Machine& m) {
     }
   }
 
-  // A taken branch and its delay slot together cost exactly the delay slot
-  // instruction's own 1 cycle - the R3000A resolves the branch in decode, so
-  // there is nothing left to charge the branch itself (confirmed by
-  // measuring this core's own SQR-loop cycles against amidog's psxtest_gte;
-  // see bug 42/43). A *not-taken* branch has no delay slot to fuse with, so
-  // it costs 1 cycle like any other instruction, and the next instruction -
-  // which always runs, taken or not - costs its own 1 cycle separately.
+  // A branch costs 1 cycle, taken or not, and the instruction after it -
+  // which always runs - costs its own. Taken, Jump() runs that delay slot
+  // inside the same step, so the step costs 2 (timers.exe's branch loops on
+  // a real console, and psxtest_gte's own expected figures; bug 78). Not
+  // taken, the next instruction is an ordinary step of its own.
   for (size_t i = 0; i < sizeof(kCases) / sizeof(kCases[0]); ++i) {
     const BranchCase& test = kCases[i];
     BeginTest(std::string("branch cycle cost: ") + test.name);
@@ -601,8 +599,8 @@ void TestBranches(Machine& m) {
     m.Run(1);  // the branch - and, if taken, its delay slot too
     const uint64_t branch_step = m.system()->cpu().context()->cycles - before;
     if (test.expect_taken) {
-      CheckEqual(static_cast<uint32_t>(branch_step), 1,
-                 "taken branch + delay slot cost 1 cycle together");
+      CheckEqual(static_cast<uint32_t>(branch_step), 2,
+                 "taken branch + delay slot cost 2 cycles together");
     } else {
       CheckEqual(static_cast<uint32_t>(branch_step), 1,
                  "not-taken branch costs 1 cycle on its own");
@@ -1002,21 +1000,15 @@ void TestGteDelay(Machine& m) {
   Check(elapsed >= 5, "SQR's 5-cycle busy window was not skipped");
 }
 
-// CPU-Timing-Plan.md's Phase 2 question, answered by measurement rather than
-// left as a guess. Reconstructs the exact loop shape Bugs-Found.md's bug 42
-// write-up describes for amidog's psxtest_gte TIMING test (SQR, CFC2 $t1
-// FLAG, a nop, an accumulate, the loop branch and its delay slot) and
-// measures this core's own per-iteration cycle delta against bug 42's own
-// recovered hardware formula (delta = 501*(opcode_cycles + overhead) + 4,
-// i.e. overhead = 9 - 5 = 4 for SQR). It comes back exactly 9: the GTE
-// busy-wait stall (bug 42) already absorbs CFC2's cost into SQR's 5-cycle
-// window, and a taken branch already costs 0 beyond its delay slot's own
-// cycle. Kept as a permanent regression check on that interaction, not
-// deleted the way bug 42's own throwaway instrument was - unlike that one,
-// this only uses the public test harness, and it is exactly the kind of
-// hardware-grounded check section 6 of Emulator-Project-Standards.md asks
-// for: one that would fail against the old, uniformly-flat-cost
-// implementation this replaced.
+// The loop amidog's psxtest_gte times each GTE command with (SQR, CFC2 $t1
+// FLAG, a nop, an accumulate, the loop branch and its delay slot), measured
+// in this core's own cycles against what the test itself expects of it. Its
+// check code (0x800318CC in the running test) wants (c + 6) cycles a pass
+// for a command of c cycles read back by the very next instruction: six
+// instructions, the command's cycles less the one it issues in, and the one
+// the CPU takes to restart after the hold. SQR is 5, so 11. Bug 43 once
+// pinned this at 9, from a figure that had itself been derived from this
+// core's own costs; bug 78 has how that was found.
 void TestSqrLoopDiagnostic(Machine& m) {
   // t0 starts at kIterations and is checked by bgtz *before* its own delay
   // slot decrements it, so passes 1..kIterations are all taken - measuring
@@ -1024,7 +1016,7 @@ void TestSqrLoopDiagnostic(Machine& m) {
   // not-taken/fall-through pass, which this check isn't aimed at (see the
   // branch-cycle-cost checks in TestBranches for that).
   const int kIterations = 50;
-  BeginTest("sqr loop overhead matches bug 42's recovered hardware formula");
+  BeginTest("sqr loop costs what psxtest_gte's TIMING check expects");
   m.Reset();
   std::vector<uint32_t> program;
   program.push_back(ADDIU(t0, zero, kIterations));  // loop counter
@@ -1051,12 +1043,12 @@ void TestSqrLoopDiagnostic(Machine& m) {
   const double per_iteration =
       static_cast<double>(elapsed) / static_cast<double>(kIterations);
   printf("  sqr loop: %llu cycles over %d iterations = %.3f cycles/iteration"
-         " (hardware-measured: 9)\n",
+         " (psxtest_gte expects 11)\n",
          static_cast<unsigned long long>(elapsed), kIterations,
          per_iteration);
-  Check(per_iteration > 8.99 && per_iteration < 9.01,
-        "per-iteration cost should measure exactly 9 cycles, matching bug "
-        "42's recovered hardware formula");
+  Check(per_iteration > 10.99 && per_iteration < 11.01,
+        "per-iteration cost should measure exactly 11 cycles, what "
+        "psxtest_gte expects of SQR");
 }
 
 void TestMemoryMap(Machine& m) {

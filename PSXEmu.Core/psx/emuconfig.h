@@ -82,7 +82,7 @@ struct EmuConfig {
   // pass-through. Only the D3D12 backend honours this; the D3D11 path has no
   // filter support (see D3D11Presenter's class comment).
   std::string video_filter = "";
-  static const std::array<const char*, 9> kValidVideoFilters;
+  static const std::array<const char*, 10> kValidVideoFilters;
 
   // --- Input --------------------------------------------------------------
   // What is plugged into each SIO0 port - one of the three real PS1
@@ -230,6 +230,13 @@ struct EmuConfig {
   // machine reads this - the text is recorded either way (Kernel) - so it is
   // purely which windows the front end has up.
   bool show_bios_console = false;
+
+  // Whether a byte the serial port transmits is copied into that same console
+  // text (Sio1). Nothing is attached to SIO1, so what a program sends there is
+  // otherwise gone; a homebrew program printing over the port is readable with
+  // this on. Off by default: it is a debugging aid, and on a retail game the
+  // port is silent anyway.
+  bool sio1_to_console = false;
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer
@@ -243,11 +250,11 @@ inline const std::array<const char*, 2>
 inline const std::array<const char*, 2>
     EmuConfig::kValidAudioBackends = { "wasapi", "dsound" };
 
-// Empty string ("None") first, then the eight loaded filters in the same
+// Empty string ("None") first, then the nine loaded filters in the same
 // order PSXEmu.Win32's Video > Filter menu offers them.
-inline const std::array<const char*, 9> EmuConfig::kValidVideoFilters = {
+inline const std::array<const char*, 10> EmuConfig::kValidVideoFilters = {
     "",         "nearest",    "bilinear", "crt",   "eagle",
-    "hq2x",     "xbrz_legacy", "scanline", "xbrz",
+    "hq2x",     "xbrz_legacy", "scanline", "xbrz",     "superxbr",
 };
 
 // In the same order PSXEmu.Win32's Emulation > Speed menu offers them.

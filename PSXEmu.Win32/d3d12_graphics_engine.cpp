@@ -273,6 +273,14 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
     // uses, so both engines agree on where the picture goes.
     LetterboxRect rect = ComputeLetterboxRect(width_, height_, 4.0f / 3.0f);
 
+    // A multi-pass filter takes over from here: it draws every pass itself, the last into the
+    // same letterbox rect. If its render targets can't be made it falls through and the frame
+    // is drawn by the pass-through below, which SetPixelShader left selected for that case.
+    if (active_chain_ != nullptr && EnsureChainResources(*active_chain_, width, height)) {
+        RenderChain(rect);
+        return;
+    }
+
     // Point sampling (Nearest Neighbor, and the built-in default when no
     // filter is selected) maps source texel columns onto destination pixels
     // through the rasterizer's own fractional interpolation. When the
@@ -415,6 +423,15 @@ void D3D12GraphicsEngine::Shutdown() {
 
 void D3D12GraphicsEngine::SetPixelShader(const std::string& name) {
     current_shader_ = name;
+    active_chain_ = nullptr;
+
+    // Chains and single shaders live in separate maps under separate keys.
+    const auto chain = chains_.find(current_shader_);
+    if (!current_shader_.empty() && chain != chains_.end()) {
+        active_chain_ = &chain->second;
+        current_pipeline_state_ = default_pipeline_state_.Get();
+        return;
+    }
 
     const auto it = custom_shaders_.find(current_shader_);
     if (!current_shader_.empty() && it != custom_shaders_.end()) {
@@ -425,20 +442,30 @@ void D3D12GraphicsEngine::SetPixelShader(const std::string& name) {
 }
 
 bool D3D12GraphicsEngine::CreateRootSignatureAndPSO() {
+    // Two SRVs: t0 is the shader's input, t1 the untouched emulator frame. Single shaders only
+    // ever read t0 (both slots hold the frame for them); a multi-pass chain's later passes read
+    // t0 = the previous pass's output and t1 = the original.
     CD3DX12_DESCRIPTOR_RANGE range;
-    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
 
     CD3DX12_ROOT_PARAMETER root_params[2];
     root_params[0].InitAsDescriptorTable(1, &range, D3D12_SHADER_VISIBILITY_PIXEL);
     // 4 floats (outW, outH, inW, inH) = 16 bytes = 4 32-bit values.
     root_params[1].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
-    CD3DX12_STATIC_SAMPLER_DESC samplers[2];
+    // s0/s1 wrap at the edges and are what every single shader is written against - they must
+    // stay as they are. s2/s3 are the same filters clamped to the edge, for the multi-pass
+    // chains (the blit below and the Super-xBR passes), whose taps reach past the picture.
+    CD3DX12_STATIC_SAMPLER_DESC samplers[4];
     samplers[0].Init(0, D3D12_FILTER_MIN_MAG_MIP_POINT);
     samplers[1].Init(1, D3D12_FILTER_MIN_MAG_MIP_LINEAR);
+    samplers[2].Init(2, D3D12_FILTER_MIN_MAG_MIP_POINT, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+                     D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+    samplers[3].Init(3, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+                     D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
 
     CD3DX12_ROOT_SIGNATURE_DESC root_sig_desc;
-    root_sig_desc.Init(2, root_params, 2, samplers,
+    root_sig_desc.Init(2, root_params, 4, samplers,
                        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
     ComPtr<ID3DBlob> serialized_root_sig, error_blob;
@@ -483,10 +510,31 @@ bool D3D12GraphicsEngine::CreateRootSignatureAndPSO() {
                           "ps_5_0", 0, 0, &ps_blob, nullptr)))
         return false;
 
+    if (!CreatePipelineState(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(),
+                             default_pipeline_state_))
+        return false;
+
+    // The last step of a multi-pass filter whose final pass rendered at some multiple of the
+    // frame: stretch that texture onto the letterboxed picture area, bilinear, edge-clamped.
+    const char* blit_shader =
+        "Texture2D g_Tex : register(t0); SamplerState g_Linear : register(s3);"
+        "float4 main(float4 pos:SV_POSITION, float2 uv:TEXCOORD0) : SV_TARGET {"
+        "    return g_Tex.Sample(g_Linear, uv);"
+        "}";
+    ComPtr<ID3DBlob> blit_blob;
+    if (FAILED(D3DCompile(blit_shader, strlen(blit_shader), nullptr, nullptr, nullptr, "main",
+                          "ps_5_0", 0, 0, &blit_blob, nullptr)))
+        return false;
+    return CreatePipelineState(blit_blob->GetBufferPointer(), blit_blob->GetBufferSize(),
+                               blit_pipeline_state_);
+}
+
+bool D3D12GraphicsEngine::CreatePipelineState(const void* bytecode, size_t size,
+                                              ComPtr<ID3D12PipelineState>& out) {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = {};
     pso_desc.pRootSignature = root_signature_.Get();
     pso_desc.VS = { vs_blob_->GetBufferPointer(), vs_blob_->GetBufferSize() };
-    pso_desc.PS = { ps_blob->GetBufferPointer(), ps_blob->GetBufferSize() };
+    pso_desc.PS = { bytecode, size };
     pso_desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
     pso_desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
     pso_desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
@@ -495,13 +543,12 @@ bool D3D12GraphicsEngine::CreateRootSignatureAndPSO() {
     pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
     pso_desc.NumRenderTargets = 1;
     // Matches Gpu::ResolveFramebuffer's byte order - see CreateSwapChain's own
-    // comment. Every PSO in this engine (default and every loaded filter)
-    // targets this same format.
+    // comment. Every PSO in this engine (default, every loaded filter and every
+    // chain render target) uses this same format.
     pso_desc.RTVFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM;
     pso_desc.SampleDesc.Count = 1;
 
-    return SUCCEEDED(
-        device_->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&default_pipeline_state_)));
+    return SUCCEEDED(device_->CreateGraphicsPipelineState(&pso_desc, IID_PPV_ARGS(&out)));
 }
 
 bool D3D12GraphicsEngine::CreateFramebufferResources(int fb_width, int fb_height) {
@@ -538,7 +585,7 @@ bool D3D12GraphicsEngine::CreateFramebufferResources(int fb_width, int fb_height
     }
 
     D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-    srv_heap_desc.NumDescriptors = 1;   // just the framebuffer - no ImGui here
+    srv_heap_desc.NumDescriptors = 2;   // the framebuffer twice: t0 and t1 (see the root signature)
     srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_heap_))))
@@ -550,8 +597,16 @@ bool D3D12GraphicsEngine::CreateFramebufferResources(int fb_width, int fb_height
     srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srv_desc.Texture2D.MipLevels = 1;
 
-    device_->CreateShaderResourceView(fb_texture_.Get(), &srv_desc,
-                                      srv_heap_->GetCPUDescriptorHandleForHeapStart());
+    D3D12_CPU_DESCRIPTOR_HANDLE srv_handle = srv_heap_->GetCPUDescriptorHandleForHeapStart();
+    const UINT srv_increment =
+        device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    for (int slot = 0; slot < 2; ++slot) {
+        device_->CreateShaderResourceView(fb_texture_.Get(), &srv_desc, srv_handle);
+        srv_handle.ptr += srv_increment;
+    }
+
+    // A chain's descriptors point at the texture just replaced.
+    chain_res_valid_ = false;
 
     return true;
 }
@@ -562,24 +617,8 @@ bool D3D12GraphicsEngine::LoadCustomPixelShader(const std::string& name, const u
         return false;
 
     ComPtr<ID3D12PipelineState> custom_pipeline_state;
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso_desc = {};
-    pso_desc.pRootSignature = root_signature_.Get();
-    pso_desc.VS = { vs_blob_->GetBufferPointer(), vs_blob_->GetBufferSize() };
-    pso_desc.PS = { bytecode, size };
-    pso_desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    pso_desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    pso_desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
-    pso_desc.DepthStencilState.DepthEnable = FALSE;
-    pso_desc.SampleMask = UINT_MAX;
-    pso_desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    pso_desc.NumRenderTargets = 1;
-    pso_desc.RTVFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM;
-    pso_desc.SampleDesc.Count = 1;
-
-    if (FAILED(device_->CreateGraphicsPipelineState(&pso_desc,
-                                                    IID_PPV_ARGS(&custom_pipeline_state)))) {
+    if (!CreatePipelineState(bytecode, size, custom_pipeline_state))
         return false;
-    }
 
     custom_shaders_[name] = custom_pipeline_state;
     return true;
@@ -592,4 +631,207 @@ bool D3D12GraphicsEngine::LoadPixelShaderFromString(const std::string& name, con
         return false;
     return LoadCustomPixelShader(name, static_cast<const uint8_t*>(ps_blob->GetBufferPointer()),
                                  ps_blob->GetBufferSize());
+}
+
+bool D3D12GraphicsEngine::LoadShaderChain(const std::string& name,
+                                          const std::vector<ShaderPass>& passes) {
+    if (!device_ || !root_signature_ || name.empty() || passes.empty())
+        return false;
+
+    ShaderChain chain;
+    for (size_t i = 0; i < passes.size(); ++i) {
+        // Only the last pass may draw straight to the window; every earlier one has to leave a
+        // texture behind for the pass after it to read.
+        if (passes[i].scale < 0 || (passes[i].scale == 0 && i + 1 != passes.size()))
+            return false;
+        const auto it = custom_shaders_.find(passes[i].shader);
+        if (it == custom_shaders_.end())
+            return false;
+        chain.pass_pipelines.push_back(it->second);
+        chain.pass_scales.push_back(passes[i].scale);
+    }
+
+    chains_[name] = std::move(chain);
+    // Replacing a chain in place keeps its map node, so anything holding a pointer to it - the
+    // active selection, the cached render targets - is now describing the old contents.
+    chain_res_valid_ = false;
+    if (name == current_shader_)
+        SetPixelShader(name);
+    return true;
+}
+
+bool D3D12GraphicsEngine::EnsureChainResources(const ShaderChain& chain, int src_width,
+                                               int src_height) {
+    if (chain_res_valid_ && chain_res_chain_ == &chain && chain_res_width_ == src_width &&
+        chain_res_height_ == src_height)
+        return true;
+
+    // Anything recorded for an earlier frame may still be reading the targets about to go.
+    FlushGPU();
+    chain_res_valid_ = false;
+    chain_targets_.clear();
+    chain_draws_.clear();
+    chain_rtv_heap_.Reset();
+    chain_srv_heap_.Reset();
+
+    const size_t pass_count = chain.pass_pipelines.size();
+    // The last pass is followed by a blit unless it already drew into the window.
+    const bool needs_blit = chain.pass_scales.back() > 0;
+    const size_t target_count = needs_blit ? pass_count : pass_count - 1;
+    const size_t draw_count = pass_count + (needs_blit ? 1 : 0);
+
+    D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
+    srv_heap_desc.NumDescriptors = static_cast<UINT>(draw_count * 2);
+    srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    if (FAILED(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&chain_srv_heap_))))
+        return false;
+
+    if (target_count > 0) {
+        D3D12_DESCRIPTOR_HEAP_DESC rtv_heap_desc = {};
+        rtv_heap_desc.NumDescriptors = static_cast<UINT>(target_count);
+        rtv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        if (FAILED(device_->CreateDescriptorHeap(&rtv_heap_desc, IID_PPV_ARGS(&chain_rtv_heap_))))
+            return false;
+    }
+
+    const UINT srv_increment =
+        device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE srv_handle = chain_srv_heap_->GetCPUDescriptorHandleForHeapStart();
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = {};
+    if (chain_rtv_heap_)
+        rtv_handle = chain_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc = {};
+    srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv_desc.Texture2D.MipLevels = 1;
+
+    // Render targets are created ready to sample: each draw flips its own target to a render
+    // target and back, so between draws (and between frames) they are always in this state.
+    const CD3DX12_HEAP_PROPERTIES default_heap(D3D12_HEAP_TYPE_DEFAULT);
+    UINT in_width = static_cast<UINT>(src_width);
+    UINT in_height = static_cast<UINT>(src_height);
+
+    chain_targets_.resize(target_count);
+    for (size_t d = 0; d < draw_count; ++d) {
+        ChainDraw draw;
+        draw.in_width = in_width;
+        draw.in_height = in_height;
+
+        const bool is_blit = d == pass_count;
+        draw.pipeline = is_blit ? blit_pipeline_state_.Get() : chain.pass_pipelines[d].Get();
+
+        // t0: the previous draw's target (the emulator frame for the first draw); t1: the frame.
+        ID3D12Resource* input = (d == 0) ? fb_texture_.Get() : chain_targets_[d - 1].Get();
+        device_->CreateShaderResourceView(input, &srv_desc, srv_handle);
+        srv_handle.ptr += srv_increment;
+        device_->CreateShaderResourceView(fb_texture_.Get(), &srv_desc, srv_handle);
+        srv_handle.ptr += srv_increment;
+
+        if (!is_blit && chain.pass_scales[d] > 0) {
+            draw.target = static_cast<int>(d);
+            draw.out_width = static_cast<UINT>(src_width) * chain.pass_scales[d];
+            draw.out_height = static_cast<UINT>(src_height) * chain.pass_scales[d];
+
+            D3D12_RESOURCE_DESC tex_desc = {};
+            tex_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+            tex_desc.Width = draw.out_width;
+            tex_desc.Height = draw.out_height;
+            tex_desc.DepthOrArraySize = 1;
+            tex_desc.MipLevels = 1;
+            tex_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            tex_desc.SampleDesc.Count = 1;
+            tex_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+            if (FAILED(device_->CreateCommittedResource(
+                    &default_heap, D3D12_HEAP_FLAG_NONE, &tex_desc,
+                    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
+                    IID_PPV_ARGS(&chain_targets_[d]))))
+                return false;
+
+            device_->CreateRenderTargetView(chain_targets_[d].Get(), nullptr, rtv_handle);
+            rtv_handle.ptr += rtv_descriptor_size_;
+
+            in_width = draw.out_width;
+            in_height = draw.out_height;
+        }
+        // else: this draw goes to the back buffer (target stays -1), sized at draw time.
+
+        chain_draws_.push_back(draw);
+    }
+
+    chain_res_chain_ = &chain;
+    chain_res_width_ = src_width;
+    chain_res_height_ = src_height;
+    chain_res_valid_ = true;
+    return true;
+}
+
+void D3D12GraphicsEngine::RenderChain(const LetterboxRect& rect) {
+    command_list_->SetGraphicsRootSignature(root_signature_.Get());
+    command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+    ID3D12DescriptorHeap* heaps[] = { chain_srv_heap_.Get() };
+    command_list_->SetDescriptorHeaps(_countof(heaps), heaps);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE back_buffer_rtv(rtv_heap_->GetCPUDescriptorHandleForHeapStart());
+    back_buffer_rtv.ptr += static_cast<SIZE_T>(frame_index_) * rtv_descriptor_size_;
+
+    const UINT srv_increment =
+        device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_GPU_DESCRIPTOR_HANDLE srv_table = chain_srv_heap_->GetGPUDescriptorHandleForHeapStart();
+
+    for (const ChainDraw& draw : chain_draws_) {
+        const bool to_back_buffer = draw.target < 0;
+
+        // Constants follow the single shaders' layout: the target's size, then the input's.
+        float out_width = rect.width;
+        float out_height = rect.height;
+
+        if (to_back_buffer) {
+            command_list_->OMSetRenderTargets(1, &back_buffer_rtv, FALSE, nullptr);
+            const D3D12_VIEWPORT viewport = { rect.x, rect.y, rect.width, rect.height, 0.0f, 1.0f };
+            const D3D12_RECT scissor = { static_cast<LONG>(rect.x), static_cast<LONG>(rect.y),
+                                         static_cast<LONG>(rect.x + rect.width),
+                                         static_cast<LONG>(rect.y + rect.height) };
+            command_list_->RSSetViewports(1, &viewport);
+            command_list_->RSSetScissorRects(1, &scissor);
+        } else {
+            out_width = static_cast<float>(draw.out_width);
+            out_height = static_cast<float>(draw.out_height);
+
+            const CD3DX12_RESOURCE_BARRIER to_render_target = CD3DX12_RESOURCE_BARRIER::Transition(
+                chain_targets_[draw.target].Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_RENDER_TARGET);
+            command_list_->ResourceBarrier(1, &to_render_target);
+
+            D3D12_CPU_DESCRIPTOR_HANDLE target_rtv =
+                chain_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+            target_rtv.ptr += static_cast<SIZE_T>(draw.target) * rtv_descriptor_size_;
+            command_list_->OMSetRenderTargets(1, &target_rtv, FALSE, nullptr);
+
+            const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, out_width, out_height, 0.0f, 1.0f };
+            const D3D12_RECT scissor = { 0, 0, static_cast<LONG>(draw.out_width),
+                                         static_cast<LONG>(draw.out_height) };
+            command_list_->RSSetViewports(1, &viewport);
+            command_list_->RSSetScissorRects(1, &scissor);
+        }
+
+        command_list_->SetPipelineState(draw.pipeline);
+        const float shader_params[4] = { out_width, out_height, static_cast<float>(draw.in_width),
+                                         static_cast<float>(draw.in_height) };
+        command_list_->SetGraphicsRoot32BitConstants(1, 4, shader_params, 0);
+        command_list_->SetGraphicsRootDescriptorTable(0, srv_table);
+        srv_table.ptr += static_cast<UINT64>(srv_increment) * 2;
+
+        command_list_->DrawInstanced(3, 1, 0, 0);
+
+        if (!to_back_buffer) {
+            const CD3DX12_RESOURCE_BARRIER to_shader_resource = CD3DX12_RESOURCE_BARRIER::Transition(
+                chain_targets_[draw.target].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            command_list_->ResourceBarrier(1, &to_shader_resource);
+        }
+    }
 }

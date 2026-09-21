@@ -4397,6 +4397,281 @@ best of eight.
 
 **Not verified:** PsyQ `.SYM` (not built), the window's look, and any game.
 
+## 76. Loads charged a cycle twice, measured against a real console
+
+[CPU-Timing-Plan.md](CPU-Timing-Plan.md) phase 3, first step. A new harness,
+`timing_test`, runs JaCzekanski's `cpu/access-time` headless and sets its
+results beside the table that suite recorded on a real console.
+
+**What it found.** A load's cost here was 2 + the region's stall, because
+every load handler (LB, LH, LW, LBU, LHU, LWL, LWR) ticked twice where every
+other instruction ticks once. With the stall table at 3 for RAM, 0 for the
+scratchpad and 3 for the on-die registers:
+- **RAM:** 5, right, and most of what a game reads;
+- **the scratchpad:** 2, where the console takes 1;
+- **the on-die registers** (DMA, pads, SIO, I_STAT, timers, GPUSTAT, MDEC): 5,
+  where the console takes 3;
+- **the cache control register:** 7, where the console takes 1.
+
+A load that ticked twice couldn't be made to cost 1 with any stall.
+
+Three more inconsistencies came from the same shape:
+- **LWC2 ticked once,** so it cost a cycle less than LW from the same memory.
+- **Compiled loads** go through `Cpu::Load` and then charge one cycle flat,
+  so a compiled RAM load cost 4 where the interpreted one cost 5.
+- **SWL and SWR** paid the full RAM stall for the read they make of the word
+  they merge into. That read is this emulator's way of doing a partial store,
+  not a bus access, so a partial store cost 4 where SW costs 1.
+
+**The fix.**
+- **One tick per load:** every load ticks once, like any instruction, and
+  `Cpu::Load`'s stall is the whole of the rest, so a load costs 1 + stall
+  everywhere.
+- **The stalls:**
+  - RAM 4, making 5 in all, unchanged;
+  - the scratchpad 0, making 1;
+  - the on-die registers 2, making 3;
+  - the cache control register 0, making 1;
+  - the BIOS ROM and expansion regions 6, making 7, unchanged.
+- **Held for now:** the CD-ROM, the SPU and expansion 2 keep their previous
+  5 until the next step, which derives them from the bus-width and delay
+  registers the BIOS programs.
+- **The merge read** of SWL/SWR costs nothing.
+
+**A misreading caught before it mattered.** The harness's first version read
+the test's numbers as decimals, and my table of the console's figures had the
+same mistake: scratchpad "1.5 / 1.1 / 0.94", on-die registers anywhere from
+2.9 to 3.8. It came to light when that table showed a scratchpad load at 0.94
+cycles, less than the instruction itself. Reading the test's source explained
+it:
+- **Each cell is net of a nop,** from 100 loads with 100 nops subtracted.
+- **The digits after the dot are a remainder,** printed as
+  `cycles / 100 "." cycles % 100` with no leading zero. So "1.5" is 1.05 and
+  "5.3" is 5.03.
+
+Read properly, the console's on-die registers cost 2.92 to 3.18: one decoder,
+one cost, a little refresh noise. The harness now parses the remainder, and
+its tolerance came down from half a cycle, a figure that rested on the
+misread spread, to a quarter.
+
+**Verified, 2026-09-19:**
+- **`timing_test`:** 35 of 51 cells within a quarter of a cycle of the
+  console, up from 5. Every row that was meant to change moved to the console's
+  figure, and every row that wasn't stayed exactly where it was.
+- **The harnesses:** every one green, `cpu_test`'s cycle-exact groups
+  (`sqrloop`, `muldelay`, `branches`) and `gte_test` included. `host_test`
+  passed after its baseline constant was updated.
+- **The BIOS boot:** 400 frames, same framebuffer checksum
+  (`c7c8db90c5984798`) and same 339 characters of console text, in 98,464,330
+  instructions rather than 97,747,598. The waits on the on-die registers spin
+  more times in the same time. The same with the recompiler, and with a
+  breakpoint, a watchpoint and call tracking (3,233 halts).
+- **The twelve discs,** run through the build before the change and the
+  build after, side by side:
+  - 35 of their 36 checksums were unchanged;
+  - the exception is Ace Combat 3 at frame 3000, now `f79c01f98128fdb6` with
+    2,295 sectors read rather than 2,291;
+  - its two screenshots show the same scene of its intro film, four sectors
+    apart;
+  - Area 51 read two more sectors along the way with the same pictures.
+
+**Not verified:** amidog's `psxtest_gte` TIMING column has not been re-read
+since this change; that is phase 4's job.
+
+## 77. The slow buses timed from the registers that set them
+
+[CPU-Timing-Plan.md](CPU-Timing-Plan.md) phase 3, second step.
+- **Before:** after bug 76 the BIOS ROM, the expansion regions, the CD-ROM and
+  the SPU still cost one flat amount each, whatever the width of the read.
+- **On the console:** they sit on 8- or 16-bit buses, so a wider read is
+  several bus accesses. Each access's length comes from the region's
+  Delay/Size register at 1F801008h-1F80101Ch and the shared COM_DELAY at
+  1F801020h, which the BIOS programs early in boot. This core stored the
+  registers but timed nothing by them.
+
+**What changed.** `IOInterface::UpdateBusTiming` works out each region's cost
+at 8, 16 and 32 bits from its registers. It runs whenever software writes one
+of them and after a state loads, and `Cpu::Load` charges the result. The
+formula is psx-spx's (Memory Control):
+- **The first access** is the read delay, plus the shared recovery and
+  floating periods if the region uses them, with a floor set by the
+  pre-strobe period.
+- **Each further access** of a narrow bus costs a slightly shorter sequential
+  time.
+
+For the BIOS ROM as the BIOS sets it (8-bit, `0013243F`), that makes a byte 7
+cycles, a halfword 13 and a word 25. It used to be 7 for all three. DuckStation
+uses the same formula.
+
+**How it measures** (`timing_test`, against JaCzekanski's `cpu/access-time` on
+a real console): 42 of 51 cells now match, up from 35.
+- **Exact:** the BIOS ROM, expansion 1 and expansion 3, at every width.
+- **Close but not exact:** the three regions that use a recovery or pre-strobe
+  period.
+  - The CD-ROM comes out 7 / 13 / 25 against the console's 8 / 14 / 26.
+  - The SPU comes out 21 / 21 against 18 / 18.
+  - Expansion 2 comes out 15 / 29 / 57 against 11 / 26 / 56.
+
+  All three were a flat 5 before.
+
+A simpler rule fits all eighteen cells: a first access of read delay + 4,
+and read delay + 2 + COM0 + COM2 for each further one. It isn't used. It was
+fitted to these same measurements, one register setting per region, so
+nothing independent could confirm it, and a game that programs the registers
+differently would be timed by a guess. The documented formula stays, with its
+error written down.
+
+**One cell is not what its label says.** The SPU's "32-bit" read is at
+1F801DAA, which is not word-aligned, so the test's compiler emitted an `lwl`
+and an `lwr`. A read watchpoint on that word showed the two instructions at
+80013FC8 and 80013FD0.
+- **Here:** each is charged a whole word of the 16-bit bus, 2 x 41 = 82.
+- **On the console:** 39, which looks like one halfword access each, as if a
+  partial load reads only the half it needs.
+
+One data point, so it is recorded, not modelled.
+
+**A misreading of my own, caught by the build.** I worked the formula out by
+hand before implementing it and predicted the CD-ROM at 9 / 15 / 27. The code
+said 7 / 13 / 25, and the code was right: `00031125` makes COM3 1, not 3.
+
+**Verified, 2026-09-19:**
+- **The harnesses:** every one green. `timing_test` has its new baseline, and
+  `host_test` passed after its BIOS constant was updated.
+- **The BIOS boot:** the same framebuffer and console text, now in 98,442,368
+  instructions. It is the same interpreted, with the recompiler, and with a
+  breakpoint, a watchpoint and call tracking.
+- **The twelve discs,** run through the original build and this one side by
+  side:
+  - 6 games unchanged at every checkpoint;
+  - 6 moved: Ace Combat 3, Air Combat, FF8, Ridge Racer, Wild Arms and
+    Wild Arms 2;
+  - Ridge Racer and Wild Arms land back on their old frame-3000 picture;
+  - the four whose frame 3000 differs were checked by eye, old against new,
+    and each is the same scene a few frames apart: Ace Combat 3's intro film,
+    Air Combat's intro plane, FF8's opening credits mid-fade, and a menu with a
+    scrolling line and a spinning logo in the Wild Arms 2 image;
+  - most games read 1 to 3 fewer CD sectors in 3,000 frames, about a
+    thousandth: slower CD-ROM and SPU register reads make them very slightly
+    slower, which is the direction the console measures.
+
+  The table in Test-Suite.md is re-recorded.
+
+**Not verified:** amidog's `psxtest_gte` TIMING column (phase 4), and stores,
+which the test doesn't measure.
+
+## 78. A taken branch cost nothing, and a GTE hold ended a cycle early
+
+Phase 4 of [CPU-Timing-Plan.md](CPU-Timing-Plan.md): rerun the timing tests
+after the memory work of bugs 76 and 77. That work had not moved amidog's
+`psxtest_gte` TIMING column at all. The screen was pixel-identical before and
+after, all 22 opcodes red.
+
+### What the test actually expects
+
+Bug 42 read this test by recovering each opcode's cost from this core's own
+loop counts, which assumed this core's costs for everything else in the
+loop. This time the test's own check code was disassembled (0x80031664 on,
+once the test is running; its results sit at 0x801F0000). For each opcode it
+times ten loop shapes, each run 501 times between a Timer 2 reset and a read:
+the command, 0, 1, 4 or 7 nops, then a `CFC2` or `MFC2`, a nop, an
+accumulate, `bgtz` and its delay slot. It passes a shape when the count is
+within 50 of `501 x per-pass - 1`, and per-pass is worked out from the
+opcode's official cost `c`. For SQR (`c` = 5):
+
+| Shape | Instructions | Test expects | This core gave |
+|---|---|---|---|
+| CFC2, 0 nops | 6 | 11 | 9 |
+| CFC2, 1 nop | 7 | 11 | 9 |
+| CFC2, 4 nops | 10 | 10 | 9 |
+| CFC2, 7 nops | 13 | 13 | 12 |
+| MFC2, 0 or 1 nops | 8 or 9 | 13 | 11 |
+| MFC2, 7 nops | - | 23 | 22 |
+
+Two separate errors:
+
+- **Where the read doesn't wait, every pass is short by exactly 1.** Ten
+  instructions cost 9. A taken conditional branch, `JR` and `JALR` charged
+  only the delay slot's cycle, never their own. Bug 43 had pinned that down as
+  right, because it matched a figure of 9 that had been derived from this
+  core's own costs in the first place.
+- **Where the read does wait, every pass is short by 2.** When the command is
+  still busy, the CPU resumes the cycle *after* it finishes, not on it. The
+  test also special-cases the read landing exactly on completion (`c` equal to
+  the nops plus one) as no wait at all. DuckStation carries the same extra
+  cycle: its `AddGTETicks` sets completion one past the command's cost.
+
+**A real console says the same about branches.** JaCzekanski's `timers.exe`
+(`test/test suite/timers/`, with the log it recorded on a console) times a
+delay loop against each timer:
+
+| Delay | Console | Before | After |
+|---|---|---|---|
+| 1000 cycles | 1011 | 762 | 1013 |
+| 5000 cycles | 5011 | 3762 | 5013 |
+
+Before, it read three quarters of the console's figure, the cost of a 4-cycle
+loop charged 3. After, the offset is a fixed 2 cycles at every length.
+
+**A misreading of my own on the way.** I first logged the test's Timer 2
+reads through a read watchpoint and saw 0 every time. That was the load's
+destination register before the load had landed, which the trace columns
+show (see the boot_runner trace notes). Tracing to the instruction after the
+read showed 13, a sensible count, and turned the search to the check code.
+
+### The fix
+
+- **`Cpu::Jump`** charges the branch's own cycle before running the delay
+  slot. Every taken branch and jump comes through it. `J` and `JAL` used to
+  tick for themselves and no longer do, so all branches now cost the same:
+  2 taken (with the delay slot), 1 not taken (plus the next instruction's own).
+- **`Cpu::COP2`**: a command or a `MFC2`/`CFC2` that arrives while the GTE is
+  busy now holds one cycle past completion.
+
+The recompiler needed nothing. It already charged one cycle per instruction,
+branch included, and hands COP2 to the interpreter. This change brings the
+interpreter into line with it.
+
+### What it did to the rest
+
+- **`psxtest_gte`:** TIMING passes for all 22 opcodes. The full run reaches
+  ALL DONE, and TOTAL's T is green.
+- **`psxtest_gte`'s OPCODE group still fails, as it did before this change.**
+  Its T column is N/A. Its X, F and V show:
+  - value errors: RTPS and RTPT;
+  - flag errors: NCS, NCT, NCCS, NCCT, CC, CDP, NCDS, NCDT and MVMVA.
+
+  That group runs the commands in other encodings. This is a GTE result
+  problem, not timing, and has not been investigated. Earlier docs said
+  values and flags agreed with hardware outright; that was only true of REG
+  and COMPLEX.
+- **`psxtest_cpu`:** unchanged. Every group OK or N/A, `Result: 00000101`, and
+  red and yellow appear only in the legend row.
+- **`cpu_test`:** the taken-branch cost checks now expect 2, and `sqrloop`
+  expects 11 a pass, the test's own figure, where it expected 9.
+- **`timing_test`:** its exact baseline held. The access-time test subtracts a
+  loop of nops, so the branch cost cancels.
+
+### Verified, 2026-09-19
+
+- **Every harness:** green. `host_test` has its new BIOS count.
+- **The BIOS boot:** 400 frames in 92,082,652 instructions, down from
+  98,442,368. Same framebuffer checksum, 919 RFEs and 907 interrupts: the same
+  boot, 6.5% fewer instructions in the same time.
+- **The twelve discs,** step-3 build against this one, 3,000 frames each:
+  - Area 51 and FF8 land on the same frame-3000 picture;
+  - Captain Tsubasa J alternates two frames and has swapped them;
+  - the other nine end on a different frame 3000. Each was checked by eye, old
+    against new, and each is the same scene a moment apart: Ace Combat 3's and
+    FF7's intro films, Air Combat's plane, a Bomberman cutscene, the Legend
+    of Mana map, Ridge Racer's attract lap, Vandal Hearts' title mid-fade,
+    Wild Arms' opening film, and the Wild Arms 2 image's trainer menu.
+  - Most read about 30 fewer sectors by frame 1000 and keep that lag. The CPU
+    does a few percent less per frame, which is the direction every test here
+    says is right.
+
+  The table in Test-Suite.md is re-recorded.
+
 ## 79. The GTE accumulator was checked only at the end of a sum, and RTPS's IR0 came from a wrapped MAC0
 
 amidog's `psxtest_gte` OPCODE group, the one after OFFICIAL TIMING, failed
@@ -4497,3 +4772,95 @@ The screen above was reached twice, and the two agree to the pixel
 - interpreted, 700,000 frames and 310 billion instructions, with the net
   raised in a scratch build - three hours at 62 fps, and the reason the
   recompiler is the one to reach for here.
+
+## 80. The serial port answered nothing at all
+
+`1F801050`-`1F80105F` - SIO1, the 8-pin SERIAL I/O socket on the back of the
+console - was not decoded. A read fell through `IOInterface::Read32` to the
+catch-all that returns 0 and counts a trap, and a write went nowhere.
+
+Zero is not what an unused port reads. Bit 0 of the status register is "the
+transmitter can take a byte", so software waiting to send would have waited
+for ever; the receive FIFO looked as though it held a byte of 00h rather than
+being empty; and the baud-rate timer, which counts whether or not anything is
+connected, never moved.
+
+### What it is
+
+The asynchronous sibling of SIO0. Where the controller port is synchronous,
+with a device-select and an acknowledge line, this is a plain UART - baud
+rate, character length, parity, stop bits, the DTR/DSR and RTS/CTS handshake
+pairs - with IRQ8 to report a byte sent, a byte arrived, or /DSR changing.
+
+Two things used it. A link cable between two consoles, for the handful of
+games with a link mode (Doom, Ridge Racer Revolution, Destruction Derby and a
+couple of dozen others), and development hardware: Net Yaroze loaded code down
+this port, and homebrew prints to a PC through it. A retail BIOS never touches
+it - a 60-frame boot of SCPH1001 makes no access to 1F80105xh at all, which is
+why nothing had noticed.
+
+### What was built
+
+`psx/sio1.h`/`.cpp`, a `Component` like the rest, wired into `IOInterface`'s
+six read and write paths, its tick and its save state (state version 7 -> 8).
+It models **a port with nothing plugged into it**, which is all a single
+emulator can honestly be:
+
+- the registers keep what is written and read back what hardware would, at
+  byte, halfword and word widths, with MODE and CTRL sharing a word and BAUD
+  sharing one with the unused 105Ch;
+- the status reports an idle, ready transmitter, an empty receive FIFO, and no
+  device asserting /DSR or CTS;
+- the acknowledge and reset bits are strobes that act and do not stick;
+- the baud-rate timer reloads from BAUD scaled by MODE's factor and counts
+  down at the CPU clock, readable in status bits 11-25;
+- a write to the data register transmits only when the transmitter is
+  enabled, and raises IRQ8 when the transmit interrupt is armed; acknowledging
+  clears the latch.
+
+**What it does not do is a partner.** No link between two instances, no host
+serial port, no loopback. DuckStation does not either - its `sio.cpp` is the
+same four registers plus an option to send transmitted bytes to the TTY - so
+this is level with the reference rather than past it. A byte also leaves
+instantly instead of taking its ten or so bit periods; with nothing receiving,
+the only visible difference is how soon the transmit interrupt arrives.
+
+`EmuConfig::sio1_to_console` (Emulation > Serial Port to Console,
+`sio1_to_console` in `psxemu.ini`) copies each transmitted byte into the BIOS
+console text, so a homebrew program printing over the port is readable in the
+window that already shows what the BIOS printed. Off by default.
+
+**One deliberate disagreement with DuckStation.** It reports /DSR and CTS
+asserted on a port with nothing attached; this reports neither. A line with
+nothing pulling it is not asserted, and software asking "is a cable there?"
+should hear no. No console test covers it, so that is documentation and
+reasoning rather than a measurement, and it is written down here because it is
+the kind of choice that is invisible later.
+
+### Verified, 2026-09-20
+
+- **`sio_test`: 105 -> 146 checks**, 0 failures - a new `sio1` group (the
+  reset state, an empty FIFO reading as the idle line, register round trips,
+  the read-only status, the strobes, access widths, transmit gating and IRQ8,
+  the acknowledge, the baud timer counting and reloading, the console redirect
+  both ways, and a save-state round trip).
+- **`media_test`: 261 -> 263**, the two its settings section gives every
+  setting - off by default, and remembered when set.
+- **Every other harness green**, and unchanged.
+- **The BIOS boot is unchanged** - same instruction count, checksum and
+  console text - which it should be, since the BIOS never reads this port.
+- **The twelve discs are unchanged**, every checksum at frames 1000, 2000 and
+  3000 identical to the run recorded before this. No game on the table touches
+  the port.
+- **The front end** builds, and the new menu item works end to end: an
+  isolated copy launched with its own settings file, sent `WM_COMMAND` 1142,
+  wrote `sio1_to_console = 1` to that file.
+- **`host_test`'s two real-time checks** (the frame limiter's rate, and three
+  seconds of sound without an underrun) failed while another long emulator run
+  held a core on this machine. `host_test` built from the commit before this
+  change fails the same two under the same load, so they are the machine being
+  busy, not this. Its deterministic checks, including the threaded BIOS boot,
+  pass.
+
+Numbered 80 rather than 79 because another session is writing up bug 79 (the
+GTE OPCODE group) at the same time.

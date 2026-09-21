@@ -68,7 +68,7 @@ namespace psxemu {
         kCommandRendererFirst,
         kCommandRendererLast = kCommandRendererFirst + 1,   // Direct3D 11, 12
         kCommandFilterFirst,
-        kCommandFilterLast = kCommandFilterFirst + 8,   // None + 8 filters
+        kCommandFilterLast = kCommandFilterFirst + 9,   // None + 9 filters
         kCommandViewVram,
         kCommandFrameLimiter,
         kCommandCdMechanicalTiming,
@@ -95,6 +95,7 @@ namespace psxemu {
         kCommandPauseInMenus,
         kCommandShowTimings,
         kCommandBiosConsole,
+        kCommandSerialToConsole,
         kCommandEjectMemoryCardSlot1,
         kCommandEjectMemoryCardSlot2,
         kCommandMemoryCardEditor,
@@ -164,8 +165,8 @@ namespace psxemu {
         { "d3d12", L"Direct3D &12" },
     };
 
-    // The filter choices - None plus the eight ported from GBAEmu (see shaders/), in the order the
-    // Video > Filter menu and EmuConfig::kValidVideoFilters both list them. Only D3D12 supports
+    // The filter choices - None plus the ones ported from GBAEmu (see shaders/) and the multi-pass
+    // Super-xBR, in the order the Video > Filter menu and EmuConfig::kValidVideoFilters both list them. Only D3D12 supports
     // these; see D3D11Presenter's class comment for why.
     struct FilterChoice { const char* key; const wchar_t* label; };
 
@@ -179,6 +180,7 @@ namespace psxemu {
         { "xbrz_legacy", L"xBRZ (&Legacy Placeholder)" },
         { "scanline",    L"&Scanline (CRT)" },
         { "xbrz",        L"x&BRZ" },
+        { "superxbr",    L"Super-&xBR (3 pass)" },
     };
 
     // What a port can hold - the three real PS1 controllers, a mouse, a multitap, or nothing at

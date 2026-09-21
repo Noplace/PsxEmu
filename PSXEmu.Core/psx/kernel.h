@@ -52,6 +52,12 @@ class Kernel : public Component {
   // use. It is capped anyway, so text nobody collects cannot grow without
   // bound - and what the cap turned away is counted, not silently lost.
   void TakeConsoleText(std::string* out);
+
+  // One character from somewhere other than the BIOS's own putchar - the
+  // serial port, when EmuConfig::sio1_to_console asks for what it transmits
+  // (Sio1). It lands in the same text, because for the person reading it the
+  // question is what the program said, not which way out it went.
+  void WriteConsoleChar(char c) { RecordTty(c); }
   uint64_t console_text_dropped() const { return console_dropped_; }
 
   // Incremented by every Initialize - a cold boot or a reset. A front end

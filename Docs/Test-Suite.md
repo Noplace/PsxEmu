@@ -23,13 +23,13 @@ no window. A group name runs only that group.
 | `shifts` | arithmetic vs logical right shifts, variable shifts masking the amount to five bits |
 | `muldiv` | signed and unsigned multiply, HI/LO, division by zero, and the most negative value divided by -1 |
 | `muldelay` | mult/multu's 6/9/13-cycle cost by rs magnitude, div/divu's fixed 36, and reading hi/lo before the operation finishes waiting out the busy window instead of skipping it (bug 43, the same hazard shape as `gtedelay`'s GTE check) |
-| `branches` | every conditional, taken and not, at negative/zero/positive and at the extremes; that the delay slot runs either way; that a branch never writes its own operand; that a taken branch and its delay slot cost 1 cycle together and a not-taken branch costs 1 cycle on its own (bug 43) |
+| `branches` | every conditional, taken and not, at negative/zero/positive and at the extremes; that the delay slot runs either way; that a branch never writes its own operand; that a taken branch and its delay slot cost 2 cycles together and a not-taken branch costs 1 cycle on its own (bugs 43 and 78) |
 | `jumps` | j/jal/jr/jalr, where the link register points, and that the linking branches write it even when not taken |
 | `loadstore` | sign vs zero extension on byte and halfword loads, and that partial stores leave their neighbours alone |
 | `unaligned` | lwl/lwr/swl/swr at all four alignments, and the pairs used together to move an unaligned word |
 | `loaddelay` | a load's value landing one instruction late, a write in the delay slot beating it, a second load to the same register discarding the first, and the pairing surviving a branch delay slot |
 | `gtedelay` | MFC2 having the same one-instruction load delay as an ordinary load (bug 42, the same shapes as `loaddelay` aimed at MFC2), and that a GTE register read right after a command waits out its busy time rather than skipping it |
-| `sqrloop` | reconstructs bug 42's own psxtest_gte SQR loop and measures this core's cycles directly: exactly 9 cycles/iteration, matching the hardware-recovered value (bug 43) - a regression guard on the GTE-busy-wait/branch-cost interaction that answered CPU-Timing-Plan.md's phase 2 question |
+| `sqrloop` | psxtest_gte's own SQR loop (SQR, CFC2, nop, accumulate, bgtz and its delay slot), measured in this core's cycles: exactly 11 a pass, the figure the test's own check code expects - the GTE hold's restart cycle and a taken branch's own cycle both show up in it (bug 78) |
 | `memory` | RAM through KUSEG/KSEG0/KSEG1, RAM mirroring, the scratchpad, hardware registers through all three windows, the BIOS being read-only, and $zero staying zero |
 | `exceptions` | syscall and break vectoring, the Cop0 status stack pushing and popping, mfc0/mtc0 |
 | `interrupts` | I_STAT acknowledge semantics, the three gates that can block an interrupt, and that EPC points at the instruction that has *not* run |
@@ -78,9 +78,9 @@ computed by hand in the test.
 
 These tests say the implementation agrees with the description. That it agrees
 with the hardware is amidog's `psxtest_gte` (`test/psxtest_gte/`): its REG,
-COMPLEX and OPCODE groups pass for all 22 commands - OPCODE since bug 79, which
-is what the `opcode` group above holds. Its TIMING group is bug 42 and
-[CPU-Timing-Plan.md](CPU-Timing-Plan.md). The BIOS shell issues zero GTE
+COMPLEX, TIMING and OPCODE groups pass for all 22 commands - TIMING since bug
+78, OPCODE since bug 79, which is what the `opcode` group above holds. The
+BIOS shell issues zero GTE
 commands, so the BIOS baseline below says nothing about the GTE; the game table
 does.
 
@@ -227,6 +227,25 @@ byte-for-byte undelete. `mc_test <card>` was also run on copies of real saved
 cards - Wild Arms, Wild Arms 2, Vandal Hearts, NASCAR Thunder 2004 - and listed
 each save with its title, block count and one-to-three-frame icon.
 
+## sio_test
+
+    sio_test
+
+The two serial ports, driven through their registers rather than through any
+interface written for the test: SIO0 (`psx/sio.h`), which is the controller and
+memory card port, and SIO1 (`psx/sio1.h`), the serial socket on the back. No
+BIOS, no window.
+
+**Current: 146 checks, 0 failures.**
+
+| Group | Covers |
+|---|---|
+| the pad | a digital pad's four-byte poll and its buttons; an empty slot never acknowledging; the acknowledge line as a pulse that releases itself (bug 46) |
+| the DualShock handshake | 0x43/0x44/0x45 gated on configuration mode, entering analog and locking it, the status query, the axes, both rumble mappings, a reconnect forgetting the negotiation, and each controller type refusing what it does not have |
+| the mouse | its id, switches and axes, and movement draining across as many polls as it takes |
+| the multitap | both addressing methods, per-player state, the escalation rules, and a round trip through a save state |
+| `sio1` | the serial port with nothing plugged into it: the reset state, an empty receive FIFO reading as the idle line, the registers keeping what is written, the status being read-only, the two strobes not sticking, byte/halfword/word access reaching the right halves, transmitting only when enabled and raising IRQ8 when armed, acknowledging clearing the latch, the baud-rate timer counting down and reloading, the console redirect on and off, and a save-state round trip |
+
 ## debug_test
 
     debug_test
@@ -260,6 +279,78 @@ the process (bug 72).
 Mutation-tested: without the guard that keeps a halted machine halted, a
 second `StepInstruction` counted the same breakpoint twice, and the
 "does not count the breakpoint again" check failed (2, wanting 1).
+
+## timing_test
+
+    timing_test [bios]
+
+Bus timing against a real console, for [CPU-Timing-Plan.md](CPU-Timing-Plan.md)
+phase 3. It boots the BIOS, side-loads JaCzekanski's `cpu/access-time`
+(`test/test suite/cpu/access-time/`) and sets each result beside the `psx.log`
+the suite ships: the same table, from a real console. It takes a fifth of a
+second.
+
+**What the test measures:** for each region and each width it times 100
+loads, subtracts 100 nops, and prints what is left per load. That is one load
+instruction's cost beyond a nop. It prints `cycles / 100` and `cycles % 100`
+either side of a dot, with no leading zero on the remainder, so "5.3" is 5.03
+and "12.94" is 12.94. Read as a decimal, a one-digit remainder comes out ten
+times too big. The harness's first version did exactly that (see bug 76).
+
+Two questions, kept apart:
+
+- **How close is it?** A cell within a quarter of a cycle of the console counts
+  as a match. That is the console's own scatter: its on-die registers share one
+  decoder and one cost and read 2.92 to 3.18, and RAM reads 5.03 to 5.21 as its
+  refresh lands in some loops and not others. The count is printed, not
+  asserted. Raising it is phase 3's work.
+- **Has it changed?** The emulator is deterministic, so every row is also
+  checked, exactly, against the baseline recorded in the source. Any change to
+  bus timing fails it until the baseline is updated alongside. That is
+  deliberate: the change should be one somebody meant.
+
+**Current: 19 checks, 0 failures; 42 of 51 cells match the console.**
+Cycles per load at 8 / 16 / 32 bits:
+
+| Region | Console | This emulator | Before bugs 76-77 |
+|---|---|---|---|
+| RAM | 5.21 / 5.03 / 5.14 | 5.01 - matches | 5.01 |
+| Scratchpad | 1.05 / 1.01 / 0.94 | 0.99 - matches | 1.99 |
+| On-die: DMA, pads, SIO, RAM_SIZE, I_STAT, timers, GPUSTAT, MDEC | 2.92 - 3.18 | 3.00 - matches | 5.00 |
+| Cache control | 0.95 / 1.09 / 1.09 | 1.01 - matches | 7.01 |
+| BIOS | 7.06 / 12.94 / 24.94 | 7.01 / 13.01 / 25.01 - matches | 7.01 flat |
+| Expansion 1 | 6.94 / 13.07 / 25.07 | 7.01 / 13.01 / 25.01 - matches | 7.01 flat |
+| Expansion 3 | 6.07 / 6.01 / 9.95 | 6.01 / 6.01 / 10.01 - matches | 7.01 flat |
+| CD-ROM | 8.00 / 14.00 / 25.93 | 7.00 / 13.00 / 25.00 - one under | 5.00 flat |
+| Expansion 2 | 10.99 / 25.99 / 55.98 | 15.00 / 29.00 / 57.00 | 5.00 flat |
+| SPU | 17.99 / 17.99 / 38.94 | 21.00 / 21.00 / 82.00 | 5.00 / 5.00 / 10.00 |
+
+The six slow regions' costs come from the memory-control registers the BIOS
+programs, by psx-spx's formula (bug 77). What is left, and why it is left:
+
+- **The formula's own error.** It is exact for the three regions that use no
+  recovery or pre-strobe period. For the three that do, it is off by 1 to 4
+  cycles, and this core keeps it rather than fitting it. A simpler rule does
+  fit all eighteen cells: first access = read delay + 4, then read delay + 2 +
+  COM0 + COM2 for each further one. But it comes from one register setting per
+  region and these same measurements, and nothing independent could check it.
+- **The SPU's 32-bit cell** is not a 32-bit load. 1F801DAA is not
+  word-aligned, so the test's read compiles to an `lwl`/`lwr` pair. Each is
+  charged a whole word of the 16-bit bus here: 2 x 41. The console takes 39
+  for the pair, which looks like one halfword access each, as if a partial
+  load reads only the half it needs. It is one data point, so it isn't
+  modelled.
+
+The harness was mutation-tested when written: a one-cycle scratchpad stall
+added to `Cpu::Load` moved that row up by exactly one cycle, and the baseline
+check failed. So a stall change shows one-for-one in the table.
+
+What it does not measure:
+- **Stores.** It times only loads.
+- **Load overlap.** It doesn't measure how a slow load overlaps the
+  instructions after it.
+- **Which console.** Its log doesn't say which model it came from, and the ROM
+  row depends on how that console's BIOS programmed the bus.
 
 ## boot_runner
 
@@ -405,7 +496,7 @@ side, with a sequence number in every item.
   for every one published; mouse motion adding up exactly across a racing
   publisher and taker; a doorbell that does not lose a ring that came first.
 - **The machine's thread.** A threaded BIOS boot lands on **boot_runner's own
-  instruction count and checksum** - 97,747,598 and `c7c8db90c5984798` - which
+  instruction count and checksum** - 92,082,652 and `c7c8db90c5984798` - which
   is the assertion that threading changed nothing about what the machine
   computes. Then again with pause and resume requests thrown at it from another
   thread as fast as it will take them (432 of them, same numbers), and again
@@ -452,11 +543,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 287 | | `gpu_test` | 31 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
-| `timer_test` | 70 | | `media_test` | 261 |
-| `sio_test` | 105 | | `spu_test` | 108 |
+| `timer_test` | 70 | | `media_test` | 263 |
+| `sio_test` | 146 | | `spu_test` | 108 |
 | `mc_test` | 77 | | `debug_test` | 174 |
 
-**1,304 checks, 0 failures**, all ten green. Each harness's own section above
+**1,347 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)
@@ -466,7 +557,9 @@ are not counted above, since they test no emulation: `letterbox_test` (12
 checks, aspect ratio), `frame_limiter_test` (8 checks - the average rate, and since bug 62 the
 spacing between frames too), `speed_resampler_test` (11 checks, the audio
 arithmetic behind 50-200% speed - the frame counts, that a minute at 150% does
-not drift, and that blocks join continuously) and `host_test` (33 checks, the
+not drift, and that blocks join continuously), `timing_test` (19 checks,
+bus timing against a real console - its own section above, and not a
+correctness count: it records how far off the timing is) and `host_test` (33 checks, the
 threads and the channels between them - its own section above).
 
 `rec_test` (460 checks) is not counted either, and for a different reason: it
@@ -511,7 +604,7 @@ and what they decided, are in the plan's step 6.
 
 | Measure | Value |
 |---|---|
-| instructions | 97,747,598 |
+| instructions | 92,082,652 |
 | resolution | 640x478 |
 | framebuffer checksum | `c7c8db90c5984798` |
 | non-black (visible) | 305,920 of 305,920 |
@@ -525,6 +618,25 @@ and what they decided, are in the plan's step 6.
 | texels 4-bit / 15-bit | 3,159,000 / 0 |
 | CD-ROM commands | 3 |
 | SPU | 297,483 frames, 64 key-ons, peak 28,461/23,222 |
+
+**And then to 92,082,652** (bug 78), checksum, console text, RFEs and
+interrupts unchanged. Every taken branch and jump now costs its own cycle, so
+the same 400 frames hold 6.5% fewer instructions. The disc table moved in ten
+games; every changed frame was checked by eye (bug 78).
+
+**Before that, 98,442,368** (bug 77), checksum and console text unchanged
+again. The BIOS ROM, the CD-ROM and the SPU now cost what the memory-control
+registers set: a word from the 8-bit ROM is 25 cycles where it was 7. This
+time the disc table moved in six games; every changed frame was checked by
+eye against the old one, and each is the same scene a few frames apart (bug
+77 has them).
+
+**It moved again later that day, to 98,464,330** (bug 76), with the checksum
+and the console text unchanged. Loads from the on-die registers now cost their
+measured 3 cycles rather than 5, so the BIOS's waits on GPUSTAT and I_STAT spin
+more times in the same stretch of time. The twelve-disc table moved at one
+point only: Ace Combat 3's frame 3000, the same scene of its intro film four
+sectors further on.
 
 **The instruction count moved on 2026-09-19**, from 97,749,265 to 97,747,598,
 with the checksum and every other number here unchanged. That is bug 67: an
@@ -581,18 +693,24 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 
 | Disc | f1000 | f2000 | f3000 | non-black | res | macroblocks | sectors |
 |---|---|---|---|---|---|---|---|
-| Air Combat | `a1e228e8a2ee662c` | `db59eb682fe9985e` | `12a6284c62657ea5` | 51,200 | 320x240 | 243,200 | 5,293 |
-| Wild Arms | `7daf7515b034bb74` | `9ecc3caaf8731ea6` | `01b3d7eb25290632` | 61,440 | 320x240 | 93,120 | 3,747 |
-| Wild Arms 2 (cd1) | `00d5e173b295085a` | `c7a39acab8a692fb` | `22da9010e1a6bfbe` | 76,800 | 320x240 | 0 | 100 |
-| Vandal Hearts | `bcb8fe295f5b70db` | `7e2959681f0a6aec` | `94ae6edd29a35858` | 52,652 | 320x240 | 128,400 | 5,260 |
-| Legend of Mana | `ec6fe2e3bdb4fd30` | `baf825dc27742faa` | `bbc7cecc82310cd8` | 76,064 | 320x240 | 155,400 | 5,345 |
-| Ridge Racer | `2e63ac3574a2a3c3` | `dc337b3bf868b8d8` | `e363f0b4ab4b87eb` | 76,415 | 320x240 | 0 | 1,578 |
-| Bomberman Party Ed. | `4a31d7a6c52734a4` | `717a1bbe80c75439` | `ba27f3e0e9823174` | 76,224 | 320x240 | 147,000 | 4,686 |
-| Area 51 | `085daca5fb878fff` | `8706d714ea09fec7` | `c20fec6d8f189e8d` | 51,855 | 256x240 | 100,080 | 5,511 |
-| Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `44eccfde5b859174` | 75,911 | 320x240 | 0 | 668 |
-| Final Fantasy VIII | `aedac3154f8a0383` | `f3ee4d06bf3e0383` | `24cffdf4fad5568e` | 3,790 | 640x480 | 0 | 1,187 |
-| Ace Combat 3 | `3121874ad83b9ef4` | `afa843f1f90957a1` | `1e2454a46003d966` | 61,189 | 320x240 | 82,992 | 2,291 |
-| Captain Tsubasa J | `f0779890ee9b1bb0` | `816d516f2ba1d3f8` | `add4d55f3196ad03` | 76,800 | 320x240 | 59,100 | 3,776 |
+| Air Combat | `a1e228e8a2ee662c` | `51080ad999e88621` | `5109d78c91007c12` | 51,200 | 320x240 | 241,800 | 5,262 |
+| Wild Arms | `327dc95f5519b75b` | `e53c89cb43c0075b` | `b828d822ec27badf` | 61,440 | 320x240 | 92,363 | 3,715 |
+| Wild Arms 2 (cd1) | `55565300d8dc9411` | `81007d90c767846a` | `1742c42883771622` | 76,800 | 320x240 | 0 | 100 |
+| Vandal Hearts | `bcb8fe295f5b70db` | `7c1297df773e7342` | `fc66e49c14bf8861` | 76,725 | 320x240 | 127,500 | 5,230 |
+| Legend of Mana | `e13bb6ec78144cc9` | `9797912c492383e1` | `b16eaf3906c9d6dd` | 76,312 | 320x240 | 154,500 | 5,313 |
+| Ridge Racer | `a727da8b232bddfd` | `2758d5485cdcc39e` | `7a1c0fe4da6de7ef` | 76,463 | 320x240 | 0 | 1,578 |
+| Bomberman Party Ed. | `4a31d7a6c52734a4` | `45e058b70ed827c2` | `3ba049eea7e64970` | 68,913 | 320x240 | 145,800 | 4,652 |
+| Area 51 | `d7e8093204d0085b` | `5b1c23ab7d41b7d0` | `c20fec6d8f189e8d` | 51,855 | 256x240 | 100,080 | 5,490 |
+| Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `fb1d8340ba2617e0` | 75,943 | 320x240 | 0 | 668 |
+| Final Fantasy VIII | `aedac3154f8a0383` | `f3ee4d06bf3e0383` | `c184351a7e528d32` | 4,002 | 640x480 | 0 | 1,187 |
+| Ace Combat 3 | `8fe9a55647356011` | `5c75e2844b252161` | `b7d1c35c356ae822` | 54,862 | 320x240 | 80,864 | 2,255 |
+| Captain Tsubasa J | `f0779890ee9b1bb0` | `add4d55f3196ad03` | `816d516f2ba1d3f8` | 76,800 | 320x240 | 59,100 | 3,759 |
+
+Re-recorded after bug 78 (a taken branch costs its own cycle), which moved ten
+of the twelve: the CPU does a few percent less per frame, so each game is at a
+slightly different point at each checkpoint. Every changed frame 3000 was
+checked by eye against the old one, and each is the same scene a moment apart.
+Captain Tsubasa J alternates between two frames and has simply swapped them.
 
 Images are the ones under `\\superserverx\D\Games\Sony\PSX\ISO`; Area 51 and
 Wild Arms 2 are mounted from their `.ccd`, which gives byte-identical results to
@@ -697,12 +815,12 @@ wrong way, and it stays anyway.
 
 - **amidog's GTE suite has run** (`test/psxtest_gte/` - see bug 41 for how
   to reach it, `--auto-boot --exe` or the Win32 front end's Boot PSX-EXE menu
-  command). Values and flags agree with hardware in REG, COMPLEX and - since
-  bug 79 - OPCODE, the group that runs each command in its other encodings,
-  and bug 42 made every GTE command's own cost match. Its TIMING column is
-  still red, because
-  the test's loop also measures the ordinary CPU instructions around each
-  command - [CPU-Timing-Plan.md](CPU-Timing-Plan.md) phases 0 and 3.
+  command). **The whole suite passes**: BASIC, REG, COMPLEX, the official
+  TIMING group (bug 78) and OPCODE (bug 79), with TOTAL green on X, F, V and
+  T - sampled from the screen of a build carrying both. OPCODE is slow to
+  reach: once it passes it takes 557,805 frames, past boot_runner's
+  instruction safety net, and an interpreted run of it is three hours
+  (bug 79).
 - **amidog's CPU suite passes.** `test/psxtest_cpu/` (reached with
   `--auto-boot --exe`) reports no errors in any group, and its results screen
   is all OK or N/A - sampled by pixel, not by eye, TIMING column included. Bug

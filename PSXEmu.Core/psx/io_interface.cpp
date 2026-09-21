@@ -54,6 +54,7 @@ int IOInterface::Initialize() {
   io.interrupt_stat = 0;
   io.interrupt_mask = 0;
   io.cache_control = 0;
+  UpdateBusTiming();
 
   memset(&access_log, 0, sizeof(access_log));
 
@@ -64,6 +65,9 @@ int IOInterface::Initialize() {
 
   sio.set_system(system_);
   sio.Initialize();
+
+  sio1.set_system(system_);
+  sio1.Initialize();
 
   dma.set_system(system_);
   dma.Initialize();
@@ -87,6 +91,59 @@ int IOInterface::Deinitialize() {
   return 0;
 }
 
+// psx-spx, Memory Control: a region's first access and each sequential one, from its Delay/Size
+// register's read delay (bits 4-7) and which of COM_DELAY's shared periods it uses - recovery
+// COM0 (bit 8), floating release COM2 (bit 10), and pre-strobe COM3 (bit 11) as a minimum. An
+// 8-bit bus (bit 12 clear) makes a halfword two accesses and a word four; a 16-bit one makes a
+// word two. The load's own instruction is the first of those cycles, so the stall is the total
+// less one.
+//
+// Measured on a real console by JaCzekanski's cpu/access-time (timing_test), the formula is exact
+// for the BIOS ROM and expansions 1 and 3 as the BIOS programs them. For the regions that use a
+// recovery or pre-strobe period - the CD-ROM, the SPU, expansion 2 - it comes out 1 to 4 cycles
+// above the console. That is the documented formula's own error, kept as it is rather than
+// fitted to one measurement per region (Docs/CPU-Timing-Plan.md, phase 3).
+void IOInterface::UpdateBusTiming() {
+  const uint32_t delays[kBusRegions] = {
+    io.exp1_delay, io.exp3_delay, io.bios_rom, io.spu_delay, io.cdrom_delay, io.exp2_delay,
+  };
+  const int com0 = static_cast<int>(io.com_delay & 0xF);
+  const int com2 = static_cast<int>((io.com_delay >> 8) & 0xF);
+  const int com3 = static_cast<int>((io.com_delay >> 12) & 0xF);
+  for (int region = 0; region < kBusRegions; ++region) {
+    const uint32_t delay = delays[region];
+    const int read_delay = static_cast<int>((delay >> 4) & 0xF);
+    int first = 0, sequential = 0, minimum = 0;
+    if (delay & 0x100) {   // recovery
+      first += com0 - 1;
+      sequential += com0 - 1;
+    }
+    if (delay & 0x400) {   // floating release
+      first += com2;
+      sequential += com2;
+    }
+    if (delay & 0x800)     // pre-strobe
+      minimum = com3;
+    if (first < 6)
+      first += 1;
+    first += read_delay + 2;
+    sequential += read_delay + 2;
+    if (first < minimum + 6)
+      first = minimum + 6;
+    if (sequential < minimum + 2)
+      sequential = minimum + 2;
+
+    const bool bus16 = (delay & 0x1000) != 0;
+    const int totals[3] = {
+      first,
+      bus16 ? first : first + sequential,
+      bus16 ? first + sequential : first + 3 * sequential,
+    };
+    for (int width = 0; width < 3; ++width)
+      bus_stall_[region][width] = static_cast<uint32_t>(totals[width] > 1 ? totals[width] - 1 : 0);
+  }
+}
+
 void IOInterface::Serialise(StateIO& state) {
   state.Plain(io);
   state.Bytes(ram_buffer.u8, 0x200000);
@@ -97,9 +154,12 @@ void IOInterface::Serialise(StateIO& state) {
   cdrom.Serialise(state);
   mdec.Serialise(state);
   sio.Serialise(state);
+  sio1.Serialise(state);
   dma.Serialise(state);
   state.Plain(pending_cycles_);
   state.Plain(sysclk8_accum_);
+  // Derived from the registers just restored, like the GPU's framebuffer - not saved.
+  UpdateBusTiming();
 }
 
 void IOInterface::SetInterrupt(InterruptCodes interrupt) {
@@ -170,6 +230,7 @@ void IOInterface::RunPending() {
 
   cdrom.Tick(batch);
   sio.Tick(batch);
+  sio1.Tick(batch);
   system_->spu().Tick(batch);
 
   dma.Tick(batch);
@@ -228,6 +289,8 @@ uint8_t IOInterface::Read08(uint32_t address) {
   // exists at all. It used to trap unconditionally on entry.
   if (address >= 0x1F801040 && address <= 0x1F80104F)
     return sio.Read08(address);
+  if (address >= 0x1F801050 && address <= 0x1F80105F)
+    return sio1.Read08(address);
   if (address >= 0x1F801800 && address <= 0x1F801803)
     return cdrom.Read(address);
 
@@ -310,6 +373,8 @@ uint16_t IOInterface::Read16(uint32_t address) {
 
   if (address >= 0x1F801040 && address <= 0x1F80104F)
     return sio.Read16(address);
+  if (address >= 0x1F801050 && address <= 0x1F80105F)
+    return sio1.Read16(address);
 
   if (address >= 0x1F801800 && address <= 0x1F801803) {
     return static_cast<uint16_t>(cdrom.Read(address)) |
@@ -386,6 +451,10 @@ uint32_t IOInterface::Read32(uint32_t address) {
     case 0x1F801800: case 0x1F801804: return cdrom.ReadDataWord();
     case 0x1F801040: case 0x1F801044: case 0x1F801048: case 0x1F80104A:
     case 0x1F80104E: return sio.Read32(address);
+    // SIO1, the serial port: nothing is attached, and sio1.h says what that
+    // means for each register.
+    case 0x1F801050: case 0x1F801054: case 0x1F801058: case 0x1F80105A:
+    case 0x1F80105C: case 0x1F80105E: return sio1.Read32(address);
     
   }
   BREAKPOINT
@@ -443,6 +512,10 @@ void IOInterface::Write08(uint32_t address,uint8_t data) {
     sio.Write08(address, data);
     return;
   }
+  if (address >= 0x1F801050 && address <= 0x1F80105F) {
+    sio1.Write08(address, data);
+    return;
+  }
   if (address >= 0x1F801800 && address <= 0x1F801803) {
     cdrom.Write(address, data);
     return;
@@ -494,6 +567,10 @@ void IOInterface::Write16(uint32_t address,uint16_t data) {
 
   if (address >= 0x1F801040 && address <= 0x1F80104F) {
     sio.Write16(address, data);
+    return;
+  }
+  if (address >= 0x1F801050 && address <= 0x1F80105F) {
+    sio1.Write16(address, data);
     return;
   }
   if (address >= 0x1F801800 && address <= 0x1F801803) {
@@ -550,6 +627,10 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
     sio.Write32(address, data);
     return;
   }
+  if (address >= 0x1F801050 && address <= 0x1F80105F) {
+    sio1.Write32(address, data);
+    return;
+  }
 
   if (address >= 0x1F801080 && address <= 0x1F8010F4) {
     // Flush first: channel 2/5/6 refuse a new trigger while their own chcr
@@ -565,13 +646,13 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
   switch (address) {
     case 0x1F801000: io.exp1_base_addr = data; return;
     case 0x1F801004: io.exp2_base_addr = data; return;
-    case 0x1F801008: io.exp1_delay = data; return;
-    case 0x1F80100C: io.exp3_delay = data; return;
-    case 0x1F801010: io.bios_rom = data; return;
-    case 0x1F801014: io.spu_delay = data; return;
-    case 0x1F801018: io.cdrom_delay = data; return;
-    case 0x1F80101C: io.exp2_delay = data; return;
-    case 0x1F801020: io.com_delay = data; return;
+    case 0x1F801008: io.exp1_delay = data; UpdateBusTiming(); return;
+    case 0x1F80100C: io.exp3_delay = data; UpdateBusTiming(); return;
+    case 0x1F801010: io.bios_rom = data; UpdateBusTiming(); return;
+    case 0x1F801014: io.spu_delay = data; UpdateBusTiming(); return;
+    case 0x1F801018: io.cdrom_delay = data; UpdateBusTiming(); return;
+    case 0x1F80101C: io.exp2_delay = data; UpdateBusTiming(); return;
+    case 0x1F801020: io.com_delay = data; UpdateBusTiming(); return;
     case 0x1F801060: io.ram_size = data; return;
     case 0x1F801070: io.interrupt_stat &= data; return;
     case 0x1F801074: io.interrupt_mask = data;  return;

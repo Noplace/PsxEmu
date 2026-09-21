@@ -47,6 +47,7 @@ class IOInterface : public Component {
   Cdrom cdrom;
   Mdec mdec;
   Sio sio;
+  Sio1 sio1;
   Dma dma;
 
   // Per-register access tallies for the 0x1F801xxx block, indexed by the low
@@ -86,6 +87,21 @@ class IOInterface : public Component {
   }
   uint32_t ReadSubWord(uint32_t address, uint32_t bytes);
   void WriteSubWord(uint32_t address, uint32_t data, uint32_t bytes);
+
+  // The regions whose access time the memory-control registers set: each has a Delay/Size
+  // register at 1F801008h-1F80101Ch, and all share COM_DELAY at 1F801020h.
+  enum BusRegion { kBusExp1, kBusExp3, kBusBios, kBusSpu, kBusCdrom, kBusExp2, kBusRegions };
+
+  // The cycles a load from `region` stalls beyond the one every instruction costs, for an 8, 16
+  // and 32-bit read (index 0, 1, 2). Worked out from the registers by psx-spx's formula
+  // (Memory Control): a first access, then a sequential one for each further unit of the bus -
+  // an 8-bit bus reads a word in four, a 16-bit bus in two. Recalculated whenever software
+  // writes a register, and after a state is loaded.
+  uint32_t bus_stall(BusRegion region, uint32_t index) const {
+    return bus_stall_[region][index];
+  }
+  void UpdateBusTiming();
+  uint32_t bus_stall_[kBusRegions][3] = {};
 
   // bios_buffer is deliberately not here - the BIOS is a user-supplied dump,
   // not machine state; a state file carries a hash of it instead and refuses

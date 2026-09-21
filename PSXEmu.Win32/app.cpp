@@ -202,6 +202,7 @@ namespace psxemu {
         UpdatePauseInMenusMenu();
         UpdateShowTimingsMenu();
         UpdateBiosConsoleMenu();
+        UpdateSerialToConsoleMenu();
         UpdateFilterMenu();
         UpdateRendererMenu();
         UpdateAudioBackendMenu();
@@ -816,6 +817,16 @@ namespace psxemu {
         SaveSettingsIfChanged();
     }
 
+    void App::UpdateSerialToConsoleMenu() { TickSerialToConsole(window_, config_.sio1_to_console); }
+
+    // This one the machine does need: Sio1 reads it as each byte is transmitted.
+    void App::SetSerialToConsole(bool on) {
+        config_.sio1_to_console = on;
+        UpdateSerialToConsoleMenu();
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+    }
+
     namespace {
 
         // On the machine's thread: copies of both cards, for the editor to read on its own.
@@ -1426,6 +1437,9 @@ namespace psxemu {
                 break;
             case kCommandBiosConsole:
                 SetShowBiosConsole(!config_.show_bios_console);
+                break;
+            case kCommandSerialToConsole:
+                SetSerialToConsole(!config_.sio1_to_console);
                 break;
 
             case kCommandDebugger:

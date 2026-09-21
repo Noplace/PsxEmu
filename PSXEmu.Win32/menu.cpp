@@ -129,6 +129,8 @@ namespace psxemu {
                     L"Show &Timings in Title Bar");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandBiosConsole),
                     L"BIOS &Console");
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandSerialToConsole),
+                    L"Serial &Port to Console");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandDebugger),
                     L"&Debugger...");
 
@@ -522,6 +524,14 @@ namespace psxemu {
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandBiosConsole),
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickSerialToConsole(HWND window, bool on) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandSerialToConsole),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
     }
 
