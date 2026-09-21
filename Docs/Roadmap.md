@@ -187,7 +187,7 @@ actually is rather than from memory:
       full); phase 3 (memory regions) and phase 4 not.
 - [x] **[Threading-Plan.md](Threading-Plan.md)** - window, machine, video,
       audio and input threads. Phase 7, a rasteriser thread, not done.
-- [x] **[Emulation-Speed-Plan.md](Emulation-Speed-Plan.md)** - 50-200%.
+- [x] **[Emulation-Speed-Plan.md](Emulation-Speed-Plan.md)** - 50-300%.
 - [~] `psx/emuconfig.h` and `psx/settings.h`, following GBAEmu's design.
       `psxemu.ini` holds audio, video, input, speed, recompiler and BIOS
       choices - the list is in Gaps.md. The last disc and the key bindings are

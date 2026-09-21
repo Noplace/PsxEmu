@@ -39,7 +39,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 287, gte 106, timer 70, sio 146, spu 108, gpu 31, mdec 85, media 263, mc 77, debug 174 - 1,347
+cpu 287, gte 106, timer 70, sio 146, spu 108, gpu 31, mdec 85, media 265, mc 77, debug 174 - 1,349
 checks, no failures (re-run 2026-09-21, bugs 78 and 79 together). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
@@ -314,6 +314,7 @@ Missing or unproven:
   and its divide-by-4 on raw input is a guess.
 
 ## Barely started
+
 - **Parallel / expansion port** - a readable buffer with nothing behind it.
 - **DMA channel 5 (PIO)** - accepts register writes and raises its interrupt;
   transfers nothing.
@@ -343,7 +344,7 @@ to boot.
 ### The front end is minimal
 
 A window, menus for disc, reset, pause, volume, video filter, controllers,
-which BIOS to boot and how fast to run (50-200%), D3D11 and D3D12 presenters,
+which BIOS to boot and how fast to run (50-300%), D3D11 and D3D12 presenters,
 keyboard/XInput/mouse input, and a speed readout in the title bar (bug 49) that
 Emulation > Show Timings expands into where each frame's time went, and a BIOS
 console window (Emulation > BIOS Console, bug 66) showing what software prints

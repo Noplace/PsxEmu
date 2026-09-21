@@ -1,4 +1,4 @@
-// speed_resampler_test - the audio side of running the machine at 50%..200%.
+// speed_resampler_test - the audio side of running the machine at 50%..300%.
 //
 // The SPU produces 44,100 samples per emulated second whatever speed the
 // machine is being run at, and the sound device consumes 44,100 per real one.
@@ -91,6 +91,29 @@ void TestOneAndAHalf() {
              "900 frames at 1.5x is 600 frames out");
 }
 
+// The two fastest the menu offers. Both step by an exact 16.16 amount, so the
+// count is exact for a block that divides by the speed; a block that does not
+// carries its remainder, which is what the drift check below covers.
+void TestTwoAndAHalf() {
+  printf("250%% produces two fifths as many\n");
+  const std::vector<int16_t> in = Ramp(1000);
+  std::vector<int16_t> out;
+  SpeedResampler resampler;
+  resampler.Append(in.data(), 1000, 2.5, &out);
+  CheckEqual(static_cast<int>(out.size()) / 2, 400,
+             "1000 frames at 2.5x is 400 frames out");
+}
+
+void TestTripleSpeedThirdsTheCount() {
+  printf("300%% produces a third as many frames\n");
+  const std::vector<int16_t> in = Ramp(900);
+  std::vector<int16_t> out;
+  SpeedResampler resampler;
+  resampler.Append(in.data(), 900, 3.0, &out);
+  CheckEqual(static_cast<int>(out.size()) / 2, 300,
+             "900 frames at 3x is 300 frames out");
+}
+
 // The one that matters over a session: called once a frame for a minute, the
 // count must not drift. At 60 blocks a second for 60 seconds, a half-sample
 // error per block would be 1,800 samples - a fifth of a second of silence or
@@ -178,12 +201,14 @@ void TestDegenerateInput() {
 }  // namespace
 
 int main() {
-  printf("speed_resampler_test - audio for 50%%..200%% speed\n\n");
+  printf("speed_resampler_test - audio for 50%%..300%% speed\n\n");
 
   TestUnitySpeedIsACopy();
   TestDoubleSpeedHalvesTheCount();
   TestHalfSpeedDoublesTheCount();
   TestOneAndAHalf();
+  TestTwoAndAHalf();
+  TestTripleSpeedThirdsTheCount();
   TestTheCountDoesNotDriftOverManyBlocks();
   TestBlocksJoinContinuously();
   TestResetForgetsTheCarriedFrame();

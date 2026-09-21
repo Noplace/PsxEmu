@@ -91,7 +91,7 @@ namespace psxemu {
         kCommandRescanBios,
         kCommandOpenBiosFolder,
         kCommandSpeedFirst,
-        kCommandSpeedLast = kCommandSpeedFirst + 3,   // 50, 100, 150, 200%
+        kCommandSpeedLast = kCommandSpeedFirst + 5,   // 50, 100, 150, 200, 250, 300%
         kCommandPauseInMenus,
         kCommandShowTimings,
         kCommandBiosConsole,
@@ -147,6 +147,8 @@ namespace psxemu {
         { 1.0f, L"&100%% (console)" },
         { 1.5f, L"1&50%%" },
         { 2.0f, L"&200%% (double)" },
+        { 2.5f, L"2&50%%" },
+        { 3.0f, L"&300%% (triple)" },
     };
 
     // The two renderer choices, in the order the Video > Renderer menu and

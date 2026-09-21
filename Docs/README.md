@@ -50,7 +50,7 @@ A PlayStation 1 emulator revived from a 2012-2014 codebase.
   and the controller port with the digital pad, DualShock, mouse and multitap.
 - Disc images: `.cue`, `.mds`/`.mdf`, `.ccd`/`.img`, `.bin`, `.img`, `.iso`,
   and a physical drive.
-- Save states, per-disc memory cards, and 50-200% emulation speed.
+- Save states, per-disc memory cards, and 50-300% emulation speed.
 - A dynamic recompiler, off by default, at 3.0-3.9x real time.
 - A Win32 front end on five threads - window, machine, video, audio, input -
   presenting through Direct3D 11 or 12, with WASAPI or DirectSound.

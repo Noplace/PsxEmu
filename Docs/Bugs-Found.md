@@ -4864,3 +4864,44 @@ the kind of choice that is invisible later.
 
 Numbered 80 rather than 79 because another session is writing up bug 79 (the
 GTE OPCODE group) at the same time.
+
+## 81. 250% and 300% emulation speed
+
+Emulation > Speed offered 50, 100, 150 and 200%. It now offers 250 and 300%
+as well. Nothing about the emulated machine changes - it is still 33.8688 MHz
+and 59.29 Hz, and no baseline in [Test-Suite.md](Test-Suite.md) moves - the
+setting scales the rate the frame limiter paces to and the rate the audio is
+resampled at on its way to a device that consumes 44,100 samples per *real*
+second.
+
+Two entries in `kSpeedChoices` (`PSXEmu.Win32/const.h`), two more command ids
+in its run, and two more values in `EmuConfig::kValidSpeeds`, which is what a
+hand-edited `emulation_speed` is snapped to on load. The menu builds and ticks
+itself from the table, so nothing else in the front end had to change.
+
+The audio arithmetic needed nothing: `SpeedResampler` takes the factor as a
+number, and 2.5 and 3.0 are both exact in its 16.16 step, so the sample count
+stays exact. A block that does not divide by the speed carries its remainder
+as it already did - at 300%, a one-frame block emits nothing twice and then a
+frame, rather than rounding each block.
+
+### Verified, 2026-09-21
+
+- **`speed_resampler_test`: 11 -> 13 checks** - 1000 frames at 2.5x is 400
+  out, 900 at 3x is 300.
+- **`media_test`: 263 -> 265** - 300% survives a settings round trip, and a
+  hand-edited 2.7 snaps to 250% rather than leaving the menu with nothing
+  ticked.
+- **The menu works end to end.** An isolated copy of the front end, launched
+  with its own settings file and sent `WM_COMMAND` 1141, wrote
+  `emulation_speed = 3`.
+
+**What could not be shown here: that the machine actually runs faster.** With
+the BIOS shell booted, the title bar read 100% at 100% and about the same at
+150, 200, 250 and 300% - it never went above ~60 fps. That is this machine,
+not the change: a build from before it reads the same at 150 and 200%, and
+with the frame limiter off entirely - "as fast as whatever blocks first" - the
+front end still only reached ~57-60 fps. Another emulator session and a long
+headless run were occupying the host at the time. The setting reaching the
+machine is verified; the speed-up it asks for needs a quiet machine and a
+visible window to confirm, and is worth re-checking there.

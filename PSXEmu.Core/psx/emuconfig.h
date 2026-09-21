@@ -208,7 +208,7 @@ struct EmuConfig {
   // whatever blocks first"; the menu greys the choices out there.
   float emulation_speed = 1.0f;
 
-  static const std::array<float, 4> kValidSpeeds;
+  static const std::array<float, 6> kValidSpeeds;
 
   // --- Front end ----------------------------------------------------------
   // Whether the machine pauses while one of the front end's menus - or a
@@ -258,8 +258,8 @@ inline const std::array<const char*, 10> EmuConfig::kValidVideoFilters = {
 };
 
 // In the same order PSXEmu.Win32's Emulation > Speed menu offers them.
-inline const std::array<float, 4> EmuConfig::kValidSpeeds = {
-    0.5f, 1.0f, 1.5f, 2.0f,
+inline const std::array<float, 6> EmuConfig::kValidSpeeds = {
+    0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f,
 };
 
 // Order matches PSXEmu.Win32's Input > Controller Port menus and

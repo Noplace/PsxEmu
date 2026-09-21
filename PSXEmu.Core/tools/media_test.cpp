@@ -1620,6 +1620,24 @@ void TestSettingsFile(const std::string& directory) {
     Check(loaded.sio1_to_console, "echoing it survives the round trip");
   }
 
+  // Emulation speed is snapped to one the menu can tick, not clamped to a
+  // range, so a hand-edited value picks its nearest neighbour rather than
+  // leaving nothing ticked.
+  {
+    EmuConfig config;
+    config.emulation_speed = 3.0f;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.emulation_speed == 3.0f, "300% survives the round trip");
+
+    out.SetFloat("emulation_speed", 2.7f);
+    EmuConfig snapped;
+    emulation::psx::LoadConfig(out, snapped);
+    Check(snapped.emulation_speed == 2.5f, "2.7 snaps to the 250% the menu has");
+  }
+
   // A key this build does not know about is preserved rather than dropped, so
   // a file written by a newer build survives being loaded and saved by an
   // older one.

@@ -244,7 +244,7 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   c.bios_file = f.GetString("bios_file", c.bios_file);
 
   // Snapped to one of the offered speeds rather than clamped to a range: the
-  // menu has four entries and can only tick one of them, so a hand-edited 1.23
+  // menu has six entries and can only tick one of them, so a hand-edited 1.23
   // would leave nothing ticked and no way to tell what was set.
   const float speed = f.GetFloat("emulation_speed", c.emulation_speed);
   float nearest = EmuConfig::kValidSpeeds[0];

@@ -1,10 +1,11 @@
-# Emulation speed: 50%, 100%, 150%, 200%
+# Emulation speed: 50% to 300%
 
 ## Built, 2026-09-16
 
 All of the below is implemented, in the shape it describes:
 
-- **Emulation > Speed** offers 50/100/150/200%, ticks what is set, and greys
+- **Emulation > Speed** offers 50/100/150/200/250/300% - the last two added
+  2026-09-21, bug 81 - ticks what is set, and greys
   out while the frame limiter is off.
 - `EmuConfig::emulation_speed` persists as `emulation_speed`, snapped on load
   to one of `kValidSpeeds` rather than clamped - a hand-edited 1.23 would leave
