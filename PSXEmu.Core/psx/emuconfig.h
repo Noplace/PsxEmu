@@ -237,6 +237,30 @@ struct EmuConfig {
   // this on. Off by default: it is a debugging aid, and on a retail game the
   // port is silent anyway.
   bool sio1_to_console = false;
+
+  // --- Mouse ------------------------------------------------------------
+  // How a host mouse's movement becomes a PlayStation mouse's counts, when a
+  // port is set to Sio::kMouse. The device itself has no say in this - it
+  // reports raw counts and any acceleration is the game's - so this is a
+  // choice about the host, and utilities::MouseMotion (platform/
+  // mouse_scaling.h) has what each one means:
+  //
+  //   "desktop"   the cursor's own movement, exactly as Windows accelerated
+  //               it, with the pointer captured to the window
+  //   "windows"   raw counts with Windows' curve reapplied (approximated)
+  //   "hardware"  raw counts, linear, scaled for a 1994 ball mouse
+  //
+  // "desktop" by default: it is the one that needs nothing guessed, and the
+  // one whose feel a person can check against their own desktop.
+  std::string mouse_motion = "desktop";
+  static const std::array<const char*, 3> kValidMouseMotions;
+
+  // What the host mouse is set to, in counts per inch. Windows cannot be
+  // asked - HID carries no such field - so "hardware" needs it from the
+  // person; it is what their mouse's own software says. 800 is the common
+  // default on a modern mouse.
+  int mouse_dpi = 800;
+  static const std::array<int, 4> kValidMouseDpis;
 };
 
 // Out of line so there is one definition; these are bounds a UI can offer
@@ -260,6 +284,16 @@ inline const std::array<const char*, 10> EmuConfig::kValidVideoFilters = {
 // In the same order PSXEmu.Win32's Emulation > Speed menu offers them.
 inline const std::array<float, 6> EmuConfig::kValidSpeeds = {
     0.5f, 1.0f, 1.5f, 2.0f, 2.5f, 3.0f,
+};
+
+// In the same order PSXEmu.Win32's Input > Mouse menus offer them, and the
+// same order utilities::MouseMotion declares them.
+inline const std::array<const char*, 3> EmuConfig::kValidMouseMotions = {
+    "desktop", "windows", "hardware",
+};
+
+inline const std::array<int, 4> EmuConfig::kValidMouseDpis = {
+    400, 800, 1600, 3200,
 };
 
 // Order matches PSXEmu.Win32's Input > Controller Port menus and

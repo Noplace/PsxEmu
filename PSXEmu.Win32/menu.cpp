@@ -225,6 +225,27 @@ namespace psxemu {
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(multitap_port[1]),
                     L"M&ultitap Port 2");
         AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
+
+        // What a host mouse's movement is worth, for whichever port is set to Mouse. Two
+        // submenus rather than one flat list: the resolution only means anything to the
+        // hardware mode, and burying it keeps the choice that matters at the top.
+        HMENU mouse_motion = CreatePopupMenu();
+        for (size_t i = 0; i < std::size(kMouseMotionChoices); ++i) {
+            AppendMenuW(mouse_motion, MF_STRING,
+                        static_cast<UINT_PTR>(kCommandMouseMotionFirst + i),
+                        kMouseMotionChoices[i].label);
+        }
+        HMENU mouse_dpi = CreatePopupMenu();
+        for (size_t i = 0; i < std::size(kMouseDpiChoices); ++i) {
+            AppendMenuW(mouse_dpi, MF_STRING, static_cast<UINT_PTR>(kCommandMouseDpiFirst + i),
+                        std::to_wstring(kMouseDpiChoices[i]).c_str());
+        }
+        HMENU mouse = CreatePopupMenu();
+        AppendMenuW(mouse, MF_POPUP, reinterpret_cast<UINT_PTR>(mouse_motion), L"&Motion");
+        AppendMenuW(mouse, MF_POPUP, reinterpret_cast<UINT_PTR>(mouse_dpi), L"Mouse &DPI");
+        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(mouse), L"Mo&use");
+
+        AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(input, MF_STRING, static_cast<UINT_PTR>(kCommandKeyBindings),
                     L"&Keyboard Bindings...");
 
@@ -525,6 +546,28 @@ namespace psxemu {
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandBiosConsole),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickMouseMotion(HWND window, const std::string& key) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        for (size_t i = 0; i < std::size(kMouseMotionChoices); ++i) {
+            const bool on = (key == kMouseMotionChoices[i].key);
+            CheckMenuItem(bar, static_cast<UINT>(kCommandMouseMotionFirst + i),
+                          MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+        }
+    }
+
+    void TickMouseDpi(HWND window, int dpi) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        for (size_t i = 0; i < std::size(kMouseDpiChoices); ++i) {
+            const bool on = (dpi == kMouseDpiChoices[i]);
+            CheckMenuItem(bar, static_cast<UINT>(kCommandMouseDpiFirst + i),
+                          MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+        }
     }
 
     void TickSerialToConsole(HWND window, bool on) {

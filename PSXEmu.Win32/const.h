@@ -96,6 +96,12 @@ namespace psxemu {
         kCommandShowTimings,
         kCommandBiosConsole,
         kCommandSerialToConsole,
+        // How a host mouse's movement becomes a PSX mouse's counts, and what the host mouse's
+        // own resolution is - see EmuConfig::mouse_motion and kMouseMotionChoices below.
+        kCommandMouseMotionFirst,
+        kCommandMouseMotionLast = kCommandMouseMotionFirst + 2,   // desktop, windows, hardware
+        kCommandMouseDpiFirst,
+        kCommandMouseDpiLast = kCommandMouseDpiFirst + 3,         // 400, 800, 1600, 3200
         kCommandEjectMemoryCardSlot1,
         kCommandEjectMemoryCardSlot2,
         kCommandMemoryCardEditor,
@@ -150,6 +156,20 @@ namespace psxemu {
         { 2.5f, L"2&50%%" },
         { 3.0f, L"&300%% (triple)" },
     };
+
+    // How a host mouse's movement is scaled, in the order Input > Mouse > Motion lists them and
+    // EmuConfig::kValidMouseMotions holds them. The keys are what psxemu.ini stores.
+    struct MouseMotionChoice { const char* key; const wchar_t* label; };
+
+    inline constexpr MouseMotionChoice kMouseMotionChoices[] = {
+        { "desktop",  L"Match &Desktop Pointer" },
+        { "windows",  L"Windows &Acceleration (approximated)" },
+        { "hardware", L"&Hardware (linear, 1994 mouse)" },
+    };
+
+    // The host mouse resolutions Input > Mouse > DPI offers, in the order
+    // EmuConfig::kValidMouseDpis holds them. Only "hardware" reads this.
+    inline constexpr int kMouseDpiChoices[] = { 400, 800, 1600, 3200 };
 
     // The two renderer choices, in the order the Video > Renderer menu and
     // EmuConfig::kValidGraphicsBackends both list them.

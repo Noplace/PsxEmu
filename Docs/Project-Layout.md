@@ -12,6 +12,7 @@ PsxEmu/
       util.h                   SafeDelete / SafeDeleteArray / SafeRelease
       frame_limiter.h          holds a front end's loop to the machine's frame rate
       speed_resampler.h        stretches the SPU's output to the emulation speed
+      mouse_scaling.h          what a host mouse's movement is worth to a PSX mouse
     host/                      the only thread-aware part of Core - Docs/Threading-Plan.md
       doorbell.h               one per thread; everything that gives it work rings it
       request_queue.h          the one door into something another thread owns

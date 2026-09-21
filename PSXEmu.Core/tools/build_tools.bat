@@ -115,6 +115,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_speedres\ /Fe:Temp\tools\speed_resampler_test.exe 
    PSXEmu.Core\tools\speed_resampler_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
+if not exist Temp\tools\obj_mousescale mkdir Temp\tools\obj_mousescale
+cl %FLAGS% /Fo:Temp\tools\obj_mousescale\ /Fe:Temp\tools\mouse_scaling_test.exe ^
+   PSXEmu.Core\tools\mouse_scaling_test.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 rem The recompiler, which is being built beside the core rather than into it -
 rem nothing in psx\ includes any of this, and the emulator does not link it.
 rem Only the emitter files rec_test actually reaches are compiled; the rest of

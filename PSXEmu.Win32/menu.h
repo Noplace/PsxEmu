@@ -121,6 +121,11 @@ namespace psxemu {
     // shown in that same console.
     void TickSerialToConsole(HWND window, bool on);
 
+    // EmuConfig::mouse_motion and EmuConfig::mouse_dpi - how a host mouse's movement becomes a
+    // PSX mouse's counts, and what the host mouse's own resolution is.
+    void TickMouseMotion(HWND window, const std::string& key);
+    void TickMouseDpi(HWND window, int dpi);
+
     // ---------------------------------------------------------------------------------------------
     // Settings keys
     // ---------------------------------------------------------------------------------------------

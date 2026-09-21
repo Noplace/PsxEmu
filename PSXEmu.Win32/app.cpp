@@ -139,6 +139,8 @@ namespace psxemu {
         }
 
         StartThreads();
+        // After the input thread exists, since that is what holds the mouse.
+        SendMouseSettingsToInput();
 
         ShowWindow(window_, show_command);
         UpdateWindow(window_);
@@ -203,6 +205,7 @@ namespace psxemu {
         UpdateShowTimingsMenu();
         UpdateBiosConsoleMenu();
         UpdateSerialToConsoleMenu();
+        UpdateMouseMenu();
         UpdateFilterMenu();
         UpdateRendererMenu();
         UpdateAudioBackendMenu();
@@ -704,6 +707,8 @@ namespace psxemu {
         UpdateMultitapSourceMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
+        // Whether any port is a mouse decides whether the cursor may be captured.
+        SendMouseSettingsToInput();
     }
 
     void App::UpdateInputSourceMenu() {
@@ -818,6 +823,57 @@ namespace psxemu {
     }
 
     void App::UpdateSerialToConsoleMenu() { TickSerialToConsole(window_, config_.sio1_to_console); }
+
+    void App::UpdateMouseMenu() {
+        TickMouseMotion(window_, config_.mouse_motion);
+        TickMouseDpi(window_, config_.mouse_dpi);
+    }
+
+    // The input thread owns the scaling, so this goes there rather than to the machine - along
+    // with whether Match Desktop Pointer may take the cursor over at all, which is a question
+    // about what the front end is doing rather than about the mouse:
+    //
+    //   - a port has to be set to Mouse, or nothing wants the pointer in the first place;
+    //   - the machine has to be running. Nothing is started yet, or it is paused, and the
+    //     pointer is the person's own - to reach a menu, to pick a disc, to close the window -
+    //     so it stays where they put it and stays visible;
+    //   - no menu may be open. The menu bar is driven with that same pointer, and pinning it to
+    //     the middle of the window mid-menu would make the menus unusable.
+    //
+    // Mouse::Poll adds the last condition itself: the window has to have focus.
+    void App::SendMouseSettingsToInput() {
+        if (input_ == nullptr)
+            return;
+        utilities::MouseMotion motion = utilities::MouseMotion::kDesktop;
+        if (config_.mouse_motion == "windows")
+            motion = utilities::MouseMotion::kWindows;
+        else if (config_.mouse_motion == "hardware")
+            motion = utilities::MouseMotion::kHardware;
+        const bool port_is_mouse = (config_.controller_type[0] == "mouse" ||
+                                    config_.controller_type[1] == "mouse");
+        const bool may_capture = port_is_mouse && !paused_by_user_ && menu_depth_ == 0;
+        input_->SetMouseMotion(motion, config_.mouse_dpi, may_capture);
+
+        // Give the arrow back the moment capture ends rather than waiting for the next mouse
+        // move to ask through WM_SETCURSOR - a pause the person asked for should show them a
+        // pointer straight away.
+        if (!may_capture && window_ != nullptr)
+            SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+    }
+
+    void App::SetMouseMotion(const std::string& key) {
+        config_.mouse_motion = key;
+        UpdateMouseMenu();
+        SaveSettingsIfChanged();
+        SendMouseSettingsToInput();
+    }
+
+    void App::SetMouseDpi(int dpi) {
+        config_.mouse_dpi = dpi;
+        UpdateMouseMenu();
+        SaveSettingsIfChanged();
+        SendMouseSettingsToInput();
+    }
 
     // This one the machine does need: Sio1 reads it as each byte is transmitted.
     void App::SetSerialToConsole(bool on) {
@@ -991,6 +1047,7 @@ namespace psxemu {
                 paused_by_user_ = false;
                 SetWindowTitleForPath(path);
                 NoteRecentDisc(path);
+                SendMouseSettingsToInput();
             });
         });
     }
@@ -1014,6 +1071,7 @@ namespace psxemu {
             PostToUi([this] {
                 paused_by_user_ = false;
                 SetWindowTitleForPath(std::string());
+                SendMouseSettingsToInput();
             });
         });
     }
@@ -1048,6 +1106,7 @@ namespace psxemu {
             PostToUi([this, path] {
                 paused_by_user_ = false;
                 SetWindowTitleForPath(path);
+                SendMouseSettingsToInput();
             });
         });
     }
@@ -1094,6 +1153,8 @@ namespace psxemu {
         PostToMachine([paused](Machine& machine) {
             machine.SetPaused(emulation::host::kPausedByUser, paused);
         });
+        // A paused machine gives the pointer back - see SendMouseSettingsToInput.
+        SendMouseSettingsToInput();
     }
 
     void App::EnterMenuPause() {
@@ -1102,6 +1163,10 @@ namespace psxemu {
             PostToMachine(
                 [](Machine& machine) { machine.SetPaused(emulation::host::kPausedForMenu, true); });
         }
+        // The menus are driven with the pointer, so it is theirs while one is open, whether or
+        // not the machine itself pauses for it.
+        if (menu_depth_ == 1)
+            SendMouseSettingsToInput();
     }
 
     void App::LeaveMenuPause() {
@@ -1113,6 +1178,7 @@ namespace psxemu {
             PostToMachine([](Machine& machine) {
                 machine.SetPaused(emulation::host::kPausedForMenu, false);
             });
+            SendMouseSettingsToInput();
         }
     }
 
@@ -1183,6 +1249,25 @@ namespace psxemu {
             // Windows is about to run a modal loop of its own - the menu bar, or a drag or resize
             // of the window. The machine keeps running underneath it now; whether it should is
             // Emulation > Pause While in Menus.
+            // The cursor is pinned to the middle of the window while Input > Mouse > Motion is
+            // Match Desktop Pointer, so it has to be hidden - an arrow stuck in the centre of the
+            // picture is worse than none. Only over the client area: the frame and the menu bar
+            // keep theirs.
+            case WM_SETCURSOR:
+                if (app != nullptr && LOWORD(lparam) == HTCLIENT && app->input_ != nullptr &&
+                    app->input_->capturing_mouse()) {
+                    SetCursor(nullptr);
+                    return TRUE;
+                }
+                break;
+
+            // Someone has been in the mouse control panel: Windows Acceleration mode reads the
+            // pointer speed and the curve from there, so it re-reads them.
+            case WM_SETTINGCHANGE:
+                if (app != nullptr && app->input_ != nullptr)
+                    app->input_->RefreshWindowsPointerSettings();
+                break;
+
             case WM_ENTERMENULOOP:
                 if (app != nullptr)
                     app->EnterMenuPause();
@@ -1502,6 +1587,12 @@ namespace psxemu {
                     const int player = (offset / source_count) % 4;
                     SetMultitapSource(port, player,
                                       kInputSourceChoices[offset % source_count].key);
+                } else if (command >= kCommandMouseMotionFirst &&
+                           command <= kCommandMouseMotionLast) {
+                    SetMouseMotion(kMouseMotionChoices[command - kCommandMouseMotionFirst].key);
+                } else if (command >= kCommandMouseDpiFirst &&
+                           command <= kCommandMouseDpiLast) {
+                    SetMouseDpi(kMouseDpiChoices[command - kCommandMouseDpiFirst]);
                 } else if (command >= kCommandSpeedFirst &&
                            command < kCommandSpeedFirst +
                                          static_cast<int>(std::size(kSpeedChoices))) {

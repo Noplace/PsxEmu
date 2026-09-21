@@ -4896,12 +4896,122 @@ frame, rather than rounding each block.
   with its own settings file and sent `WM_COMMAND` 1141, wrote
   `emulation_speed = 3`.
 
-**What could not be shown here: that the machine actually runs faster.** With
-the BIOS shell booted, the title bar read 100% at 100% and about the same at
-150, 200, 250 and 300% - it never went above ~60 fps. That is this machine,
-not the change: a build from before it reads the same at 150 and 200%, and
-with the frame limiter off entirely - "as fast as whatever blocks first" - the
-front end still only reached ~57-60 fps. Another emulator session and a long
-headless run were occupying the host at the time. The setting reaching the
-machine is verified; the speed-up it asks for needs a quiet machine and a
-visible window to confirm, and is worth re-checking there.
+**What the speeds above 150% actually deliver here: nothing more.** With the
+BIOS shell booted in a minimised window on an otherwise idle machine, the
+title bar reads 59.3 fps (100%) at 100% and then plateaus - 65.4 at 150%,
+65.2 at 200%, 66.0 at 250%, 65.0 at 300%. So the setting is reaching the
+limiter (150% does exceed 100%) and the front end simply cannot emulate faster
+than about 110% of real time in that configuration, which makes 200, 250 and
+300% indistinguishable from each other.
+
+That ceiling is not this change - the same build with the frame limiter off
+entirely, which is "as fast as whatever blocks first", sits at the same rate -
+and it is not obviously a real performance limit either: `boot_runner` reaches
+1.68x real time headless on the same host. A minimised window, the presenter
+and the audio device are all in the GUI path and not in that one. Which of
+them is the ceiling is unmeasured and is its own question, worth a look before
+anyone reads the higher speeds as useful. Nothing here is a reason not to
+offer them: 50% and 150% both do what they say.
+
+## 82. The mouse's sensitivity was a guessed divisor; now it is a choice of three
+
+`PSXEmu.Win32/mouse.h` took raw input's counts and divided them by 2.5. Its
+own comment called that "divide-by-4... a starting point, not a measurement",
+which was two things at once: the constant and the comment disagreed, and
+neither was grounded in anything.
+
+### What the hardware actually settles, and what it does not
+
+psx-spx on the mouse: it returns **"raw mickeys, so effects like double speed
+threshold must (should) be implemented by software"**. So the device applies
+nothing - a count off the ball is a count on the wire, and any acceleration is
+the *game's*. That kills the idea of emulating the mouse's own acceleration:
+there is none to emulate, and a curve added here would sit on top of whatever
+the game does rather than under it.
+
+What it leaves open is the scale: how many counts an inch of desk is worth.
+That is not a fact about the console either, because it depends on the host's
+mouse. Sony published no resolution for the SCPH-1030, psx-spx has none, and
+neither does its Wikipedia article; ball mice of that decade were 100-400 CPI
+with 200 the common figure. There is no divisor to look up.
+
+### Three answers, and the person picks
+
+Input > Mouse > Motion, `mouse_motion` in `psxemu.ini`, default the first:
+
+- **Match Desktop Pointer.** Read the cursor rather than the mouse -
+  `GetCursorPos` - and hand the game how far Windows itself moved it, which is
+  the person's own pointer speed and acceleration curve already applied by the
+  thing that owns them. Nothing is modelled, so nothing is guessed. The cursor
+  is pinned back to the middle of the window every poll, which is what keeps a
+  screen edge or a second monitor from eating movement, and hidden while it is
+  (`WM_SETCURSOR`) since an arrow parked in the centre of the picture is worse
+  than none.
+
+  **It only holds the pointer while there is a game to hold it for.** Four
+  conditions, and all of them have to be true: a port set to Mouse, the window
+  focused, no menu open, and the machine actually running. Nothing started yet,
+  or paused - by the person, or with Pause While in Menus - and the pointer is
+  theirs again and visible, because that is when they need it: to reach a menu,
+  pick a disc, or close the window. The menu condition is its own reason
+  rather than a nicety, since the menu bar is driven with that same pointer and
+  pinning it mid-menu would make the menus unusable. `App::SendMouseSettings-
+  ToInput` computes all of it and is called from every place that changes any
+  of them - the pause, the menus, each of the three boot paths - and hands the
+  arrow back on the spot rather than waiting for the next mouse move to ask.
+- **Windows Acceleration (approximated).** Keep raw input and reapply the
+  curve. `SmoothMouseXCurve`/`SmoothMouseYCurve`, `MouseSensitivity` and
+  `MouseSpeed` come out of `HKCU\Control Panel\Mouse` (re-read on
+  `WM_SETTINGCHANGE`, so a trip to the control panel is noticed); each report
+  is timed with `QueryPerformanceCounter`, since the gain is a function of that
+  report's speed and by poll time a flick and a slow drag of the same distance
+  are indistinguishable. **Approximated is the word:** the curve's shape is on
+  the record but the constants tying it to real units - a hard-coded 3.5 on the
+  input, a 150 Hz mouse rate and the 96-DPI screen assumption on the output -
+  come from people reading the binaries, not from Microsoft. This mode exists
+  for wanting the desktop's feel without the capture; the mode above is the one
+  that is exact.
+- **Hardware (linear, 1994 mouse).** What the console had: no curve, counts
+  scaled only for the gulf between that sensor and a modern one -
+  `kPlayStationMouseCpi` (200) over `mouse_dpi`, which Input > Mouse > DPI
+  offers as 400/800/1600/3200 because Windows cannot be asked what a mouse's
+  resolution is. A game that applies its own acceleration then behaves as it
+  would on hardware, with its curve and not the host's.
+
+The arithmetic moved to `PSXEmu.Core/platform/mouse_scaling.h` so it can be
+tested without Windows; `mouse.h` keeps the registry, the raw input and the
+cursor. **A defect fixed on the way:** the old remainder carry-back was
+integer (`accumulated_dx_ -= state.dx * 2.5f` on an `int32_t`), so it dropped
+the fraction every poll and lost a little of every slow movement.
+`MouseAccumulator` keeps it in floating point.
+
+### Verified, 2026-09-21
+
+- **New `mouse_scaling_test`: 37 checks** - the linear scale at four
+  resolutions and at nonsense ones; the carried fraction, including the case
+  it exists for (forty single counts at quarter scale really is ten, not
+  zero); the curve parse against this machine's own registry bytes, pasted in,
+  with short, missing and non-monotonic curves refused; gain rising with
+  speed, extrapolating past the last point, and falling back to 1.0 rather
+  than dividing by zero; and the slider's eleven stops.
+- **`media_test`: 265 -> 271** - both settings round-trip, an unknown mode
+  falls back to the default, and 1500 DPI snaps to 1600.
+- **Every other harness green**, 1,355 in all, and the BIOS boot unchanged
+  (92,082,652 instructions, `c7c8db90c5984798`) - all of this is host-side.
+- **The menu works end to end:** an isolated copy of the front end sent each
+  of the four commands in turn wrote `mouse_motion = windows`, then
+  `hardware`, then `mouse_dpi = 1600`, then `desktop`.
+- **The capture rules, against a real window and a real cursor** - which is
+  why this one is a scratch probe rather than a harness: 15 checks that the
+  first poll of a capture reports no movement (where the pointer happened to
+  be is not movement), that the cursor is pinned to the window's middle and
+  movement is its distance from it, that an unfocused window and a withdrawn
+  permission both leave the pointer exactly where the person left it, that
+  granting permission again reports no jump from wherever it wandered, and
+  that the other two modes never touch the cursor at all. It moves the real
+  pointer and puts it back.
+
+**Not verified, and it is the whole question: which mode is right.** That
+needs a mouse-aware game and a hand on a mouse, neither of which a harness
+has. `Populous - The Beginning` and `Lemmings & Oh No! More Lemmings` are both
+on the share and both claim mouse support (Gaps.md).

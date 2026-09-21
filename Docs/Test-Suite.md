@@ -543,21 +543,26 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 287 | | `gpu_test` | 31 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
-| `timer_test` | 70 | | `media_test` | 265 |
+| `timer_test` | 70 | | `media_test` | 271 |
 | `sio_test` | 146 | | `spu_test` | 108 |
 | `mc_test` | 77 | | `debug_test` | 174 |
 
-**1,349 checks, 0 failures**, all ten green. Each harness's own section above
+**1,355 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)
 
-Four smaller harnesses cover the host-side headers the front end leans on and
+Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
 checks, aspect ratio), `frame_limiter_test` (8 checks - the average rate, and since bug 62 the
 spacing between frames too), `speed_resampler_test` (13 checks, the audio
 arithmetic behind 50-300% speed - the frame counts, that a minute at 150% does
-not drift, and that blocks join continuously), `timing_test` (19 checks,
+not drift, and that blocks join continuously), `mouse_scaling_test` (37
+checks, the three ways a host mouse's movement becomes a PSX mouse's counts -
+the linear scale against a host resolution, the fraction that has to survive
+between polls or slow movement vanishes, and the reading of Windows' own
+acceleration curve out of the registry bytes this machine holds; bug 82),
+`timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is) and `host_test` (33 checks, the
 threads and the channels between them - its own section above).

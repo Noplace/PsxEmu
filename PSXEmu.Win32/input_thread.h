@@ -67,6 +67,23 @@ namespace psxemu {
                 keys_[i].store(map[i], std::memory_order_relaxed);
         }
 
+        // Any thread: how a host mouse's movement is turned into a PSX mouse's counts, and
+        // whether the mode that captures the cursor is allowed to right now - which is the
+        // App's call, not this thread's (App::SendMouseSettingsToInput). See mouse.h.
+        void SetMouseMotion(utilities::MouseMotion motion, int host_dpi, bool may_capture) {
+            mouse_.SetMotion(motion, host_dpi);
+            mouse_.SetCaptureEnabled(may_capture);
+        }
+
+        // Any thread: re-reads Windows' own pointer speed and acceleration curve, for
+        // MouseMotion::kWindows. Called on WM_SETTINGCHANGE, when someone has been in the mouse
+        // control panel.
+        void RefreshWindowsPointerSettings() { mouse_.ReadWindowsPointerSettings(); }
+
+        // Whether the cursor is currently pinned to the window's middle, so the window procedure
+        // can hide it while it is.
+        bool capturing_mouse() const { return mouse_.capturing(); }
+
      private:
         void Run();
         static LRESULT CALLBACK RawInputWindowProc(HWND window, UINT message, WPARAM wparam,

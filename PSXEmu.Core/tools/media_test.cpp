@@ -1638,6 +1638,31 @@ void TestSettingsFile(const std::string& directory) {
     Check(snapped.emulation_speed == 2.5f, "2.7 snaps to the 250% the menu has");
   }
 
+  // How a host mouse's movement is scaled, and what the host mouse's own
+  // resolution is: a choice from a list, and a number snapped to one.
+  {
+    EmuConfig config;
+    Check(config.mouse_motion == "desktop", "the desktop pointer is the default");
+    Check(config.mouse_dpi == 800, "and 800 DPI");
+    config.mouse_motion = "hardware";
+    config.mouse_dpi = 1600;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.mouse_motion == "hardware", "the mode survives the round trip");
+    Check(loaded.mouse_dpi == 1600, "so does the resolution");
+
+    // An unknown mode leaves whatever was there, the same as every other
+    // choice in this file; an odd DPI snaps to one the menu can tick.
+    out.SetString("mouse_motion", "telepathy");
+    out.SetInt("mouse_dpi", 1500);
+    EmuConfig fallback;
+    emulation::psx::LoadConfig(out, fallback);
+    Check(fallback.mouse_motion == "desktop", "an unknown mode falls back to the default");
+    Check(fallback.mouse_dpi == 1600, "and 1500 snaps to 1600");
+  }
+
   // A key this build does not know about is preserved rather than dropped, so
   // a file written by a newer build survives being loaded and saved by an
   // older one.

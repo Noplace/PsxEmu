@@ -40,6 +40,10 @@ namespace psxemu {
     InputThread::InputThread(emulation::host::InputExchange* exchange, HWND main_window)
         : exchange_(exchange), main_window_(main_window) {
         SetKeyMap(DefaultKeyMap());
+        // The window the cursor is recentred in, and Windows' own pointer settings, both of which
+        // MouseMotion's modes need before the first poll.
+        mouse_.SetWindow(main_window);
+        mouse_.ReadWindowsPointerSettings();
     }
 
     InputThread::~InputThread() {
@@ -126,7 +130,7 @@ namespace psxemu {
             // Polled either way, so the accumulated motion cannot pile up while the window is
             // someone else's; only what is published is gated on focus - which is what registering
             // without RIDEV_INPUTSINK used to do for free.
-            const Mouse::State mouse = mouse_.Poll();
+            const Mouse::State mouse = mouse_.Poll(reading.focused);
             reading.mouse_left = mouse.left;
             reading.mouse_right = mouse.right;
             if (reading.focused) {

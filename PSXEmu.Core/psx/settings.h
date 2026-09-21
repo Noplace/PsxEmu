@@ -22,6 +22,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -181,6 +182,8 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("show_timings", c.show_timings);
   f.SetBool("show_bios_console", c.show_bios_console);
   f.SetBool("sio1_to_console", c.sio1_to_console);
+  f.SetString("mouse_motion", c.mouse_motion);
+  f.SetInt("mouse_dpi", c.mouse_dpi);
 }
 
 inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
@@ -258,6 +261,20 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   c.show_timings = f.GetBool("show_timings", c.show_timings);
   c.show_bios_console = f.GetBool("show_bios_console", c.show_bios_console);
   c.sio1_to_console = f.GetBool("sio1_to_console", c.sio1_to_console);
+
+  const std::string mouse_motion = f.GetString("mouse_motion", c.mouse_motion);
+  if (IsValidChoice(mouse_motion, EmuConfig::kValidMouseMotions))
+    c.mouse_motion = mouse_motion;
+
+  // Snapped to one the menu offers, the same as the speeds above and for the
+  // same reason - a hand-edited 1234 would leave nothing ticked.
+  const int dpi = f.GetInt("mouse_dpi", c.mouse_dpi);
+  int nearest_dpi = EmuConfig::kValidMouseDpis[0];
+  for (int candidate : EmuConfig::kValidMouseDpis) {
+    if (std::abs(candidate - dpi) < std::abs(nearest_dpi - dpi))
+      nearest_dpi = candidate;
+  }
+  c.mouse_dpi = nearest_dpi;
 }
 
 }

@@ -118,6 +118,7 @@
     <ClInclude Include="host\sample_ring.h" />
     <ClInclude Include="host\video_output.h" />
     <ClInclude Include="platform\frame_limiter.h" />
+    <ClInclude Include="platform\mouse_scaling.h" />
     <ClInclude Include="platform\speed_resampler.h" />
     <ClInclude Include="platform\types.h" />
     <ClInclude Include="platform\util.h" />

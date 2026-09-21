@@ -39,8 +39,8 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 287, gte 106, timer 70, sio 146, spu 108, gpu 31, mdec 85, media 265, mc 77, debug 174 - 1,349
-checks, no failures (re-run 2026-09-21, bugs 78 and 79 together). The two that were failing when this document was last
+cpu 287, gte 106, timer 70, sio 146, spu 108, gpu 31, mdec 85, media 271, mc 77, debug 174 - 1,355
+checks, no failures (re-run 2026-09-21, after bugs 78-82). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
@@ -311,7 +311,15 @@ Missing or unproven:
 - **`0x46`/`0x47`** answer with the right shape and zero content, and `0x4C`
   reports a DualShock, not a DualShock 2 (no pressure-sensitive buttons).
 - **The mouse has never met a mouse-aware game.** Its reply follows psx-spx,
-  and its divide-by-4 on raw input is a guess.
+  and how much a hand movement is worth is now a choice rather than the
+  guessed divisor it was (bug 82): Input > Mouse > Motion offers the desktop
+  pointer's own accelerated movement, Windows' curve reapplied to raw counts,
+  or linear counts scaled for a 1994 ball mouse. What is still unsettled is
+  which of them is *right*, and that needs a game to judge in - `Populous -
+  The Beginning` and `Lemmings & Oh No! More Lemmings` are on the share and
+  both claim mouse support. Two of the three modes also rest on numbers
+  nobody published: the console mouse's ~200 CPI, and the constants in
+  Windows' undocumented ballistics.
 
 ## Barely started
 
@@ -328,7 +336,7 @@ Missing or unproven:
 source per port, the multitap player sources, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `bios_file`,
 `emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console` and
-`sio1_to_console`.
+`sio1_to_console`, `mouse_motion` and `mouse_dpi`.
 Beside those, the front end keeps its own keys in the same file: the eight
 most recent discs (`recent_disc_1`..`8`, File > Recent Discs) and the keyboard
 bindings (`key_up`, `key_cross` and so on, Settings > Input > Keyboard

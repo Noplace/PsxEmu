@@ -150,6 +150,8 @@ namespace psxemu {
         void SetShowTimings(bool on);
         void SetShowBiosConsole(bool on);
         void SetSerialToConsole(bool on);
+        void SetMouseMotion(const std::string& key);
+        void SetMouseDpi(int dpi);
         // On the machine's thread, after every frame: what the BIOS console gained, posted to the
         // window. Posting keeps it in order with everything else the machine tells the UI.
         void CollectConsoleText(emulation::psx::System& system);
@@ -200,6 +202,9 @@ namespace psxemu {
         void UpdateShowTimingsMenu();
         void UpdateBiosConsoleMenu();
         void UpdateSerialToConsoleMenu();
+        void UpdateMouseMenu();
+        // The mouse scaling lives on the input thread; this is how it hears about a change.
+        void SendMouseSettingsToInput();
 
         // ---------------------------------------------------------------------------------------
         // The machine, asked for from here and done there
