@@ -918,7 +918,10 @@ namespace emulation {
                 nr = br + r / 4; ng = bg + g / 4; nb = bb + b / 4;
                 break;
             }
-            *dst = To15Bit(Clamp8(nr), Clamp8(ng), Clamp8(nb)) | (back & 0x8000);
+            // The mask bit is not this function's to decide - PlotPixel sets it from the
+            // texel and GP0(E6h) after this returns - so it is left clear here rather
+            // than carried over from the pixel underneath.
+            *dst = To15Bit(Clamp8(nr), Clamp8(ng), Clamp8(nb));
         }
 
         void Gpu::PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
@@ -948,8 +951,21 @@ namespace emulation {
                 target = To15Bit(r, g, b);
             }
 
-            if (force_set_mask_)
-                target |= 0x8000;
+            // The mask bit written is GP0(E6h) bit 0: "0=TextureBit15, 1=ForceBit15=1"
+            // (psx-spx). Forced, it is always set; otherwise a *textured* draw hands the
+            // texel's own bit 15 straight through to the framebuffer, and an untextured
+            // one writes zero. It is not the bit that was already there - the pixel is
+            // being replaced, mask bit included.
+            //
+            // Only the forced half of that was modelled, so a texture's bit 15 reached
+            // the blend decision above and then vanished. Silent Hill is what found it:
+            // it draws its scene with textures whose bit 15 is set, which on hardware
+            // marks those pixels, and then lays a flat semi-transparent quad over the
+            // player with mask-checking on. Every pixel it covers should be rejected.
+            // With nothing marked, the quad drew in full - a pale rectangle around the
+            // character, exactly the size of the quad (bug 83).
+            const bool set_mask = force_set_mask_ || (from_texture && texture_mask);
+            target = static_cast<uint16_t>((target & 0x7FFF) | (set_mask ? 0x8000 : 0));
 
             ++stats_.pixels;
 

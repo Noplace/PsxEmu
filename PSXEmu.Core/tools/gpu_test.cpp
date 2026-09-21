@@ -117,6 +117,75 @@ void TestReadinessBitsAreAlwaysSet(System* system) {
   Check((status & (1u << 28)) != 0, "ready to receive a DMA block");
 }
 
+// GP0(E6h) bit 0 decides what goes into the framebuffer's bit 15 while drawing:
+// "0=TextureBit15, 1=ForceBit15=1" (psx-spx). Forced is the easy half and was
+// the only half modelled. The other one is that a *textured* draw hands the
+// texel's own bit 15 through to the pixel it writes, and an untextured draw
+// writes zero - which is what makes the mask usable as a per-texel stencil,
+// and is how Silent Hill keeps a flat semi-transparent quad off the scene it
+// has already drawn (bug 83). Checked by drawing, then reading VRAM, then
+// drawing again with mask-checking on to see which pixels are protected.
+void TestTextureBit15BecomesTheMaskBit(System* system) {
+  printf("a textured draw writes the texel's bit 15 as the mask bit\n");
+  system->gpu().WriteStatus(0x00000000);                     // GP1(00h) reset
+  system->gpu().WriteData(0xE3000000);                       // draw area top-left
+  system->gpu().WriteData(0xE4000000 | (300u << 10) | 300u);  // bottom-right
+  system->gpu().WriteData(0xE6000000);                       // mask: neither bit
+
+  // A two-texel 15-bit texture at (0,256), the base of texture page 1: one
+  // texel with bit 15 set, one without, both otherwise white. CPU->VRAM, so
+  // this is the same route a game loads a texture by.
+  system->gpu().WriteData(0xA0000000);
+  system->gpu().WriteData((256u << 16) | 0u);   // destination (0,256)
+  system->gpu().WriteData((1u << 16) | 2u);     // two across, one down
+  system->gpu().WriteData((0x7FFFu << 16) | 0xFFFFu);   // texel0 FFFF, texel1 7FFF
+
+  // Two 1x1 raw textured rectangles - GP0(65h) - one per texel. Raw, so the
+  // texel reaches the framebuffer unmodulated and the colour word is ignored.
+  // The texture page is 15-bit (colours=2) at page x=0, y=256: bit 4 set,
+  // bits 7-8 = 2.
+  system->gpu().WriteData(0xE1000000 | (2u << 7) | (1u << 4));
+  system->gpu().WriteData(0x65000000);                  // textured rect, 1x1, raw
+  system->gpu().WriteData((10u << 16) | 10u);           // at (10,10)
+  system->gpu().WriteData(0u);                          // u=0, v=0, clut 0
+  system->gpu().WriteData((1u << 16) | 1u);             // 1x1
+
+  system->gpu().WriteData(0x65000000);
+  system->gpu().WriteData((10u << 16) | 12u);           // at (12,10)
+  system->gpu().WriteData(1u);                          // u=1, v=0
+  system->gpu().WriteData((1u << 16) | 1u);
+
+  const uint16_t* vram = system->gpu().vram();
+  CheckEqual(vram[10 * 1024 + 10] & 0x8000, 0x8000,
+             "the texel with bit 15 set marked its pixel");
+  CheckEqual(vram[10 * 1024 + 12] & 0x8000, 0,
+             "the texel without it did not");
+
+  // An untextured draw writes a clear mask bit whatever else it is doing -
+  // including a semi-transparent one, where bit 15 is the blend flag on the
+  // way in but not on the way out.
+  system->gpu().WriteData(0x68000000 | 0xFFFFFF);   // mono rect, 1x1, opaque
+  system->gpu().WriteData((10u << 16) | 14u);       // at (14,10)
+  system->gpu().WriteData(0x6A000000 | 0xFFFFFF);   // mono rect, 1x1, semi-transparent
+  system->gpu().WriteData((10u << 16) | 16u);       // at (16,10)
+  CheckEqual(vram[10 * 1024 + 14] & 0x8000, 0, "an opaque untextured draw leaves it clear");
+  CheckEqual(vram[10 * 1024 + 16] & 0x8000, 0,
+             "and so does a semi-transparent one");
+
+  // Now the point of all that: with mask-checking on, the marked pixel is
+  // protected and its neighbours are not.
+  system->gpu().WriteData(0xE6000002);              // mask: check, do not set
+  system->gpu().WriteData(0x60000000 | 0x0000FF);   // flat blue rect
+  system->gpu().WriteData((10u << 16) | 10u);       // at (10,10)
+  system->gpu().WriteData((1u << 16) | 8u);         // eight across, one down
+
+  CheckEqual(vram[10 * 1024 + 10] & 0x7FFF, 0x7FFF,
+             "the marked pixel kept its own colour");
+  Check((vram[10 * 1024 + 12] & 0x7FFF) != 0x7FFF,
+        "the unmarked pixel beside it was painted over");
+  system->gpu().WriteData(0xE6000000);              // leave the mask as found
+}
+
 // A polyline's terminator word (GP0, X and Y fields both 0x5000..0x5FFF)
 // used to be pushed into the vertex fifo like one more point instead of
 // being discarded, and CmdLine decoded it as a bogus final vertex - X=Y=0
@@ -322,6 +391,7 @@ int main() {
   TestAcknowledgeClearsStatusAndAllowsANewEdge(system);
   TestRepeatedRequestIsNotANewEdge(system);
   TestReadinessBitsAreAlwaysSet(system);
+  TestTextureBit15BecomesTheMaskBit(system);
   TestPolylineTerminatorIsNotAVertex(system);
   TestOpaqueSharedEdgeUsesLastDrawnPrimitive(system);
   TestSemiTransparentSharedEdgeBlendsOnce(system);

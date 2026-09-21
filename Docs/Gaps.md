@@ -4,10 +4,16 @@ Hardware and features still missing, ordered by how likely each is to stop a
 game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 [Bugs-Found.md](Bugs-Found.md) for what has already been fixed.
 
-Last audited 2026-09-15, after bug 55 (DICR master flag). Every entry below
-was checked against the code at that point, not carried forward from the
-previous audit (which predated bug 39 and the September 12-14 commits).
-Harness counts and the recompiler and threading entries refreshed 2026-09-18.
+Last audited 2026-09-21, after bug 82 (the mouse's three motion modes). Every
+entry below was re-read against the code, not carried forward: each claim was
+checked at the line it describes, and what follows is what that reading found.
+
+Four entries were wrong and are corrected below - the GPU's scanline
+granularity, the MDEC's control bit 30, the baseline provenance, and the
+"sweep the other harnesses" question, which is now answered. Two gaps were
+missing entirely and have been added: the GPU's absent drawing time (which
+Test-Suite.md was already linking to) and the emulation-speed ceiling. The
+rest verified as written.
 
 ---
 
@@ -26,9 +32,12 @@ delay before the next block rather than modelled inside the MDEC. The decoder
 itself still decodes a whole macroblock the instant its last word arrives and
 holds its output in a buffer of its own rather than a 768-word FIFO, so:
 
-- **The data-in request is not modelled.** Real hardware asserts it while the
-  input FIFO has room; here the channel's own pacing stands in for it, and
-  MDEC control bit 30 (DMA-in enable) does not gate the channel at all.
+- **The data-in request is reported but not obeyed.** `Mdec::Status` raises
+  STAT's request bit (28) when control bit 30 is set and the decoder wants
+  data, so software watching it sees something sensible - but `Dma::Dma0`
+  never consults it. The channel's own timer decides when to feed, and a game
+  that cleared bit 30 mid-transfer would be fed anyway. (This entry used to
+  say bit 30 was not modelled at all, which stopped being true.)
 - **Output appears all at once** when a macroblock finishes, where hardware
   copies it out over the same 2,688 cycles.
 
@@ -39,7 +48,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 287, gte 106, timer 70, sio 146, spu 108, gpu 31, mdec 85, media 271, mc 77, debug 174 - 1,355
+cpu 287, gte 106, timer 70, sio 146, spu 108, gpu 37, mdec 85, media 271, mc 77, debug 174 - 1,361
 checks, no failures (re-run 2026-09-21, after bugs 78-82). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
@@ -61,9 +70,13 @@ that game, not against a unit test.
 
 ### Baselines - refreshed, and now a real table
 
-Measured at `8c7c694` on 2026-09-16: the BIOS boot row, the register-access
-row, and a new per-game table of twelve discs at 3,000 frames with checksums at
-frames 1000/2000/3000. See [Test-Suite.md](Test-Suite.md).
+First measured at `8c7c694` on 2026-09-16: the BIOS boot row, the
+register-access row, and a per-game table of twelve discs at 3,000 frames with
+checksums at frames 1000/2000/3000. See [Test-Suite.md](Test-Suite.md). Both
+have moved since, each time deliberately and each time with the changed frames
+checked by eye: the memory-access work (bugs 76-77) and then the branch cost
+(bug 78), which moved ten of the twelve games and took the BIOS boot to
+92,082,652 instructions.
 
 The refresh paid for itself immediately: the BIOS boot was drawing 304,803 of
 305,920 non-black pixels where the pre-September build drew all of them, which
@@ -71,11 +84,13 @@ turned out to be **bug 60** - the drawing area's last column and row discarded
 by a half-open loop clipping an inclusive bound. Four days in every frame of
 every game, invisible without a reference to compare against.
 
-### Recent SPU and GPU work is unrecorded and untested
+### The September SPU work is still unrecorded and untested
 
-The September 12-14 commits have no Bugs-Found entries. The SPU commit
-replaced the reverb and added volume sweeps (see below) without adding a
-`spu_test` check.
+`1419d78` replaced the reverb and added volume sweeps without a Bugs-Found
+entry and without a `spu_test` check, and that is still true: the only
+mentions of either word in `spu_test.cpp` are in comments about the CD input
+volume's format. The GPU half of this entry is settled - the September 12-14
+raster commits are what bugs 59 and 60 are about.
 
 ### Tests written with the feature they check, and never run against it
 
@@ -85,13 +100,23 @@ from the first run - it played silence and asserted a zero peak was a bug in
 the drive (bug 58). A test committed alongside its feature is worth running
 once before it is believed.
 
-### A written test nobody called
+### A written test nobody called - swept, and clean
 
 `mdec_test`'s `TestOutputDmaStartedFirst` - the Area 51 regression, written
 with commit `535949b` - was never added to `main()`, so its checks had never
-run. Wiring it in (bug 56) found a real bug in the first two of them. Worth a
-sweep of the other harnesses for the same thing: a test is only a test if
-something calls it.
+run. Wiring it in (bug 56) found a real bug in the first two of them, and left
+the obvious question: how many others are there?
+
+**None.** The 2026-09-21 audit swept all 17 harnesses in
+`PSXEmu.Core/tools`, comparing each `void Test...()` definition against
+whether anything references it. All 214 of them are wired in - by a direct
+call, or by a group table in the three that take a group name (`cpu_test`,
+`gte_test` and `spu_test`, whose entries read `{ "arithmetic",
+TestArithmetic }` rather than as calls, which is exactly what a naive grep for
+`TestArithmetic(` misses and what made them look uncalled on the first pass).
+Three harnesses - `host_test`, `timing_test` and `frame_limiter_test` - name
+their sections differently (`DoorbellChecks()` and the like) and were swept the
+same way against their own naming. Also clean.
 
 ## Silently wrong rather than absent
 
@@ -140,7 +165,9 @@ does it. A slight softening of the top end, not a wrong pitch or a click.
 ### Cause's interrupt-pending bits are faked
 
 `Cpu::RaiseException` sets `Cause` bits 8-15 from `SR`'s interrupt mask
-(`cause |= sr & 0xFF00`) rather than from the lines actually pending. The
+(`cause |= (sr & 0xFF00)`, on the interrupt path only - the code's own
+`//todo : set ip flags correctly`) rather than from the lines actually
+pending. The
 BIOS's handler computes `cause & sr & 0xFF00`, gets a non-zero answer, and
 works - but software reading `Cause` to find out *which* line is pending gets
 the mask instead.
@@ -191,8 +218,35 @@ Approximate rather than wrong:
   `RunPending()` runs the batch early on any counter register access.
 - **Hblanks are counted per completed scanline**, the right number attributed
   to the end of the line rather than the moment the beam leaves the window.
-- **`Gpu::Tick` advances a whole scanline at a time**, so nothing between
-  scanlines is observable and the hblank gate changes at batch granularity.
+- **Vblank lands on a scanline boundary.** `Gpu::Tick` consumes whole
+  scanlines and evaluates vblank, the vsync interrupt and the field flip once
+  per line, so a game cannot observe the beam crossing into vblank mid-line.
+  The beam's position *within* a line is tracked, though - `dot_accumulator_`
+  keeps the remainder and `in_hblank()` reads it against the display window
+  from GP1(06), so the hblank gate a counter sees is sub-scanline. (This used
+  to say the whole thing moved a scanline at a time, which the dot-clock work
+  had already made untrue.)
+- **Everything above still moves in 32-cycle steps**, which is the real floor:
+  `IOInterface::Tick` batches, and a counter read runs the batch early.
+
+### No GP0 FIFO, and no drawing time
+
+GPUSTAT's three readiness bits are assignments, not answers: `gpu.cpp` sets
+`ready_cmd`, `ready_dma` and `ready_vram_send` to 1 every time it builds the
+register, and the DMA request bit is derived from those. So the GPU is always
+ready, the command FIFO is unbounded, and a primitive costs no time to draw -
+where hardware has a 64-byte FIFO and a rasteriser that takes as long as the
+triangle is big.
+
+Nothing here has been seen to matter: games drive the GPU through DMA and the
+BIOS waits on flags that are always set, so both come back immediately. What
+would notice is a game that fills the FIFO deliberately and waits for room, or
+one that times a frame by how long a large primitive took. `gpu_test` pins the
+current behaviour down on purpose, so a future FIFO is a deliberate change
+rather than a surprise (bug 40).
+
+This entry was missing until the 2026-09-21 audit, while Test-Suite.md's
+`gpu_test` section had been pointing at it by name.
 
 ### The instruction and data caches are not modelled
 
@@ -335,8 +389,9 @@ Missing or unproven:
 `graphics_backend` (D3D11 or D3D12), `video_filter`, controller type and input
 source per port, the multitap player sources, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `bios_file`,
-`emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console` and
-`sio1_to_console`, `mouse_motion` and `mouse_dpi`.
+`emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console`,
+`sio1_to_console`, `mouse_motion` and `mouse_dpi` - twenty keys, which is
+every field `StoreConfig` writes.
 Beside those, the front end keeps its own keys in the same file: the eight
 most recent discs (`recent_disc_1`..`8`, File > Recent Discs) and the keyboard
 bindings (`key_up`, `key_cross` and so on, Settings > Input > Keyboard
@@ -381,6 +436,24 @@ the game keeps running under an open menu is a setting: Emulation > Pause While
 in Menus, off by default. What is left of that plan is its phase 7, a thread for
 the rasteriser, which is worth about 12% with the recompiler on and nothing like
 a priority.
+
+### Emulation speeds above about 110% do nothing
+
+Emulation > Speed offers 50 to 300% (bug 81) and the setting reaches the frame
+limiter, but the front end cannot emulate faster than about 110% of real time,
+so 150, 200, 250 and 300% all come out the same. Measured on an idle machine
+with the BIOS shell booted, in a minimised window: 59.3 fps at 100%, then
+65.4, 65.2, 66.0 and 65.0. Turning the frame limiter off entirely - "as fast
+as whatever blocks first" - sits at the same rate, so the limiter is not what
+is holding it.
+
+`boot_runner` reaches 1.68x real time headless on the same host, so this is
+not the emulation being that slow. The difference is everything the GUI adds
+and the harness does not: a presenter, an audio device that consumes in real
+time, and the thread hand-offs between them - plus the minimised window, which
+was not ruled out. Which of those is the ceiling is unmeasured. 50% and 150%
+both do what they say, so nothing here is broken, but the top of the range is
+currently decoration.
 
 ### Never run against the reference
 

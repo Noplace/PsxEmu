@@ -92,7 +92,7 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 31 checks, 0 failures.**
+**Current: 37 checks, 0 failures.**
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
@@ -101,12 +101,18 @@ check that earned its place by catching a real bug: GP0(1Fh) setting
 GPUSTAT.24 and raising I_STAT's GPU line, GP1(02h) acknowledging it and
 allowing a fresh edge, a repeated request while unacknowledged raising no
 second I_STAT edge, GP1(00h) reset clearing both, and a polyline's
-terminator word not being drawn as a bogus final vertex (bug 45 - it was).
+terminator word not being drawn as a bogus final vertex (bug 45 - it was);
+and what GP0(E6h) writes into a pixel's bit 15 while drawing - a textured
+draw hands the texel's own bit 15 through, an untextured one writes zero, and
+a later draw with mask-checking on is refused exactly where that bit is set
+(bug 83, which is what Silent Hill's pale box around the player was).
 It also pins down, as a fact about the current code rather than an
 assumption a future change discovers the hard way, that the three GPUSTAT
 readiness bits report ready
 unconditionally - there is no GP0 FIFO or drawing-time model yet. See bug 40
-in [Bugs-Found.md](Bugs-Found.md) and "no drawing time" in [Gaps.md](Gaps.md).
+in [Bugs-Found.md](Bugs-Found.md) and "No GP0 FIFO, and no drawing time" in
+[Gaps.md](Gaps.md), which that link promised for a while before the entry
+existed to point at.
 
 It also covers the display side, where the same two-registers-read-as-one
 mistake was possible: the visible width is `GP1(06h)`'s window divided by
@@ -541,7 +547,7 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 287 | | `gpu_test` | 31 |
+| `cpu_test` | 287 | | `gpu_test` | 37 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 271 |
 | `sio_test` | 146 | | `spu_test` | 108 |

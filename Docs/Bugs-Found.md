@@ -5015,3 +5015,76 @@ the fraction every poll and lost a little of every slow movement.
 needs a mouse-aware game and a hand on a mouse, neither of which a harness
 has. `Populous - The Beginning` and `Lemmings & Oh No! More Lemmings` are both
 on the share and both claim mouse support (Gaps.md).
+
+## 83. A texture's bit 15 never reached the framebuffer, and Silent Hill drew a box round the player
+
+Silent Hill, loaded from a save in the first alley: a pale rectangle around
+Harry, hard-edged, moving with him. Inside it everything - character, ground,
+wall, blood - is about half again as bright as outside.
+
+### What it is
+
+`--watch-vram 80,132,4,4` named the commands that write that pixel (02, 38,
+3A, 3E), and an instrumented `CmdPolygon` in a scratch worktree printed each
+one's whole draw state. The box is one primitive:
+
+    cmd=3A semi=1 mode=1 tex=0 gouraud=1 mask=1/1 box=72,126..123,207
+        all four vertices rgb=332F37
+
+A flat, untextured, semi-transparent quad, blend mode 1 (B+F), exactly the
+size and place of the box - and the pixels bear it out: 5A5263 outside became
+8C7B94 inside, which is +32/+29/+31 against the quad's own 332F37.
+
+**`mask=1/1` is the point.** That quad is drawn with GP0(E6h)'s *both* bits
+set: set-mask and check-mask. Check-mask means "do not write a pixel whose
+bit 15 is set", and the same instrumentation, per pixel this time, showed what
+the frame does to that bit:
+
+    setmask=1 untextured opaque   fog base      -> writes bit 15 = 1
+    setmask=0 untextured opaque   geometry      -> writes bit 15 = 0
+    setmask=0 textured  semi  texbit15=1        -> ...should write 1
+    setmask=0 untextured opaque   geometry      -> writes 0
+    setmask=0 textured  semi  texbit15=1        -> ...should write 1
+    setmask=1 checkmask=1 untextured semi       -> the quad
+
+So the scene is drawn with textures whose bit 15 is set, and on hardware each
+such pixel ends up marked - which is exactly what the quad then tests for. It
+should be refused over all of it. Here nothing was marked, so it drew in full.
+
+### The rule, and what was missing
+
+psx-spx, GP0(E6h): bit 0 is "Set mask while drawing (0=TextureBit15,
+1=ForceBit15=1)". Only the forced half existed. `Gpu::PlotPixel` wrote
+`To15Bit(r, g, b)`, which clears bit 15, then set it if `force_set_mask_`;
+`BlendSemiTransparent` carried over the bit that was already there. So a
+texel's bit 15 was read - it is what decides whether a textured
+semi-transparent pixel blends at all, which was already right - and then
+thrown away instead of being written.
+
+It now writes `force_set_mask_ || (from_texture && texture_mask)`, and the
+blend no longer carries the old bit: the pixel is being replaced, mask bit
+included. DuckStation's software rasteriser does the same thing - the colour
+it writes carries `texture_color & 0x8000`, and its comment for the
+untextured path ("Non-textured transparent polygons don't set bit 15, but are
+treated as transparent") is the other half of the same rule.
+
+### Verified, 2026-09-21
+
+- **Silent Hill:** the box is gone, from both save slots that still load, and
+  the alley reads as the dim foggy scene it should be. (Slot 4 is a version-1
+  state and is refused - unrelated, and by design.)
+- **New `gpu_test` checks: 31 -> 37.** A two-texel 15-bit texture, one texel
+  with bit 15 set and one without, drawn through the real GP0 path: the first
+  marks its pixel, the second does not, an untextured draw leaves the bit
+  clear whether opaque or semi-transparent, and a later flat quad with
+  mask-checking on is refused on the marked pixel and paints the unmarked one.
+  Every one of those fails against the old code.
+- **Every other harness green**, 1,361 checks.
+- **The BIOS boot is unchanged** - 92,082,652 instructions,
+  `c7c8db90c5984798`, all 305,920 pixels.
+- **The twelve discs are byte-identical**, every checksum at every checkpoint.
+  That is the reassuring half. The other half is what it says about coverage:
+  not one game on that table uses mask-checking in its first 3,000 frames, so
+  the table could not have caught this and cannot catch a regression in it.
+  Silent Hill is the only disc here known to exercise it, and the `gpu_test`
+  checks above are what stands in for that.
