@@ -43,6 +43,7 @@ PsxEmu/
       iso9660.h/.cpp           the filesystem: volume descriptor, directories, file lookup
       mdec.h/.cpp              motion decoder
       sio.h/.cpp               controller / memory card port: pad, DualShock, mouse, multitap
+      sio1.h/.cpp              serial port: the registers of a port with nothing plugged in
       spu.h/.cpp               sound: 24 voices, ADSR, reverb, sweeps, CD input
       dma.h/.cpp               DMA channels
       io_interface.h/.cpp      memory map and hardware registers

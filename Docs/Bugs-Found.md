@@ -4671,3 +4671,95 @@ interpreter into line with it.
     says is right.
 
   The table in Test-Suite.md is re-recorded.
+
+## 80. The serial port answered nothing at all
+
+`1F801050`-`1F80105F` - SIO1, the 8-pin SERIAL I/O socket on the back of the
+console - was not decoded. A read fell through `IOInterface::Read32` to the
+catch-all that returns 0 and counts a trap, and a write went nowhere.
+
+Zero is not what an unused port reads. Bit 0 of the status register is "the
+transmitter can take a byte", so software waiting to send would have waited
+for ever; the receive FIFO looked as though it held a byte of 00h rather than
+being empty; and the baud-rate timer, which counts whether or not anything is
+connected, never moved.
+
+### What it is
+
+The asynchronous sibling of SIO0. Where the controller port is synchronous,
+with a device-select and an acknowledge line, this is a plain UART - baud
+rate, character length, parity, stop bits, the DTR/DSR and RTS/CTS handshake
+pairs - with IRQ8 to report a byte sent, a byte arrived, or /DSR changing.
+
+Two things used it. A link cable between two consoles, for the handful of
+games with a link mode (Doom, Ridge Racer Revolution, Destruction Derby and a
+couple of dozen others), and development hardware: Net Yaroze loaded code down
+this port, and homebrew prints to a PC through it. A retail BIOS never touches
+it - a 60-frame boot of SCPH1001 makes no access to 1F80105xh at all, which is
+why nothing had noticed.
+
+### What was built
+
+`psx/sio1.h`/`.cpp`, a `Component` like the rest, wired into `IOInterface`'s
+six read and write paths, its tick and its save state (state version 7 -> 8).
+It models **a port with nothing plugged into it**, which is all a single
+emulator can honestly be:
+
+- the registers keep what is written and read back what hardware would, at
+  byte, halfword and word widths, with MODE and CTRL sharing a word and BAUD
+  sharing one with the unused 105Ch;
+- the status reports an idle, ready transmitter, an empty receive FIFO, and no
+  device asserting /DSR or CTS;
+- the acknowledge and reset bits are strobes that act and do not stick;
+- the baud-rate timer reloads from BAUD scaled by MODE's factor and counts
+  down at the CPU clock, readable in status bits 11-25;
+- a write to the data register transmits only when the transmitter is
+  enabled, and raises IRQ8 when the transmit interrupt is armed; acknowledging
+  clears the latch.
+
+**What it does not do is a partner.** No link between two instances, no host
+serial port, no loopback. DuckStation does not either - its `sio.cpp` is the
+same four registers plus an option to send transmitted bytes to the TTY - so
+this is level with the reference rather than past it. A byte also leaves
+instantly instead of taking its ten or so bit periods; with nothing receiving,
+the only visible difference is how soon the transmit interrupt arrives.
+
+`EmuConfig::sio1_to_console` (Emulation > Serial Port to Console,
+`sio1_to_console` in `psxemu.ini`) copies each transmitted byte into the BIOS
+console text, so a homebrew program printing over the port is readable in the
+window that already shows what the BIOS printed. Off by default.
+
+**One deliberate disagreement with DuckStation.** It reports /DSR and CTS
+asserted on a port with nothing attached; this reports neither. A line with
+nothing pulling it is not asserted, and software asking "is a cable there?"
+should hear no. No console test covers it, so that is documentation and
+reasoning rather than a measurement, and it is written down here because it is
+the kind of choice that is invisible later.
+
+### Verified, 2026-09-20
+
+- **`sio_test`: 105 -> 146 checks**, 0 failures - a new `sio1` group (the
+  reset state, an empty FIFO reading as the idle line, register round trips,
+  the read-only status, the strobes, access widths, transmit gating and IRQ8,
+  the acknowledge, the baud timer counting and reloading, the console redirect
+  both ways, and a save-state round trip).
+- **`media_test`: 261 -> 263**, the two its settings section gives every
+  setting - off by default, and remembered when set.
+- **Every other harness green**, and unchanged.
+- **The BIOS boot is unchanged** - same instruction count, checksum and
+  console text - which it should be, since the BIOS never reads this port.
+- **The twelve discs are unchanged**, every checksum at frames 1000, 2000 and
+  3000 identical to the run recorded before this. No game on the table touches
+  the port.
+- **The front end** builds, and the new menu item works end to end: an
+  isolated copy launched with its own settings file, sent `WM_COMMAND` 1142,
+  wrote `sio1_to_console = 1` to that file.
+- **`host_test`'s two real-time checks** (the frame limiter's rate, and three
+  seconds of sound without an underrun) failed while another long emulator run
+  held a core on this machine. `host_test` built from the commit before this
+  change fails the same two under the same load, so they are the machine being
+  busy, not this. Its deterministic checks, including the threaded BIOS boot,
+  pass.
+
+Numbered 80 rather than 79 because another session is writing up bug 79 (the
+GTE OPCODE group) at the same time.

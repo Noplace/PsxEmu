@@ -47,6 +47,7 @@ class IOInterface : public Component {
   Cdrom cdrom;
   Mdec mdec;
   Sio sio;
+  Sio1 sio1;
   Dma dma;
 
   // Per-register access tallies for the 0x1F801xxx block, indexed by the low

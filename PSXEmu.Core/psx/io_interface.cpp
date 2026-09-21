@@ -66,6 +66,9 @@ int IOInterface::Initialize() {
   sio.set_system(system_);
   sio.Initialize();
 
+  sio1.set_system(system_);
+  sio1.Initialize();
+
   dma.set_system(system_);
   dma.Initialize();
 
@@ -151,6 +154,7 @@ void IOInterface::Serialise(StateIO& state) {
   cdrom.Serialise(state);
   mdec.Serialise(state);
   sio.Serialise(state);
+  sio1.Serialise(state);
   dma.Serialise(state);
   state.Plain(pending_cycles_);
   state.Plain(sysclk8_accum_);
@@ -226,6 +230,7 @@ void IOInterface::RunPending() {
 
   cdrom.Tick(batch);
   sio.Tick(batch);
+  sio1.Tick(batch);
   system_->spu().Tick(batch);
 
   dma.Tick(batch);
@@ -284,6 +289,8 @@ uint8_t IOInterface::Read08(uint32_t address) {
   // exists at all. It used to trap unconditionally on entry.
   if (address >= 0x1F801040 && address <= 0x1F80104F)
     return sio.Read08(address);
+  if (address >= 0x1F801050 && address <= 0x1F80105F)
+    return sio1.Read08(address);
   if (address >= 0x1F801800 && address <= 0x1F801803)
     return cdrom.Read(address);
 
@@ -366,6 +373,8 @@ uint16_t IOInterface::Read16(uint32_t address) {
 
   if (address >= 0x1F801040 && address <= 0x1F80104F)
     return sio.Read16(address);
+  if (address >= 0x1F801050 && address <= 0x1F80105F)
+    return sio1.Read16(address);
 
   if (address >= 0x1F801800 && address <= 0x1F801803) {
     return static_cast<uint16_t>(cdrom.Read(address)) |
@@ -442,6 +451,10 @@ uint32_t IOInterface::Read32(uint32_t address) {
     case 0x1F801800: case 0x1F801804: return cdrom.ReadDataWord();
     case 0x1F801040: case 0x1F801044: case 0x1F801048: case 0x1F80104A:
     case 0x1F80104E: return sio.Read32(address);
+    // SIO1, the serial port: nothing is attached, and sio1.h says what that
+    // means for each register.
+    case 0x1F801050: case 0x1F801054: case 0x1F801058: case 0x1F80105A:
+    case 0x1F80105C: case 0x1F80105E: return sio1.Read32(address);
     
   }
   BREAKPOINT
@@ -499,6 +512,10 @@ void IOInterface::Write08(uint32_t address,uint8_t data) {
     sio.Write08(address, data);
     return;
   }
+  if (address >= 0x1F801050 && address <= 0x1F80105F) {
+    sio1.Write08(address, data);
+    return;
+  }
   if (address >= 0x1F801800 && address <= 0x1F801803) {
     cdrom.Write(address, data);
     return;
@@ -550,6 +567,10 @@ void IOInterface::Write16(uint32_t address,uint16_t data) {
 
   if (address >= 0x1F801040 && address <= 0x1F80104F) {
     sio.Write16(address, data);
+    return;
+  }
+  if (address >= 0x1F801050 && address <= 0x1F80105F) {
+    sio1.Write16(address, data);
     return;
   }
   if (address >= 0x1F801800 && address <= 0x1F801803) {
@@ -604,6 +625,10 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
 
   if (address >= 0x1F801040 && address <= 0x1F80104F) {
     sio.Write32(address, data);
+    return;
+  }
+  if (address >= 0x1F801050 && address <= 0x1F80105F) {
+    sio1.Write32(address, data);
     return;
   }
 

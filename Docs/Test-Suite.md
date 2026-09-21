@@ -227,6 +227,25 @@ byte-for-byte undelete. `mc_test <card>` was also run on copies of real saved
 cards - Wild Arms, Wild Arms 2, Vandal Hearts, NASCAR Thunder 2004 - and listed
 each save with its title, block count and one-to-three-frame icon.
 
+## sio_test
+
+    sio_test
+
+The two serial ports, driven through their registers rather than through any
+interface written for the test: SIO0 (`psx/sio.h`), which is the controller and
+memory card port, and SIO1 (`psx/sio1.h`), the serial socket on the back. No
+BIOS, no window.
+
+**Current: 146 checks, 0 failures.**
+
+| Group | Covers |
+|---|---|
+| the pad | a digital pad's four-byte poll and its buttons; an empty slot never acknowledging; the acknowledge line as a pulse that releases itself (bug 46) |
+| the DualShock handshake | 0x43/0x44/0x45 gated on configuration mode, entering analog and locking it, the status query, the axes, both rumble mappings, a reconnect forgetting the negotiation, and each controller type refusing what it does not have |
+| the mouse | its id, switches and axes, and movement draining across as many polls as it takes |
+| the multitap | both addressing methods, per-player state, the escalation rules, and a round trip through a save state |
+| `sio1` | the serial port with nothing plugged into it: the reset state, an empty receive FIFO reading as the idle line, the registers keeping what is written, the status being read-only, the two strobes not sticking, byte/halfword/word access reaching the right halves, transmitting only when enabled and raising IRQ8 when armed, acknowledging clearing the latch, the baud-rate timer counting down and reloading, the console redirect on and off, and a save-state round trip |
+
 ## debug_test
 
     debug_test
@@ -524,11 +543,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 287 | | `gpu_test` | 31 |
 | `gte_test` | 99 | | `mdec_test` | 85 |
-| `timer_test` | 70 | | `media_test` | 261 |
-| `sio_test` | 105 | | `spu_test` | 108 |
+| `timer_test` | 70 | | `media_test` | 263 |
+| `sio_test` | 146 | | `spu_test` | 108 |
 | `mc_test` | 77 | | `debug_test` | 174 |
 
-**1,297 checks, 0 failures**, all ten green. Each harness's own section above
+**1,340 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)

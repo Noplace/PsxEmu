@@ -26,6 +26,9 @@
 #include "shaders/legacy_shaders.h"
 #include "shaders/ps_scanline_filter.h"
 #include "shaders/ps_xbrz_filter.h"
+#include "shaders/superxbr_pass0.h"
+#include "shaders/superxbr_pass1.h"
+#include "shaders/superxbr_pass2.h"
 
 namespace psxemu {
 
@@ -82,6 +85,17 @@ namespace psxemu {
         engine.LoadCustomPixelShader("scanline", g_ps_scanline_filter,
                                      sizeof(g_ps_scanline_filter));
         engine.LoadCustomPixelShader("xbrz", g_ps_xbrz_filter, sizeof(g_ps_xbrz_filter));
+
+        // Super-xBR: three passes, each rendering at twice the emulator frame (pass 0 reads the
+        // frame, pass 1 the pass 0 result plus the frame, pass 2 the pass 1 result), then the
+        // engine's own linear blit to the window. Engines without chain support return false and
+        // the entry simply does nothing there.
+        engine.LoadCustomPixelShader("superxbr_pass0", g_superxbr_pass0, sizeof(g_superxbr_pass0));
+        engine.LoadCustomPixelShader("superxbr_pass1", g_superxbr_pass1, sizeof(g_superxbr_pass1));
+        engine.LoadCustomPixelShader("superxbr_pass2", g_superxbr_pass2, sizeof(g_superxbr_pass2));
+        engine.LoadShaderChain("superxbr", { { "superxbr_pass0", 2 },
+                                             { "superxbr_pass1", 2 },
+                                             { "superxbr_pass2", 2 } });
     }
 
     namespace {

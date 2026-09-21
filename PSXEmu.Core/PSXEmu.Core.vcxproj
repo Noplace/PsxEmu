@@ -100,6 +100,7 @@
     <ClCompile Include="psx\bios_calls.cpp" />
     <ClCompile Include="psx\root_counter.cpp" />
     <ClCompile Include="psx\sio.cpp" />
+    <ClCompile Include="psx\sio1.cpp" />
     <ClCompile Include="psx\spu.cpp" />
     <ClCompile Include="psx\state.cpp" />
     <ClCompile Include="psx\system.cpp" />
@@ -146,6 +147,7 @@
     <ClInclude Include="psx\psx.h" />
     <ClInclude Include="psx\root_counter.h" />
     <ClInclude Include="psx\sio.h" />
+    <ClInclude Include="psx\sio1.h" />
     <ClInclude Include="psx\spu.h" />
     <ClInclude Include="psx\state.h" />
     <ClInclude Include="psx\system.h" />

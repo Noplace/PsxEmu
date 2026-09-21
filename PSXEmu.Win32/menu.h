@@ -117,6 +117,10 @@ namespace psxemu {
     // EmuConfig::show_bios_console - whether the BIOS console window is open.
     void TickBiosConsole(HWND window, bool on);
 
+    // EmuConfig::sio1_to_console - whether what the serial port transmits is
+    // shown in that same console.
+    void TickSerialToConsole(HWND window, bool on);
+
     // ---------------------------------------------------------------------------------------------
     // Settings keys
     // ---------------------------------------------------------------------------------------------

@@ -1608,6 +1608,18 @@ void TestSettingsFile(const std::string& directory) {
     Check(loaded.show_bios_console, "an open BIOS console survives the round trip");
   }
 
+  // The serial port's console redirect: off by default, and remembered on.
+  {
+    EmuConfig config;
+    Check(!config.sio1_to_console, "the serial port is not echoed by default");
+    config.sio1_to_console = true;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.sio1_to_console, "echoing it survives the round trip");
+  }
+
   // A key this build does not know about is preserved rather than dropped, so
   // a file written by a newer build survives being loaded and saved by an
   // older one.

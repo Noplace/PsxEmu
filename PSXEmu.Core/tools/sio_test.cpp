@@ -13,7 +13,9 @@
 #include <cstring>
 
 using emulation::psx::Sio;
+using emulation::psx::Sio1;
 using emulation::psx::System;
+using emulation::psx::kInterruptSIO1;
 
 namespace {
 
@@ -889,6 +891,198 @@ void TestDualShockRefusesConfigCommandsOutsideConfigMode(System* system) {
   CheckEqual(reply[0], 0x41, "id still 5A41h");
 }
 
+// ---------------------------------------------------------------------------
+// SIO1, the serial port (sio1.h). A different device from everything above:
+// the same chip family, but the asynchronous port on the back of the console
+// with nothing plugged into it. These check the registers behave as a port
+// with no cable does, since that is the whole of what is modelled.
+
+const uint32_t kSio1Data = 0x1F801050;
+const uint32_t kSio1Stat = 0x1F801054;
+const uint32_t kSio1Mode = 0x1F801058;
+const uint32_t kSio1Ctrl = 0x1F80105A;
+const uint32_t kSio1Baud = 0x1F80105E;
+
+// The reset strobe, which every test starts from.
+void ResetSio1(System* system) {
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlReset);
+  system->io().io.interrupt_stat = 0;
+}
+
+void TestSio1ResetState(System* system) {
+  printf("SIO1 comes out of reset idle, ready, and with nothing connected\n");
+  ResetSio1(system);
+  const uint32_t stat = system->io().Read32(kSio1Stat);
+  Check((stat & Sio1::kStatTxReady) != 0, "the transmitter can take a byte");
+  Check((stat & Sio1::kStatTxIdle) != 0, "and is idle");
+  Check((stat & Sio1::kStatRxNotEmpty) == 0, "the receive FIFO is empty");
+  Check((stat & Sio1::kStatInterrupt) == 0, "no interrupt is latched");
+  Check((stat & Sio1::kStatDsrLevel) == 0, "no device is asserting /DSR");
+  Check((stat & Sio1::kStatCtsLevel) == 0, "nor CTS");
+  CheckEqual(system->io().Read16(kSio1Mode), 0, "mode is clear");
+  CheckEqual(system->io().Read16(kSio1Ctrl), 0, "control is clear");
+  CheckEqual(system->io().Read16(kSio1Baud), 0xDC, "baud is DCh");
+}
+
+void TestSio1EmptyReceiveFifoReadsOnes(System* system) {
+  printf("reading SIO1's data register with nothing attached gives the idle line\n");
+  ResetSio1(system);
+  CheckEqual(system->io().Read08(kSio1Data), 0xFF, "a byte read is FFh");
+  CheckEqual(system->io().Read16(kSio1Data), 0xFFFF, "a halfword read is FFFFh");
+  CheckEqual(system->io().Read32(kSio1Data), 0xFFFFFFFFu, "and a word FFFFFFFFh");
+}
+
+void TestSio1RegistersRoundTrip(System* system) {
+  printf("SIO1's mode, control and baud registers keep what is written\n");
+  ResetSio1(system);
+  system->io().Write16(kSio1Mode, 0x004D);
+  system->io().Write16(kSio1Baud, 0x1234);
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlTxEnable | Sio1::kCtrlRxEnable |
+                                      Sio1::kCtrlDtrOutput);
+  CheckEqual(system->io().Read16(kSio1Mode), 0x004D, "mode reads back");
+  CheckEqual(system->io().Read16(kSio1Baud), 0x1234, "baud reads back");
+  CheckEqual(system->io().Read16(kSio1Ctrl),
+             Sio1::kCtrlTxEnable | Sio1::kCtrlRxEnable | Sio1::kCtrlDtrOutput,
+             "control reads back");
+
+  // The acknowledge bit is a strobe: it does something and does not stick.
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlTxEnable | Sio1::kCtrlAcknowledge);
+  CheckEqual(system->io().Read16(kSio1Ctrl), Sio1::kCtrlTxEnable,
+             "the acknowledge strobe does not stay set");
+
+  // A byte write reaches the same register as a halfword write.
+  system->io().Write08(kSio1Baud, 0x56);
+  CheckEqual(system->io().Read08(kSio1Baud), 0x56, "a byte write lands in baud");
+
+  // A word access covers the pair of halfword registers sharing its word:
+  // mode with control, and baud with the unused 105Ch below it.
+  system->io().Write32(kSio1Mode, 0x00010021);
+  CheckEqual(system->io().Read16(kSio1Mode), 0x0021,
+             "a word write puts its low half in mode");
+  CheckEqual(system->io().Read16(kSio1Ctrl), 0x0001,
+             "and its high half in control");
+  CheckEqual(system->io().Read32(kSio1Mode), 0x00010021,
+             "a word read gives both back");
+  system->io().Write32(kSio1Baud, 0x00990000);
+  CheckEqual(system->io().Read16(kSio1Baud), 0x0099,
+             "baud is the high half of its word");
+}
+
+void TestSio1StatusIsReadOnly(System* system) {
+  printf("writing SIO1's status register changes nothing\n");
+  ResetSio1(system);
+  const uint32_t before = system->io().Read32(kSio1Stat) & 0x7FF;
+  system->io().Write32(kSio1Stat, 0xFFFFFFFFu);
+  CheckEqual(system->io().Read32(kSio1Stat) & 0x7FF, before,
+             "status is what it was");
+}
+
+void TestSio1TransmitNeedsTheTransmitterEnabled(System* system) {
+  printf("SIO1 transmits, and raises IRQ8, only when it is enabled to\n");
+  ResetSio1(system);
+
+  // Transmitter off: the byte goes nowhere and nothing is raised.
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlTxInterrupt);
+  system->io().Write08(kSio1Data, 'A');
+  CheckEqual(system->io().io.interrupt_stat & kInterruptSIO1, 0,
+             "a disabled transmitter raises no interrupt");
+
+  // On, with the transmit interrupt armed: the byte leaves and IRQ8 follows.
+  ResetSio1(system);
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlTxEnable | Sio1::kCtrlTxInterrupt);
+  system->io().Write08(kSio1Data, 'B');
+  CheckEqual(system->io().io.interrupt_stat & kInterruptSIO1, kInterruptSIO1,
+             "an enabled one raises IRQ8");
+  Check((system->io().Read32(kSio1Stat) & Sio1::kStatInterrupt) != 0,
+        "and latches the interrupt bit in status");
+  Check((system->io().Read32(kSio1Stat) & Sio1::kStatTxReady) != 0,
+        "the transmitter is ready for the next byte");
+
+  // The acknowledge strobe clears the latch.
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlTxEnable | Sio1::kCtrlAcknowledge);
+  Check((system->io().Read32(kSio1Stat) & Sio1::kStatInterrupt) == 0,
+        "acknowledging clears the latch");
+}
+
+void TestSio1ResetStrobeRestoresEverything(System* system) {
+  printf("SIO1's reset strobe puts the port back as it started\n");
+  ResetSio1(system);
+  system->io().Write16(kSio1Mode, 0x00FF);
+  system->io().Write16(kSio1Baud, 0x4321);
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlTxEnable | Sio1::kCtrlRtsOutput);
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlReset);
+  CheckEqual(system->io().Read16(kSio1Mode), 0, "mode is clear again");
+  CheckEqual(system->io().Read16(kSio1Baud), 0xDC, "baud is back to DCh");
+  CheckEqual(system->io().Read16(kSio1Ctrl), 0, "control is clear again");
+}
+
+void TestSio1BaudTimerCountsDown(System* system) {
+  printf("SIO1's baud-rate timer counts down and reloads\n");
+  ResetSio1(system);
+  system->io().Write16(kSio1Mode, 0);          // reload factor 1
+  system->io().Write16(kSio1Baud, 0x0100);     // 256 cycles a period
+  const uint32_t start =
+      (system->io().Read32(kSio1Stat) >> Sio1::kStatTimerShift) & Sio1::kStatTimerMask;
+  CheckEqual(start, 0x0100, "writing baud reloads the timer");
+
+  system->io().sio1.Tick(100);
+  const uint32_t after =
+      (system->io().Read32(kSio1Stat) >> Sio1::kStatTimerShift) & Sio1::kStatTimerMask;
+  CheckEqual(after, 0x0100 - 100, "100 cycles later it has counted down 100");
+
+  // Past zero it reloads rather than stopping - 156 cycles finishes this
+  // period, the next 256 the following one, leaving a whole period again.
+  system->io().sio1.Tick(156);
+  const uint32_t reloaded =
+      (system->io().Read32(kSio1Stat) >> Sio1::kStatTimerShift) & Sio1::kStatTimerMask;
+  CheckEqual(reloaded, 0x0100, "reaching zero reloads it");
+}
+
+void TestSio1ConsoleRedirect(System* system) {
+  printf("SIO1 hands what it transmits to the console only when asked to\n");
+  ResetSio1(system);
+  std::string text;
+  system->kernel().TakeConsoleText(&text);   // drain whatever was pending
+
+  system->config().sio1_to_console = false;
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlTxEnable);
+  system->io().Write08(kSio1Data, 'n');
+  system->kernel().TakeConsoleText(&text);
+  Check(text.empty(), "off, the byte is gone");
+
+  system->config().sio1_to_console = true;
+  system->io().Write08(kSio1Data, 'h');
+  system->io().Write08(kSio1Data, 'i');
+  system->kernel().TakeConsoleText(&text);
+  Check(text == "hi", "on, it reaches the console text");
+
+  // Still only what the port actually transmits.
+  system->io().Write16(kSio1Ctrl, 0);
+  system->io().Write08(kSio1Data, 'x');
+  system->kernel().TakeConsoleText(&text);
+  Check(text.empty(), "with the transmitter disabled, nothing is sent");
+  system->config().sio1_to_console = false;
+}
+
+void TestSio1SurvivesSaveState(System* system) {
+  printf("SIO1's registers round-trip through a save state\n");
+  ResetSio1(system);
+  system->io().Write16(kSio1Mode, 0x0032);
+  system->io().Write16(kSio1Baud, 0x0708);
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlTxEnable | Sio1::kCtrlDtrOutput);
+
+  const std::string path = "Temp\\tools\\sio1_state_test.sav";
+  Check(system->SaveState(path).empty(), "save succeeds");
+
+  system->io().Write16(kSio1Ctrl, Sio1::kCtrlReset);
+  Check(system->LoadState(path).empty(), "load succeeds");
+
+  CheckEqual(system->io().Read16(kSio1Mode), 0x0032, "mode came back");
+  CheckEqual(system->io().Read16(kSio1Baud), 0x0708, "baud came back");
+  CheckEqual(system->io().Read16(kSio1Ctrl),
+             Sio1::kCtrlTxEnable | Sio1::kCtrlDtrOutput, "control came back");
+}
+
 }  // namespace
 
 int main() {
@@ -924,6 +1118,16 @@ int main() {
   TestDigitalPadRefusesConfigCommands(system);
   TestEnterConfigReplyCarriesTheButtons(system);
   TestDualShockRefusesConfigCommandsOutsideConfigMode(system);
+
+  TestSio1ResetState(system);
+  TestSio1EmptyReceiveFifoReadsOnes(system);
+  TestSio1RegistersRoundTrip(system);
+  TestSio1StatusIsReadOnly(system);
+  TestSio1TransmitNeedsTheTransmitterEnabled(system);
+  TestSio1ResetStrobeRestoresEverything(system);
+  TestSio1BaudTimerCountsDown(system);
+  TestSio1ConsoleRedirect(system);
+  TestSio1SurvivesSaveState(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

@@ -149,6 +149,7 @@ namespace psxemu {
         void SetPauseInMenus(bool on);
         void SetShowTimings(bool on);
         void SetShowBiosConsole(bool on);
+        void SetSerialToConsole(bool on);
         // On the machine's thread, after every frame: what the BIOS console gained, posted to the
         // window. Posting keeps it in order with everything else the machine tells the UI.
         void CollectConsoleText(emulation::psx::System& system);
@@ -198,6 +199,7 @@ namespace psxemu {
         void UpdatePauseInMenusMenu();
         void UpdateShowTimingsMenu();
         void UpdateBiosConsoleMenu();
+        void UpdateSerialToConsoleMenu();
 
         // ---------------------------------------------------------------------------------------
         // The machine, asked for from here and done there

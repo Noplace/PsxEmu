@@ -49,6 +49,7 @@
 #include "psx/disc.h"
 #include "psx/cdrom.h"
 #include "psx/sio.h"
+#include "psx/sio1.h"
 #include "psx/spu.h"
 #include "psx/mdec.h"
 #include "psx/root_counter.h"

@@ -21,6 +21,17 @@
 #include <windows.h>
 #include <stdint.h>
 #include <string>
+#include <vector>
+
+// One stage of a multi-pass filter chain (see IGraphicsEngine::LoadShaderChain).
+struct ShaderPass {
+    // Key of a pixel shader already given to LoadCustomPixelShader or LoadPixelShaderFromString.
+    std::string shader;
+    // Size of this pass's render target, as a whole multiple of the emulator's framebuffer.
+    // 0 means "draw straight into the letterboxed picture area of the window"; only the last
+    // pass of a chain may use it. Any other last pass is followed by a linear-filtered blit.
+    int scale;
+};
 
 // What a presenter has to be able to do, so the front end can hold one of
 // these instead of a concrete D3D11 or D3D12 type and switch between them at
@@ -60,4 +71,14 @@ class IGraphicsEngine {
     virtual bool LoadCustomPixelShader(const std::string& name, const uint8_t* bytecode,
                                        size_t size) = 0;
     virtual bool LoadPixelShaderFromString(const std::string& name, const char* hlsl) = 0;
+
+    // A filter made of several shaders run one after another, each drawing into its own texture
+    // that the next one reads (t0), with the untouched emulator frame always available as well
+    // (t1). Selected with SetPixelShader(name) like any single shader. Every pass shader must be
+    // loaded first. Not pure: an engine without chain support just says no.
+    virtual bool LoadShaderChain(const std::string& name, const std::vector<ShaderPass>& passes) {
+        (void)name;
+        (void)passes;
+        return false;
+    }
 };
