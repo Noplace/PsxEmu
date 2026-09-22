@@ -48,8 +48,8 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 287, gte 106, timer 70, sio 146, spu 108, gpu 37, mdec 85, media 271, mc 77, debug 174 - 1,361
-checks, no failures (re-run 2026-09-21, after bugs 78-82). The two that were failing when this document was last
+cpu 297, gte 106, timer 70, sio 146, spu 108, gpu 37, mdec 85, media 271, mc 77, debug 174 - 1,371
+checks, no failures (re-run 2026-09-21, after bugs 78-84). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
@@ -118,6 +118,17 @@ Three harnesses - `host_test`, `timing_test` and `frame_limiter_test` - name
 their sections differently (`DoorbellChecks()` and the like) and were swept the
 same way against their own naming. Also clean.
 
+### The twelve discs do not cover the mask bit
+
+Bug 83 was a GPU rule missing outright - a texture's bit 15 never reached the
+framebuffer, so mask-checking protected nothing - and every one of the twelve
+discs came out byte-identical across the fix. None of them uses mask-checking
+in its first 3,000 frames, so that table could not have found the bug and
+cannot catch a regression in it. Silent Hill is the only disc here known to
+exercise it, and it is not on the table; `gpu_test`'s new checks are what
+stands in for it. The general point is worth keeping in view: a checksum table
+covers what its games happen to do, and the quiet ones are the gaps.
+
 ## Silently wrong rather than absent
 
 These do not stop anything, which is what makes them worth listing: a game
@@ -162,15 +173,26 @@ path, which resamples 44,100 Hz to the output rate, interpolates linearly
 rather than with the hardware's seven-point filter. The code says so where it
 does it. A slight softening of the top end, not a wrong pitch or a click.
 
-### Cause's interrupt-pending bits are faked
+### Cause's interrupt-pending bits - fixed
 
-`Cpu::RaiseException` sets `Cause` bits 8-15 from `SR`'s interrupt mask
-(`cause |= (sr & 0xFF00)`, on the interrupt path only - the code's own
-`//todo : set ip flags correctly`) rather than from the lines actually
-pending. The
+Bug 84. `Cpu::RaiseException` used to set `Cause` bits 8-15 from `SR`'s
+interrupt mask (`cause |= (sr & 0xFF00)`, the code's own `//todo : set ip
+flags correctly`) rather than from the lines actually pending. The
 BIOS's handler computes `cause & sr & 0xFF00`, gets a non-zero answer, and
-works - but software reading `Cause` to find out *which* line is pending gets
-the mask instead.
+works either way, which is why this survived - but software reading `Cause`
+to find out *which* line is pending got the mask instead.
+
+Now: `Cpu::CauseRegister` composes what software reads. Bit 10 - the one line
+the PSX wires its interrupt controller to - is `(I_STAT & I_MASK) != 0` at the
+moment of the read rather than a copy taken at the last exception; bits 11-15
+(IP3-IP7 on an R3000A) read zero, because nothing is attached to them on this
+machine; bits 8-9 are software's own, written by `MTC0` and honoured by the
+dispatch, so a software interrupt is delivered like any other. An exception
+writes the code and BD and leaves the rest alone, and `MTC0` to `Cause` can
+reach nothing but bits 8-9 - both the same masks DuckStation uses.
+
+What is left is not a gap so much as the hardware: IP3-IP7 have nothing to
+report because the console attaches nothing to them.
 
 ### Cycle timing - partly measured, memory regions still modelled
 

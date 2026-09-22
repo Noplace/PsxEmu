@@ -67,6 +67,13 @@ class IOInterface : public Component {
   int Deinitialize();
   void SetInterrupt(InterruptCodes interrupt);
   void ClearInterrupt(InterruptCodes interrupt);
+  // Whether the controller is asking the CPU for an interrupt right now: any
+  // pending source that is also unmasked. This is the single line the PSX
+  // wires to the R3000A's interrupt input, so it is also Cop0 Cause's bit 10
+  // (Cpu::CauseRegister).
+  bool interrupt_line() const {
+    return (io.interrupt_stat & io.interrupt_mask) != 0;
+  }
   void Tick(uint32_t cycles);
   // Runs whatever cycles have piled up, rather than waiting for the batch to
   // fill. Reading a root counter does this first, so software never sees a

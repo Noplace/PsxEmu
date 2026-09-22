@@ -1315,6 +1315,83 @@ void TestInterrupts(Machine& m) {
   m.Run(1);
   CheckEqual(m.reg(t0), 0, "it did not run");
   CheckEqual(m.cop0(kCop0Epc), kProgramBase, "EPC points at it");
+
+  // Cause's interrupt-pending field, read the way software reads it - MFC0,
+  // not the stored word - because its hardware half is the state of the lines
+  // now rather than a copy taken at the last exception. Bit 10 is the only one
+  // of those lines the PSX wires up; bits 8-9 are software's own (bug 84).
+  //
+  // What this replaced: the field was filled in from SR's *mask* whenever an
+  // interrupt was taken, so Cause answered "everything you are listening to"
+  // instead of "this line". The first check below is the one that catches it -
+  // with three mask bits set and one real interrupt, the old code reported all
+  // three pending.
+  BeginTest("Cause reports which line is pending, not which are unmasked");
+  m.Reset();
+  m.set_cop0(kCop0Status, 0x10000701);   // IEc, and IM bits 8, 9 and 10
+  io.io.interrupt_stat = 0x00000001;     // one real source: vblank
+  io.io.interrupt_mask = 0x00000001;
+  m.Load({ MFC0(t0, kCop0Cause) });
+  m.Run(1);   // the interrupt is taken in front of it, so run the handler's read
+  m.system()->cpu().context()->pc = kProgramBase;
+  m.Run(1);
+  CheckEqual((m.reg(t0) >> 8) & 0xFF, 0x04,
+             "only bit 10 - the interrupt controller's line - is pending");
+  CheckEqual((m.cop0(kCop0Cause) >> 2) & 0x1F, 0, "and the code is still Int");
+
+  BeginTest("Cause's pending bit follows the lines, not the last exception");
+  // Still standing in the handler from the test above, which is the point:
+  // the exception is over and done with, and what Cause reports from here on
+  // is whatever the lines are doing. The pc is put back each time because a
+  // taken exception left it at the vector.
+  io.io.interrupt_stat = 0;              // the source goes away
+  m.Load({ MFC0(t0, kCop0Cause) });
+  m.system()->cpu().context()->pc = kProgramBase;
+  m.Run(1);
+  CheckEqual((m.reg(t0) >> 8) & 0xFF, 0x00,
+             "with nothing pending the field reads clear, exception or not");
+  io.io.interrupt_stat = 0x00000001;
+  io.io.interrupt_mask = 0x00000000;     // pending, but masked off
+  m.Load({ MFC0(t0, kCop0Cause) });
+  m.system()->cpu().context()->pc = kProgramBase;
+  m.Run(1);
+  CheckEqual((m.reg(t0) >> 8) & 0xFF, 0x00,
+             "a masked source does not raise the line either");
+
+  BeginTest("MTC0 can write Cause's software bits and nothing else");
+  m.Reset();
+  io.io.interrupt_stat = 0;
+  io.io.interrupt_mask = 0;
+  m.set_cop0(kCop0Status, 0x10000000);   // IEc clear: nothing is taken here
+  m.Load({ ADDIU(t0, zero, -1),          // 0xFFFFFFFF
+           MTC0(t0, kCop0Cause),
+           MFC0(t1, kCop0Cause) });
+  m.Run(3);
+  CheckEqual(m.reg(t1) & 0x00000300, 0x00000300, "both software bits took");
+  CheckEqual(m.reg(t1) & ~0x00000300u, 0u,
+             "and nothing else did - not the code, not BD, not a device line");
+
+  BeginTest("a software interrupt is taken like any other");
+  m.Reset();
+  io.io.interrupt_stat = 0;
+  io.io.interrupt_mask = 0;
+  m.set_cop0(kCop0Status, 0x10000101);   // IEc, and IM bit 8 only
+  m.Load({ ADDIU(t0, zero, 0x100),       // Cause bit 8: software interrupt 0
+           MTC0(t0, kCop0Cause),
+           ADDIU(t1, zero, 1) });
+  m.Run(2);                              // set it, then let the next step see it
+  m.Run(1);
+  Check(m.pc() >= kExceptionVector && m.pc() < kExceptionVector + 0x100,
+        "control is in the exception handler");
+  CheckEqual(m.reg(t1), 0, "the instruction after it did not run");
+  CheckEqual((m.cop0(kCop0Cause) >> 2) & 0x1F, 0, "the code is Int");
+
+  BeginTest("an exception leaves the software bits alone");
+  // Hardware writes the code and BD and nothing else. Clearing the whole
+  // register - which is what this used to do - would drop a software
+  // interrupt that had not been handled yet.
+  CheckEqual(m.cop0(kCop0Cause) & 0x00000300, 0x00000100,
+             "software interrupt 0 is still pending after the exception");
 }
 
 // ---------------------------------------------------------------------------

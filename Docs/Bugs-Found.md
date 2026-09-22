@@ -5088,3 +5088,79 @@ treated as transparent") is the other half of the same rule.
   the table could not have caught this and cannot catch a regression in it.
   Silent Hill is the only disc here known to exercise it, and the `gpu_test`
   checks above are what stands in for that.
+
+## 84. Cause reported the interrupt mask instead of the pending line
+
+`Cpu::RaiseException` built Cop0 Cause from scratch on every exception:
+
+```cpp
+  //todo : set ip flags correctly
+  cause = 0;
+  cause |= branch_flag ? 0x80000000 : 0;
+  cause |= (code & 0x1F) << 2;
+  if (code == kExceptionCodeInt)
+    cause |= (sr & 0xFF00);
+```
+
+That last line is the bug, and the `//todo` above it knew. Bits 8-15 of Cause
+are the interrupt-*pending* field; `sr & 0xFF00` is the interrupt *mask*. So
+Cause answered "every line you are listening to is pending". The BIOS handler
+computes `cause & sr & 0xFF00` and only needs a non-zero answer, which is why
+this survived from the first commit: with one line wired up, the mask and the
+truth look the same. Set SR to listen on more lines and they part company - a
+handler reading Cause to find out which line it was would have been told all
+three.
+
+Two smaller things came with it. `cause = 0` cleared the two
+software-interrupt bits (8-9) on every exception, so a software interrupt
+raised and not yet handled was forgotten by the next one. And `MTC0` wrote
+Cause wholesale, letting software invent an exception code or claim a device
+interrupt that never happened.
+
+### What the hardware does
+
+- **Bits 10-15** are the hardware pending lines, IP2-IP7, and they are *live* -
+  what the lines are doing when Cause is read, not a copy taken when something
+  was last taken. The PSX wires its interrupt controller to bit 10 alone, so
+  bit 10 is `(I_STAT & I_MASK) != 0` and 11-15 read zero.
+- **Bits 8-9** are software's own pending bits, set and cleared with `MTC0`.
+- **An exception** writes the code (2-6) and BD (31), nothing else.
+- **`MTC0`** reaches bits 8-9, nothing else.
+- **The dispatch** takes an interrupt when `(Cause.IP & SR.IM) != 0` and IEc -
+  which includes the software bits, so a software interrupt is delivered like
+  any other.
+
+DuckStation's masks say the same: `CAUSE::WRITE_MASK` is `0x300`, its
+`EXCEPTION_WRITE_MASK` is `0xF000007C`.
+
+### The change
+
+`Cpu::CauseRegister` composes what software reads - the stored word with bits
+10-15 replaced by the live line - and `MFC0` of Cause goes through it.
+`RaiseException` writes only its two fields. `MTC0` masks to bits 8-9.
+`System::StepImpl` decides on `Cause.IP & SR.IM` rather than reading
+`interrupt_stat & interrupt_mask` and SR bit 10 directly, and its two
+"blocked" counters now mean what they say: masked off, or IEc.
+
+**One thing this forced.** `Cpu::Jump` decided whether the delay slot had
+raised an exception by comparing Cause before and after. With Cause carrying a
+live interrupt line, a device raising one during the delay slot would change
+that word with no exception taken, and the branch would not have been
+completed - the pc left wherever the slot put it. It now compares
+`exceptions_raised_`, the counter that already existed for compiled code to
+ask the same question.
+
+### Verified, 2026-09-21
+
+- **`cpu_test`: 287 -> 297**, in the `interrupts` group. Six of the seven new
+  checks fail against the old core, which was checked by building this test
+  against it: Cause reported `0x07` where only bit 10 was pending, kept
+  reporting it after the source had gone and while it was masked off, let
+  `MTC0` write `0xFFFFFCFF`, and never delivered a software interrupt at all.
+- **Every other harness green**, 1,371 checks.
+- **The BIOS boot is unchanged** - 92,082,652 instructions,
+  `c7c8db90c5984798`, and the same 907 interrupts taken and 669,578 blocked,
+  which is the number that would have moved had the dispatch changed its mind
+  about anything.
+- **The twelve discs are byte-identical**, and Silent Hill from a save state
+  matches the previous build exactly, interrupt counts included.

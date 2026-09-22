@@ -342,6 +342,16 @@ class Cpu : public Component {
   // block stops where it is. See rec/runtime.h.
   uint64_t exceptions_raised() const { return exceptions_raised_; }
 
+  // Cop0's Cause register as software sees it, which is not quite what is
+  // stored: the interrupt-pending field's hardware half is the state of the
+  // interrupt lines *now*, not a copy taken when the last exception happened.
+  // Bit 10 is the one line the PSX wires its interrupt controller to, so it
+  // reads as (I_STAT & I_MASK) != 0, and bits 11-15 - IP3 to IP7 on an
+  // R3000A, with nothing attached here - read as zero. Bits 8-9 are
+  // software's own pending bits and come from the stored word, where MTC0
+  // put them. See RaiseException and MFC0 (bug 84).
+  uint32_t CauseRegister() const;
+
   // The interpreter's version of the same question, for a load: if its own
   // access raised an exception - a misaligned address, a bus error - it
   // delivers nothing, and the destination keeps what it held. Arming the 0

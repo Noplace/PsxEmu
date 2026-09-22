@@ -360,14 +360,23 @@ void Cpu::RaiseException(uint32_t address, Exceptions exception, ExceptionCodes 
   sr = (sr & ~0x3F) | ((sr & 0xF) << 2);
 
 
-  //set cause
-  //todo : set ip flags correctly
+  // Cause, of which an exception writes only two fields: the code for what
+  // happened (bits 2-6) and BD, whether it happened in a branch delay slot
+  // (bit 31). Everything else is left exactly as it was - the interrupt-pending
+  // field (bits 8-15) belongs to the interrupt lines and to software, not to
+  // whatever exception happened to be taken.
+  //
+  // This used to clear the whole register and then, for an interrupt, fill the
+  // pending field in from SR's *mask* - so Cause reported "every line you are
+  // listening to is pending", which for the BIOS handler is indistinguishable
+  // from the truth (it computes cause & sr & 0xFF00 and only needs it to be
+  // non-zero) and wrong for anything that reads Cause to find out *which* line
+  // it was. IOInterface::RefreshInterruptLine now maintains bit 10 from the
+  // interrupt controller, MTC0 owns bits 8-9, and this leaves both alone.
   uint32_t& cause = context_->ctrl.Cause;
-  cause = 0;
-  cause |= context_->branch_flag == true ? 0x80000000 : 0;
-  cause |= (code&0x1F)<<2;
-  if (code == kExceptionCodeInt)
-    cause |= (sr&0xFF00);
+  cause = (cause & ~0xF000007Cu) |
+          ((code & 0x1F) << 2) |
+          (context_->branch_flag == true ? 0x80000000u : 0u);
 
 
   //specific exception handling
@@ -913,14 +922,20 @@ void Cpu::Jump(uint32_t address) {
   }
   __inside_delay_slot = true;
   context_->branch_flag = true;
-  uint32_t prev_cause = context_->ctrl.Cause;
+  // Whether the delay slot raised anything, asked of the exception counter
+  // rather than by watching Cause for a change. Cause now carries the live
+  // interrupt-pending bit, which a device can flip during the delay slot
+  // without any exception being taken - and reading that as "an exception
+  // happened" would leave the pc wherever the slot left it instead of at the
+  // branch target.
+  const uint64_t exceptions_before = exceptions_raised_;
   ExecuteInstruction();
   context_->branch_flag = false;
   __inside_delay_slot = false;
   // If an exception (like an interrupt) happened during the delay slot,
   // ExecuteInstruction would have called RaiseException and set PC to 0x80000080.
   // We should NOT overwrite PC with the jump target in this case.
-  if (context_->ctrl.Cause == prev_cause) {
+  if (exceptions_raised_ == exceptions_before) {
     context_->pc = address;
   }
   if (output_inst == true && until_address == context_->pc)
@@ -1061,17 +1076,35 @@ void Cpu::LUI() {
   //WriteReg(rt_, context_->immediate_ << 16);
 }
 
+// See the declaration in cpu.h: the pending field's hardware half is live,
+// and only bit 10 of it is wired to anything on this machine.
+uint32_t Cpu::CauseRegister() const {
+  const uint32_t stored = context_->ctrl.Cause & ~0x0000FC00u;
+  return stored | (system_->io().interrupt_line() ? 0x00000400u : 0u);
+}
+
 void Cpu::COP0() {
   switch (context_->rs()) {
     //MFC
     case 0x00: {
-      WriteReg(rt_, context_->ctrl.reg[rd_]);
+      WriteReg(rt_, (rd_ == 13) ? CauseRegister() : context_->ctrl.reg[rd_]);
       break;
     }
     //MTC
     case 0x04: {
       const uint32_t before = context_->ctrl.SR.raw;
-      context_->ctrl.reg[rd_] = context_->gp.reg[rt_];
+      if (rd_ == 13) {
+        // Cause is read-only apart from the two software-interrupt bits: the
+        // rest is the hardware's account of what happened, and writing it
+        // would let software invent an exception code or claim a device
+        // interrupt. Bits 8-9 are software's own pending lines, and taken as
+        // seriously as bit 10 - see System::StepImpl.
+        context_->ctrl.Cause =
+            (context_->ctrl.Cause & ~0x00000300u) |
+            (context_->gp.reg[rt_] & 0x00000300u);
+      } else {
+        context_->ctrl.reg[rd_] = context_->gp.reg[rt_];
+      }
       if (rd_ == 12) {
         ExceptionLog::Record(ExceptionLog::kStatusWrite, context_->prev_pc,
                              context_->ctrl.EPC, context_->ctrl.Cause, before,

@@ -15,7 +15,7 @@ Each test assembles a handful of MIPS instructions into RAM, runs them through
 the real CPU, and checks what came out - the same path a game takes. No BIOS,
 no window. A group name runs only that group.
 
-**Current: 287 checks, 0 failures.**
+**Current: 297 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -32,7 +32,7 @@ no window. A group name runs only that group.
 | `sqrloop` | psxtest_gte's own SQR loop (SQR, CFC2, nop, accumulate, bgtz and its delay slot), measured in this core's cycles: exactly 11 a pass, the figure the test's own check code expects - the GTE hold's restart cycle and a taken branch's own cycle both show up in it (bug 78) |
 | `memory` | RAM through KUSEG/KSEG0/KSEG1, RAM mirroring, the scratchpad, hardware registers through all three windows, the BIOS being read-only, and $zero staying zero |
 | `exceptions` | syscall and break vectoring, the Cop0 status stack pushing and popping, mfc0/mtc0 |
-| `interrupts` | I_STAT acknowledge semantics, the three gates that can block an interrupt, and that EPC points at the instruction that has *not* run |
+| `interrupts` | I_STAT acknowledge semantics, the three gates that can block an interrupt, that EPC points at the instruction that has *not* run, and Cop0 Cause's interrupt-pending field read through MFC0 (bug 84): only the line that is actually pending rather than every line SR is listening to, following the lines live instead of reporting the last exception, MTC0 reaching bits 8-9 and nothing else, and a software interrupt being delivered like any other |
 | `cacheisolation` | a store with Isolate Cache set not reaching the scratchpad, and an ordinary store still landing |
 | `biosconsole` | BIOS putchar/puts calls through the A0h/B0h/C0h vectors reaching the console feed exactly once each, interpreted and then recompiled (bug 66) |
 | `cpuedges` | what amidog's psxtest_cpu found (bug 68): sub/addi trapping on signed overflow without writing their destination, sltiu's sign-extended immediate, a misaligned lh/lw faulting without loading, all 32 REGIMM encodings branching (and linking only for 10h/11h, after reading rs), jalr with rd == rs, and a misaligned jump target faulting at the target |
@@ -547,7 +547,7 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 287 | | `gpu_test` | 37 |
+| `cpu_test` | 297 | | `gpu_test` | 37 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 271 |
 | `sio_test` | 146 | | `spu_test` | 108 |

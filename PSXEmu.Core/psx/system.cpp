@@ -165,10 +165,17 @@ bool System::StepImpl() {
   bool gte_command_first = false;
   uint32_t gte_command_pc = 0;
 
-  if (io_.io.interrupt_stat & io_.io.interrupt_mask) {
-    // Cop0 SR: bit 10 is the hardware interrupt mask line the PSX wires all
-    // of its interrupts to, and IEc is the global enable.
-    if ((cpu_.context()->ctrl.SR.raw & 0x400) && (cpu_.context()->ctrl.SR.IEc)) {
+  // What the R3000A actually decides on: Cause's pending field against SR's
+  // mask, both bits 8-15, with IEc as the global enable. For the interrupt
+  // controller's own line that is the same test as `interrupt_stat &
+  // interrupt_mask` and SR bit 10, which is what this used to read directly;
+  // going through Cause adds the two software-interrupt bits, which software
+  // sets with MTC0 and which are as real as the hardware one (bug 84).
+  const uint32_t cause_pending = (cpu_.CauseRegister() >> 8) & 0xFF;
+  const uint32_t cause_masked = cause_pending & ((cpu_.context()->ctrl.SR.raw >> 8) & 0xFF);
+
+  if (cause_pending != 0) {
+    if (cause_masked != 0 && cpu_.context()->ctrl.SR.IEc) {
       ++interrupts_taken_;
       const uint32_t pending = io_.io.interrupt_stat & io_.io.interrupt_mask;
       for (int bit = 0; bit < 11; ++bit)
@@ -182,9 +189,11 @@ bool System::StepImpl() {
         cpu_.RaiseException(cpu_.context()->pc, kOtherException,
                             kExceptionCodeInt);
       }
-    } else if (!(cpu_.context()->ctrl.SR.raw & 0x400)) {
+    } else if (cause_masked == 0) {
+      // Pending, but every pending line is masked off in SR.
       ++interrupts_blocked_im_;
     } else {
+      // Unmasked and pending, but IEc says not now.
       ++interrupts_blocked_;
     }
   }
