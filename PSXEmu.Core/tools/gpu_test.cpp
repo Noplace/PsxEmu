@@ -243,6 +243,169 @@ void TestDrawingCostIsClipped(System* system) {
   RunGpu(system);
 }
 
+// In 480-line interlace with drawing to the display area prohibited, hardware
+// puts down only the active field, so a primitive costs half (bug 88). GP1(08)
+// sets the display mode; GP0(E1) bit 10 is the draw-to-display bit.
+void TestInterlacedDrawingCostsHalf(System* system) {
+  printf("drawing only the active field costs half as much\n");
+
+  // 480 lines with vertical interlace on: GP1(08) bit 2 is the vertical
+  // resolution and bit 5 the interlace. Drawing to the display area is left
+  // prohibited, which is what makes hardware skip a field.
+  system->gpu().WriteStatus(0x08000004 | (1u << 5));
+  system->gpu().WriteData(0xE1000000);                       // draw to display off
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (400u << 10) | 600u);
+
+  const uint64_t before_field = system->gpu().stats().draw_ticks;
+  system->gpu().WriteData(0x20000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((200u << 16) | 300u);
+  system->gpu().WriteData((300u << 16) | 200u);
+  const uint64_t one_field = system->gpu().stats().draw_ticks - before_field;
+  CheckEqual(static_cast<uint32_t>(one_field), 46u + 2500u,
+             "a triangle costs half its area when only one field is drawn");
+
+  // The same primitive with drawing to the display area allowed: hardware has
+  // to put down every line, so the full price is back.
+  RunGpu(system);
+  const uint64_t before_both = system->gpu().stats().draw_ticks;
+  system->gpu().WriteData(0xE1000000 | (1u << 10));          // draw to display on
+  system->gpu().WriteData(0x20000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((200u << 16) | 300u);
+  system->gpu().WriteData((300u << 16) | 200u);
+  const uint64_t both_fields = system->gpu().stats().draw_ticks - before_both;
+  CheckEqual(static_cast<uint32_t>(both_fields), 46u + 5000u,
+             "and its full area once it may draw to the display area");
+
+  // And it is the interlace that does it, not the 480 lines: progressive 480
+  // pays in full.
+  RunGpu(system);
+  system->gpu().WriteStatus(0x08000004);
+  system->gpu().WriteData(0xE1000000);
+  const uint64_t before_prog = system->gpu().stats().draw_ticks;
+  system->gpu().WriteData(0x20000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((200u << 16) | 300u);
+  system->gpu().WriteData((300u << 16) | 200u);
+  const uint64_t progressive = system->gpu().stats().draw_ticks - before_prog;
+  CheckEqual(static_cast<uint32_t>(progressive), 46u + 5000u,
+             "480 lines without interlace pays in full");
+
+  // A rectangle halves its rows the same way: 40x40 is charged as 40x20.
+  RunGpu(system);
+  system->gpu().WriteStatus(0x08000004 | (1u << 5));
+  system->gpu().WriteData(0xE1000000);
+  const uint64_t before_rect = system->gpu().stats().draw_ticks;
+  system->gpu().WriteData(0x60000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((40u << 16) | 40u);
+  const uint64_t rect = system->gpu().stats().draw_ticks - before_rect;
+  CheckEqual(static_cast<uint32_t>(rect), 16u + (40u * 20u),
+             "a rectangle is charged for half its rows");
+
+  // Back to progressive for whatever runs after this.
+  system->gpu().WriteStatus(0x08000000);
+  system->gpu().WriteData(0xE1000000);
+  RunGpu(system);
+}
+
+// And the pixels follow the cost (bug 89): in that same mode hardware leaves
+// the field it is displaying alone, so half the rows of a primitive or a fill
+// are never written. A transfer is not affected - neither of DuckStation's
+// WriteVRAM or CopyVRAM paths is even told which field is showing.
+void TestInterlacedSkipsDisplayedField(System* system) {
+  printf("drawing leaves the displayed field's rows alone\n");
+
+  // 480 lines interlaced with drawing to the display area prohibited, and the
+  // display area at VRAM row 0 so the skipped parity is just the field bit.
+  system->gpu().WriteStatus(0x08000004 | (1u << 5));
+  system->gpu().WriteData(0xE1000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (400u << 10) | 600u);
+  system->gpu().WriteStatus(0x05000000);            // display area at (0,0)
+
+  const uint16_t* vram = system->gpu().vram();
+
+  // Which parity is showing is GPUSTAT bit 31 in interlaced mode, and it flips
+  // once a frame - so each stage below drains the GPU first, then reads the
+  // field, then writes a command that runs as its last word arrives. Running
+  // the machine between the read and the draw would move the field under it,
+  // which is what the first version of this test did.
+  auto field_now = [&]() -> uint32_t {
+    RunGpu(system);
+    return (system->gpu().ReadStatus() >> 31) & 1u;
+  };
+  auto rows_match = [&](int32_t y0, int32_t x, uint32_t field,
+                        bool* shown_clear, bool* others_written) {
+    *shown_clear = true;
+    *others_written = true;
+    for (int32_t row = y0; row < y0 + 4; ++row) {
+      const uint16_t pixel = vram[row * 1024 + x];
+      if ((static_cast<uint32_t>(row) & 1u) == field) {
+        if (pixel != 0)
+          *shown_clear = false;
+      } else if (pixel == 0) {
+        *others_written = false;
+      }
+    }
+  };
+
+  // A solid 4x4 white rectangle at (300,300), clear of everything else here.
+  uint32_t field = field_now();
+  system->gpu().WriteData(0x60FFFFFF);
+  system->gpu().WriteData((300u << 16) | 300u);
+  system->gpu().WriteData((4u << 16) | 4u);
+  bool shown_clear = false, others_written = false;
+  rows_match(300, 300, field, &shown_clear, &others_written);
+  Check(shown_clear, "the rows being displayed are left untouched");
+  Check(others_written, "the rows that are not being displayed are drawn");
+
+  // A fill skips the same rows, although its cost is not halved.
+  field = field_now();
+  system->gpu().WriteData(0x02FFFFFF);
+  system->gpu().WriteData((400u << 16) | 400u);
+  system->gpu().WriteData((4u << 16) | 16u);
+  rows_match(400, 400, field, &shown_clear, &others_written);
+  Check(shown_clear, "a fill skips the displayed field's rows too");
+  Check(others_written, "and fills the rest");
+
+  // Once drawing to the display area is allowed, every row is drawn again.
+  field_now();
+  system->gpu().WriteData(0xE1000000 | (1u << 10));
+  system->gpu().WriteData(0x60FFFFFF);
+  system->gpu().WriteData((300u << 16) | 320u);
+  system->gpu().WriteData((4u << 16) | 4u);
+  bool all_rows = true;
+  for (int32_t row = 300; row < 304; ++row) {
+    if (vram[row * 1024 + 320] == 0)
+      all_rows = false;
+  }
+  Check(all_rows, "every row is drawn once drawing to the display area is allowed");
+
+  // A CPU-to-VRAM transfer is not gated by the field, so it lands whole even
+  // with the skip back on. Four rows of two pixels, two pixels per word.
+  field_now();
+  system->gpu().WriteData(0xE1000000);
+  system->gpu().WriteData(0xA0000000);
+  system->gpu().WriteData((300u << 16) | 340u);
+  system->gpu().WriteData((4u << 16) | 2u);
+  for (int i = 0; i < 4; ++i)
+    system->gpu().WriteData(0x7FFF7FFF);
+  bool transfer_whole = true;
+  for (int32_t row = 300; row < 304; ++row) {
+    if (vram[row * 1024 + 340] == 0)
+      transfer_whole = false;
+  }
+  Check(transfer_whole, "a CPU-to-VRAM transfer is not gated by the field");
+
+  // Back to progressive for whatever runs after this.
+  system->gpu().WriteStatus(0x08000000);
+  system->gpu().WriteData(0xE1000000);
+  RunGpu(system);
+}
+
 // The GP0 queue (bug 86): words wait in it while the rasteriser is busy, the
 // port reports full at the 16 words hardware holds, and everything drains once
 // the machine has run. This is what gives DMA channel 2 something to wait for.
@@ -562,6 +725,8 @@ int main() {
   TestReadinessBits(system);
   TestDrawingTakesTime(system);
   TestDrawingCostIsClipped(system);
+  TestInterlacedDrawingCostsHalf(system);
+  TestInterlacedSkipsDisplayedField(system);
   TestGp0QueueFillsAndDrains(system);
   TestTextureBit15BecomesTheMaskBit(system);
   TestPolylineTerminatorIsNotAVertex(system);

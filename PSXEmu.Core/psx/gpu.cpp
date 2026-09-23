@@ -688,6 +688,12 @@ namespace emulation {
                 const uint32_t vy = y + row;
                 if (vy >= kVramHeight)
                     break;
+                // A fill skips the displayed field too, though its cost is not halved:
+                // it is charged by the row burst either way.
+                if (SkipsVramRow(static_cast<int32_t>(vy))) {
+                    ++stats_.field_skipped;
+                    continue;
+                }
                 for (uint32_t col = 0; col < w; ++col) {
                     const uint32_t vx = x + col;
                     if (vx >= kVramWidth)
@@ -778,6 +784,8 @@ namespace emulation {
                 pixels += pixels;
             if (state.semi_transparent || check_mask_)
                 pixels += (pixels + 1) / 2;
+            if (DrawsOneFieldOnly())
+                pixels /= 2;
             if (pixels > 0x00FFFFFF)
                 pixels = 0x00FFFFFF;   // a primitive larger than VRAM is a bad packet
             return static_cast<int32_t>(pixels);
@@ -826,6 +834,8 @@ namespace emulation {
             }
             if (state.semi_transparent || check_mask_)
                 ticks_per_row += (width + 1) / 2;
+            if (DrawsOneFieldOnly())
+                height = (height / 2 > 0) ? (height / 2) : 1;
             const int64_t total = ticks_per_row * height;
             return static_cast<int32_t>(total > 0x00FFFFFF ? 0x00FFFFFF : total);
         }
@@ -972,7 +982,11 @@ namespace emulation {
                     const int32_t dy = current.y - previous.y;
                     const int32_t span_x = (dx < 0) ? -dx : dx;
                     const int32_t span_y = (dy < 0) ? -dy : dy;
-                    AddDrawTicks(16 + ((span_x > span_y) ? span_x : span_y));
+                    const int32_t rows =
+                        DrawsOneFieldOnly()
+                            ? ((span_y / 2 > 0) ? (span_y / 2) : 1)
+                            : span_y;
+                    AddDrawTicks(16 + ((span_x > rows) ? span_x : rows));
                     DrawLineSegment(previous, current, state);
                 }
                 previous = current;
@@ -1161,6 +1175,12 @@ namespace emulation {
             if (x < draw_area_left_ || x > draw_area_right_ ||
                 y < draw_area_top_ || y > draw_area_bottom_) {
                 ++stats_.clipped;
+                return;
+            }
+            // The field being displayed is left alone (bug 89). Every primitive
+            // goes through here, so this is the one place it has to be said.
+            if (SkipsVramRow(y)) {
+                ++stats_.field_skipped;
                 return;
             }
 

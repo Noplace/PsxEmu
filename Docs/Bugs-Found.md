@@ -5391,3 +5391,133 @@ switches, one to stop the queue ever reporting full and one to charge no
 drawing time at all: either one restored full speed, so the stall was real and
 the cost model was what drove it. Only then did the 95% figure above make the
 cause obvious. The switches were temporary and are not in the tree.
+
+## 88. Drawing was charged for both fields in interlaced mode
+
+The same family as bug 87 - the cost model billing for work hardware would not
+do - found by reading the rest of the model against DuckStation's rather than
+by a game misbehaving.
+
+### What was wrong
+
+In 480-line interlaced mode with drawing to the display area prohibited,
+hardware puts down only the active field: half the lines, half the time. The
+three bits that say so are GPUSTAT 19 (480 lines), 22 (vertical interlace) and
+10 (drawing to the display area allowed), and the state is 19 and 22 set with
+10 clear - DuckStation's `SkipDrawingToActiveField`, which halves the per-pixel
+cost of triangles, rectangles and lines when it holds.
+
+We charged the full price, so any game in that mode was billed twice what the
+hardware would take. `Gpu::DrawsOneFieldOnly` now reports the state and the
+three per-pixel estimates halve when it does. Setup costs and fills are not
+halved, which is also what DuckStation does: a fill ignores the drawing area
+and the field alike.
+
+**One inconsistency this buys, on purpose.** Our rasteriser does not skip those
+lines - it draws every one - so we now charge half for twice the work. That is
+the right way round: what a game can observe is how long hardware would have
+taken, not how long we took. Making the rasteriser skip the field as well is a
+rendering change rather than a timing one, and is not part of this.
+
+### Verified, 2026-09-23
+
+- **The BIOS shell is where it fires**, and it fires exactly: its drawing cost
+  halves from 89,653,406 GPU clocks to 45,132,122 over 400 frames, 25% of the
+  GPU's time down to 13%. The picture is identical - `c7c8db90c5984798`, all
+  305,920 pixels - as are the 16,913 GP0 words, the 1,153 primitives, the 908
+  interrupts and every register. It runs 1.1% fewer instructions, 93,049,815
+  against 94,111,024, because it spends less of each frame waiting.
+- **`gpu_test`: 53 -> 57.** A triangle costs half its area in that mode and its
+  full area once drawing to the display area is allowed; 480 lines without
+  interlace pays in full, which pins that it is the interlace doing it and not
+  the resolution; and a rectangle is charged for half its rows. Two of the four
+  fail without the halving and pass with it.
+- **Every harness green**, 1,391 checks in the counted ten and 1,973 across all
+  seventeen.
+- **Silent Hill is untouched**, to the word: 1,762,279 GP0 words and the same
+  143,974,952 draw ticks over 300 frames from the user's save slot 1. It runs
+  progressive, so the halving correctly never applies - which is the check that
+  this did not disturb bug 87's fix.
+
+**How much of the disc table this reaches: all twelve, and three of them
+heavily.** This entry first said "almost none of it", which was wrong. It was
+read off a single end-of-run GPUSTAT sample - Final Fantasy VIII's had bit 10
+set, so the halving looked inapplicable - and a game sets that bit differently
+from one primitive to the next, so one sample at one instant says nothing about
+the run. The counter added in bug 89 is what settled it. Charged drawing over
+3,000 frames, before this change and after:
+
+| Disc | Before | After |
+|---|---|---|
+| Ace Combat 3 | 453,044,706 | 278,566,219 |
+| Ridge Racer | 603,721,780 | 551,648,977 |
+| Final Fantasy VIII | 311,163,619 | 156,946,816 |
+| Wild Arms | 254,076,751 | 143,583,020 |
+| Air Combat | 106,937,061 | 54,864,258 |
+
+Every disc drops, because the licence and logo phase every disc boots through
+is 640x480 interlaced and accounts for a large part of a cold run's drawing -
+`field_skipped` comes to exactly 49,753,614 for eight of the twelve, which is
+that shared phase and nothing else. The three that go well past it are using
+480i themselves: Ace Combat 3 (+89.6M pixels skipped), Final Fantasy VIII
+(+68.1M) and Wild Arms (+7.9M). Those are the discs to re-check when anything
+touches this, and Final Fantasy VIII is the reason the table alone could not
+have told us - all three of its checkpoints are black or near-black, which that
+table already flags as a weak signal.
+
+## 89. The rasteriser drew both fields while being charged for one
+
+Bug 88 halved what a primitive costs in 480-line interlace, because hardware
+puts down only the field it is not displaying. It left the pixels alone, so the
+rasteriser went on drawing every line - charged for one field, drawing two. That
+inconsistency was written up as a deliberate simplification at the time; this
+closes it.
+
+### What changed
+
+`Gpu::SkipsVramRow` reports whether a VRAM row is the one being displayed:
+`DrawsOneFieldOnly()` and the row's parity matching `Gpu::ActiveLineLsb`, which
+is the display area's VRAM row plus the field being shown, and zero outside
+480i - DuckStation's `crtc_state.active_line_lsb`. A row that matches is left
+untouched.
+
+- **Every primitive goes through `PlotPixel`**, so that is the one place the
+  test is made. Triangles, rectangles and lines all inherit it.
+- **A fill skips the same rows**, although its cost is still not halved: a fill
+  is charged by the row burst either way, which is what DuckStation does.
+- **A CPU-to-VRAM transfer and a VRAM-to-VRAM copy do not skip.** That is where
+  DuckStation draws the line too: neither its `WriteVRAMImpl` nor its
+  `CopyVRAMImpl` is even told which field is showing.
+- **`Gpu::Stats::field_skipped`** counts the pixels left alone, and
+  `boot_runner` prints it beside the clipped and mask-rejected counts. It stays
+  zero unless a game is in 480i, which makes it a quick way to tell whether
+  this is in play at all.
+
+### Verified, 2026-09-23
+
+- **The BIOS shell draws the same picture from half the pixels.** 42,473,662
+  plotted where it was 84,637,573, with 42,163,911 skipped - and the checksum
+  is still `c7c8db90c5984798` with all 305,920 pixels non-black. That is the
+  point of the change: the shell redraws every frame and the field alternates,
+  so VRAM ends up holding both halves, exactly as it would on hardware.
+- **`gpu_test`: 57 -> 63.** The displayed field's rows are untouched and the
+  others are drawn; a fill does the same; every row is drawn again once drawing
+  to the display area is allowed; and a CPU-to-VRAM transfer lands whole with
+  the skip on. Two of the six fail without it.
+- **Every harness green**, 1,397 checks in the counted ten and 1,979 across all
+  seventeen; the BIOS instruction count is unchanged from bug 88, since this
+  moves pixels and not time.
+- **Silent Hill is untouched**, checksum and GP0 words both, with
+  `field_skipped` at zero - it runs progressive, so none of this reaches it.
+- **Four frame-1000 disc checksums moved and nothing else did.** All four are
+  in the interlaced boot phase rather than in the game; the logos are the same
+  a few pixels further through their fade, checked by eye at 4x with clean
+  letterforms and no combing. Docs/Test-Suite.md has the detail.
+
+**Two mistakes in writing the test, both mine and both worth remembering.** The
+first version read the field once at the top, but `RunGpu` advances about half a
+frame and the field flips under it - each stage now drains, reads the field,
+then writes a command that runs as its last word lands, with no machine time in
+between. The second was plainer: the vertex word is `(y << 16) | x` and the
+extent `(h << 16) | w`, and two of the checks had them the wrong way round, so
+they were reading VRAM where nothing had been drawn.

@@ -1602,10 +1602,11 @@ int main(int argc, char** argv) {
   printf("               GP0 queue peaked at %u words, %llu dropped\n",
          gpu_stats.queue_peak,
          static_cast<unsigned long long>(gpu_stats.queue_overflows));
-  printf("               %llu clipped, %llu mask-rejected, %llu transparent\n",
+  printf("               %llu clipped, %llu mask-rejected, %llu transparent, %llu field-skipped\n",
          static_cast<unsigned long long>(gpu_stats.clipped),
          static_cast<unsigned long long>(gpu_stats.mask_rejected),
-         static_cast<unsigned long long>(gpu_stats.transparent_texels));
+         static_cast<unsigned long long>(gpu_stats.transparent_texels),
+         static_cast<unsigned long long>(gpu_stats.field_skipped));
   printf("               texels by depth: %llu 4-bit, %llu 8-bit, %llu 15-bit\n",
          static_cast<unsigned long long>(gpu_stats.texels_by_depth[0]),
          static_cast<unsigned long long>(gpu_stats.texels_by_depth[1]),

@@ -92,7 +92,7 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 53 checks, 0 failures.**
+**Current: 63 checks, 0 failures.**
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
@@ -549,13 +549,13 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 297 | | `gpu_test` | 53 |
+| `cpu_test` | 297 | | `gpu_test` | 63 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 271 |
 | `sio_test` | 146 | | `spu_test` | 108 |
 | `mc_test` | 77 | | `debug_test` | 174 |
 
-**1,387 checks, 0 failures**, all ten green. Each harness's own section above
+**1,397 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived: every setting in
 `EmuConfig` round-trips through the file, and those are settings.)
@@ -617,7 +617,7 @@ and what they decided, are in the plan's step 6.
 
 | Measure | Value |
 |---|---|
-| instructions | 94,111,024 |
+| instructions | 93,049,815 |
 | resolution | 640x478 |
 | framebuffer checksum | `c7c8db90c5984798` |
 | non-black (visible) | 305,920 of 305,920 |
@@ -630,7 +630,17 @@ and what they decided, are in the plan's step 6.
 | primitives / pixels | 1,153 / 84,637,573 |
 | texels 4-bit / 15-bit | 3,159,000 / 0 |
 | CD-ROM commands | 3 |
-| SPU | 297,483 frames, 64 key-ons, peak 28,461/23,222 |
+| SPU | 297,483 frames, 64 key-ons, peak 27,547/23,860 |
+
+**And then to 93,049,815** (bug 88), with the checksum, every pixel, all 16,913
+GP0 words, all 1,153 primitives, the 908 interrupts and every register
+unchanged. The shell runs 480-line interlaced, so its per-pixel drawing cost
+halves - 89,653,406 GPU clocks to 45,132,122, 25% of a frame's GPU time down to
+13% - and it spends 1.1% fewer instructions waiting for it.
+
+The SPU peak in the table above is re-recorded at the same time: it had been
+28,461/23,222, which no build in this batch produces, so it went stale at some
+earlier point in the same way the Ridge Racer disc row had.
 
 **And then to 94,111,024** (bug 87), checksum and every pixel still unchanged,
 along with 42 fewer GP0 words and four fewer primitives. Drawing is charged on
@@ -727,17 +737,39 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 | Disc | f1000 | f2000 | f3000 | non-black | res | macroblocks | sectors |
 |---|---|---|---|---|---|---|---|
 | Air Combat | `a1e228e8a2ee662c` | `51080ad999e88621` | `5109d78c91007c12` | 51,200 | 320x240 | 241,800 | 5,262 |
-| Wild Arms | `327dc95f5519b75b` | `e53c89cb43c0075b` | `b828d822ec27badf` | 61,440 | 320x240 | 92,363 | 3,715 |
+| Wild Arms | `a94d9bb38769a360` | `e53c89cb43c0075b` | `b828d822ec27badf` | 61,440 | 320x240 | 92,363 | 3,715 |
 | Wild Arms 2 (cd1) | `55565300d8dc9411` | `81007d90c767846a` | `1742c42883771622` | 76,800 | 320x240 | 0 | 100 |
-| Vandal Hearts | `bcb8fe295f5b70db` | `7c1297df773e7342` | `fc66e49c14bf8861` | 76,725 | 320x240 | 127,500 | 5,230 |
+| Vandal Hearts | `837e5d63d4faa1cc` | `7c1297df773e7342` | `fc66e49c14bf8861` | 76,725 | 320x240 | 127,500 | 5,230 |
 | Legend of Mana | `e13bb6ec78144cc9` | `9797912c492383e1` | `b16eaf3906c9d6dd` | 76,312 | 320x240 | 154,500 | 5,313 |
 | Ridge Racer | `a727da8b232bddfd` | `2758d5485cdcc39e` | `952129b672f3fa12` | 76,463 | 320x240 | 0 | 1,578 |
 | Bomberman Party Ed. | `4a31d7a6c52734a4` | `45e058b70ed827c2` | `3ba049eea7e64970` | 68,913 | 320x240 | 145,800 | 4,652 |
 | Area 51 | `d7e8093204d0085b` | `5b1c23ab7d41b7d0` | `c20fec6d8f189e8d` | 51,855 | 256x240 | 100,080 | 5,490 |
 | Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `fb1d8340ba2617e0` | 75,943 | 320x240 | 0 | 668 |
 | Final Fantasy VIII | `aedac3154f8a0383` | `f3ee4d06bf3e0383` | `c184351a7e528d32` | 4,002 | 640x480 | 0 | 1,187 |
-| Ace Combat 3 | `8fe9a55647356011` | `5c75e2844b252161` | `b7d1c35c356ae822` | 54,862 | 320x240 | 80,864 | 2,255 |
+| Ace Combat 3 | `2d039a3114a00858` | `cf810ebe207eec51` | `b7d1c35c356ae822` | 54,862 | 320x240 | 80,864 | 2,255 |
 | Captain Tsubasa J | `f0779890ee9b1bb0` | `add4d55f3196ad03` | `816d516f2ba1d3f8` | 76,800 | 320x240 | 59,100 | 3,759 |
+
+Re-recorded after bug 89 (the rasteriser skips the field it is displaying),
+which moved four frame-1000 checksums and nothing else: Wild Arms, Vandal
+Hearts and Ace Combat 3 at frame 1000, Ace Combat 3 at frame 2000 as well.
+Every other checkpoint on every disc is byte-identical, CD sector counts
+included.
+
+All four are in the 640x480 interlaced boot phase at that point - the licence
+screen and the publisher logo, not the game - which is exactly where the skip
+applies and where nothing else in this table reaches. Checked by eye at 4x:
+the logos are the same, a few pixels further through their fade, with clean
+letterforms and no combing. Wild Arms' frame-1000 non-black count moves with
+them, 20,002 to 19,933, because a fade caught a moment later has a few more
+pixels below the black threshold; its frame-3000 count in the table is
+unchanged.
+
+Re-checked after bug 88 (only the active field is charged in interlaced mode):
+all twelve are byte-identical at all three checkpoints, CD sector counts
+included. That is the expected result rather than a weak one - only Final
+Fantasy VIII is in 480i, and it draws to the display area, so hardware would
+put down every line and the halving rightly does not apply. The BIOS boot above
+is where that change shows.
 
 Re-checked after bug 87 (drawing charged on clipped geometry): eleven of the
 twelve are byte-identical at all three checkpoints to the build from before the

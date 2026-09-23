@@ -101,6 +101,9 @@ class Gpu : public GpuCore {
     uint32_t transfer_log_count;
     // Pixels rejected by each of the reasons PlotPixel can reject one.
     uint64_t clipped;
+    // Pixels a draw left alone because their row was the field being shown
+    // (bug 89). Zero unless a game is in 480i interlace.
+    uint64_t field_skipped;
     uint64_t mask_rejected;
     uint64_t transparent_texels;
     // Texels sampled at each colour depth: 4-bit CLUT, 8-bit CLUT, 15-bit
@@ -391,6 +394,41 @@ class Gpu : public GpuCore {
   };
 
   // The per-pixel halves of the drawing cost - see PolygonSetupTicks above.
+  // Whether hardware is putting down only the active field, which halves what
+  // a primitive costs: 480 lines, vertical interlace on, and drawing to the
+  // display area prohibited. DuckStation's SkipDrawingToActiveField, and the
+  // same three bits.
+  //
+  // Our rasteriser does not skip those lines - it draws every one - so this
+  // charges half for twice the work. That is deliberate: what a game can
+  // observe is how long hardware would have taken, not how long we took.
+  bool DrawsOneFieldOnly() const {
+    return status_.vres && status_.vertical_interlace &&
+           !status_.draw_to_display;
+  }
+
+  // Which VRAM row parity the beam is currently showing, which is the one a
+  // draw skips. DuckStation's crtc_state.active_line_lsb: the display area's
+  // row in VRAM plus the field being shown, and zero outside 480i.
+  uint32_t ActiveLineLsb() const {
+    if (!status_.vres || !status_.vertical_interlace)
+      return 0;
+    return (display_vram_y_ + status_.odd_line) & 1u;
+  }
+
+  // Whether a draw leaves this VRAM row alone. In 480i with drawing to the
+  // display area prohibited, hardware puts down only the field that is not
+  // being shown - which is what bug 88 already charges half for, and bug 89
+  // makes true of the pixels as well.
+  //
+  // Primitives and fills skip; a CPU-to-VRAM transfer and a VRAM-to-VRAM copy
+  // do not, which is also where DuckStation draws the line - neither of its
+  // WriteVRAM or CopyVRAM paths is even told the field.
+  bool SkipsVramRow(int32_t y) const {
+    return DrawsOneFieldOnly() &&
+           (static_cast<uint32_t>(y) & 1u) == ActiveLineLsb();
+  }
+
   // One coordinate held inside the drawing area, for the cost estimates below.
   int32_t ClampToDrawArea(int32_t v, bool horizontal) const {
     const int32_t lo = horizontal ? draw_area_left_ : draw_area_top_;

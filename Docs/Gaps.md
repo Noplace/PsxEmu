@@ -276,7 +276,22 @@ Hill was charged 2.9 frames of drawing for every frame and ran at a third
 speed - so the rasteriser could never catch up and channel 2 spent the frame
 waiting.
 
+**And only the active field is charged (bug 88).** In 480-line interlace with
+drawing to the display area prohibited, hardware puts down half the lines, so
+the per-pixel cost of triangles, rectangles and lines halves - GPUSTAT bits 19
+and 22 set with bit 10 clear, which is DuckStation's condition. Setup costs and
+fills are not halved, which is also what it does.
+
+**And the pixels follow it (bug 89).** The rasteriser leaves the displayed
+field's rows alone rather than drawing every line and being charged for half,
+which is what bug 88 left inconsistent. Primitives and fills skip; a
+CPU-to-VRAM transfer and a VRAM-to-VRAM copy do not, which is where DuckStation
+draws the line as well. `Gpu::Stats::field_skipped` counts the pixels left
+alone and stays zero outside 480i.
+
 Four simplifications are left, and all four are deliberate:
+
+
 
 - **The store is deeper than the 16 words it reports.** Nothing here can make
   a CPU write wait, so a game that ignores the ready bits and writes anyway
