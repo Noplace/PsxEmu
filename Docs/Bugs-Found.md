@@ -5164,3 +5164,230 @@ ask the same question.
   about anything.
 - **The twelve discs are byte-identical**, and Silent Hill from a save state
   matches the previous build exactly, interrupt counts included.
+
+## 85. Drawing took no time at all
+
+The GPU drew every primitive instantly and reported itself ready for ever.
+GPUSTAT's three readiness bits were assignments - `ready_cmd = 1`,
+`ready_dma = 1`, `ready_vram_send = 1` - so the DMA request line derived from
+them never dropped either. A game asking "is the GPU keeping up?" was told yes,
+always, whatever it had just thrown at it.
+
+### What a primitive costs
+
+Nobody published a rasteriser timing table, so these are DuckStation's numbers,
+which are what the emulator community measured and settled on. Two parts:
+
+**Setup**, by shape, in GPU clocks:
+
+| | untextured | textured |
+|---|---|---|
+| triangle, flat | 46 | 226 |
+| triangle, shaded | 334 | 496 |
+| quad, flat | 82 | 262 |
+| quad, shaded | 370 | 532 |
+
+Rectangles and each line segment are a flat 16.
+
+**Per pixel**, on top:
+
+- a triangle costs its area; doubled if it samples a texture; half as much
+  again if each pixel has to read the framebuffer back, which blending and
+  mask-checking both do;
+- a rectangle costs a per-row figure times its rows, where a textured row
+  costs more and how much more depends on the depth - the texture cache
+  reloads every few pixels, and reloads less often when the sprite is narrow
+  enough for one row to hit what the last fetched;
+- a line costs its longer dimension - one pixel per step along whichever axis
+  it travels furthest;
+- a VRAM fill is `46 + (width / 8 + 9) * height`, charged by the row, because
+  it writes in wide bursts and ignores the drawing area entirely;
+- a VRAM-to-VRAM copy is `width * height * 2`: every pixel is read and then
+  written.
+
+`Gpu::AddDrawTicks` accumulates it, `Gpu::Tick` burns it down against the same
+GPU clock the dot clock already runs on, and **GPUSTAT bit 28 - ready to
+receive a DMA block - is 0 while anything is owed**, with the DMA request line
+following it.
+
+Bits 26 and 27 still read ready always, deliberately. Bit 26 is "ready to
+receive a command word", and there is no queue here for words to wait in - a
+GP0 word is executed as it arrives - so clearing it would stall software with
+nothing to drain it. Bit 27 means "able to hand VRAM over", not "a transfer is
+running"; reporting it only during a transfer is what used to leave the BIOS
+shell spinning. Both are in Gaps.md as what is left of this.
+
+`pending_draw_ticks_` is deliberately not in the save state: it is a few
+thousand clocks of work in flight, gone a scanline later, and saving it would
+change the state format and refuse every save state that exists for a number
+worth nothing after a frame.
+
+### Verified, 2026-09-22
+
+- **`gpu_test`: 37 -> 44.** A flat untextured triangle of 5,000 pixels is
+  charged 46 + 5000; a semi-transparent one 46 + 5000 + 2500; bit 28 and the
+  DMA request line are low while that is owed and come back after the machine
+  has run long enough to pay it, not merely by being asked twice.
+- **Every other harness green**, 1,378 checks.
+- **The BIOS boot draws the same picture** - `c7c8db90c5984798`, all 305,920
+  pixels, the same 907 interrupts - in 92,367,970 instructions instead of
+  92,082,652. That 0.3% is the shell waiting on bit 28 between primitives,
+  which is the first evidence that anything here reads it.
+- **Eleven of the twelve discs are byte-identical.** Ridge Racer's frame 3000
+  moved, which is the right game to move: it is the most GPU-heavy of the set
+  and the one whose primitives reach the drawing area's edge. Frames 1000 and
+  2000 match exactly, with the same GP0 word counts, so the divergence starts
+  later - its attract demo reaches a different point once the game waits for
+  the GPU, and frame 3000 is a clean close-up of the car rather than the wide
+  track shot. Checked by eye; checked again at 6,000 frames, where it is still
+  drawing steadily (18.1M GP0 words) with a full screen and no hang.
+
+**What this does not do** is make the GPU refuse work. DMA channel 2 still
+hands over a whole transfer however busy the GPU is, because there is no queue
+to fill and nothing to apply back-pressure with. That, and charging transfers
+their own time, is the rest of the entry in Gaps.md.
+
+## 86. The GP0 queue, and a DMA that waits for it
+
+Bug 85 gave the GPU time to spend but nowhere to make anyone wait: a GP0 word
+was acted on where it landed, so the port was always empty and always ready.
+This is the other half - the 16-word queue hardware puts in front of the
+rasteriser, and DMA channel 2 waiting on it.
+
+### What changed
+
+- **`Gpu::WriteData` pushes into a queue** and `Gpu::DrainQueue` takes words
+  out of it for as long as the rasteriser is free. The command assembler
+  underneath is untouched; it simply gets its words from the queue now.
+- **GPUSTAT bits 26 and 28 are the queue's occupancy** against the 16 words
+  hardware holds, and the DMA request line follows them. Bit 27 still reports
+  ready always, for the reason in bug 85.
+- **DMA channel 2 stops when the port is full** - between linked-list nodes,
+  or on a block boundary in block mode - and `Dma::Tick` runs it again when
+  the GPU has made room. MADR and BCR are rewritten to describe what is left,
+  so a paused transfer is entirely in its own registers and a save state needs
+  nothing added. That is the shape channel 1 already used to wait for the
+  MDEC.
+- **`Gpu::Tick` drains** whatever the rasteriser has caught up on.
+
+### Three things it does not do, on purpose
+
+- **The store is deeper than the 16 it reports.** Nothing in this emulator can
+  make a CPU write wait - hardware stalls the CPU, and there is no mechanism
+  here to do that - so a game that ignores the ready bits and writes anyway
+  must not lose words. The depth is what software is told; the capacity is
+  what is actually kept, and a counter records anything lost past it. It has
+  never fired.
+- **A pause happens at a node or block boundary**, not mid-node, so one
+  linked-list node of up to 255 words still goes over in one piece.
+- **Transfers are not charged, and are not queued.** A CPU-to-VRAM blit costs
+  no GPU time, and its data words flow past a busy rasteriser instead of
+  waiting behind it: the blitter is a separate piece of the chip, and holding
+  those words back deadlocks a game that uploads a texture between two
+  primitives - which is what the first version of this did.
+
+**One safety net.** Reading GPUREAD forces the queue to run first, giving the
+drawing time away rather than answering from a stale latch. Deferring
+execution means VRAM is not necessarily current the instant a command has been
+written, and that is the one way this could have turned into a wrong picture
+rather than a slower one. `gpu_test` needed the same treatment - four of its
+checks write commands and then read VRAM directly, which a game cannot do, and
+they now let the GPU run first.
+
+### Verified, 2026-09-22
+
+- **`gpu_test`: 44 -> 48.** Sixteen words behind a busy rasteriser fill the
+  port: bits 26 and 28 and the DMA request line all drop, the queue really is
+  holding them, running the machine empties it, and nothing is ever dropped.
+- **Every other harness green**, 1,382 checks.
+- **The BIOS boot draws the same picture** - `c7c8db90c5984798`, all 305,920
+  pixels - in 94,118,232 instructions, up from 92,367,970, with one more
+  interrupt (908). All of that is the shell waiting on a GPU that is no longer
+  instantaneous; together with bug 85 it is 2.2% more instructions for the
+  same 400 frames.
+- **Eleven of the twelve discs are byte-identical at all three checkpoints,**
+  Ridge Racer excepted - the same game bug 85 moved, and for the same reason.
+  Its frame 3000 is now a clean shot of the car on the mountain section,
+  checked by eye, and at 6,000 frames it is still drawing steadily (17.5M GP0
+  words, full screen). Bomberman and Wild Arms each read one CD sector more or
+  less at a checkpoint, with identical checksums: pacing, not content.
+- **No cost to emulation speed**: Ridge Racer runs 1.46x real time against
+  1.43x before, which is noise.
+
+## 87. The drawing cost was charged on unclipped geometry, and Silent Hill crawled
+
+Bugs 85 and 86 together made the GPU take time and made DMA channel 2 wait for
+it. Silent Hill then ran at roughly a third speed - the user's report, and the
+first thing either bug had visibly broken.
+
+### What was wrong
+
+`Gpu::TriangleDrawTicks` charged for the triangle's **whole** area, and
+`Gpu::RectangleDrawTicks` for its whole width and height, whether or not any of
+it was inside the drawing area. A 3D game aims large polygons at a small
+viewport and lets the drawing area throw the rest away, so Silent Hill was
+paying for geometry it never rasterised: 2,536,564 GPU clocks a frame against
+the 887,928 a frame actually holds - it was being charged 2.9 frames of drawing
+for every frame. The rasteriser could never catch up, the queue was full
+whenever the game looked, and channel 2 spent the frame waiting.
+
+DuckStation clamps each vertex to the drawing area before taking the area, and
+intersects a rectangle with it, for exactly this reason. Both now do the same.
+It is still an approximation for a primitive only partly outside - clamping the
+corners undershoots where intersecting the edges would be exact - which is the
+tradeoff DuckStation documents and takes.
+
+### The second half: idle time was bankable
+
+`Gpu::AdvanceDrawing` (bug 86's fix for a transfer's own cycles reaching the
+rasteriser before the next batch boundary) credited **all** of its ticks to
+`prepaid_ticks_` even when there was no drawing owed to spend them on. `Tick`
+pays that bank back before it draws anything, and the bank only ever grew, so
+the longer a game ran the less of each frame the rasteriser got. Only what the
+rasteriser actually had work for is banked now. On its own this changed nothing
+measurable - the clamping above was the whole of the slowdown - but it is wrong
+either way and would have surfaced in a game that idles the GPU.
+
+### One reporting bug it turned up
+
+`boot_runner`'s "draw ticks a frame" divided by `gpu().frame_count()`, which a
+loaded save state restores from whenever that state was made. Every per-frame
+figure measured from a save state was therefore understated by however long the
+original session had been running - which is why the first look at this said
+the GPU was using 1% of its time when it was using 95%. It divides by the
+frames the run itself produced now.
+
+### Verified, 2026-09-23
+
+- **Silent Hill is back to speed.** From the user's save slot 1: 1,762,279 GP0
+  words over 300 frames against 1,771,177 for the build from before bug 85,
+  and 7,818,771 against 7,824,594 over 1,200 frames - 99.5% and 99.93%. The
+  gap narrows as the run lengthens, which is what rules out anything that
+  accumulates; what is left is the FIFO pacing those bugs were for. Drawing now
+  costs 58% of the GPU's time here, against the 286% it was being charged.
+- **`gpu_test`: 48 -> 53.** The same triangle costs its full area inside the
+  drawing area, a quarter of it when only a 50x50 corner is kept, and setup
+  alone when it is wholly outside; a rectangle is charged on its clipped width
+  and height. Four of the five fail against the unclamped code and pass with it.
+- **Every harness green**, 1,387 checks in the counted ten and 1,969 across all
+  seventeen. `host_test`'s three failures were a pinned BIOS instruction count
+  left at 92,367,970 from before bug 85 - its framebuffer checksum matched
+  exactly - and are now on 94,111,024.
+- **The BIOS boot draws the same picture** - `c7c8db90c5984798`, all 305,920
+  pixels - with the same 908 interrupts and the same I_STAT, I_MASK and SR, in
+  94,111,024 instructions and 42 fewer GP0 words.
+- **Eleven of the twelve discs are byte-identical** at all three checkpoints to
+  the pre-timing build. Ridge Racer's frame 3000 moved and was checked by eye:
+  the same attract-mode shot a fraction of a second later, same pixel count.
+  Wild Arms reads one CD sector fewer at frame 2000 with the same checksum.
+  See Docs/Test-Suite.md for the table and for the stale row this turned up.
+
+**How it was found**, because the first two hours went the wrong way. The
+symptom was the CPU spinning: nearly as many instructions for a third of the
+drawing, hot in a loop at 0x80013130 that reads Timer 1's counter twice until
+two reads agree. That is a game waiting, not a game working, and it pointed at
+the DMA resume path - which was wrong. What settled it was a build with two
+switches, one to stop the queue ever reporting full and one to charge no
+drawing time at all: either one restored full speed, so the stall was real and
+the cost model was what drove it. Only then did the 95% figure above make the
+cause obvious. The switches were temporary and are not in the tree.

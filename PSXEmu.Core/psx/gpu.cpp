@@ -111,6 +111,9 @@ namespace emulation {
             memset(framebuffer_, 0, sizeof(uint32_t) * kVramWidth * kVramHeight);
 
             status_.raw = 0x14802000;
+            pending_draw_ticks_ = 0;
+            queue_head_ = queue_size_ = 0;
+            prepaid_ticks_ = 0;
             fifo_count_ = 0;
             fifo_needed_ = 0;
             transfer_mode_ = kTransferNone;
@@ -199,6 +202,11 @@ namespace emulation {
             io.Plain(scanline_);
             io.Plain(was_in_vblank_);
             io.Plain(frame_count_);
+            // pending_draw_ticks_ is deliberately not saved. It is at most a few
+            // thousand GPU clocks of work in flight, it is gone a scanline later, and
+            // saving it would change the state format - which would refuse every save
+            // state anyone already has, for a number that is worth nothing once the
+            // machine has run for a frame. A loaded state resumes with an idle GPU.
 
             // framebuffer_ is derived, not saved - rebuild it now so a caller that
             // reads it right after a load (boot_runner --ppm, the front end's next
@@ -222,18 +230,21 @@ namespace emulation {
 
         uint32_t Gpu::ReadStatus() {
             GpuStatus s = status_;
-            // The core is not cycle-accurate enough to model the FIFO filling up, so all
-            // three ready bits report permanently ready. Reporting busy would deadlock
-            // software that spins on them.
+            // Bits 26 and 28 - ready for a command word, ready for a DMA block - are
+            // the GP0 queue's occupancy against the 16 words hardware holds. They drop
+            // when the rasteriser falls behind, which is what makes drawing time
+            // visible to software and what DMA channel 2 waits on. The DMA request
+            // line below follows them.
             //
-            // Bit 27 has to be included in that. Reporting it only while a VRAM-to-CPU
-            // transfer is in flight looks more honest, but it is not what the bit means:
-            // it says the GPU is ready to hand VRAM over, not that a transfer is already
-            // running. Software that checks readiness *before* issuing the read command
-            // waits for a bit that this GPU would only set afterwards, and spins for
-            // ever - which is exactly where the BIOS shell was stopping.
-            s.ready_cmd = 1;
-            s.ready_dma = 1;
+            // Bit 27 stays set. Reporting it only while a
+            // VRAM-to-CPU transfer is in flight looks more honest, but it is not what
+            // the bit means: it says the GPU is ready to hand VRAM over, not that a
+            // transfer is already running. Software that checks readiness *before*
+            // issuing the read command waits for a bit that this GPU would only set
+            // afterwards, and spins for ever - which is exactly where the BIOS shell
+            // was stopping.
+            s.ready_cmd = ready_for_dma() ? 1 : 0;
+            s.ready_dma = ready_for_dma() ? 1 : 0;
             s.ready_vram_send = 1;
 
             switch (s.dma_direction) {
@@ -246,6 +257,17 @@ namespace emulation {
         }
 
         uint32_t Gpu::ReadData() {
+            // Reading the port means software wants what the GPU has produced, and on
+            // hardware it would have waited for that itself. Anything still queued is
+            // run first - drawing time is given away rather than answering with a
+            // stale latch, which is the one way the queue could turn into a wrong
+            // picture instead of a slower one.
+            if (queue_size_ > 0 && transfer_mode_ != kTransferFromVram) {
+                const int32_t owed = pending_draw_ticks_;
+                pending_draw_ticks_ = 0;
+                DrainQueue();
+                pending_draw_ticks_ = owed;
+            }
             if (transfer_mode_ != kTransferFromVram)
                 return read_latch_;
 
@@ -266,13 +288,62 @@ namespace emulation {
             return result;
         }
 
+        // A word arriving at GP0. It goes into the queue and is acted on from there,
+        // which is the whole point: a busy rasteriser leaves it waiting, exactly as a
+        // real FIFO would, and GPUSTAT says so (bug 86).
         void Gpu::WriteData(uint32_t data) {
             ++stats_.gp0_words;
-            if (transfer_mode_ == kTransferToVram) {
-                StepTransfer(data);
-                return;
-            }
+            PushQueue(data);
+            DrainQueue();
+        }
 
+        void Gpu::PushQueue(uint32_t word) {
+            if (queue_size_ >= kQueueCapacity) {
+                // Nothing here can stall a CPU write, so a game that ignores the ready
+                // bits must not lose words. Catch up by force - drawing time is given
+                // away rather than data - and only then give up.
+                const int32_t owed = pending_draw_ticks_;
+                pending_draw_ticks_ = 0;
+                DrainQueue();
+                pending_draw_ticks_ = (queue_size_ >= kQueueCapacity) ? 0 : owed;
+                if (queue_size_ >= kQueueCapacity) {
+                    ++stats_.queue_overflows;
+                    return;
+                }
+            }
+            queue_[(queue_head_ + queue_size_) % kQueueCapacity] = word;
+            ++queue_size_;
+            if (queue_size_ > stats_.queue_peak)
+                stats_.queue_peak = queue_size_;
+        }
+
+        uint32_t Gpu::PopQueue() {
+            const uint32_t word = queue_[queue_head_];
+            queue_head_ = (queue_head_ + 1) % kQueueCapacity;
+            --queue_size_;
+            return word;
+        }
+
+        // Words leave the queue while the GPU has nothing else to do. A VRAM transfer's
+        // data keeps flowing whatever the rasteriser is doing: the blitter is a separate
+        // piece of the chip, and holding its words back behind a draw would deadlock a
+        // game that uploads a texture between two primitives.
+        void Gpu::DrainQueue() {
+            while (queue_size_ > 0) {
+                if (transfer_mode_ == kTransferToVram) {
+                    StepTransfer(PopQueue());
+                    continue;
+                }
+                if (drawing())
+                    break;
+                FeedCommand(PopQueue());
+            }
+        }
+
+        // The command assembler: collects a command's words and runs it once the last
+        // one has arrived. This is what WriteData was before the queue went in front
+        // of it, unchanged apart from taking its word from the queue.
+        void Gpu::FeedCommand(uint32_t data) {
             if (fifo_count_ == 0) {
                 fifo_needed_ = CommandLength(data >> 24);
                 // A polyline runs until its terminator rather than for a fixed length.
@@ -424,6 +495,9 @@ namespace emulation {
                 status_.raw = 0x14802000;
                 fifo_count_ = 0;
                 fifo_needed_ = 0;
+                // A reset abandons whatever was being drawn, so nothing is owed.
+                pending_draw_ticks_ = 0;
+                queue_head_ = queue_size_ = 0;
                 transfer_mode_ = kTransferNone;
                 draw_area_left_ = draw_area_top_ = 0;
                 draw_area_right_ = draw_area_bottom_ = 0;
@@ -567,6 +641,9 @@ namespace emulation {
             const uint32_t w = ((fifo_[3] & 0xFFFF) - 1 & 0x3FF) + 1;
             const uint32_t h = (((fifo_[3] >> 16) & 0xFFFF) - 1 & 0x1FF) + 1;
 
+            // Each pixel is read and then written, hence twice the area.
+            AddDrawTicks(static_cast<int32_t>(w * h * 2));
+
             for (uint32_t row = 0; row < h; ++row) {
                 for (uint32_t col = 0; col < w; ++col) {
                     const uint16_t pixel = VramAt(sx + col, sy + row);
@@ -592,6 +669,10 @@ namespace emulation {
             const uint32_t w = ((fifo_[2] & 0x3FF) + 0x0F) & ~0x0F;
             const uint32_t h = (fifo_[2] >> 16) & 0x1FF;
 
+            // A fill writes VRAM directly and in wide bursts, so it is charged by the
+            // row rather than by the pixel.
+            AddDrawTicks(46 + static_cast<int32_t>((w / 8 + 9) * h));
+
             // Clipped at the right and bottom edges rather than wrapped. VramAt masks
             // its coordinates, so running off an edge used to come back round and land
             // on whatever was at the other side - and Silent Hill leans on that not
@@ -615,6 +696,138 @@ namespace emulation {
                     NoteWatchWrite(vx, vy);
                 }
             }
+        }
+
+        // ---------------------------------------------------------------------------
+        // Drawing time
+        //
+        // A real GPU takes time to rasterise, and software can tell: GPUSTAT's ready
+        // bits drop while it is busy, and with them the DMA request line. This core
+        // drew everything instantly and reported ready for ever, which is the "no
+        // drawing time" entry in Docs/Gaps.md.
+        //
+        // The costs below are DuckStation's, and they are not Sony's: nobody published
+        // a rasteriser timing table, so these are what the emulator community measured
+        // and agreed on. Two parts to each primitive - a fixed setup, then a cost per
+        // pixel that depends on what the pixel costs to produce.
+        // ---------------------------------------------------------------------------
+
+        // See the declaration: a transfer's own cycles, spent on the rasteriser now
+        // rather than at the next batch boundary, and remembered so Tick does not
+        // spend them again.
+        void Gpu::AdvanceDrawing(uint32_t cpu_cycles) {
+            if (cpu_cycles == 0)
+                return;
+            const uint32_t ticks =
+                (cpu_cycles * kGpuClockNumerator) / kGpuClockDenominator;
+            // Only what the rasteriser actually had work for is remembered. Time it
+            // spent idle is not bankable: crediting it here would have Tick spend its
+            // whole budget paying the bank back instead of drawing, and since the
+            // bank only ever grows the rasteriser would fall further behind the
+            // longer a game ran (bug 87).
+            if (pending_draw_ticks_ > 0) {
+                const uint32_t used =
+                    (ticks < static_cast<uint32_t>(pending_draw_ticks_))
+                        ? ticks : static_cast<uint32_t>(pending_draw_ticks_);
+                pending_draw_ticks_ -= static_cast<int32_t>(used);
+                prepaid_ticks_ += used;
+            }
+            DrainQueue();
+        }
+
+        void Gpu::AddDrawTicks(int32_t ticks) {
+            if (ticks <= 0)
+                return;
+            pending_draw_ticks_ += ticks;
+            stats_.draw_ticks += static_cast<uint64_t>(ticks);
+        }
+
+        // Setup, by primitive shape: a flat untextured triangle is cheap, a shaded
+        // textured quad is more than ten times dearer.
+        int32_t Gpu::PolygonSetupTicks(bool quad, bool shaded, bool textured) {
+            static const int32_t kSetup[2][2][2] = {
+                // [quad][shaded][textured]
+                { {  46, 226 }, { 334, 496 } },
+                { {  82, 262 }, { 370, 532 } },
+            };
+            return kSetup[quad ? 1 : 0][shaded ? 1 : 0][textured ? 1 : 0];
+        }
+
+        // One triangle: its area in pixels, doubled if it samples a texture, and half
+        // as much again if each pixel has to read the framebuffer back - which is what
+        // blending and mask-checking both do.
+        int32_t Gpu::TriangleDrawTicks(const Vertex& a, const Vertex& b, const Vertex& c,
+            const DrawState& state) const {
+            // Clamped to the drawing area first: what a primitive costs is what it
+            // actually rasterises, and a game that throws big polygons at a small
+            // viewport - Silent Hill's 3D view is one - pays only for the part that
+            // lands. Charging the unclipped area made it seven times dearer than the
+            // hardware and left the GPU permanently behind (bug 87). It is still an
+            // approximation for a triangle only partly outside: clamping the corners
+            // undershoots rather than intersecting the edges, which is what
+            // DuckStation does too.
+            const int32_t ax = ClampToDrawArea(a.x, true),  ay = ClampToDrawArea(a.y, false);
+            const int32_t bx = ClampToDrawArea(b.x, true),  by = ClampToDrawArea(b.y, false);
+            const int32_t cx = ClampToDrawArea(c.x, true),  cy = ClampToDrawArea(c.y, false);
+            const int64_t twice_area =
+                static_cast<int64_t>(ax) * by + static_cast<int64_t>(bx) * cy +
+                static_cast<int64_t>(cx) * ay - static_cast<int64_t>(ax) * cy -
+                static_cast<int64_t>(bx) * ay - static_cast<int64_t>(cx) * by;
+            int64_t pixels = (twice_area < 0 ? -twice_area : twice_area) / 2;
+            if (state.textured)
+                pixels += pixels;
+            if (state.semi_transparent || check_mask_)
+                pixels += (pixels + 1) / 2;
+            if (pixels > 0x00FFFFFF)
+                pixels = 0x00FFFFFF;   // a primitive larger than VRAM is a bad packet
+            return static_cast<int32_t>(pixels);
+        }
+
+        // One rectangle or sprite: a cost per row times the rows. A textured row costs
+        // more, and how much more depends on the depth - the texture cache reloads
+        // every few pixels, and reloads less often when the sprite is narrow enough for
+        // a row to hit what the last one fetched.
+        int32_t Gpu::RectangleDrawTicks(int32_t x, int32_t y, int32_t width,
+            int32_t height, const DrawState& state) const {
+            // Clipped to the drawing area, for the same reason the triangle above is.
+            const int32_t left   = (x > draw_area_left_) ? x : draw_area_left_;
+            const int32_t top    = (y > draw_area_top_) ? y : draw_area_top_;
+            const int32_t right  = ((x + width - 1) < draw_area_right_)
+                                       ? (x + width - 1) : draw_area_right_;
+            const int32_t bottom = ((y + height - 1) < draw_area_bottom_)
+                                       ? (y + height - 1) : draw_area_bottom_;
+            width = right - left + 1;
+            height = bottom - top + 1;
+            if (width <= 0 || height <= 0)
+                return 0;
+            int64_t ticks_per_row = width;
+            if (state.textured) {
+                switch (state.texpage_colors) {
+                case 0:   // 4-bit CLUT
+                    ticks_per_row += width;
+                    break;
+                case 1:   // 8-bit CLUT: 8 bytes fetched every 4 pixels
+                    if (width > 128)
+                        ticks_per_row += (width / 4) * 8;
+                    else if ((width * height) > 2048)
+                        ticks_per_row += (width / 4) * (4 * (128 / (width ? width : 1)));
+                    else
+                        ticks_per_row += width;
+                    break;
+                default:  // 15-bit direct: the same again, in 2x2 blocks
+                    if (width > 128)
+                        ticks_per_row += (width / 2) * 8;
+                    else if ((width * height) > 1024)
+                        ticks_per_row += (width / 4) * (8 * (128 / (width ? width : 1)));
+                    else
+                        ticks_per_row += width;
+                    break;
+                }
+            }
+            if (state.semi_transparent || check_mask_)
+                ticks_per_row += (width + 1) / 2;
+            const int64_t total = ticks_per_row * height;
+            return static_cast<int32_t>(total > 0x00FFFFFF ? 0x00FFFFFF : total);
         }
 
         // ---------------------------------------------------------------------------
@@ -702,6 +915,11 @@ namespace emulation {
 
             RecordSetup(command, state, raw_page, raw_clut);
 
+            AddDrawTicks(PolygonSetupTicks(quad, gouraud, state.textured));
+            AddDrawTicks(TriangleDrawTicks(v[0], v[1], v[2], state));
+            if (quad)
+                AddDrawTicks(TriangleDrawTicks(v[1], v[2], v[3], state));
+
             RasterTriangle(v[0], v[1], v[2], state);
             if (quad)
                 RasterTriangle(v[1], v[2], v[3], state);
@@ -746,8 +964,17 @@ namespace emulation {
                 current.b = static_cast<uint8_t>(colour >> 16);
                 current.u = current.v = 0;
 
-                if (have_previous)
+                if (have_previous) {
+                    // A line costs its longer dimension - it plots one pixel per step
+                    // along whichever axis it travels furthest - plus a flat setup, the
+                    // same 16 a rectangle pays.
+                    const int32_t dx = current.x - previous.x;
+                    const int32_t dy = current.y - previous.y;
+                    const int32_t span_x = (dx < 0) ? -dx : dx;
+                    const int32_t span_y = (dy < 0) ? -dy : dy;
+                    AddDrawTicks(16 + ((span_x > span_y) ? span_x : span_y));
                     DrawLineSegment(previous, current, state);
+                }
                 previous = current;
                 have_previous = true;
             }
@@ -811,6 +1038,10 @@ namespace emulation {
             const uint8_t r = static_cast<uint8_t>(colour);
             const uint8_t g = static_cast<uint8_t>(colour >> 8);
             const uint8_t b = static_cast<uint8_t>(colour >> 16);
+
+            // A rectangle's setup is flat-rate, unlike a polygon's.
+            AddDrawTicks(16);
+            AddDrawTicks(RectangleDrawTicks(x, y, w, h, state));
 
             RecordSetup(command, state, 0, 0);
 
@@ -1274,6 +1505,28 @@ namespace emulation {
                 }
                 was_in_vblank_ = now_in_vblank;
             }
+            // Burn down whatever drawing is still owed. `gpu_clocks` above is this
+            // call's elapsed time in the GPU's own clock, already carried across calls,
+            // so it is what the rasteriser gets through too.
+            // Whatever a transfer already paid for (AdvanceDrawing) comes off first,
+            // so these cycles are not spent on the rasteriser twice. The display
+            // timing above is not affected: that time passed either way.
+            uint32_t payable = gpu_clocks;
+            if (prepaid_ticks_ > 0) {
+                const uint32_t used =
+                    (prepaid_ticks_ < payable) ? prepaid_ticks_ : payable;
+                prepaid_ticks_ -= used;
+                payable -= used;
+            }
+            if (pending_draw_ticks_ > 0 && payable > 0) {
+                pending_draw_ticks_ -= static_cast<int32_t>(payable);
+                if (pending_draw_ticks_ < 0)
+                    pending_draw_ticks_ = 0;
+            }
+            // Whatever the rasteriser has caught up on, the queue can now feed it.
+            if (queue_size_ > 0 && !drawing())
+                DrainQueue();
+
             dot_accumulator_ += remaining * kGpuClockDenominator;
             return frame_completed;
         }

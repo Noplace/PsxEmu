@@ -4,7 +4,8 @@ Hardware and features still missing, ordered by how likely each is to stop a
 game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 [Bugs-Found.md](Bugs-Found.md) for what has already been fixed.
 
-Last audited 2026-09-21, after bug 82 (the mouse's three motion modes). Every
+Last audited 2026-09-21, after bug 82 (the mouse's three motion modes), with
+the GP0 queue entry below brought up to date after bug 87. Every
 entry below was re-read against the code, not carried forward: each claim was
 checked at the line it describes, and what follows is what that reading found.
 
@@ -48,7 +49,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 297, gte 106, timer 70, sio 146, spu 108, gpu 37, mdec 85, media 271, mc 77, debug 174 - 1,371
+cpu 297, gte 106, timer 70, sio 146, spu 108, gpu 48, mdec 85, media 271, mc 77, debug 174 - 1,382
 checks, no failures (re-run 2026-09-21, after bugs 78-84). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
@@ -251,21 +252,51 @@ Approximate rather than wrong:
 - **Everything above still moves in 32-cycle steps**, which is the real floor:
   `IOInterface::Tick` batches, and a counter read runs the batch early.
 
-### No GP0 FIFO, and no drawing time
+### The GP0 queue and drawing time - built, with four simplifications left
 
-GPUSTAT's three readiness bits are assignments, not answers: `gpu.cpp` sets
-`ready_cmd`, `ready_dma` and `ready_vram_send` to 1 every time it builds the
-register, and the DMA request bit is derived from those. So the GPU is always
-ready, the command FIFO is unbounded, and a primitive costs no time to draw -
-where hardware has a 64-byte FIFO and a rasteriser that takes as long as the
-triangle is big.
+**Drawing takes time now (bug 85).** Every primitive is charged in GPU clocks -
+a setup cost by shape, then a per-pixel cost that doubles for a texture and
+rises again for blending or mask-checking - and `Gpu::Tick` burns it down.
+GPUSTAT bit 28, ready to receive a DMA block, drops while the rasteriser owes
+time, and the DMA request line drops with it. So a game that watches the GPU's
+load now sees one. The constants are DuckStation's, which are community
+measurements rather than anything Sony published.
 
-Nothing here has been seen to matter: games drive the GPU through DMA and the
-BIOS waits on flags that are always set, so both come back immediately. What
-would notice is a game that fills the FIFO deliberately and waits for room, or
-one that times a frame by how long a large primitive took. `gpu_test` pins the
-current behaviour down on purpose, so a future FIFO is a deliberate change
-rather than a surprise (bug 40).
+**And the queue is real (bug 86).** GP0 words wait in it rather than being
+acted on where they land, the port reports full at the 16 words hardware
+holds - bits 26 and 28, and the DMA request line with them - and DMA channel 2
+stops when it is full and picks up when the rasteriser has made room, with
+MADR and BCR describing the remainder so a paused transfer needs nothing
+remembered on the side.
+
+**And the cost is charged on what actually rasterises (bug 87).** A primitive's
+area is taken after clamping it to the drawing area, not before. Charging the
+whole of it billed a 3D game for geometry the drawing area threw away - Silent
+Hill was charged 2.9 frames of drawing for every frame and ran at a third
+speed - so the rasteriser could never catch up and channel 2 spent the frame
+waiting.
+
+Four simplifications are left, and all four are deliberate:
+
+- **The store is deeper than the 16 words it reports.** Nothing here can make
+  a CPU write wait, so a game that ignores the ready bits and writes anyway
+  would lose words if the store were exactly 16; hardware would have stalled
+  its CPU instead. The depth is what software is told; the capacity is what is
+  kept, and `Gpu::Stats::queue_overflows` counts anything lost beyond it.
+- **A paused transfer stops at a node or block boundary**, not mid-node, so a
+  single linked-list node of up to 255 words still goes over in one piece.
+- **A partly-offscreen primitive is estimated by clamping its corners**, which
+  undershoots where intersecting its edges with the drawing area would be
+  exact. DuckStation documents the same approximation and takes it.
+- **Transfers are not charged.** A CPU-to-VRAM or VRAM-to-CPU blit still costs
+  no GPU time, where hardware spends real time on every word. Its words do
+  flow past a busy rasteriser rather than queueing behind it, because the
+  blitter is a separate piece of the chip and holding them back would deadlock
+  a game that uploads a texture between two primitives.
+
+Reading GPUREAD also forces whatever is queued to run first, drawing time
+given away rather than answering from a stale latch - the one way the queue
+could have turned into a wrong picture rather than a slower one.
 
 This entry was missing until the 2026-09-21 audit, while Test-Suite.md's
 `gpu_test` section had been pointing at it by name.

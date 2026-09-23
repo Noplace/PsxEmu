@@ -1074,6 +1074,10 @@ int main(int argc, char** argv) {
   std::vector<int16_t> audio;
   uint64_t instructions = 0;
   uint64_t last_frame = system->gpu().frame_count();
+  // Frames this run produced. gpu().frame_count() is not it: a loaded save state
+  // restores the counter the state was made with, so dividing by it understates a
+  // per-frame figure by however long the original session had been running.
+  const uint64_t first_frame = last_frame;
   int frames = 0;
   uint16_t last_buttons = 0;
 
@@ -1582,6 +1586,22 @@ int main(int argc, char** argv) {
   printf("               %llu primitives, %llu pixels plotted\n",
          static_cast<unsigned long long>(gpu_stats.primitives),
          static_cast<unsigned long long>(gpu_stats.pixels));
+  // What the rasteriser was charged, against what a frame actually holds: the
+  // GPU runs at 53.2224 MHz and a frame is 1/59.94 of a second, so a little
+  // under 890,000 of these. Over that, on average, and the GPU cannot keep up
+  // with what the game is asking for and the game waits (bugs 85, 86).
+  const double kTicksPerFrame = 53222400.0 / 59.94;
+  const uint64_t frames_drawn = system->gpu().frame_count() - first_frame;
+  printf("               %llu draw ticks, %.0f a frame of %.0f (%.0f%% of the "
+         "GPU's time)\n",
+         static_cast<unsigned long long>(gpu_stats.draw_ticks),
+         frames_drawn ? static_cast<double>(gpu_stats.draw_ticks) / frames_drawn : 0.0,
+         kTicksPerFrame,
+         frames_drawn ? 100.0 * static_cast<double>(gpu_stats.draw_ticks) /
+                            (frames_drawn * kTicksPerFrame) : 0.0);
+  printf("               GP0 queue peaked at %u words, %llu dropped\n",
+         gpu_stats.queue_peak,
+         static_cast<unsigned long long>(gpu_stats.queue_overflows));
   printf("               %llu clipped, %llu mask-rejected, %llu transparent\n",
          static_cast<unsigned long long>(gpu_stats.clipped),
          static_cast<unsigned long long>(gpu_stats.mask_rejected),

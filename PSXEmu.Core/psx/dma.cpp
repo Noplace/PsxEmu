@@ -162,6 +162,22 @@ void Dma::Tick(uint32_t cycles) {
       CompletePending(channel);
   }
 
+  // Channel 2 feeding the GPU, waiting on a full GP0 port. MADR and BCR
+  // describe whatever is left, so picking up again is simply running the
+  // channel - see Dma2 (bug 86).
+  if (channels[2].busy_cycles == DmaChannel::kAwaitingRequest &&
+      system_->gpu_core()->ready_for_dma()) {
+    transfer_cycles_ = 0;
+    channels[2].busy_cycles = 0;
+    Dma2();
+    if (transfer_cycles_ > 0)
+      system_->cpu().AccountCycles(transfer_cycles_);
+    if (channels[2].busy_cycles != DmaChannel::kAwaitingRequest) {
+      channels[2].busy_cycles =
+          transfer_cycles_ > 0 ? static_cast<int32_t>(transfer_cycles_) : 1;
+    }
+  }
+
   // Channel 0 feeding the MDEC. After the loop above, so the countdown a last
   // block arms starts with the next batch rather than this one.
   if (mdec_in_wait_ > 0) {
@@ -617,12 +633,32 @@ void Dma::Dma2() {
     uint32_t address = channels[2].madr & 0x1FFFFF;
     uint32_t guard = 0;
     a1 = a2 = a3 = 0xFFFFFF;
+    // How much of this transfer's own time the GPU has already been given.
+    uint32_t charged_to_gpu = transfer_cycles_;
 
     do {
       if (guard++ > 2000000)
         break;
       if (check_endless_loop(address))
         break;
+
+      // The GPU's port has 16 words and a rasteriser that empties them in its
+      // own time (bug 86). When it is full, the transfer gives the GPU the
+      // time it has itself spent so far - the rasteriser has been drawing
+      // through those cycles, and waiting for the next 32-cycle batch to say
+      // so throttles this channel to 16 words a batch whatever the GPU is
+      // doing (bug 87) - and only stops if the port is still full afterwards.
+      // It stops between nodes, so MADR alone says where to pick up, and
+      // Dma::Tick runs the channel again when there is room.
+      if (!gpu->ready_for_dma()) {
+        gpu->AdvanceDrawing(transfer_cycles_ - charged_to_gpu);
+        charged_to_gpu = transfer_cycles_;
+        if (!gpu->ready_for_dma()) {
+          channels[2].madr = address & 0xFFFFFF;
+          channels[2].busy_cycles = DmaChannel::kAwaitingRequest;
+          return;
+        }
+      }
 
       // Each node is a header word: a count in the top byte and the address of
       // the next node in the low 24 bits.
@@ -649,12 +685,13 @@ void Dma::Dma2() {
   // Burst and block are the same transfer; only where the length comes from
   // differs. A field of zero means the maximum, not nothing.
   uint32_t words;
+  uint32_t block = 1;
   if (sync == 0) {
     words = channels[2].bcr & 0xFFFF;
     if (words == 0)
       words = 0x10000;
   } else {
-    uint32_t block = channels[2].bcr & 0xFFFF;
+    block = channels[2].bcr & 0xFFFF;
     if (block == 0)
       block = 0x10000;
     uint32_t blocks = (channels[2].bcr >> 16) & 0xFFFF;
@@ -664,7 +701,21 @@ void Dma::Dma2() {
   }
 
   uint32_t address = channels[2].madr & 0x1FFFFC;
+  uint32_t moved = 0;
+  uint32_t charged_to_gpu = 0;
   for (uint32_t i = 0; i < words; ++i) {
+    // Writing to a GPU whose port is full waits, the same as the linked-list
+    // path above - at a block boundary in block mode, so what is left is a
+    // whole number of blocks and BCR can say so. Reads from the GPU are not
+    // gated: nothing is queued in that direction.
+    if (from_ram && !gpu->ready_for_dma() && (sync == 0 || (i % block) == 0)) {
+      // The same catch-up the linked-list path does: the words moved so far
+      // took time, and the rasteriser has been working through it.
+      gpu->AdvanceDrawing(RamCycles(moved) - charged_to_gpu);
+      charged_to_gpu = RamCycles(moved);
+      if (!gpu->ready_for_dma())
+        break;
+    }
     if (from_ram)
       gpu->WriteData(ram.u32[address >> 2]);
     else
@@ -674,12 +725,25 @@ void Dma::Dma2() {
         ram.u32[address >> 2] = word;
       }
     address = static_cast<uint32_t>(address + step) & 0x1FFFFC;
+    ++moved;
   }
 
-  ChargeWords(words);
+  ChargeWords(moved);
   if (!from_ram)   // only the GPU-to-RAM direction writes anything
-    NoteRamWritten(channels[2].madr & 0x1FFFFC, words, step);
+    NoteRamWritten(channels[2].madr & 0x1FFFFC, moved, step);
   channels[2].madr = address;
+
+  // What is left, written back where the hardware keeps it, so a paused
+  // transfer is described by its own registers and needs nothing remembered
+  // on the side - the same way channel 1 waits for the MDEC.
+  const uint32_t left = words - moved;
+  if (left > 0) {
+    if (sync == 0)
+      channels[2].bcr = (channels[2].bcr & 0xFFFF0000) | (left & 0xFFFF);
+    else
+      channels[2].bcr = (channels[2].bcr & 0xFFFF) | ((left / block) << 16);
+    channels[2].busy_cycles = DmaChannel::kAwaitingRequest;
+  }
 }
 
 // Tells whoever is watching for code being overwritten that a transfer has

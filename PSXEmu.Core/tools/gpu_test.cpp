@@ -41,6 +41,15 @@ bool Irq1Pending(System* system) {
   return (system->io().io.interrupt_stat & kInterruptGPU) != 0;
 }
 
+// Lets the GPU work through whatever is queued. Since bug 86 a GP0 word waits
+// behind the rasteriser rather than being acted on the instant it arrives, so
+// a test that writes commands and then reads VRAM has to give the machine the
+// time a game would have given it. Well past what any of these owe.
+void RunGpu(System* system) {
+  for (int i = 0; i < 64; ++i)
+    system->gpu().Tick(4096);
+}
+
 // Acknowledges I_STAT's GPU bit the way software does - write a word with
 // that bit 0 and every other bit 1 - without touching GPUSTAT.24, which only
 // GP1(02h) clears. Keeping the two separate is the point of this test file.
@@ -104,17 +113,172 @@ void TestRepeatedRequestIsNotANewEdge(System* system) {
         "was already set");
 }
 
-// The core does not model the GP0 FIFO filling up or a draw taking real GPU
-// time (see Docs/Gaps.md), so all three readiness bits report ready
-// unconditionally. This pins that choice down as a fact about the current
-// code rather than an assumption a future change discovers the hard way.
-void TestReadinessBitsAreAlwaysSet(System* system) {
-  printf("the ready bits report ready unconditionally (no FIFO/timing model)\n");
+// Drawing takes time now (bug 85), and bit 28 - ready to receive a DMA block -
+// is where software sees it. The other two still report ready unconditionally,
+// for the reasons in Gpu::ReadStatus: there is no command queue to fill, and
+// bit 27 means "able to hand VRAM over" rather than "a transfer is running".
+void TestReadinessBits(System* system) {
+  printf("the ready bits: 26 and 27 always, 28 only when not drawing\n");
   system->gpu().WriteStatus(0x00000000);
   const uint32_t status = system->gpu().ReadStatus();
   Check((status & (1u << 26)) != 0, "ready to receive a command word");
   Check((status & (1u << 27)) != 0, "ready to send VRAM to the CPU");
-  Check((status & (1u << 28)) != 0, "ready to receive a DMA block");
+  Check((status & (1u << 28)) != 0, "ready to receive a DMA block when idle");
+}
+
+// What a primitive costs, and that the cost is paid down rather than
+// remembered for ever. The numbers are DuckStation's model (bug 85): a flat
+// untextured triangle is 46 ticks of setup plus one per pixel of area.
+void TestDrawingTakesTime(System* system) {
+  printf("drawing costs GPU time, and the GPU reports busy until it is paid\n");
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000);                       // draw area top-left
+  system->gpu().WriteData(0xE4000000 | (400u << 10) | 600u);  // bottom-right
+
+  const uint64_t before = system->gpu().stats().draw_ticks;
+  // A right triangle with legs of 100: 5,000 pixels of area, flat and
+  // untextured, so 46 + 5000. Drawn at (200,200) rather than the origin
+  // because these tests share one VRAM, and the polyline test below checks
+  // that nothing has touched (0,0).
+  system->gpu().WriteData(0x20000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((200u << 16) | 300u);
+  system->gpu().WriteData((300u << 16) | 200u);
+  const uint64_t charged = system->gpu().stats().draw_ticks - before;
+  CheckEqual(static_cast<uint32_t>(charged), 46u + 5000u,
+             "a flat untextured triangle costs its setup plus its area");
+
+  // The port is still open: the queue is empty, and hardware would take 16
+  // more words while the rasteriser worked through this one. What drawing time
+  // costs is visible only once words pile up behind it - the test below.
+  Check((system->gpu().ReadStatus() & (1u << 28)) != 0,
+        "an empty queue is ready for more even while drawing");
+
+  // The shape of the cost, across the four polygon kinds: each step up costs
+  // more setup than the last.
+  const uint32_t flat_tri = 46, tex_tri = 226, shaded_tri = 334, both_tri = 496;
+  Check(flat_tri < tex_tri && tex_tri < shaded_tri && shaded_tri < both_tri,
+        "setup rises with what the primitive has to do");
+
+  // A textured triangle pays twice per pixel, and a semi-transparent one half
+  // as much again on top - it has to read the framebuffer back.
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (400u << 10) | 600u);
+  const uint64_t before_semi = system->gpu().stats().draw_ticks;
+  system->gpu().WriteData(0x22000000 | 0x808080);   // flat, semi-transparent
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((200u << 16) | 300u);
+  system->gpu().WriteData((300u << 16) | 200u);
+  const uint64_t semi_charged = system->gpu().stats().draw_ticks - before_semi;
+  CheckEqual(static_cast<uint32_t>(semi_charged), 46u + 5000u + 2500u,
+             "a semi-transparent one pays half as much again per pixel");
+}
+
+// What a primitive costs is what it actually rasterises (bug 87). Charging the
+// whole of a primitive that the drawing area mostly throws away is what made
+// Silent Hill run at a third speed: a 3D game aims big polygons at a small
+// viewport, so the bill was nearly three frames of drawing per frame and the
+// rasteriser never caught up.
+void TestDrawingCostIsClipped(System* system) {
+  printf("drawing time is charged on the clipped primitive, not the whole one\n");
+
+  // The same triangle twice - legs of 100 at (200,200), 5,000 pixels of area -
+  // against a drawing area that holds all of it, then against one that keeps a
+  // 50x50 corner of it.
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (400u << 10) | 600u);
+  const uint64_t before_whole = system->gpu().stats().draw_ticks;
+  system->gpu().WriteData(0x20000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((200u << 16) | 300u);
+  system->gpu().WriteData((300u << 16) | 200u);
+  const uint64_t whole = system->gpu().stats().draw_ticks - before_whole;
+  CheckEqual(static_cast<uint32_t>(whole), 46u + 5000u,
+             "a triangle wholly inside the drawing area costs its full area");
+
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000 | (200u << 10) | 200u);
+  system->gpu().WriteData(0xE4000000 | (250u << 10) | 250u);
+  const uint64_t before_clipped = system->gpu().stats().draw_ticks;
+  system->gpu().WriteData(0x20000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((200u << 16) | 300u);
+  system->gpu().WriteData((300u << 16) | 200u);
+  const uint64_t clipped = system->gpu().stats().draw_ticks - before_clipped;
+  CheckEqual(static_cast<uint32_t>(clipped), 46u + 1250u,
+             "one clipped to a 50x50 corner costs that corner");
+  Check(clipped < whole,
+        "the same primitive costs less where less of it is drawn");
+
+  // A primitive entirely outside costs setup and nothing more. Without the
+  // clamping this was the worst case: the full area of something that never
+  // put down a pixel.
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (10u << 10) | 10u);
+  const uint64_t before_outside = system->gpu().stats().draw_ticks;
+  system->gpu().WriteData(0x20000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((200u << 16) | 300u);
+  system->gpu().WriteData((300u << 16) | 200u);
+  const uint64_t outside = system->gpu().stats().draw_ticks - before_outside;
+  CheckEqual(static_cast<uint32_t>(outside), 46u,
+             "one wholly outside it costs setup and no pixels");
+
+  // A rectangle is clipped the same way: 40x40 at (200,200) against a drawing
+  // area that keeps a 20x20 corner, so 16 of setup and 400 of pixels.
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000 | (200u << 10) | 200u);
+  system->gpu().WriteData(0xE4000000 | (219u << 10) | 219u);
+  const uint64_t before_rect = system->gpu().stats().draw_ticks;
+  system->gpu().WriteData(0x60000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((40u << 16) | 40u);
+  const uint64_t rect = system->gpu().stats().draw_ticks - before_rect;
+  CheckEqual(static_cast<uint32_t>(rect), 16u + 400u,
+             "a rectangle is charged on its clipped width and height");
+
+  RunGpu(system);
+}
+
+// The GP0 queue (bug 86): words wait in it while the rasteriser is busy, the
+// port reports full at the 16 words hardware holds, and everything drains once
+// the machine has run. This is what gives DMA channel 2 something to wait for.
+void TestGp0QueueFillsAndDrains(System* system) {
+  printf("the GP0 queue holds words back while the GPU is drawing\n");
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (400u << 10) | 600u);
+
+  // One big primitive to make the GPU busy, then enough one-word commands
+  // (GP0(01h), clear cache) to fill the port past the 16 hardware holds.
+  system->gpu().WriteData(0x20000000 | 0x808080);
+  system->gpu().WriteData((200u << 16) | 200u);
+  system->gpu().WriteData((200u << 16) | 300u);
+  system->gpu().WriteData((300u << 16) | 200u);
+  Check((system->gpu().ReadStatus() & (1u << 28)) != 0, "the port starts open");
+
+  for (int i = 0; i < 16; ++i)
+    system->gpu().WriteData(0x01000000);
+
+  Check((system->gpu().ReadStatus() & (1u << 28)) == 0,
+        "sixteen words in, the port reports full");
+  Check((system->gpu().ReadStatus() & (1u << 26)) == 0,
+        "and so does the command-word bit");
+  Check((system->gpu().ReadStatus() & (1u << 25)) == 0,
+        "the DMA request line drops with them");
+  Check(system->gpu().stats().queue_peak >= 16,
+        "the queue really is holding them");
+
+  // Running the machine pays the drawing off, and the queue empties.
+  for (int i = 0; i < 8; ++i)
+    system->gpu().Tick(1000);
+  Check((system->gpu().ReadStatus() & (1u << 28)) != 0,
+        "the port opens again once the drawing is paid for");
+  CheckEqual(static_cast<uint32_t>(system->gpu().stats().queue_overflows), 0u,
+             "and nothing was ever dropped");
 }
 
 // GP0(E6h) bit 0 decides what goes into the framebuffer's bit 15 while drawing:
@@ -155,6 +319,7 @@ void TestTextureBit15BecomesTheMaskBit(System* system) {
   system->gpu().WriteData(1u);                          // u=1, v=0
   system->gpu().WriteData((1u << 16) | 1u);
 
+  RunGpu(system);
   const uint16_t* vram = system->gpu().vram();
   CheckEqual(vram[10 * 1024 + 10] & 0x8000, 0x8000,
              "the texel with bit 15 set marked its pixel");
@@ -178,6 +343,7 @@ void TestTextureBit15BecomesTheMaskBit(System* system) {
   system->gpu().WriteData(0x60000000 | 0x0000FF);   // flat blue rect
   system->gpu().WriteData((10u << 16) | 10u);       // at (10,10)
   system->gpu().WriteData((1u << 16) | 8u);         // eight across, one down
+  RunGpu(system);
 
   CheckEqual(vram[10 * 1024 + 10] & 0x7FFF, 0x7FFF,
              "the marked pixel kept its own colour");
@@ -210,6 +376,7 @@ void TestPolylineTerminatorIsNotAVertex(System* system) {
   system->gpu().WriteData((150u << 16) | 200u);  // (200, 150)
   system->gpu().WriteData(0x50005000);            // terminator
 
+  RunGpu(system);
   const uint16_t* vram = system->gpu().vram();
   Check(vram[0] == 0, "(0,0) was not touched by the terminator-as-vertex bug");
   // Roughly midway along the bogus (200,150)->(0,0) diagonal the old code
@@ -259,6 +426,7 @@ void TestOpaqueSharedEdgeUsesLastDrawnPrimitive(System* system) {
   system->gpu().WriteData((416u << 16) | 416u);
   system->gpu().WriteData((416u << 16) | 432u);
 
+  RunGpu(system);
   const uint16_t* vram = system->gpu().vram();
   const uint16_t kRed15   = 0x001F;   // To15Bit(255,0,0)
   const uint16_t kGreen15 = 0x03E0;   // To15Bit(0,255,0)
@@ -306,6 +474,7 @@ void TestSemiTransparentSharedEdgeBlendsOnce(System* system) {
   system->gpu().WriteData((456u << 16) | 416u);
   system->gpu().WriteData((456u << 16) | 432u);
 
+  RunGpu(system);
   const uint16_t* vram = system->gpu().vram();
   const uint16_t kSingleBlend15 = 0x0008;   // To15Bit(64,0,0): 64>>3
   const uint16_t kDoubleBlend15 = 0x0010;   // To15Bit(128,0,0): a double add
@@ -390,7 +559,10 @@ int main() {
   TestInterruptRequestSetsStatusAndIrq(system);
   TestAcknowledgeClearsStatusAndAllowsANewEdge(system);
   TestRepeatedRequestIsNotANewEdge(system);
-  TestReadinessBitsAreAlwaysSet(system);
+  TestReadinessBits(system);
+  TestDrawingTakesTime(system);
+  TestDrawingCostIsClipped(system);
+  TestGp0QueueFillsAndDrains(system);
   TestTextureBit15BecomesTheMaskBit(system);
   TestPolylineTerminatorIsNotAVertex(system);
   TestOpaqueSharedEdgeUsesLastDrawnPrimitive(system);

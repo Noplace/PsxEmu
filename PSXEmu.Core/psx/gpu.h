@@ -70,6 +70,16 @@ class Gpu : public GpuCore {
     uint64_t gp1_words;
     uint64_t primitives;
     uint64_t pixels;
+    // GPU clocks charged for drawing, and how many of them the CPU actually
+    // had to wait through - the second is zero unless something asked. See
+    // Gpu::AddDrawTicks.
+    uint64_t draw_ticks;
+    uint64_t draw_ticks_waited;
+    // The deepest the GP0 queue has been, and how many words were dropped
+    // because it could not go deeper. The second should stay zero: it means
+    // software wrote GP0 far past what the port said it could take.
+    uint32_t queue_peak;
+    uint64_t queue_overflows;
     // How many times each GP0 and GP1 command byte was executed. A primitive
     // that is never issued and one that is issued and drawn wrongly look the
     // same on screen; this separates them.
@@ -167,6 +177,22 @@ class Gpu : public GpuCore {
   uint32_t dot_in_scanline() const {
     return dot_accumulator_ / kGpuClockDenominator;
   }
+  // Whether the GP0 queue has room for more, which is what GPUSTAT bits 26 and
+  // 28 report and what DMA channel 2 waits on before handing over its next
+  // node. False means the rasteriser is behind and the port is full.
+  bool ready_for_dma() const { return queue_size_ < kFifoDepth; }
+
+  // Lets the rasteriser use time a transfer in progress has already spent.
+  //
+  // A DMA moving words into GP0 takes real cycles, and the GPU is drawing
+  // through them - but nothing here advances the GPU until the machine next
+  // ticks, which is once per 32-cycle batch. Without this a full port is only
+  // emptied at those boundaries, and channel 2 crawls at 16 words a batch
+  // however idle the GPU actually is: Silent Hill ran at a third speed on 2%
+  // of the GPU's time. The cycles are remembered so Tick does not count them
+  // twice (bug 87).
+  void AdvanceDrawing(uint32_t cpu_cycles);
+
   // Outside the horizontal display window is hblank. Both ends come from
   // GP1(06), so a game that narrows its display widens its own hblank.
   bool in_hblank() const {
@@ -286,6 +312,50 @@ class Gpu : public GpuCore {
   uint64_t frame_count_;
   Stats stats_;
 
+  // How much drawing the GPU still owes, in its own 53.2 MHz clocks. Charged
+  // per primitive (AddDrawTicks) and burnt down by Tick. A real GPU takes time
+  // to rasterise, and software can see that: it is why GPUSTAT's ready bits
+  // exist and why the DMA request line drops. See Docs/Gaps.md.
+  int32_t pending_draw_ticks_;
+
+  // ---- the GP0 queue -----------------------------------------------------
+  // Words that have arrived but not been acted on yet. Hardware holds 16 of
+  // them and stops accepting more until the rasteriser has caught up, which is
+  // what `kFifoDepth` reports - but the store here is far deeper, because
+  // nothing in this emulator can make a CPU write wait. A game that ignores
+  // the ready bits and writes anyway would lose words if this were exactly 16;
+  // real hardware would have stalled its CPU instead. So the depth is what
+  // software is *told*, and the capacity is what is actually kept.
+  static const int kFifoDepth = 16;
+  static const int kQueueCapacity = 1024;
+  uint32_t queue_[kQueueCapacity];
+  int queue_head_, queue_size_;
+
+  // GPU clocks already paid to the rasteriser out of time a DMA transfer was
+  // spending anyway - see AdvanceDrawing - so that Tick does not pay for the
+  // same cycles a second time.
+  uint32_t prepaid_ticks_;
+
+  void PushQueue(uint32_t word);
+  uint32_t PopQueue();
+  // Hands queued words to the command assembler for as long as the GPU is free
+  // to take them. Called after every write and from Tick.
+  void DrainQueue();
+  // One word into the assembler below, executing the command once its last
+  // word has arrived. This is what WriteData used to be.
+  void FeedCommand(uint32_t word);
+
+  // Whether the GPU is still rasterising. Everything that reports "busy"
+  // derives from this rather than testing the counter directly.
+  bool drawing() const { return pending_draw_ticks_ > 0; }
+  void AddDrawTicks(int32_t ticks);
+
+  // What one primitive costs, in GPU clocks. The shapes and the constants are
+  // DuckStation's, which are community measurements rather than anything
+  // Sony published - see Docs/Bugs-Found.md's entry for this work. Declared
+  // below Vertex and DrawState, which they take.
+  static int32_t PolygonSetupTicks(bool quad, bool shaded, bool textured);
+
   // ---- command handling --------------------------------------------------
   static int CommandLength(uint32_t command);
   void ExecuteCommand();
@@ -319,6 +389,18 @@ class Gpu : public GpuCore {
     bool dither;
     bool flip_x, flip_y;   // textured rectangles only
   };
+
+  // The per-pixel halves of the drawing cost - see PolygonSetupTicks above.
+  // One coordinate held inside the drawing area, for the cost estimates below.
+  int32_t ClampToDrawArea(int32_t v, bool horizontal) const {
+    const int32_t lo = horizontal ? draw_area_left_ : draw_area_top_;
+    const int32_t hi = horizontal ? draw_area_right_ : draw_area_bottom_;
+    return (v < lo) ? lo : ((v > hi) ? hi : v);
+  }
+  int32_t TriangleDrawTicks(const Vertex& a, const Vertex& b, const Vertex& c,
+                            const DrawState& state) const;
+  int32_t RectangleDrawTicks(int32_t x, int32_t y, int32_t width, int32_t height,
+                             const DrawState& state) const;
 
   void RecordSetup(uint32_t command, const DrawState& state,
                    uint32_t raw_page, uint32_t raw_clut);

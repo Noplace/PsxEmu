@@ -58,6 +58,12 @@ class GpuCore : public Component {
   // asks twice does not count the same dot clock twice.
   virtual uint32_t TakeDotClocks() = 0;
   virtual uint32_t TakeHblanks() = 0;
+  // Whether the GP0 port can take more words, which is what DMA channel 2
+  // waits on: false means the queue is full and the rasteriser is behind.
+  virtual bool ready_for_dma() const = 0;
+  // Time a transfer has spent, handed to the rasteriser so a queue it is
+  // filling can empty during the transfer rather than only between batches.
+  virtual void AdvanceDrawing(uint32_t cpu_cycles) = 0;
   virtual bool in_hblank() const = 0;
   virtual bool in_vblank() const = 0;
   // The visible area, resolved out of VRAM into 32-bit XRGB. Size comes back
