@@ -65,6 +65,8 @@ void Machine::ApplyConfig(const psx::EmuConfig& config) {
     // Start the sound at the new setting rather than letting it slide there over
     // a fifth of a second from the old one.
     achieved_speed_ = config.emulation_speed > 0.0 ? config.emulation_speed : 1.0;
+    falling_behind_ = false;
+    behind_frames_ = ahead_frames_ = 0;
   }
 }
 
@@ -133,16 +135,36 @@ void Machine::Run() {
     // headroom is running at exactly the speed it was told to.
     const double refresh = system_->gpu().refresh_hz();
     const double real_seconds = Ms(paced - start) / 1000.0;
+    const double asked =
+        system_->config().emulation_speed > 0.0 ? system_->config().emulation_speed : 1.0;
     if (refresh > 0.0 && real_seconds > 0.0) {
-      const double measured = (1.0 / refresh) / real_seconds;
-      // A fifth of a second or so of smoothing: enough that one long frame - a
-      // disc seek, a window drag - does not bend the pitch, and short enough to
-      // follow a scene getting heavier.
+      double measured = (1.0 / refresh) / real_seconds;
+      // Never above what was asked. A frame only looks faster than that when the
+      // limiter skipped its sleep for a reason of its own: the first frame after
+      // a resume, which it lets through unpaced to set a fresh deadline, or one
+      // catching up behind a late one. Feeding those in is what bent the pitch
+      // up on every unpause (bug 92) - that first frame read as twice real time.
+      if (measured > asked)
+        measured = asked;
       const double kSmoothing = 0.05;
       achieved_speed_ += kSmoothing * (measured - achieved_speed_);
       if (achieved_speed_ < 0.05) achieved_speed_ = 0.05;
       if (achieved_speed_ > 16.0) achieved_speed_ = 16.0;
     }
+    // Is the machine keeping up? The limiter sleeping is the evidence: a machine
+    // with headroom always has something to sleep off. Half a second of frames
+    // without is a real shortfall; one is a seek, or the frame after a resume.
+    if (Ms(paced - handed_over) >= 0.5) {
+      ++ahead_frames_;
+      behind_frames_ = 0;
+    } else {
+      ++behind_frames_;
+      ahead_frames_ = 0;
+    }
+    if (!falling_behind_ && behind_frames_ >= kBehindFrames)
+      falling_behind_ = true;
+    else if (falling_behind_ && ahead_frames_ >= kBehindFrames)
+      falling_behind_ = false;
 
     report_emulate_ms_ += Ms(emulated - input_taken);
 
@@ -234,21 +256,30 @@ void Machine::PumpAudio() {
       break;
     const double error =
         static_cast<double>(audio_->Available() - kAudioTargetFrames) / kAudioTargetFrames;
-    // Proportional, and with enough authority to actually refill a ring that
-    // has been emptied. The gain used to be 0.005, which for a ring at a
-    // quarter of its target asks for a 0.35% correction - about 5 ms of sound
-    // recovered a second, so six seconds to climb back, and any hiccup on the
-    // way is another gap. At 0.03 the same error asks for 2%, which is a second
-    // and a half. Near the target - where it sits whenever the host is keeping
-    // up - the correction is a fraction of a percent, as before, and inaudible;
-    // the 3% ceiling is about fifty cents and is only ever reached while badly
-    // off. This is the feedback half of the loop the line below feeds forward.
-    double trim = 1.0 + 0.03 * error;
-    if (trim < 0.97) trim = 0.97;
-    if (trim > 1.03) trim = 1.03;
+    // Two regimes, and the line between them is whether the host keeps up.
+    //
+    // Keeping up - nearly always: resample by exactly the speed asked for, and
+    // hold the ring with a trim of at most half a percent, about eight cents.
+    // That is what this did before bug 90 and it is inaudible. Bug 90 raised
+    // the gain to 0.03 everywhere, and at that gain the trim follows the ring's
+    // own fill-and-drain - up by a frame's sound, down by the device's pull,
+    // three frames round - so the pitch warbled by about a percent, twenty times
+    // a second, in every game (bug 92).
+    //
+    // Falling behind: resample by the speed actually achieved, which is the only
+    // way to hand the device as much sound as it plays, and give the trim the
+    // authority to refill a ring the shortfall emptied. The pitch is already off
+    // nominal by then, by design - it follows the speed the game really runs at.
+    const double asked =
+        system_->config().emulation_speed > 0.0 ? system_->config().emulation_speed : 1.0;
+    const double base = falling_behind_ ? achieved_speed_ : asked;
+    const double gain = falling_behind_ ? 0.03 : 0.005;
+    double trim = 1.0 + gain * error;
+    if (trim < 1.0 - gain) trim = 1.0 - gain;
+    if (trim > 1.0 + gain) trim = 1.0 + gain;
 
     resampled_.clear();
-    resampler_.Append(scratch_.data(), frames, achieved_speed_ * trim, &resampled_);
+    resampler_.Append(scratch_.data(), frames, base * trim, &resampled_);
     audio_->Write(resampled_.data(),
                   static_cast<int>(resampled_.size() / SampleRing::kChannels));
   }
@@ -270,13 +301,10 @@ void Machine::Pace() {
 // does not spend seconds climbing back up from empty.
 void Machine::Resume() {
   ResetPacing();
-  // Nothing measured yet, and the two ways of being wrong are not equal: guess
-  // high and the device is handed too little and plays silence, guess low and it
-  // is handed too much and the ring drops a few frames nobody hears. So start at
-  // real time, or the setting if that is slower, and let the first fifth of a
-  // second find the rest.
-  const double asked = system_->config().emulation_speed;
-  achieved_speed_ = (asked > 0.0 && asked < 1.0) ? asked : 1.0;
+  // The frame after this one is unpaced by design, so it proves nothing about
+  // whether the machine keeps up. What was learned before the pause stands:
+  // pausing does not change what the host can manage.
+  behind_frames_ = ahead_frames_ = 0;
   const int missing = kAudioTargetFrames - audio_->Available();
   if (missing > 0)
     audio_->WriteSilence(missing);

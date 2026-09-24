@@ -161,11 +161,18 @@ class Machine {
   utilities::FrameLimiter limiter_;
   utilities::SpeedResampler resampler_;
   // The speed the machine is actually managing, in multiples of real time,
-  // smoothed over about a fifth of a second. The sound is resampled by this
-  // rather than by the setting: at a speed the host cannot reach the two are
-  // not the same, and resampling by the setting hands the device fewer samples
-  // than it needs for every second it runs. See PumpAudio.
+  // smoothed over about a fifth of a second and never above the setting. Only
+  // used for the sound while falling_behind_ is set - see PumpAudio.
   double achieved_speed_ = 1.0;
+  // Whether the machine has stopped reaching the speed it was asked for: the
+  // limiter has had nothing to sleep off for kBehindFrames frames running. Not
+  // one slow frame - the first frame after a resume is unpaced by design, and
+  // a seek or a heavy scene can take one long frame - but a sustained shortfall.
+  // Cleared the same way, by the limiter sleeping for kBehindFrames running.
+  bool falling_behind_ = false;
+  int behind_frames_ = 0;
+  int ahead_frames_ = 0;
+  static const int kBehindFrames = 30;
 
   std::vector<int16_t> scratch_;     // one read of the SPU's samples
   std::vector<int16_t> resampled_;   // the same, stretched for the speed

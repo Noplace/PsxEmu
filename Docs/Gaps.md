@@ -575,16 +575,19 @@ the harness, not 35% slower: there is no front-end overhead to find. Marginal
 cost per frame, not total time over a run that includes the boot, is the figure
 to use.
 
-**One real defect this turned up, now fixed (bug 90).** Sound was resampled by
+**One real defect this turned up, now fixed (bugs 90 and 92).** Sound was resampled by
 the speed *asked for* rather than the speed achieved, so at 300% on a host good
 for 165% the device was handed about 55% of the samples it needed and the rest
 was silence. The ratio is now the rate the machine is actually managing, and the
 ring's trim has the authority to refill after a shortfall. At every speed the
-host can reach - 50, 100, 150% - sound is gapless. At a speed it cannot reach a
-1.8% deficit remains, down from 45%, for two structural reasons: the smoothed
-rate lags a scene getting heavier, and the audio thread always fills the device's
-writable room with silence rather than waiting, so the ring cannot build a
-cushion.
+host can reach - 50, 100, 150% - sound is gapless.
+
+Bug 90 applied that everywhere and made the pitch slide after every unpause and
+warble in every game. Bug 92 confines it to a host that is actually falling
+behind - half a second of the limiter with nothing to sleep off - and is
+otherwise back to resampling by the setting, as it always was. At a speed the
+host cannot reach, the only gap left is that first half second, before the
+shortfall is recognised: about 5,500 short frames once, then none.
 
 ### Never run against the reference
 

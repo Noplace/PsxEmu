@@ -5524,6 +5524,11 @@ they were reading VRAM where nothing had been drawn.
 
 ## 90. Sound was resampled by the speed asked for, not the speed achieved
 
+**Superseded in part by bug 92.** The feed-forward and the stronger trim below
+made the pitch slide after every unpause and warble in every game. Both now
+apply only while the host is failing to reach the speed asked for; the rest of
+the time this is back to what it was before.
+
 Found while measuring the emulation-speed ceiling (Gaps.md), not from a report.
 
 ### What was wrong
@@ -5711,3 +5716,87 @@ bottleneck.
 **It helps bug 90 as a side effect.** Short audio frames over 18 seconds at 300%
 fall from ~32,500 to ~16,000: the closer the machine gets to the speed asked
 for, the smaller the deficit the sound has to absorb.
+
+## 92. The pitch slid down after every unpause, and warbled in every game
+
+Reported by the user: pause for a second, resume, and the sound starts high and
+slides back to normal over a second or two - and something similar, fainter,
+in games without a pause. Both were bug 90.
+
+### What was wrong
+
+Measured with a per-frame log of the pacing loop, driven through the front end
+with a pause posted as a `WM_COMMAND`:
+
+- **The slide.** `FrameLimiter::Reset` is called on every resume, and the first
+  `Wait` after it sets a fresh deadline and returns *without sleeping*. So the
+  first frame back ran in 8.07 ms instead of 16.86 and read as 2.09x real time.
+  Bug 90 fed that straight into `achieved_speed_`, which jumped from 1.0012 to
+  1.0545 in one frame; the resample ratio opened at 1.0466 - about 80 cents
+  sharp - and was still 1.0120 thirty-two frames later. That is the sound
+  starting high and settling.
+- **The warble.** Bug 90 also raised the ring trim's gain from 0.005 to 0.03.
+  At that gain the trim follows the ring's own fill-and-drain - up by a frame's
+  worth of sound, down by the device's pull, three frames round - so the ratio
+  swung by about a percent twenty times a second: 0.9925, 0.9978, 0.9948,
+  0.9994... In a game, any one slow frame (a seek, a heavy scene) also nudged
+  `achieved_speed_`, the same way the resume did but smaller.
+
+Neither was the SPU or the new GPU thread. The rasteriser thread does not touch
+the sound path at all.
+
+### What changed
+
+Bug 90's fix was only ever meant for a host that cannot reach the speed asked
+for. It is now confined to exactly that case:
+
+- **Keeping up - nearly always: back to what this did before bug 90.** Resample
+  by exactly the speed asked for, with a trim of at most half a percent. That
+  was inaudible, and it is again.
+- **Falling behind: bug 90's behaviour.** Resample by the speed actually
+  achieved, with the stronger trim to refill the ring the shortfall emptied.
+- **Which regime is decided by the limiter sleeping**, which is the evidence a
+  machine has headroom. Thirty frames running with nothing to sleep off - half
+  a second - is a real shortfall; one is a seek, or the unpaced frame after a
+  resume. Thirty frames of sleeping again clears it.
+- **The measured speed is never allowed above the setting.** A frame only looks
+  faster than that when the limiter skipped its sleep for reasons of its own,
+  which is precisely the resume frame.
+- **A pause no longer resets what was learned.** Pausing does not change what
+  the host can manage, so only a change of speed or limiter setting starts the
+  estimate again.
+
+### Verified, 2026-09-24
+
+The same reproduction, the same log, before and after:
+
+| | Before | After |
+|---|---|---|
+| Ratio on the first frame after resume | 1.0466 | 0.9988 |
+| Ratio spread over the run | 6.52% (~110 cents) | 0.62% (~11 cents) |
+| Ratio spread in steady state, frame 120 on | 5.86% (~100 cents) | 0.38% (~6.6 cents) |
+
+The remaining 0.6% over the whole run is frames 3-6, while WASAPI is still
+opening and the ring piles up; the trim sits at its half-percent cap, which is
+what it has always done there. The unpaced frame after the resume still
+measures 1.988, and now changes nothing.
+
+And bug 90's purpose still holds, reading `short` off the title bar:
+
+| Speed | Before bug 90 | Bug 90 | Now |
+|---|---|---|---|
+| 50% | 4,501 | 0 | 0 |
+| 100% | 0 | 0 | 0 |
+| 150% (reachable) | 0 | 0 | 0 |
+| 300% (unreachable) | ~20,000 a second | ~800 a second | 5,520 once, then none |
+
+The 300% figure is the half second before the machine is judged to be falling
+behind, during which the sound is still resampled by the setting. After that it
+does not move, which is better than bug 90 managed on its own. `host_test` 33
+and `speed_resampler_test` 13, both green.
+
+**The lesson worth keeping** is the one bug 90 skipped: a change to how the
+sound is paced has to be listened to, or measured per frame, in the ordinary
+case - not only in the case it was written for. Bug 90 was verified by counting
+short frames at five speeds, and short frames were never the problem here; the
+pitch was, and a count of gaps cannot hear pitch.
