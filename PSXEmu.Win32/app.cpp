@@ -202,6 +202,8 @@ namespace psxemu {
         UpdateSkipBiosIntroMenu();
         UpdateRecompilerMenu();
         UpdateGpuThreadMenu();
+        UpdateGpuTransferTimingMenu();
+        UpdateICacheTimingMenu();
         UpdatePauseInMenusMenu();
         UpdateShowTimingsMenu();
         UpdateBiosConsoleMenu();
@@ -801,6 +803,31 @@ namespace psxemu {
     void App::SetGpuThread(bool on) {
         config_.gpu_thread = on;
         UpdateGpuThreadMenu();
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+    }
+
+    void App::UpdateGpuTransferTimingMenu() {
+        TickGpuTransferTiming(window_, config_.gpu_transfer_timing);
+    }
+
+    // Charging the GPU for CPU-VRAM transfers (bug 93). Picked up by the next
+    // transfer to start, so one already streaming in finishes the way it began.
+    void App::SetGpuTransferTiming(bool on) {
+        config_.gpu_transfer_timing = on;
+        UpdateGpuTransferTimingMenu();
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+    }
+
+    void App::UpdateICacheTimingMenu() { TickICacheTiming(window_, config_.icache_timing); }
+
+    // The instruction-cache timing model (bug 94). System latches it between
+    // instructions, and only while the interpreter runs: with the recompiler on it
+    // does nothing, since compiled blocks do not fetch.
+    void App::SetICacheTiming(bool on) {
+        config_.icache_timing = on;
+        UpdateICacheTimingMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
     }
@@ -1529,6 +1556,14 @@ namespace psxemu {
 
             case kCommandGpuThread:
                 SetGpuThread(!config_.gpu_thread);
+                break;
+
+            case kCommandGpuTransferTiming:
+                SetGpuTransferTiming(!config_.gpu_transfer_timing);
+                break;
+
+            case kCommandICacheTiming:
+                SetICacheTiming(!config_.icache_timing);
                 break;
 
             case kCommandPauseInMenus:

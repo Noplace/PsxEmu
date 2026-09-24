@@ -190,6 +190,22 @@ struct EmuConfig {
   // one. Read once, when the GPU is initialised.
   bool gpu_thread = true;
 
+  // Charge the GPU for CPU-to-VRAM and VRAM-to-CPU transfers: one tick per pixel
+  // moved, so commands issued after a large upload wait for it the way they
+  // would on hardware. Off by default because it can only make a game slower,
+  // and nothing measured says exactly how much slower; the figure is derived
+  // from the VRAM-to-VRAM copy cost, not measured. See Docs/Bugs-Found.md 93.
+  bool gpu_transfer_timing = false;
+
+  // Charge instruction fetches for the instruction cache: a hit is free, a miss
+  // refills the rest of its 16-byte line, and code run uncached - the BIOS ROM
+  // through KSEG1, most of all - pays the full bus cost of every fetch. The
+  // interpreter only; with the recompiler on it has no effect, because compiled
+  // blocks do not fetch. Off by default because it moves the timing of every
+  // game. A timing model only - instructions still come from memory, never
+  // from the cache. See Docs/Bugs-Found.md 94.
+  bool icache_timing = false;
+
   // --- BIOS ---------------------------------------------------------------
   // Which image in the front end's BIOS folder to boot, by filename alone -
   // "SCPH1001.BIN", not a path. The folder is the front end's to know

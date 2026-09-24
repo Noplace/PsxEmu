@@ -5800,3 +5800,208 @@ sound is paced has to be listened to, or measured per frame, in the ordinary
 case - not only in the case it was written for. Bug 90 was verified by counting
 short frames at five speeds, and short frames were never the problem here; the
 pitch was, and a count of gaps cannot hear pitch.
+
+## 93. CPU-VRAM transfers cost no GPU time - now an option
+
+Gaps.md listed it as the last of the GP0 queue's simplifications: an upload or a
+readback through GP0(A0h)/GP0(C0h) charged the rasteriser nothing, where
+hardware spends time on every pixel. It is now charged, behind a setting that is
+off by default, because it is the one change in this area that can only make a
+game slower.
+
+### What it does
+
+Emulation > Charge GPU Time for VRAM **T**ransfers, or `gpu_transfer_timing`.
+
+- **One tick a pixel, in one direction.** An upload is charged as each pixel
+  lands; a readback is charged up front, since the GPU is fetching from VRAM for
+  the whole of it even though software reads the words out one at a time.
+- **On the same bill as drawing** (`pending_draw_ticks_`), so what it delays is
+  the commands queued behind a transfer. The transfer's own words are not held
+  back: they still flow past a busy rasteriser, for the deadlock reason bug 86
+  gave.
+- **Latched per transfer**, so turning it over mid-upload cannot charge half of
+  one.
+- `Gpu::Stats::transfer_ticks` says how much of `draw_ticks` it accounts for,
+  and `boot_runner --gpu-transfer-timing` prints it.
+
+### Where the figure comes from - and where it does not
+
+**DuckStation does not charge these transfers at all.** Neither
+`HandleCopyRectangleCPUToVRAMCommand` nor `HandleCopyRectangleVRAMToCPUCommand`
+adds GPU ticks; the time it takes to move the words is charged on the DMA side,
+which this core charges as well. So there is no measured figure to copy, and
+nobody published one.
+
+One tick a pixel is *derived*, from the one transfer that is charged: a
+VRAM-to-VRAM copy costs two ticks a pixel, a read and a write (bug 85,
+DuckStation's figure). An upload is only the write and a readback only the read.
+That is a reasoned estimate, not a measurement, and it is why this is an option
+rather than the default.
+
+### Verified, 2026-09-24
+
+- **Off, nothing moves**: the BIOS boot is identical on every figure -
+  93,049,815 instructions, `c7c8db90c5984798`, 1,153 primitives, 908 interrupts.
+- **On, the BIOS barely notices**: 17,844 ticks charged over 400 frames, with the
+  picture and the instruction count unchanged. The shell uploads very little.
+- **On, with bug 94's model as well, all twelve discs still run correctly** -
+  see below.
+
+## 94. No instruction cache - now an option, as a timing model
+
+Gaps.md: "The instruction and data caches are not modelled." Every instruction
+fetch cost one cycle wherever it came from, which is the same as assuming every
+fetch hits a cache - including the BIOS running uncached out of ROM, where
+hardware pays a four-access 8-bit bus read for every word.
+
+**On the "data cache" half: there is nothing to add.** The R3000A's data cache
+is not a cache on the PlayStation - it is the 1 KB scratchpad at 0x1F800000,
+which this core has always implemented, at the 1-cycle access
+JaCzekanski's access-time test measured. What was missing was the instruction
+cache.
+
+### What it does
+
+Emulation > **I**nstruction Cache Timing (interpreter), or `icache_timing`. Off
+by default.
+
+DuckStation's model, with this core's own measured bus costs:
+
+- **256 lines of 16 bytes, direct-mapped.** Each tag is the line's address with
+  a bit per word marking the words not yet in it, since a refill starts at the
+  word being fetched and runs to the end of its line.
+- **KUSEG and KSEG0 go through the cache.** A hit costs nothing beyond the
+  instruction's own cycle. A miss refills to the end of the line - one cycle a
+  word from RAM, which the cache reads in a burst, and the full access for every
+  word from the 8-bit BIOS ROM or expansion 1.
+- **KSEG1 is uncached**, and every fetch costs what a load from the same place
+  costs: 4 from RAM, about 24 a word from the ROM. DuckStation charges 6 for RAM
+  here; this core's 4 is what JaCzekanski's test measured for a load, and the bus
+  does not know whether it is fetching or loading.
+- **An isolated store drops a line**, which is how the BIOS flushes the cache. An
+  ordinary store does not: the instruction cache is not kept coherent with
+  memory on hardware, which is exactly why software has to flush it.
+- **A loaded state starts cold.** The tags are not saved, so `kStateVersion` did
+  not move.
+
+### Two decisions worth knowing about
+
+- **Tags only - no data.** DuckStation serves instructions out of its cache.
+  This does not: instructions still come from memory, and the model only decides
+  what a fetch costs. Serving code from a cache is how the earlier attempt here
+  (`ICache2`, still in the tree and in the state format, and still not used for
+  fetches) came to corrupt every read. The gap was timing fidelity, and a model
+  that cannot run stale code cannot break a game that way.
+- **The interpreter only.** With the recompiler on, the setting does nothing -
+  confirmed to the instruction: `--recompiler` and `--recompiler --icache-timing`
+  give the same 8,766,076 steps and the same checksum. Compiled blocks chain
+  into one another without fetching, so modelling the cache there means emitting
+  tag checks into generated code, on top of a recompiler whose own timing is
+  still unproven (Recompiler-Plan.md, "Timing: the known gap"). The model is
+  kept off entirely while the recompiler runs - `Cpu::SyncICacheSetting`, once a
+  batch - rather than left seeing only the odd interpreted step.
+
+### Verified, 2026-09-24
+
+- **Off, nothing moves**, on every figure above.
+- **On, it does what it is designed to.** The BIOS boot: 77,471,082 hits,
+  222,460 misses (99.7% of cached fetches hit), and 2,647,298 uncached fetches -
+  the ROM through KSEG1. The CPU gets 26% fewer instructions done in 400 frames,
+  93.0M down to 68.9M, and frame 400 is still byte-identical.
+- **On, with bug 93 as well, all twelve discs run correctly.** Every checksum
+  moves, because every game is slower and so at a different point by each
+  checkpoint - Legend of Mana has read 4,650 sectors by frame 3000 where it read
+  5,313, Wild Arms 3,058 against 3,715. Every frame 3000 was checked by eye: each
+  is a clean, sensible frame of its game's intro, a moment earlier or later.
+
+**Whether it is more accurate is not shown, and the attempt is worth recording.**
+Two console-measured references were tried:
+
+- `timing_test` (JaCzekanski's access-time, now runnable with
+  `--icache-timing`): still 42 of 51 cells within tolerance, and a total error
+  against the console of 62.60 cycles against 62.45 without it. Neutral. It
+  measures loads, and its loop sits in the cache.
+- The timers test against `test suite/timers/psx.log`: in steady state, 481
+  cycles of total error against 474 - neutral. In the first two samples of each
+  row, 96,405 against 74,385 - worse, but those samples are dominated by where
+  in the frame the test happens to start, which depends on how long the boot
+  took, which is exactly what the model changes.
+
+An earlier look at the timers log used one sample per row and made the model
+look 18% better. Split into warm-up and steady state, that went away. So: built
+to the reference model, verified to behave as designed, not verified to be more
+faithful - which is why it is off.
+
+### What the two options cost with both switched off
+
+Measured against a build of the tree before them, from a separate worktree. The
+host was in use while this was measured, so neither wall clock nor process CPU
+time could be trusted - the control itself moved 38% between two runs - and the
+comparison that held up was **both builds run at the same moment, side by side**,
+eleven pairs, taking the median ratio:
+
+| | Median, new against old | Pairs where new was slower |
+|---|---|---|
+| Recompiled | 0.0% | 5 of 11 - noise |
+| Interpreted | +0.9% | 9 of 11 |
+
+The recompiler, which is how the front end normally runs, pays nothing. The
+interpreter pays a little under one percent, and it is the check in
+`Cpu::StageIF`: a build with only that branch taken out ran 2.3% *faster* than
+the old tree, 0 of 11 pairs slower. Nothing else in the change makes the
+interpreter do less work, so that 2.3% is code layout - which is the honest
+scale of this: any edit to the interpreter's inner loop moves it a couple of
+percent either way, and one predicted branch per fetch lands it at +0.9%.
+
+It took two corrections to get there, both worth knowing:
+
+- **The first version cost 3.6%.** The kilobyte of tags sat in the middle of
+  `Cpu`, just ahead of `store_observer_`, which every store reads - moving every
+  member after it onto different cache lines - and `System` checked the setting
+  on every step, three loads an instruction. The tags now live on the heap,
+  allocated the first time the model is switched on, and the setting is picked up
+  once per 32-cycle batch in `IOInterface::RunPending`.
+- **Two earlier readings were wrong.** Best-of-five wall clock said +3.6%, then
+  on a busier host +32%, then process CPU time said the new build was 11%
+  *faster*. Only the paired runs agreed with themselves.
+
+## 95. Three harnesses crashed on exit, and one had failures the crash was hiding
+
+Found while verifying bugs 93 and 94: `gpu_test`, `sio_test` and `timer_test`
+printed nothing at all and exited with 0xC0000409, so the sweep counted them as
+missing rather than failing - 1,700 checks instead of 1,979.
+
+### The crash
+
+0xC0000409 is MSVC's `abort()`, and the cause was `std::terminate`: a
+`std::thread` destroyed while still joinable. Those three are exactly the
+harnesses that build a `System` and never call `Deinitialize`, and since
+`gpu_thread` became the default every `Gpu` starts a rasteriser thread. At exit
+the `Gpu` was destroyed with its thread still running, and `Gpu::~Gpu` was
+empty. Output buffered before the abort was lost, which is why nothing printed.
+
+So this was bug 91's, latent until the default changed - and not only a harness
+problem: any path that destroys a `System` without deinitialising it would have
+taken the front end down the same way. `Gpu::~Gpu` now stops the thread, which
+first draws whatever is still queued; `vram_` is only freed by `Deinitialize`,
+so it is still there to draw into.
+
+### What the crash was hiding
+
+With the crash gone, `gpu_test` ran and failed four checks - the interlaced
+field tests (bug 89) and the mask-bit test (bug 83). All four took the pointer
+`Gpu::vram()` handed back once, issued more commands, and went on reading
+through it. That was fine while drawing happened where it was submitted. With
+the rasteriser on its own thread the later draws had not landed yet - and a
+check that a pixel was "left clear" could pass only because nothing had been
+drawn there at all.
+
+A game cannot do this: it sees VRAM only through GPUREAD or DMA, and both wait
+for the rasteriser. The tests now read the same way, through a `VramView` whose
+`operator[]` waits for the rasteriser on every read. No check changed.
+
+### Verified, 2026-09-24
+
+`gpu_test` 63, `sio_test` 146 and `timer_test` 70, all green with the rasteriser
+threaded, which is now the path they exercise by default.

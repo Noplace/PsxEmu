@@ -146,6 +146,8 @@ namespace psxemu {
         void SetSkipBiosIntro(bool on);
         void SetRecompiler(bool on);
         void SetGpuThread(bool on);
+        void SetGpuTransferTiming(bool on);
+        void SetICacheTiming(bool on);
         void SetAudioBackend(const std::string& key);
         void SetPauseInMenus(bool on);
         void SetShowTimings(bool on);
@@ -199,6 +201,8 @@ namespace psxemu {
         void UpdateSkipBiosIntroMenu();
         void UpdateRecompilerMenu();
         void UpdateGpuThreadMenu();
+        void UpdateGpuTransferTimingMenu();
+        void UpdateICacheTimingMenu();
         void UpdateAudioBackendMenu();
         void UpdatePauseInMenusMenu();
         void UpdateShowTimingsMenu();

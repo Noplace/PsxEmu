@@ -190,6 +190,10 @@ void IOInterface::RunPending() {
   if (batch == 0)
     return;
 
+  // Settings the CPU keeps a flag of its own for, picked up here - a batch is at
+  // most a few dozen instructions, and far cheaper than asking on every one.
+  system_->cpu().SyncICacheSetting();
+
   GpuCore* gpu = system_->gpu_core();
   gpu->Tick(batch);
 

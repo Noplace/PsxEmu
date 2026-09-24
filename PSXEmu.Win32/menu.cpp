@@ -126,6 +126,14 @@ namespace psxemu {
         // next vblank, and every read of VRAM waits for the rasteriser either way.
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandGpuThread),
                     L"Rasterise on a &GPU Thread");
+        // Two timing models, both off by default because they change how fast games
+        // run and neither is proven more accurate against hardware (bugs 93, 94).
+        // Safe to toggle mid-game: each is picked up between instructions or at
+        // the start of the next transfer.
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandGpuTransferTiming),
+                    L"Charge GPU Time for VRAM &Transfers");
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandICacheTiming),
+                    L"&Instruction Cache Timing (interpreter)");
         AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandPauseInMenus),
                     L"Pause &While in Menus");
@@ -533,6 +541,22 @@ namespace psxemu {
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandGpuThread),
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickGpuTransferTiming(HWND window, bool on) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandGpuTransferTiming),
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickICacheTiming(HWND window, bool on) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandICacheTiming),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
     }
 

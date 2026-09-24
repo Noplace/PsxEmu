@@ -6,8 +6,9 @@ game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 
 Last audited 2026-09-21, after bug 82 (the mouse's three motion modes), with
 the GP0 queue entry below, the harness counts and the speed-ceiling entry
-brought up to date after bugs 87 to 91 (the GPU's drawing cost, the interlaced
-field, the audio resample and phase 7's rasteriser thread). Every
+brought up to date after bugs 87 to 95 (the GPU's drawing cost, the interlaced
+field, the audio resample, phase 7's rasteriser thread, and the transfer and
+instruction-cache timing options). Every
 entry below was re-read against the code, not carried forward: each claim was
 checked at the line it describes, and what follows is what that reading found.
 
@@ -53,7 +54,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 cpu 297, gte 106, timer 70, sio 146, spu 108, gpu 63, mdec 85, media 271, mc 77, debug 174 - 1,397
 checks, no failures, and 1,979 across all seventeen harnesses (re-run
-2026-09-23, after bugs 78-89). The two that were failing when this document was last
+2026-09-24, after bugs 78-95 - with the rasteriser threaded, now the default). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
@@ -306,11 +307,14 @@ Four simplifications are left, and all four are deliberate:
 - **A partly-offscreen primitive is estimated by clamping its corners**, which
   undershoots where intersecting its edges with the drawing area would be
   exact. DuckStation documents the same approximation and takes it.
-- **Transfers are not charged.** A CPU-to-VRAM or VRAM-to-CPU blit still costs
-  no GPU time, where hardware spends real time on every word. Its words do
-  flow past a busy rasteriser rather than queueing behind it, because the
-  blitter is a separate piece of the chip and holding them back would deadlock
-  a game that uploads a texture between two primitives.
+- **Transfers are not charged, unless asked (bug 93).** By default a CPU-to-VRAM
+  or VRAM-to-CPU blit still costs no GPU time. Emulation > Charge GPU Time for
+  VRAM Transfers charges one tick a pixel - a figure derived from the
+  VRAM-to-VRAM copy cost, since DuckStation charges nothing here and nobody
+  measured it - which is why it is off. Either way the words flow past a busy
+  rasteriser rather than queueing behind it, because the blitter is a separate
+  piece of the chip and holding them back would deadlock a game that uploads a
+  texture between two primitives.
 
 Reading GPUREAD also forces whatever is queued to run first, drawing time
 given away rather than answering from a stale latch - the one way the queue
@@ -319,13 +323,29 @@ could have turned into a wrong picture rather than a slower one.
 This entry was missing until the 2026-09-21 audit, while Test-Suite.md's
 `gpu_test` section had been pointing at it by name.
 
-### The instruction and data caches are not modelled
+### The instruction cache - a timing model, off by default and unproven
 
-`ICache`/`ICache2` exist in `cpu.h` with every call site commented out,
-deliberately: routing data loads through an *instruction* cache corrupted every
-read once the BIOS enabled it. The cost is timing fidelity, and a future
-recompiler would want the cache-control write at `0xFFFE0130` as its signal
-that code changed - see [Recompiler-Plan.md](Recompiler-Plan.md).
+By default every instruction fetch costs one cycle wherever it comes from,
+which is the same as assuming it always hits the cache - including the BIOS
+running uncached out of ROM. Emulation > Instruction Cache Timing (bug 94)
+models the cache: DuckStation's 256-line layout, a refill to the end of the line
+on a miss, the full bus cost for every uncached fetch. It is a timing model only
+- instructions still come from memory, never from the cache - so it cannot run
+stale code, which is how the earlier `ICache2` corrupted every read.
+
+Three limits:
+
+- **Interpreter only.** With the recompiler on it does nothing, because compiled
+  blocks do not fetch. Modelling it there means tag checks in generated code, on
+  top of the recompiler's own unproven timing.
+- **Not shown to be more accurate.** Against JaCzekanski's access-time test and
+  the timers test's console log it is neutral in steady state; see bug 94 for
+  the numbers and for the comparison that briefly looked better and was not.
+- **The cache-enable bit in `0xFFFE0130` is not consulted**, as DuckStation does
+  not, and a loaded state starts with a cold cache.
+
+**There is no data cache to add.** The R3000A's data cache is the PlayStation's
+1 KB scratchpad at 0x1F800000, which has always been implemented.
 
 ### GTE - values and flags agree with hardware; one matrix is guessed
 
@@ -460,7 +480,7 @@ Missing or unproven:
 `graphics_backend` (D3D11 or D3D12), `video_filter`, controller type and input
 source per port, the multitap player sources, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `gpu_thread`,
-`bios_file`,
+`gpu_transfer_timing`, `icache_timing`, `bios_file`,
 `emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console`,
 `sio1_to_console`, `mouse_motion` and `mouse_dpi` - twenty keys, which is
 every field `StoreConfig` writes.

@@ -110,6 +110,8 @@ namespace psxemu {
     void TickSkipBiosIntro(HWND window, bool on);
     void TickRecompiler(HWND window, bool on);
     void TickGpuThread(HWND window, bool on);
+    void TickGpuTransferTiming(HWND window, bool on);
+    void TickICacheTiming(HWND window, bool on);
 
     // EmuConfig::pause_in_menus and EmuConfig::show_timings.
     void TickPauseInMenus(HWND window, bool on);

@@ -18,6 +18,8 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <memory>
+
 namespace emulation {
 namespace psx {
   /*
@@ -341,6 +343,18 @@ class Cpu : public Component {
   // check and cannot unwind, so it asks afterwards: if the count moved, the
   // block stops where it is. See rec/runtime.h.
   uint64_t exceptions_raised() const { return exceptions_raised_; }
+
+  // The instruction cache as a timing model (bug 94) - see EmuConfig::icache_
+  // timing. System turns it on and off, between instructions and only while the
+  // interpreter is running. Counters are for the harnesses.
+  bool icache_timing() const { return icache_timing_; }
+  void set_icache_timing(bool on);
+  // Brings the model in line with the setting. Called once a batch of cycles
+  // (IOInterface::RunPending), not per instruction - see StageIF.
+  void SyncICacheSetting();
+  uint64_t icache_hits() const { return icache_hits_; }
+  uint64_t icache_misses() const { return icache_misses_; }
+  uint64_t uncached_fetches() const { return uncached_fetches_; }
 
   // Cop0's Cause register as software sees it, which is not quite what is
   // stored: the interrupt-pending field's hardware half is the state of the
@@ -745,6 +759,35 @@ class Cpu : public Component {
   void BGEZ();
   void BLTZAL();
   void BGEZAL();
+
+  // ---- the instruction-cache timing model (bug 94) -----------------------
+  // Last in the class on purpose: put in the middle, the kilobyte of tags moved
+  // every member after it - store_observer_, read on every store, among them -
+  // onto different cache lines, and the interpreter ran 3.6% slower with the
+  // model switched off.
+  // The instruction cache's tags, and nothing else: 256 lines of four words,
+  // direct-mapped on bits 4-11 of the address, each tag the line's address with
+  // a bit per word that is set while that word is not yet in the line - the
+  // layout DuckStation uses, since a refill starts at the word being fetched
+  // and runs to the end of its line, leaving the words before it absent.
+  //
+  // There is deliberately no data. Instructions still come from memory; this
+  // only decides what a fetch costs. Serving code out of a cache is how an
+  // earlier attempt here came to corrupt every read (the ICache2 above is what
+  // is left of it), and it is timing, not content, that this exists for.
+  // The tags live on the heap, allocated the first time the model is switched
+  // on. Inline they made Cpu a kilobyte bigger, and Cpu sits inside System, so
+  // every System member after it moved too.
+  static const int kICacheLines = 256;
+  std::unique_ptr<uint32_t[]> icache_tags_;
+  bool icache_timing_ = false;
+  uint64_t icache_hits_ = 0;
+  uint64_t icache_misses_ = 0;
+  uint64_t uncached_fetches_ = 0;
+  void InvalidateICacheTags();
+  // What fetching the instruction at pc costs beyond the one cycle every
+  // instruction does.
+  uint32_t FetchStall(uint32_t pc);
 };
 
 }

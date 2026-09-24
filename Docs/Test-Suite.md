@@ -318,6 +318,11 @@ Two questions, kept apart:
   deliberate: the change should be one somebody meant.
 
 **Current: 19 checks, 0 failures; 42 of 51 cells match the console.**
+
+`timing_test --icache-timing` runs the same test with the instruction-cache model
+on (bug 94). The baseline checks are for the default machine and fail with it,
+as they should; the console comparison is the point - still 42 of 51, and a
+total error of 62.60 cycles against 62.45 without the model.
 Cycles per load at 8 / 16 / 32 bits:
 
 | Region | Console | This emulator | Before bugs 76-77 |

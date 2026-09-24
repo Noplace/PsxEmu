@@ -102,7 +102,12 @@ namespace emulation {
 
         Gpu::Gpu() : vram_(nullptr), framebuffer_(nullptr) {}
 
-        Gpu::~Gpu() {}
+        // Stops the rasteriser if Deinitialize has not already. A std::thread that is still
+        // joinable when it is destroyed calls std::terminate, so a Gpu torn down without
+        // Deinitialize - three of the harnesses do exactly that - took the whole process
+        // down with it once the thread became the default (bug 95). What is still queued is
+        // drawn first; vram_ is only freed by Deinitialize, so it is still there to draw into.
+        Gpu::~Gpu() { StopRasterThread(); }
 
         int Gpu::Initialize() {
             vram_ = new uint16_t[kVramWidth * kVramHeight];
@@ -598,6 +603,8 @@ namespace emulation {
             for (int half = 0; half < 2; ++half) {
                 const uint16_t pixel = static_cast<uint16_t>(data >> (half * 16));
                 VramAt(transfer_.x + transfer_.px, transfer_.y + transfer_.py) = pixel;
+                if (transfer_timing_)
+                    ChargeTransfer(1);
                 NoteWatchWrite(transfer_.x + transfer_.px, transfer_.y + transfer_.py);
                 if (stats_.transfer_log_count > 0 &&
                     stats_.transfer_log_count <= Stats::kTransferCapacity)
@@ -628,6 +635,7 @@ namespace emulation {
             transfer_.px = 0;
             transfer_.py = 0;
             transfer_mode_ = kTransferToVram;
+            transfer_timing_ = system().config().gpu_transfer_timing;
 
             if (stats_.transfer_log_count < Stats::kTransferCapacity) {
                 Stats::Transfer& entry = stats_.transfers[stats_.transfer_log_count++];
@@ -648,6 +656,10 @@ namespace emulation {
             transfer_.px = 0;
             transfer_.py = 0;
             transfer_mode_ = kTransferFromVram;
+            // Charged up front: the pixels are read out as software asks for them, but
+            // the GPU is fetching them from VRAM for the whole transfer.
+            if (system().config().gpu_transfer_timing)
+                ChargeTransfer(static_cast<int32_t>(transfer_.w * transfer_.h));
         }
 
         void Gpu::CmdVramToVramCopy() {
@@ -749,7 +761,25 @@ namespace emulation {
             DrainQueue();
         }
 
+        // A transfer's cost, as drawing time the rasteriser owes (bug 93). One tick a
+        // pixel, in one direction: the VRAM-to-VRAM copy is charged two a pixel, a
+        // read and a write, and an upload is only the write while a readback is
+        // only the read. DuckStation charges neither - the bus time of moving the
+        // words is on the DMA side, which this core charges too - so this is a
+        // derived figure, not a measured one, and it is off unless asked for.
+        //
+        // It goes on the same bill as a primitive, so what it delays is the
+        // commands queued behind it. The transfer's own words are not held back:
+        // they flow past a busy rasteriser, for the reason in Gpu::DrainQueue.
+        void Gpu::ChargeTransfer(int32_t pixels) {
+            if (pixels <= 0)
+                return;
+            AddDrawTicks(pixels);
+            stats_.transfer_ticks += static_cast<uint64_t>(pixels);
+        }
+
         void Gpu::AddDrawTicks(int32_t ticks) {
+
             if (ticks <= 0)
                 return;
             pending_draw_ticks_ += ticks;

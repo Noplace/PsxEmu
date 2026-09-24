@@ -125,12 +125,18 @@ bool ReadFile(const char* path, std::string* text) {
 
 // Boots the BIOS, side-loads the test the way boot_runner --exe --auto-boot does, and runs it
 // until it prints "Done." or the frame limit passes. What it printed through the BIOS comes back.
+// Set by --icache-timing: runs the test with the instruction-cache model on (bug 94),
+// to see what it does to the measured costs. The baseline checks below are for the
+// default machine and are expected to fail with it.
+bool g_icache_timing = false;
+
 bool RunTest(const std::string& bios, std::string* console, int* frames) {
   // On the heap: a System is far too big for a thread's stack.
   std::unique_ptr<System> system = std::make_unique<System>();
   if (system->Initialize(bios.c_str()) != 0)
     return false;
   system->set_auto_boot_exe(true, kExe);
+  system->config().icache_timing = g_icache_timing;
   const auto& kernel = system->kernel().stats();
   while (static_cast<int>(system->gpu().frame_count()) < kFrameLimit) {
     system->StepInstructionUnarmed();
@@ -153,7 +159,13 @@ bool RunTest(const std::string& bios, std::string* console, int* frames) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  const std::string bios = (argc > 1) ? argv[1] : "bios/SCPH1001.BIN";
+  std::string bios = "bios/SCPH1001.BIN";
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--icache-timing")
+      g_icache_timing = true;
+    else
+      bios = argv[i];
+  }
   printf("timing_test - bus timing against a real console (cpu/access-time)\n\n");
 
   std::string reference_text;

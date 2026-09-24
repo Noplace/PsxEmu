@@ -138,6 +138,7 @@ int Cpu::Initialize() {
   cpu_ = this;
   icache.set_system(system_);
   icache.Initialize();
+  InvalidateICacheTags();
   //dcache_.Initialize();
 
   index = 0;
@@ -158,13 +159,100 @@ int Cpu::Initialize() {
   return 0;
 }
 
+void Cpu::InvalidateICacheTags() {
+  if (!icache_tags_)
+    return;
+  for (int i = 0; i < kICacheLines; ++i)
+    icache_tags_[i] = 0xFFFFFFFFu;
+}
+
+// The model belongs to the interpreter. With the recompiler on it is kept off
+// rather than left to see only the odd interpreted step - a GTE command, an
+// interrupt entry - with tags that describe nothing.
+void Cpu::SyncICacheSetting() {
+  const bool on = system_->config().icache_timing && !system_->recompiler_enabled();
+  if (on != icache_timing_)
+    set_icache_timing(on);
+}
+
+void Cpu::set_icache_timing(bool on) {
+
+  // Switching it on starts from a cold cache: tags left from before it was off
+  // describe code that may no longer be where they say.
+  if (on && !icache_timing_) {
+    if (!icache_tags_)
+      icache_tags_ = std::make_unique<uint32_t[]>(kICacheLines);
+    InvalidateICacheTags();
+  }
+  icache_timing_ = on;
+}
+
+// The fetch cost, on DuckStation's model with this core's own bus costs.
+//
+// KUSEG and KSEG0 go through the cache. A hit costs nothing beyond the
+// instruction's own cycle. A miss refills from the word being fetched to the end
+// of its line: one cycle a word from RAM, which the cache reads in a burst, and
+// the full access for every word from the BIOS ROM or expansion 1, which sit on
+// 8-bit buses and have no burst.
+//
+// KSEG1 is uncached, and every fetch is a single bus read costing what a load
+// from the same place costs - 4 from RAM, the ROM's programmed delay (about 24 a
+// word) from the BIOS. Those are the figures JaCzekanski's access-time test
+// measured for loads (Cpu::Load); DuckStation charges 6 for RAM here, but the bus
+// does not know whether it is fetching or loading.
+//
+// The cache-enable bit in 0xFFFE0130 is not consulted: DuckStation does not
+// either, and the BIOS turns the cache on before anything runs from a cached
+// segment.
+uint32_t Cpu::FetchStall(uint32_t pc) {
+  const uint32_t segment = pc >> 29;
+  const uint32_t physical = pc & 0x1FFFFFFF;
+  const IOInterface& io = system_->io();
+
+  if (segment == 0 || segment == 4) {
+    const uint32_t line = (pc >> 4) & (kICacheLines - 1);
+    const uint32_t word = (pc >> 2) & 3;
+    const uint32_t tag = pc & 0xFFFFFFF0u;
+    if ((icache_tags_[line] & (0xFFFFFFF0u | (1u << word))) == tag) {
+      ++icache_hits_;
+      return 0;
+    }
+    ++icache_misses_;
+    static const uint32_t kAbsentBefore[4] = { 0, 1, 3, 7 };
+    icache_tags_[line] = tag | kAbsentBefore[word];
+    const uint32_t words = 4 - word;
+    if (physical <= 0x007FFFFF)
+      return words;
+    if (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF)
+      return words * (io.bus_stall(IOInterface::kBusBios, 2) + 1);
+    if (physical >= 0x1F000000 && physical <= 0x1F7FFFFF)
+      return words * (io.bus_stall(IOInterface::kBusExp1, 2) + 1);
+    return 0;
+  }
+
+  if (segment == 5) {
+    ++uncached_fetches_;
+    if (physical <= 0x007FFFFF)
+      return 4;
+    if (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF)
+      return io.bus_stall(IOInterface::kBusBios, 2);
+    if (physical >= 0x1F000000 && physical <= 0x1F7FFFFF)
+      return io.bus_stall(IOInterface::kBusExp1, 2);
+    return 0;
+  }
+  return 0;
+}
+
 int Cpu::Deinitialize() {
+
 //  dcache_.Deinitialize();
   icache.Deinitialize();
   return 0;
 }
 
 void Cpu::Serialise(StateIO& io) {
+  if (!io.saving())
+    InvalidateICacheTags();
   io.Bytes(icache.buffer.u8, 0x1000 * 4);
   io.Plain(icache.addresses);
   io.Plain(pending_load_);
@@ -828,6 +916,8 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
   // breaks either, so a byte store also did the halfword and word writes.
   if (context_->ctrl.SR.IsC) {
     icache.InvalidateLine(address);
+    if (icache_tags_)
+      icache_tags_[(address >> 4) & (kICacheLines - 1)] = 0xFFFFFFFFu;
     return;
   }
 
@@ -888,6 +978,17 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
 void Cpu::StageIF() {
   current_stage = 1;
   auto ppc = AddressTranslation(context_->pc);
+  // The instruction-cache model (bug 94). A flag of the CPU's own, brought in line
+  // with the setting once a batch (SyncICacheSetting) rather than read through
+  // System here on every instruction: measured in pairs against the tree before it,
+  // reading the setting here cost the interpreter 1%, and the latch that preceded
+  // that - three loads a step in System - cost 3.6% along with the tags' old place
+  // in the class.
+  if (icache_timing_) [[unlikely]] {
+    const uint32_t stall = FetchStall(context_->pc);
+    for (uint32_t i = 0; i < stall; ++i)
+      Tick();
+  }
   context_->code = Load(kM32,context_->pc); //LoadMemory(cache_flag_,4,ppc,context_->pc);
   context_->pc  += 4;
 }

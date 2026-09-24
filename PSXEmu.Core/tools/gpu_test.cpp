@@ -50,6 +50,18 @@ void RunGpu(System* system) {
     system->gpu().Tick(4096);
 }
 
+// VRAM as a check reads it: every read waits for the rasteriser first, the same
+// way GPUREAD and DMA do inside the machine. These checks used to keep the pointer
+// Gpu::vram() handed back and read through it after issuing more commands, which
+// was fine while drawing happened where it was submitted. With the rasteriser on
+// its own thread (bug 91, and the default since) the later draws had not landed
+// yet - and a check that a pixel was "left clear" could pass only because nothing
+// had been drawn there at all (bug 95).
+struct VramView {
+  System* system;
+  uint16_t operator[](size_t index) const { return system->gpu().vram()[index]; }
+};
+
 // Acknowledges I_STAT's GPU bit the way software does - write a word with
 // that bit 0 and every other bit 1 - without touching GPUSTAT.24, which only
 // GP1(02h) clears. Keeping the two separate is the point of this test file.
@@ -326,7 +338,7 @@ void TestInterlacedSkipsDisplayedField(System* system) {
   system->gpu().WriteData(0xE4000000 | (400u << 10) | 600u);
   system->gpu().WriteStatus(0x05000000);            // display area at (0,0)
 
-  const uint16_t* vram = system->gpu().vram();
+  const VramView vram{system};
 
   // Which parity is showing is GPUSTAT bit 31 in interlaced mode, and it flips
   // once a frame - so each stage below drains the GPU first, then reads the
@@ -483,7 +495,7 @@ void TestTextureBit15BecomesTheMaskBit(System* system) {
   system->gpu().WriteData((1u << 16) | 1u);
 
   RunGpu(system);
-  const uint16_t* vram = system->gpu().vram();
+  const VramView vram{system};
   CheckEqual(vram[10 * 1024 + 10] & 0x8000, 0x8000,
              "the texel with bit 15 set marked its pixel");
   CheckEqual(vram[10 * 1024 + 12] & 0x8000, 0,
@@ -540,7 +552,7 @@ void TestPolylineTerminatorIsNotAVertex(System* system) {
   system->gpu().WriteData(0x50005000);            // terminator
 
   RunGpu(system);
-  const uint16_t* vram = system->gpu().vram();
+  const VramView vram{system};
   Check(vram[0] == 0, "(0,0) was not touched by the terminator-as-vertex bug");
   // Roughly midway along the bogus (200,150)->(0,0) diagonal the old code
   // would have drawn.
@@ -590,7 +602,7 @@ void TestOpaqueSharedEdgeUsesLastDrawnPrimitive(System* system) {
   system->gpu().WriteData((416u << 16) | 432u);
 
   RunGpu(system);
-  const uint16_t* vram = system->gpu().vram();
+  const VramView vram{system};
   const uint16_t kRed15   = 0x001F;   // To15Bit(255,0,0)
   const uint16_t kGreen15 = 0x03E0;   // To15Bit(0,255,0)
 
@@ -638,7 +650,7 @@ void TestSemiTransparentSharedEdgeBlendsOnce(System* system) {
   system->gpu().WriteData((456u << 16) | 432u);
 
   RunGpu(system);
-  const uint16_t* vram = system->gpu().vram();
+  const VramView vram{system};
   const uint16_t kSingleBlend15 = 0x0008;   // To15Bit(64,0,0): 64>>3
   const uint16_t kDoubleBlend15 = 0x0010;   // To15Bit(128,0,0): a double add
 

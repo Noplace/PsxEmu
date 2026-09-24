@@ -81,6 +81,8 @@ class Gpu : public GpuCore {
     // Gpu::AddDrawTicks.
     uint64_t draw_ticks;
     uint64_t draw_ticks_waited;
+    // Of draw_ticks, how many were CPU-VRAM transfers (gpu_transfer_timing).
+    uint64_t transfer_ticks;
     // The deepest the GP0 queue has been, and how many words were dropped
     // because it could not go deeper. The second should stay zero: it means
     // software wrote GP0 far past what the port said it could take.
@@ -352,6 +354,14 @@ class Gpu : public GpuCore {
   // spending anyway - see AdvanceDrawing - so that Tick does not pay for the
   // same cycles a second time.
   uint32_t prepaid_ticks_;
+
+  // Whether the transfer in progress is being charged GPU time. Latched when the
+  // transfer starts, so turning the setting over mid-upload cannot charge half
+  // of one.
+  bool transfer_timing_ = false;
+  // Charges a transfer's pixels to the rasteriser (bug 93).
+  void ChargeTransfer(int32_t pixels);
+
 
   void PushQueue(uint32_t word);
   uint32_t PopQueue();
