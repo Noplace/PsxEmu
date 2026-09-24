@@ -122,6 +122,10 @@ namespace psxemu {
         // between instructions.
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandRecompiler),
                     L"&Recompiler (faster, experimental)");
+        // Also safe to toggle while a game is running: the GPU picks it up at the
+        // next vblank, and every read of VRAM waits for the rasteriser either way.
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandGpuThread),
+                    L"Rasterise on a &GPU Thread");
         AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandPauseInMenus),
                     L"Pause &While in Menus");
@@ -521,6 +525,14 @@ namespace psxemu {
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandRecompiler),
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickGpuThread(HWND window, bool on) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandGpuThread),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
     }
 

@@ -1,17 +1,29 @@
 # Threading: the window, the machine, video, audio and input
 
-**Built, 2026-09-18.** Phases 0 to 6 are done: the machine, video, audio and
-input each have a thread, and the UI thread does nothing but answer the window.
-What each phase cost and bought is in the phase table; what was measured is
-under "What it buys, in numbers". Phase 7 - a thread for the rasteriser, and
-disc read-ahead - is still optional and still unmeasured.
+**Complete, 2026-09-24.** All eight phases are done. The machine, video, audio,
+input and now the rasteriser each have a thread, and the UI thread does nothing
+but answer the window. What each phase cost and bought is in the phase table;
+what was measured is under "What it buys, in numbers".
+
+Phase 7 landed last (bug 91) and is the only one that made the machine faster
+rather than merely better paced: 13-19% recompiled, and the BIOS shell's ceiling
+in the front end goes from 144-165% to 184-188% at a 300% setting. It is off by
+default - Emulation > Rasterise on a GPU Thread - because it is the one phase
+whose benefit depends on the workload. Its second half, disc read-ahead, is
+built and byte-identical but measured as noise on this host: Windows' own file
+cache was already doing the job.
+
+What is *not* finished is the part no harness can reach - see "Not covered"
+under How it was verified. An hour of real play, with the menus in use, states
+saved and loaded, discs swapped and the window dragged, is still the soak this
+cannot perform on its own.
 
 ## The conclusion first
 
 It can be done, it is how the performance-focused emulators are built, and it
-now is. The front end has five threads - the window, the machine, video, audio
-and input - sharing nothing except a handful of typed channels. The emulated
-machine itself (`psx/`) is exactly as single-threaded and deterministic as it
+now is. The front end has six threads - the window, the machine, video, audio,
+input and the rasteriser - sharing nothing except a handful of typed channels.
+The emulated machine itself (`psx/`) is exactly as single-threaded and deterministic as it
 was, so every checksum in [Test-Suite.md](Test-Suite.md) still means what it
 meant - and `host_test` proves it, by running a threaded BIOS boot to
 `boot_runner`'s own instruction count.
@@ -20,12 +32,23 @@ What it bought is **pacing and responsiveness**, not speed. The thread running
 the machine does nothing but emulate: no upload or present, no sound-card calls,
 no pad polling, no waiting for the monitor. Menus, drags and dialogs no longer
 freeze the game. Sound is pulled at the device's own pace, and running short is
-a gap rather than noise. What it did not buy is a faster CPU core: that is about
-90% of the work, it stays one thread, and the recompiler is what moves it.
+a gap rather than noise.
+
+For phases 0 to 6 that was all it bought: the CPU core is about 90% of the work,
+it stays one thread, and the recompiler is what moves it. Phase 7 is the one
+exception - the rasteriser is not the CPU, so moving it off the machine's thread
+did make the machine faster, by 13-19% recompiled. The CPU core itself is still
+one thread and still the ceiling.
 
 It was built in the phases below, in order, each verified before the next. The
 risky one - the machine leaving the window's thread - came after everything it
 depends on already worked.
+
+What made phase 7 safe is that the rasteriser stopped reading live state - each
+piece of drawing carries the state it was issued under - so every read of VRAM
+can simply wait for it, and a threaded run is byte-identical to an unthreaded
+one. The GPU's *timing* did not move: draw ticks, the GP0 queue and GPUSTAT's
+ready bits are things a game can see, so they stay on the machine thread.
 
 ## What the standard is
 
@@ -226,7 +249,7 @@ input; then `DestroyWindow`. The UI joins each thread with
 | 4 | Video thread and the frame mailbox | yes | present and the upload left the machine's frame; a resize repaints from the video thread; frames the monitor cannot show are dropped and counted |
 | 5 | Machine thread; the UI becomes a pure `GetMessage` pump; the bug 63 stall wiring comes out | yes | menus, drags and dialogs no longer freeze the game - and Pause While in Menus is there for anyone who wants the old behaviour |
 | 6 | Input thread, at 1 kHz, owning raw mouse input on a message-only window of its own | yes | an empty XInput slot's once-a-second probe can no longer hitch a frame; the reading a frame takes is at most a millisecond old |
-| 7 | A GPU thread (DuckStation-style - registers and timing stay with the machine, rasterising moves behind a FIFO), and disc read-ahead for images on the network share | no | worth 4-5% interpreted, about 12% recompiled ([GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md)) - still optional, still unmeasured here |
+| 7 | A GPU thread (DuckStation-style - registers and timing stay with the machine, rasterising moves behind a FIFO), and disc read-ahead for images on the network share | yes | bug 91. 19.4% on the BIOS shell, 17.7% on Wild Arms, 13.1% on Ridge Racer, recompiled - at or above the 12% guessed here. Off by default: Emulation > Rasterise on a GPU Thread, or `gpu_thread` in the settings file. In the front end it lifts the BIOS shell from 144-165% to 184-188% at a 300% setting. The read-ahead measured as noise on this host: Windows' file cache was already doing it |
 
 ### What it buys, in numbers
 

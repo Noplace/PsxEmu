@@ -173,6 +173,7 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
     }
   }
   f.SetBool("frame_limiter", c.frame_limiter);
+  f.SetBool("gpu_thread", c.gpu_thread);
   f.SetBool("cdrom_mechanical_timing", c.cdrom_mechanical_timing);
   f.SetBool("skip_bios_intro", c.skip_bios_intro);
   f.SetBool("recompiler", c.recompiler);
@@ -238,6 +239,7 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   }
 
   c.frame_limiter = f.GetBool("frame_limiter", c.frame_limiter);
+  c.gpu_thread = f.GetBool("gpu_thread", c.gpu_thread);
   c.cdrom_mechanical_timing =
       f.GetBool("cdrom_mechanical_timing", c.cdrom_mechanical_timing);
   c.skip_bios_intro = f.GetBool("skip_bios_intro", c.skip_bios_intro);

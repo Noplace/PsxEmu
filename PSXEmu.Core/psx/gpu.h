@@ -18,6 +18,10 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
 namespace emulation {
 namespace psx {
 
@@ -44,7 +48,9 @@ class Gpu : public GpuCore {
 
   bool Tick(uint32_t cycles);
 
-  const uint16_t* vram() const { return vram_; }
+  // Both of these wait for the rasteriser: what it has been handed is part of
+  // the picture, and answering before it lands would show a half-drawn frame.
+  const uint16_t* vram() const { SyncRaster(); return vram_; }
   const uint32_t* framebuffer(int& width, int& height) const {
     width = display_width_;
     height = display_height_;
@@ -78,6 +84,12 @@ class Gpu : public GpuCore {
     // The deepest the GP0 queue has been, and how many words were dropped
     // because it could not go deeper. The second should stay zero: it means
     // software wrote GP0 far past what the port said it could take.
+    // Barriers that actually had to wait for the rasteriser, and how many jobs
+    // it was handed. A threaded run whose waits approach its jobs is being
+    // serialised by something reading VRAM back, and is not going to be faster
+    // for it - see bug 91.
+    uint64_t raster_jobs;
+    uint64_t raster_waits;
     uint32_t queue_peak;
     uint64_t queue_overflows;
     // How many times each GP0 and GP1 command byte was executed. A primitive
@@ -128,7 +140,7 @@ class Gpu : public GpuCore {
     TexturedSetup setups[kSetupCapacity];
     uint32_t setup_count;
   };
-  const Stats& stats() const { return stats_; }
+  const Stats& stats() const { SyncRaster(); return stats_; }
 
   // Total scanlines and dot clocks per line for the current video mode. The
   // root counters need these to stay in step with the display.
@@ -313,7 +325,9 @@ class Gpu : public GpuCore {
   uint32_t scanline_;
   bool was_in_vblank_;
   uint64_t frame_count_;
-  Stats stats_;
+  // Mutable because the rasteriser's counters are merged into it at a barrier,
+  // and a barrier can happen inside a const read of the stats.
+  mutable Stats stats_;
 
   // How much drawing the GPU still owes, in its own 53.2 MHz clocks. Charged
   // per primitive (AddDrawTicks) and burnt down by Tick. A real GPU takes time
@@ -393,6 +407,102 @@ class Gpu : public GpuCore {
     bool flip_x, flip_y;   // textured rectangles only
   };
 
+  // Everything a draw needs that is not in its own words: the drawing area it
+  // is clipped to, the texture window, the mask rules and which field is being
+  // displayed. Snapshotted when the command is parsed rather than read as the
+  // pixels go down, so the rasteriser can run behind the machine on the state
+  // the command was issued under and not on state that has since moved on
+  // (phase 7 of Docs/Threading-Plan.md).
+  struct DrawEnv {
+    int32_t area_left, area_top, area_right, area_bottom;
+    uint32_t tw_mask_x, tw_mask_y, tw_offset_x, tw_offset_y;
+    bool force_set_mask, check_mask;
+    bool skip_field;
+    uint32_t active_line_lsb;
+  };
+
+  // One piece of rasterising, parsed and costed but not yet drawn. The machine
+  // thread produces these; the rasteriser consumes them. Fixed size on purpose:
+  // a polyline becomes one job per segment and a quad two triangles, so nothing
+  // here needs a side buffer.
+  struct DrawJob {
+    enum Kind { kTriangle, kLine, kRectangle, kFill, kVramCopy };
+    Kind kind;
+    DrawEnv env;
+    DrawState state;
+    Vertex v[3];                  // triangle: three, line: the first two
+    int32_t x, y, w, h;           // rectangle, fill, copy destination
+    int32_t src_x, src_y;         // copy source
+    uint8_t r, g, b;              // rectangle colour
+    uint8_t base_u, base_v;       // textured rectangle
+    uint16_t fill_colour;
+    uint8_t command;
+  };
+
+
+  // The environment the job being drawn was issued under. Owned by whoever is
+  // rasterising; the members it shadows stay the machine thread's, for costing
+  // and for GPUSTAT readback.
+  DrawEnv raster_env_;
+
+  // The counters the rasteriser owns. Kept apart from Stats so that no member of
+  // it is ever written by two threads: these are added into stats_ at a barrier,
+  // which is the only moment the machine thread can read them. Without this the
+  // pixel counts drifted between an inline run and a threaded one - the picture
+  // was right either way, but a counter that disagrees with itself is a counter
+  // nobody can use to check anything.
+  struct RasterCounters {
+    uint64_t pixels, clipped, field_skipped, mask_rejected, transparent_texels;
+    uint64_t texels_by_depth[4];
+    uint64_t watch_writes;
+    uint32_t watch_writers[256];
+  };
+  mutable RasterCounters raster_counters_;
+  // Adds them into stats_ and clears them. The caller holds jobs_mutex_.
+  void MergeRasterCounters() const;
+
+  // Snapshots the state a draw will need. Machine thread.
+  DrawEnv CaptureDrawEnv() const;
+  // Hands one piece of rasterising over. Machine thread.
+  void SubmitJob(const DrawJob& job);
+  // Draws one job. Whichever thread is rasterising.
+  void ApplyJob(const DrawJob& job);
+  void RasterRectangle(const DrawJob& job);
+  void RasterFill(const DrawJob& job);
+  void RasterVramCopy(const DrawJob& job);
+
+  // ---- the rasteriser's thread (phase 7) ---------------------------------
+  // Jobs go into this ring and a thread of its own applies them, so the
+  // machine can be running the next frame's CPU work while the last frame's
+  // pixels are still going down. Nothing the machine can observe depends on
+  // how far behind it is: every read of VRAM, of the stats it keeps, or of a
+  // state to save waits for it first, which is what keeps a threaded run
+  // byte-identical to an unthreaded one.
+  //
+  // The GPU's *timing* does not move. Draw ticks, the GP0 queue and GPUSTAT's
+  // ready bits are all charged and answered on the machine thread, where they
+  // were, because a game can see them and they have to stay deterministic.
+  static const int kJobCapacity = 1024;
+  DrawJob jobs_[kJobCapacity];
+  int jobs_head_ = 0;
+  int jobs_count_ = 0;
+  bool raster_busy_ = false;
+  bool raster_stop_ = false;
+  bool threaded_ = false;
+  uint8_t raster_command_ = 0;
+  mutable std::mutex jobs_mutex_;
+  mutable std::condition_variable jobs_added_;
+  mutable std::condition_variable jobs_drained_;
+  std::thread raster_thread_;
+
+  void StartRasterThread();
+  void StopRasterThread();
+  void RasterLoop();
+  // Waits until everything handed over has been drawn. Cheap when the
+  // rasteriser is keeping up, and a no-op when it is not threaded at all.
+  void SyncRaster() const;
+  void SyncThreadWithConfig();
+
   // The per-pixel halves of the drawing cost - see PolygonSetupTicks above.
   // Whether hardware is putting down only the active field, which halves what
   // a primitive costs: 480 lines, vertical interlace on, and drawing to the
@@ -424,9 +534,12 @@ class Gpu : public GpuCore {
   // Primitives and fills skip; a CPU-to-VRAM transfer and a VRAM-to-VRAM copy
   // do not, which is also where DuckStation draws the line - neither of its
   // WriteVRAM or CopyVRAM paths is even told the field.
+  // Answered from the environment the job carries, so a rasteriser running
+  // behind the machine skips the field that was being displayed when the
+  // command was issued, not whatever is on screen by the time it draws.
   bool SkipsVramRow(int32_t y) const {
-    return DrawsOneFieldOnly() &&
-           (static_cast<uint32_t>(y) & 1u) == ActiveLineLsb();
+    return raster_env_.skip_field &&
+           (static_cast<uint32_t>(y) & 1u) == raster_env_.active_line_lsb;
   }
 
   // One coordinate held inside the drawing area, for the cost estimates below.
@@ -470,8 +583,8 @@ class Gpu : public GpuCore {
     x &= (kVramWidth - 1);
     y &= (kVramHeight - 1);
     if ((x - watch_x_) < watch_w_ && (y - watch_y_) < watch_h_) {
-      ++stats_.watch_writers[current_command_ & 0xFF];
-      ++stats_.watch_writes;
+      ++raster_counters_.watch_writers[raster_command_ & 0xFF];
+      ++raster_counters_.watch_writes;
     }
   }
 

@@ -60,8 +60,12 @@ void Machine::ApplyConfig(const psx::EmuConfig& config) {
   const bool pacing_changed = current.frame_limiter != config.frame_limiter ||
                               current.emulation_speed != config.emulation_speed;
   current = config;
-  if (pacing_changed)
+  if (pacing_changed) {
     ResetPacing();
+    // Start the sound at the new setting rather than letting it slide there over
+    // a fifth of a second from the old one.
+    achieved_speed_ = config.emulation_speed > 0.0 ? config.emulation_speed : 1.0;
+  }
 }
 
 void Machine::ResetPacing() {
@@ -123,7 +127,25 @@ void Machine::Run() {
     Pace();
     const Clock::time_point paced = Clock::now();
 
+    // What that frame actually cost in real time, against the emulated time it
+    // covered: the speed the machine is managing, whatever it was asked for.
+    // Measured after Pace so the limiter's sleep counts - a machine with
+    // headroom is running at exactly the speed it was told to.
+    const double refresh = system_->gpu().refresh_hz();
+    const double real_seconds = Ms(paced - start) / 1000.0;
+    if (refresh > 0.0 && real_seconds > 0.0) {
+      const double measured = (1.0 / refresh) / real_seconds;
+      // A fifth of a second or so of smoothing: enough that one long frame - a
+      // disc seek, a window drag - does not bend the pitch, and short enough to
+      // follow a scene getting heavier.
+      const double kSmoothing = 0.05;
+      achieved_speed_ += kSmoothing * (measured - achieved_speed_);
+      if (achieved_speed_ < 0.05) achieved_speed_ = 0.05;
+      if (achieved_speed_ > 16.0) achieved_speed_ = 16.0;
+    }
+
     report_emulate_ms_ += Ms(emulated - input_taken);
+
     report_handoff_ms_ += Ms(input_taken - start) + Ms(handed_over - emulated);
     report_idle_ms_ += Ms(paced - handed_over);
     ++report_frames_;
@@ -188,13 +210,23 @@ void Machine::PublishFrame() {
 }
 
 // The SPU makes 44,100 samples per *emulated* second and the device drains
-// 44,100 per real one, so anything but 100% is resampled on the way out. On
-// top of the speed, a trim of at most half a percent holds the ring at its
+// 44,100 per real one, so anything but 100% is resampled on the way out.
+//
+// The ratio is the speed the machine is *managing*, not the one it was asked
+// for. Where the host keeps up those are the same number and nothing changes.
+// Where it does not they are not, and resampling by the setting starves the
+// device: at 300% on a host good for 165% it compressed by three while only
+// 1.65 seconds of sound arrived per second, so the device was handed about 55%
+// of what it needed and made up the rest with silence - tens of thousands of
+// short frames a second. Feeding forward from the measured rate fills it
+// exactly, and pitches the sound to the speed the game is really running at.
+//
+// On top of that, a trim of at most half a percent holds the ring at its
 // target: the frame limiter paces the machine off the host's clock, the sound
 // card consumes off its own, and left alone the difference would empty or fill
 // the ring every few minutes, forever. Half a percent is about eight cents -
-// inaudible - and clamped, so a host that cannot keep up shows up as a
-// shortfall rather than as pitch.
+// inaudible. It is the feedback on a loop the line above feeds forward, which
+// is why it can stay that small.
 void Machine::PumpAudio() {
   for (;;) {
     const int frames = system_->spu().ReadSamples(scratch_.data(), kScratchFrames);
@@ -202,12 +234,21 @@ void Machine::PumpAudio() {
       break;
     const double error =
         static_cast<double>(audio_->Available() - kAudioTargetFrames) / kAudioTargetFrames;
-    double trim = 1.0 + 0.005 * error;
-    if (trim < 0.995) trim = 0.995;
-    if (trim > 1.005) trim = 1.005;
+    // Proportional, and with enough authority to actually refill a ring that
+    // has been emptied. The gain used to be 0.005, which for a ring at a
+    // quarter of its target asks for a 0.35% correction - about 5 ms of sound
+    // recovered a second, so six seconds to climb back, and any hiccup on the
+    // way is another gap. At 0.03 the same error asks for 2%, which is a second
+    // and a half. Near the target - where it sits whenever the host is keeping
+    // up - the correction is a fraction of a percent, as before, and inaudible;
+    // the 3% ceiling is about fifty cents and is only ever reached while badly
+    // off. This is the feedback half of the loop the line below feeds forward.
+    double trim = 1.0 + 0.03 * error;
+    if (trim < 0.97) trim = 0.97;
+    if (trim > 1.03) trim = 1.03;
+
     resampled_.clear();
-    resampler_.Append(scratch_.data(), frames, system_->config().emulation_speed * trim,
-                      &resampled_);
+    resampler_.Append(scratch_.data(), frames, achieved_speed_ * trim, &resampled_);
     audio_->Write(resampled_.data(),
                   static_cast<int>(resampled_.size() / SampleRing::kChannels));
   }
@@ -229,6 +270,13 @@ void Machine::Pace() {
 // does not spend seconds climbing back up from empty.
 void Machine::Resume() {
   ResetPacing();
+  // Nothing measured yet, and the two ways of being wrong are not equal: guess
+  // high and the device is handed too little and plays silence, guess low and it
+  // is handed too much and the ring drops a few frames nobody hears. So start at
+  // real time, or the setting if that is slower, and let the first fifth of a
+  // second find the rest.
+  const double asked = system_->config().emulation_speed;
+  achieved_speed_ = (asked > 0.0 && asked < 1.0) ? asked : 1.0;
   const int missing = kAudioTargetFrames - audio_->Available();
   if (missing > 0)
     audio_->WriteSilence(missing);

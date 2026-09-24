@@ -145,6 +145,7 @@ namespace psxemu {
         void SetCdMechanicalTiming(bool on);
         void SetSkipBiosIntro(bool on);
         void SetRecompiler(bool on);
+        void SetGpuThread(bool on);
         void SetAudioBackend(const std::string& key);
         void SetPauseInMenus(bool on);
         void SetShowTimings(bool on);
@@ -197,6 +198,7 @@ namespace psxemu {
         void UpdateCdTimingMenu();
         void UpdateSkipBiosIntroMenu();
         void UpdateRecompilerMenu();
+        void UpdateGpuThreadMenu();
         void UpdateAudioBackendMenu();
         void UpdatePauseInMenusMenu();
         void UpdateShowTimingsMenu();

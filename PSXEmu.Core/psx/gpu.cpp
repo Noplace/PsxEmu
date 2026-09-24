@@ -114,6 +114,12 @@ namespace emulation {
             pending_draw_ticks_ = 0;
             queue_head_ = queue_size_ = 0;
             prepaid_ticks_ = 0;
+            memset(&raster_env_, 0, sizeof(raster_env_));
+            jobs_head_ = jobs_count_ = 0;
+            raster_command_ = 0;
+            threaded_ = system().config().gpu_thread;
+            if (threaded_)
+                StartRasterThread();
             fifo_count_ = 0;
             fifo_needed_ = 0;
             transfer_mode_ = kTransferNone;
@@ -153,12 +159,14 @@ namespace emulation {
             was_in_vblank_ = false;
             frame_count_ = 0;
             memset(&stats_, 0, sizeof(stats_));
+            memset(&raster_counters_, 0, sizeof(raster_counters_));
 
             UpdateDisplaySize();
             return S_OK;
         }
 
         void Gpu::Serialise(StateIO& io) {
+            SyncRaster();
             io.Bytes(vram_, sizeof(uint16_t) * kVramWidth * kVramHeight);
             io.Plain(status_.raw);
             io.Plain(fifo_);
@@ -217,6 +225,7 @@ namespace emulation {
         }
 
         int Gpu::Deinitialize() {
+            StopRasterThread();
             delete[] vram_;
             delete[] framebuffer_;
             vram_ = nullptr;
@@ -270,6 +279,9 @@ namespace emulation {
             }
             if (transfer_mode_ != kTransferFromVram)
                 return read_latch_;
+
+            // Reading VRAM: everything handed to the rasteriser has to be in it first.
+            SyncRaster();
 
             // Two 16-bit pixels per 32-bit read, left to right, top to bottom.
             uint32_t result = 0;
@@ -601,6 +613,10 @@ namespace emulation {
         }
 
         void Gpu::CmdCpuToVram() {
+            // The words that follow are written straight into VRAM from this thread,
+            // so whatever is still queued has to land first or the upload would be
+            // drawn over by a primitive that came before it.
+            SyncRaster();
             // Close off the previous entry before starting a new one, so a transfer that
             // never finished is visible as a short pixel count.
 
@@ -624,6 +640,7 @@ namespace emulation {
         }
 
         void Gpu::CmdVramToCpu() {
+            SyncRaster();
             transfer_.x = fifo_[1] & 0x3FF;
             transfer_.y = (fifo_[1] >> 16) & 0x1FF;
             transfer_.w = ((fifo_[2] & 0xFFFF) - 1 & 0x3FF) + 1;
@@ -644,16 +661,16 @@ namespace emulation {
             // Each pixel is read and then written, hence twice the area.
             AddDrawTicks(static_cast<int32_t>(w * h * 2));
 
-            for (uint32_t row = 0; row < h; ++row) {
-                for (uint32_t col = 0; col < w; ++col) {
-                    const uint16_t pixel = VramAt(sx + col, sy + row);
-                    if (check_mask_ && (VramAt(dx + col, dy + row) & 0x8000))
-                        continue;
-                    VramAt(dx + col, dy + row) =
-                        force_set_mask_ ? (pixel | 0x8000) : pixel;
-                    NoteWatchWrite(dx + col, dy + row);
-                }
-            }
+            DrawJob job;
+            job.kind = DrawJob::kVramCopy;
+            job.env = CaptureDrawEnv();
+            job.src_x = static_cast<int32_t>(sx);
+            job.src_y = static_cast<int32_t>(sy);
+            job.x = static_cast<int32_t>(dx);
+            job.y = static_cast<int32_t>(dy);
+            job.w = static_cast<int32_t>(w);
+            job.h = static_cast<int32_t>(h);
+            SubmitJob(job);
         }
 
         void Gpu::CmdFillRectangle() {
@@ -684,24 +701,15 @@ namespace emulation {
             // alley, because the fill that clobbered the palette was green. A shipped
             // game would be broken on real hardware if the fill wrapped, which is the
             // argument that it clips.
-            for (uint32_t row = 0; row < h; ++row) {
-                const uint32_t vy = y + row;
-                if (vy >= kVramHeight)
-                    break;
-                // A fill skips the displayed field too, though its cost is not halved:
-                // it is charged by the row burst either way.
-                if (SkipsVramRow(static_cast<int32_t>(vy))) {
-                    ++stats_.field_skipped;
-                    continue;
-                }
-                for (uint32_t col = 0; col < w; ++col) {
-                    const uint32_t vx = x + col;
-                    if (vx >= kVramWidth)
-                        break;
-                    VramAt(vx, vy) = colour;
-                    NoteWatchWrite(vx, vy);
-                }
-            }
+            DrawJob job;
+            job.kind = DrawJob::kFill;
+            job.env = CaptureDrawEnv();
+            job.x = static_cast<int32_t>(x);
+            job.y = static_cast<int32_t>(y);
+            job.w = static_cast<int32_t>(w);
+            job.h = static_cast<int32_t>(h);
+            job.fill_colour = colour;
+            SubmitJob(job);
         }
 
         // ---------------------------------------------------------------------------
@@ -930,9 +938,16 @@ namespace emulation {
             if (quad)
                 AddDrawTicks(TriangleDrawTicks(v[1], v[2], v[3], state));
 
-            RasterTriangle(v[0], v[1], v[2], state);
-            if (quad)
-                RasterTriangle(v[1], v[2], v[3], state);
+            DrawJob job;
+            job.kind = DrawJob::kTriangle;
+            job.env = CaptureDrawEnv();
+            job.state = state;
+            job.v[0] = v[0]; job.v[1] = v[1]; job.v[2] = v[2];
+            SubmitJob(job);
+            if (quad) {
+                job.v[0] = v[1]; job.v[1] = v[2]; job.v[2] = v[3];
+                SubmitJob(job);
+            }
         }
 
         void Gpu::CmdLine() {
@@ -987,7 +1002,13 @@ namespace emulation {
                             ? ((span_y / 2 > 0) ? (span_y / 2) : 1)
                             : span_y;
                     AddDrawTicks(16 + ((span_x > rows) ? span_x : rows));
-                    DrawLineSegment(previous, current, state);
+                    DrawJob job;
+                    job.kind = DrawJob::kLine;
+                    job.env = CaptureDrawEnv();
+                    job.state = state;
+                    job.v[0] = previous;
+                    job.v[1] = current;
+                    SubmitJob(job);
                 }
                 previous = current;
                 have_previous = true;
@@ -1059,9 +1080,25 @@ namespace emulation {
 
             RecordSetup(command, state, 0, 0);
 
+            DrawJob job;
+            job.kind = DrawJob::kRectangle;
+            job.env = CaptureDrawEnv();
+            job.state = state;
+            job.x = x; job.y = y; job.w = w; job.h = h;
+            job.r = r; job.g = g; job.b = b;
+            job.base_u = base_u; job.base_v = base_v;
+            SubmitJob(job);
+        }
+
+        // A rectangle's pixels, from the job the command left behind.
+        void Gpu::RasterRectangle(const DrawJob& job) {
+            const DrawState& state = job.state;
+            const int32_t x = job.x, y = job.y, w = job.w, h = job.h;
+            const uint8_t r = job.r, g = job.g, b = job.b;
+            const uint8_t base_u = job.base_u, base_v = job.base_v;
             for (int32_t row = 0; row < h; ++row) {
                 for (int32_t col = 0; col < w; ++col) {
-                    if (!textured) {
+                    if (!state.textured) {
                         PlotPixel(x + col, y + row, r, g, b, state, false, false);
                         continue;
                     }
@@ -1071,19 +1108,199 @@ namespace emulation {
                     const uint16_t texel = SampleTexture(
                         static_cast<uint8_t>(tu), static_cast<uint8_t>(tv), state);
                     if (texel == 0) {  // fully transparent texel
-                        ++stats_.transparent_texels;
+                        ++raster_counters_.transparent_texels;
                         continue;
                     }
                     uint8_t tr = From5Bit(texel & 0x1F);
                     uint8_t tg = From5Bit((texel >> 5) & 0x1F);
                     uint8_t tb = From5Bit((texel >> 10) & 0x1F);
-                    if (!raw) {
+                    if (!state.raw_texture) {
                         tr = Clamp8((tr * r) >> 7);
                         tg = Clamp8((tg * g) >> 7);
                         tb = Clamp8((tb * b) >> 7);
                     }
                     PlotPixel(x + col, y + row, tr, tg, tb, state, true,
                         (texel & 0x8000) != 0);
+                }
+            }
+        }
+
+        // ---------------------------------------------------------------------------
+        // Handing rasterising over
+        //
+        // The machine thread parses a command, charges it for the GPU time it will
+        // take and snapshots the state it was issued under; what actually puts pixels
+        // in VRAM is one of these jobs. Today they are applied where they are
+        // submitted, which is what makes this refactor provably a no-op: every
+        // checksum in Test-Suite.md is unchanged by it. What it buys is that the
+        // rasteriser no longer reads live state, which is what a thread behind a queue
+        // needs (phase 7 of Docs/Threading-Plan.md).
+        // ---------------------------------------------------------------------------
+
+        Gpu::DrawEnv Gpu::CaptureDrawEnv() const {
+            DrawEnv env;
+            env.area_left = draw_area_left_;
+            env.area_top = draw_area_top_;
+            env.area_right = draw_area_right_;
+            env.area_bottom = draw_area_bottom_;
+            env.tw_mask_x = texture_window_mask_x_;
+            env.tw_mask_y = texture_window_mask_y_;
+            env.tw_offset_x = texture_window_offset_x_;
+            env.tw_offset_y = texture_window_offset_y_;
+            env.force_set_mask = force_set_mask_;
+            env.check_mask = check_mask_;
+            env.skip_field = DrawsOneFieldOnly();
+            env.active_line_lsb = ActiveLineLsb();
+            return env;
+        }
+
+        void Gpu::SubmitJob(const DrawJob& job) {
+            if (!threaded_) {
+                raster_command_ = static_cast<uint8_t>(current_command_);
+                ApplyJob(job);
+                return;
+            }
+            std::unique_lock<std::mutex> lock(jobs_mutex_);
+            // A full ring means the rasteriser is a thousand primitives behind, which
+            // is far more than a frame: waiting here is the back pressure that keeps
+            // it from falling arbitrarily far behind and makes a barrier bounded.
+            while (jobs_count_ == kJobCapacity)
+                jobs_drained_.wait(lock);
+            DrawJob& slot = jobs_[(jobs_head_ + jobs_count_) % kJobCapacity];
+            slot = job;
+            slot.command = static_cast<uint8_t>(current_command_);
+            ++jobs_count_;
+            ++stats_.raster_jobs;
+            jobs_added_.notify_one();
+        }
+
+        void Gpu::StartRasterThread() {
+            if (raster_thread_.joinable())
+                return;
+            {
+                std::lock_guard<std::mutex> lock(jobs_mutex_);
+                raster_stop_ = false;
+            }
+            raster_thread_ = std::thread(&Gpu::RasterLoop, this);
+        }
+
+        void Gpu::StopRasterThread() {
+            if (!raster_thread_.joinable())
+                return;
+            {
+                std::lock_guard<std::mutex> lock(jobs_mutex_);
+                raster_stop_ = true;
+            }
+            jobs_added_.notify_all();
+            raster_thread_.join();
+        }
+
+        void Gpu::RasterLoop() {
+            std::unique_lock<std::mutex> lock(jobs_mutex_);
+            for (;;) {
+                while (jobs_count_ == 0 && !raster_stop_)
+                    jobs_added_.wait(lock);
+                if (jobs_count_ == 0 && raster_stop_)
+                    break;
+                const DrawJob job = jobs_[jobs_head_];
+                jobs_head_ = (jobs_head_ + 1) % kJobCapacity;
+                --jobs_count_;
+                raster_busy_ = true;
+                lock.unlock();
+                raster_command_ = job.command;
+                ApplyJob(job);
+                lock.lock();
+                raster_busy_ = false;
+                jobs_drained_.notify_all();
+            }
+        }
+
+        void Gpu::MergeRasterCounters() const {
+            stats_.pixels += raster_counters_.pixels;
+            stats_.clipped += raster_counters_.clipped;
+            stats_.field_skipped += raster_counters_.field_skipped;
+            stats_.mask_rejected += raster_counters_.mask_rejected;
+            stats_.transparent_texels += raster_counters_.transparent_texels;
+            for (int i = 0; i < 4; ++i)
+                stats_.texels_by_depth[i] += raster_counters_.texels_by_depth[i];
+            stats_.watch_writes += raster_counters_.watch_writes;
+            for (int i = 0; i < 256; ++i)
+                stats_.watch_writers[i] += raster_counters_.watch_writers[i];
+            memset(&raster_counters_, 0, sizeof(raster_counters_));
+        }
+
+        void Gpu::SyncRaster() const {
+            std::unique_lock<std::mutex> lock(jobs_mutex_);
+            if (threaded_) {
+                if (jobs_count_ > 0 || raster_busy_)
+                    ++stats_.raster_waits;
+                while (jobs_count_ > 0 || raster_busy_)
+                    jobs_drained_.wait(lock);
+            }
+            // Under the same lock the rasteriser releases after every job, so what it
+            // counted is visible here - and merged whether it is threaded or not, since
+            // the two paths have to produce the same numbers.
+            MergeRasterCounters();
+        }
+
+        void Gpu::ApplyJob(const DrawJob& job) {
+            raster_env_ = job.env;
+            switch (job.kind) {
+            case DrawJob::kTriangle:
+                RasterTriangle(job.v[0], job.v[1], job.v[2], job.state);
+                break;
+            case DrawJob::kLine:
+                DrawLineSegment(job.v[0], job.v[1], job.state);
+                break;
+            case DrawJob::kRectangle:
+                RasterRectangle(job);
+                break;
+            case DrawJob::kFill:
+                RasterFill(job);
+                break;
+            case DrawJob::kVramCopy:
+                RasterVramCopy(job);
+                break;
+            }
+        }
+
+        // A fill's rows. It ignores the drawing area and the mask bits - see
+        // CmdFillRectangle for why it clips at the VRAM edge rather than wrapping -
+        // but it does skip the displayed field.
+        void Gpu::RasterFill(const DrawJob& job) {
+            for (int32_t row = 0; row < job.h; ++row) {
+                const int32_t vy = job.y + row;
+                if (vy >= kVramHeight)
+                    break;
+                if (SkipsVramRow(vy)) {
+                    ++raster_counters_.field_skipped;
+                    continue;
+                }
+                for (int32_t col = 0; col < job.w; ++col) {
+                    const int32_t vx = job.x + col;
+                    if (vx >= kVramWidth)
+                        break;
+                    VramAt(static_cast<uint32_t>(vx), static_cast<uint32_t>(vy)) =
+                        job.fill_colour;
+                    NoteWatchWrite(static_cast<uint32_t>(vx), static_cast<uint32_t>(vy));
+                }
+            }
+        }
+
+        // A VRAM-to-VRAM copy: read a pixel, write it, honouring the mask bits.
+        void Gpu::RasterVramCopy(const DrawJob& job) {
+            for (int32_t row = 0; row < job.h; ++row) {
+                for (int32_t col = 0; col < job.w; ++col) {
+                    const uint32_t sx = static_cast<uint32_t>(job.src_x + col);
+                    const uint32_t sy = static_cast<uint32_t>(job.src_y + row);
+                    const uint32_t dx = static_cast<uint32_t>(job.x + col);
+                    const uint32_t dy = static_cast<uint32_t>(job.y + row);
+                    const uint16_t pixel = VramAt(sx, sy);
+                    if (raster_env_.check_mask && (VramAt(dx, dy) & 0x8000))
+                        continue;
+                    VramAt(dx, dy) =
+                        raster_env_.force_set_mask ? (pixel | 0x8000) : pixel;
+                    NoteWatchWrite(dx, dy);
                 }
             }
         }
@@ -1115,13 +1332,13 @@ namespace emulation {
         }
 
         uint16_t Gpu::SampleTexture(uint32_t u, uint32_t v, const DrawState& state) {
-            ++stats_.texels_by_depth[state.texpage_colors & 3];
+            ++raster_counters_.texels_by_depth[state.texpage_colors & 3];
 
             // The texture window folds the coordinates before they index the page.
-            u = (u & ~(texture_window_mask_x_ * 8)) |
-                ((texture_window_offset_x_ & texture_window_mask_x_) * 8);
-            v = (v & ~(texture_window_mask_y_ * 8)) |
-                ((texture_window_offset_y_ & texture_window_mask_y_) * 8);
+            u = (u & ~(raster_env_.tw_mask_x * 8)) |
+                ((raster_env_.tw_offset_x & raster_env_.tw_mask_x) * 8);
+            v = (v & ~(raster_env_.tw_mask_y * 8)) |
+                ((raster_env_.tw_offset_y & raster_env_.tw_mask_y) * 8);
             u &= 0xFF;
             v &= 0xFF;
 
@@ -1172,21 +1389,21 @@ namespace emulation {
         void Gpu::PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
             const DrawState& state, bool from_texture,
             bool texture_mask) {
-            if (x < draw_area_left_ || x > draw_area_right_ ||
-                y < draw_area_top_ || y > draw_area_bottom_) {
-                ++stats_.clipped;
+            if (x < raster_env_.area_left || x > raster_env_.area_right ||
+                y < raster_env_.area_top || y > raster_env_.area_bottom) {
+                ++raster_counters_.clipped;
                 return;
             }
             // The field being displayed is left alone (bug 89). Every primitive
             // goes through here, so this is the one place it has to be said.
             if (SkipsVramRow(y)) {
-                ++stats_.field_skipped;
+                ++raster_counters_.field_skipped;
                 return;
             }
 
             uint16_t& target = VramAt(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
-            if (check_mask_ && (target & 0x8000)) {
-                ++stats_.mask_rejected;
+            if (raster_env_.check_mask && (target & 0x8000)) {
+                ++raster_counters_.mask_rejected;
                 return;
             }
 
@@ -1215,10 +1432,11 @@ namespace emulation {
             // player with mask-checking on. Every pixel it covers should be rejected.
             // With nothing marked, the quad drew in full - a pale rectangle around the
             // character, exactly the size of the quad (bug 83).
-            const bool set_mask = force_set_mask_ || (from_texture && texture_mask);
+            const bool set_mask =
+                raster_env_.force_set_mask || (from_texture && texture_mask);
             target = static_cast<uint16_t>((target & 0x7FFF) | (set_mask ? 0x8000 : 0));
 
-            ++stats_.pixels;
+            ++raster_counters_.pixels;
 
             NoteWatchWrite(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
         }
@@ -1245,10 +1463,10 @@ namespace emulation {
             // column and row of the drawing area whenever a primitive reached them - which the
             // BIOS's own background does, drawn as (0,0)-(640,480) against an area of 639x479. The
             // whole of column 639 and row 479 went unpainted, 1,117 pixels of a 640x478 screen.
-            const int32_t left = std::max(min_x, draw_area_left_);
-            const int32_t right = std::min(max_x - 1, draw_area_right_);
-            const int32_t top = std::max(min_y, draw_area_top_);
-            const int32_t bottom = std::min(max_y - 1, draw_area_bottom_);
+            const int32_t left = std::max(min_x, raster_env_.area_left);
+            const int32_t right = std::min(max_x - 1, raster_env_.area_right);
+            const int32_t top = std::max(min_y, raster_env_.area_top);
+            const int32_t bottom = std::min(max_y - 1, raster_env_.area_bottom);
             if (left > right || top > bottom)
                 return;
 
@@ -1318,7 +1536,7 @@ namespace emulation {
                     const uint16_t texel = SampleTexture(static_cast<uint32_t>(u),
                         static_cast<uint32_t>(v), state);
                     if (texel == 0) {  // fully transparent texel
-                        ++stats_.transparent_texels;
+                        ++raster_counters_.transparent_texels;
                         continue;
                     }
 
@@ -1422,6 +1640,7 @@ namespace emulation {
         }
 
         void Gpu::ResolveFramebuffer() {
+            SyncRaster();
             if (status_.display_disable) {
                 memset(framebuffer_, 0,
                     sizeof(uint32_t) * display_width_ * display_height_);
@@ -1462,6 +1681,23 @@ namespace emulation {
                         row[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
                     }
                 }
+            }
+        }
+
+        // Follows the setting rather than only reading it once: the front end can turn
+        // it on mid-run, and a harness sets it after the machine is already built. Safe
+        // here because this is the machine thread, the only one that submits.
+        void Gpu::SyncThreadWithConfig() {
+            const bool wanted = system().config().gpu_thread;
+            if (wanted == threaded_)
+                return;
+            if (threaded_) {
+                SyncRaster();
+                StopRasterThread();
+                threaded_ = false;
+            } else {
+                threaded_ = true;
+                StartRasterThread();
             }
         }
 
@@ -1520,6 +1756,7 @@ namespace emulation {
                 const bool now_in_vblank = scanline_ >= vertical_display_end_;
                 if (now_in_vblank && !was_in_vblank_) {
                     system().io().SetInterrupt(kInterruptVSYNC);
+                    SyncThreadWithConfig();
                     ResolveFramebuffer();
                     ++frame_count_;
                 }

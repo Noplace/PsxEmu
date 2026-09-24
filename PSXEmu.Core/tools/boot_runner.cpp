@@ -193,6 +193,7 @@ struct Options {
   bool cd_mechanical;
   bool quiet;
   bool recompiler;
+  bool gpu_thread;
   int recompiler_toggle;
   bool recompiler_diff;
   // --break: execute breakpoints (psx/debugger.h). Each hit prints the registers and the code
@@ -554,6 +555,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   // These three had no default, so they held whatever the stack did - false by luck until
   // --watchpoint added a member and moved them, and --recompiler-diff came on by itself.
   options->recompiler = false;
+  options->gpu_thread = false;
   options->recompiler_toggle = 0;
   options->recompiler_diff = false;
   options->track_calls = false;
@@ -635,6 +637,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->cd_mechanical = true;
     } else if (strcmp(arg, "--quiet") == 0) {
       options->quiet = true;
+    } else if (strcmp(arg, "--gpu-thread") == 0) {
+      options->gpu_thread = true;
     } else if (strcmp(arg, "--recompiler") == 0) {
       options->recompiler = true;
     } else if (strcmp(arg, "--recompiler-toggle") == 0 && i + 1 < argc) {
@@ -969,6 +973,11 @@ int main(int argc, char** argv) {
 
   // Before the machine executes a single instruction, so the whole run is one
   // way or the other and comparing it against the baselines means something.
+  if (options.gpu_thread) {
+    system->config().gpu_thread = true;
+    printf("gpu            rasterising on a thread of its own\n");
+  }
+
   if (options.recompiler) {
     system->EnableRecompiler(true);
     printf("cpu            recompiler (compiled blocks, interpreter fallback)\n");
@@ -1599,6 +1608,11 @@ int main(int argc, char** argv) {
          kTicksPerFrame,
          frames_drawn ? 100.0 * static_cast<double>(gpu_stats.draw_ticks) /
                             (frames_drawn * kTicksPerFrame) : 0.0);
+  if (gpu_stats.raster_jobs > 0) {
+    printf("               %llu jobs to the rasteriser, %llu barriers waited\n",
+           static_cast<unsigned long long>(gpu_stats.raster_jobs),
+           static_cast<unsigned long long>(gpu_stats.raster_waits));
+  }
   printf("               GP0 queue peaked at %u words, %llu dropped\n",
          gpu_stats.queue_peak,
          static_cast<unsigned long long>(gpu_stats.queue_overflows));

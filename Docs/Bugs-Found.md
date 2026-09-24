@@ -5521,3 +5521,193 @@ then writes a command that runs as its last word lands, with no machine time in
 between. The second was plainer: the vertex word is `(y << 16) | x` and the
 extent `(h << 16) | w`, and two of the checks had them the wrong way round, so
 they were reading VRAM where nothing had been drawn.
+
+## 90. Sound was resampled by the speed asked for, not the speed achieved
+
+Found while measuring the emulation-speed ceiling (Gaps.md), not from a report.
+
+### What was wrong
+
+`Machine::PumpAudio` resampled the SPU's output by `config.emulation_speed`.
+That is right only while the host keeps up. At 300% on a host good for 165% it
+compressed by three while just 1.65 seconds of emulated sound arrived per real
+second, so the device was handed about 55% of the samples it needed and the
+audio thread made up the rest with silence - tens of thousands of short frames
+a second, and a ring that sat at 6 ms instead of its 40 ms target. The
+half-percent trim that holds the ring level cannot absorb a 45% shortfall.
+
+Two changes, a feed-forward and the feedback beside it:
+
+- **The ratio is now the speed the machine is managing.** `Machine` keeps
+  `achieved_speed_`, the emulated time a frame covered over the real time it
+  took, smoothed with a 0.05 coefficient - about a fifth of a second, enough
+  that one long frame does not bend the pitch. It is measured after `Pace`, so
+  the limiter's sleep counts and a machine with headroom reads exactly the speed
+  it was told to run at. Where the host keeps up this is the same number as
+  before and nothing changes.
+- **The trim's gain went from 0.005 to 0.03**, clamped at 3% rather than 0.5%.
+  The old gain asked for a 0.35% correction for a ring at a quarter of target -
+  six seconds to climb back, with every hiccup on the way another gap. It is now
+  about a second and a half. Near the target, which is where it sits whenever
+  the host keeps up, the correction is still a fraction of a percent and
+  inaudible.
+- **A resume seeds low rather than high.** The two ways of being wrong are not
+  equal: guess high and the device plays silence, guess low and the ring drops a
+  few frames nobody hears. It starts at real time, or the setting if that is
+  slower, and the first fifth of a second finds the rest.
+
+### Verified, 2026-09-23
+
+Driving a scratch copy of the front end with its own `psxemu.ini`, BIOS shell,
+recompiler on, 20 s a run, reading the `show_timings` title bar:
+
+| Speed | Short frames before | After |
+|---|---|---|
+| 50% | 4,501 | **0** |
+| 100% | 0 | 0 |
+| 150% | 0 | **0** |
+| 300% (unreachable on the shell) | ~20,000 a second | ~800 a second |
+
+So at every speed the host can actually reach, sound is now gapless, and the
+ring holds its 44-55 ms. `host_test` 33 checks and `speed_resampler_test` 13
+checks both green; the resampler itself is untouched.
+
+**What is left, and why it is structural rather than a bug.** At a speed the
+host cannot reach at all, a small deficit remains - about 1.8% where it was
+45%. Two things cause it and neither is worth bending the design for: the
+smoothed rate lags a scene getting heavier, and `AudioOutput::Run` always
+writes the device's full writable room, padding any shortfall with silence
+rather than waiting, so the ring cannot build a cushion and every transient is
+counted short. It only happens where the speed setting was already impossible -
+and per Gaps.md a real game recompiled reaches 3-4x, where 300% is reachable and
+this does not arise.
+
+## 91. Phase 7: rasterising on its own thread, and disc read-ahead
+
+The last phase of [Threading-Plan.md](Threading-Plan.md), and the one it had
+left as optional. Two independent pieces.
+
+### The rasteriser moves, the timing does not
+
+`ExecuteCommand` turned out to be a clean boundary already: it reads the
+assembled GP0 words and the GPU's draw state, and nothing else. So the split is
+where the plan said it should be - registers and timing stay with the machine,
+rasterising goes behind a queue.
+
+- **`DrawJob` is one piece of rasterising**, parsed and costed but not drawn: a
+  triangle, a line segment, a rectangle, a fill or a VRAM-to-VRAM copy. A quad
+  becomes two triangles and a polyline one job per segment, so a job is fixed
+  size and needs no side buffer.
+- **`DrawEnv` is everything a draw needs that is not in its own words** - the
+  drawing area, the texture window, the mask rules, and which field is being
+  displayed - snapshotted when the command is parsed. This is the whole trick:
+  the rasteriser reads the state the command was *issued* under, not state the
+  machine has since moved on from.
+- **Word assembly, cost, stats of commands, GPUSTAT and every register write
+  stay on the machine thread.** Draw ticks (bug 85), the GP0 queue (bug 86) and
+  the ready bits are all things a game can see, so they stay exactly where they
+  were and stay deterministic.
+- **Every read of what the rasteriser writes waits for it**: `vram()`,
+  `stats()`, `ResolveFramebuffer`, `Serialise`, both directions of a transfer,
+  and GPUREAD's pixel path. Because nothing observable depends on how far
+  behind it is, a threaded run is byte-identical to an unthreaded one - which
+  is the claim the twelve-disc table checks.
+- **The rasteriser keeps its own counters**, merged into `Stats` under the
+  queue's mutex at a barrier, so no member of `Stats` is ever written by two
+  threads.
+- **A setting, off by default**: `gpu_thread` in `psxemu.ini`, `--gpu-thread`
+  in `boot_runner`. Followed live rather than read once, so it can be turned on
+  mid-run.
+
+**The bug this caught, which was the point of doing it carefully.** Threaded
+runs of Wild Arms disagreed with the inline run *and with each other* - fewer
+pixels plotted, fewer rows skipped, identical checksum. `Gpu::RasterTriangle`
+was still clamping its loop bounds to the live `draw_area_*` instead of the
+job's snapshot, so with the rasteriser running behind, pixels were genuinely
+never drawn; the picture only survived because they were overdrawn later. In a
+game whose next primitive did not happen to cover them, that is visible
+corruption. The per-primitive counters are what made it findable: the checksum
+said everything was fine.
+
+### Disc read-ahead
+
+`Disc::ReadSector` was an `_fseeki64` and a 2,352-byte `fread` per sector,
+which for an image on a network share is a round trip each. Each `Source` now
+keeps a 32-sector block - about 75 KB - and serves sectors out of it, so a
+sequential read, which is nearly all of them, hits thirty-one times in
+thirty-two. It is purely a cache: the bytes handed back are the same bytes, and
+a short read at the end of the file is not a failure as long as the sector
+asked for came back whole.
+
+### Verified, 2026-09-23
+
+- **Byte-identical, which is the whole gate.** All twelve discs come out the
+  same threaded as inline at every checkpoint - checksums, non-black counts, CD
+  sectors and `field_skipped` - and all twelve also still match the table in
+  Test-Suite.md, which is what says the refactor and the read-ahead moved
+  nothing either. The BIOS boot matches on every figure both ways.
+- **Every harness green**, 1,979 checks. `gpu_test` 63.
+- **Faster, by more than the plan guessed.** Marginal cost per frame,
+  recompiled, best of five runs with nothing else running:
+
+| Scene | Inline | Threaded | Gain |
+|---|---|---|---|
+| BIOS shell | 8.24 ms (2.05x) | 6.90 ms (2.44x) | 19.4% |
+| Wild Arms | 3.79 ms (4.45x) | 3.22 ms (5.24x) | 17.7% |
+| Ridge Racer | 4.07 ms (4.14x) | 3.60 ms (4.68x) | 13.1% |
+
+  Threading-Plan.md estimated about 12% recompiled, so this is at or above it
+  everywhere measured.
+
+- **Barriers are not the cost they could have been.** `raster_waits` against
+  `raster_jobs`, which `boot_runner` now prints: the BIOS shell waits on 846 of
+  23,323, Wild Arms on 290 of 15,723, Ridge Racer on 726 of 441,947. Under 4%
+  in the worst case, so nothing here is being serialised by a VRAM read.
+
+**The read-ahead, honestly: it buys nothing on this machine.** Air Combat over
+3,000 frames is 10,208 ms with it and 10,181 ms without; Legend of Mana 11,731
+against 11,745. Both differences are noise. Windows' own file cache is already
+doing the job, and these images had been read many times over by the time this
+was measured, so the cache was warm throughout. The case it was written for - a
+cold cache over a slow link - is real but is not what was measured, so the
+honest summary is that it is unproven rather than useful. It stays because it
+costs 40 lines, a bounded 75 KB a source, and is byte-identical; there is no
+evidence for it beyond that.
+
+**Two measurement traps worth recording.** The first set of numbers said Wild
+Arms gained 13% and the second said it *lost* 4.9%; both were wrong. The first
+was measured before the `RasterTriangle` bug above was found, so the threaded
+run was winning by skipping work. The second was best-of-three, which is not
+enough for a 5% effect on this host - best-of-five, on an idle machine, put it
+at +17.7%. The second trap was mine to make: `SyncThreadWithConfig` was being
+called from `Gpu::Tick`, which runs about 17,600 times a frame, and it is now
+called once a frame at vblank instead.
+
+### The menu setting, and what it does in the front end
+
+Emulation > Rasterise on a **G**PU Thread, beside the recompiler and safe to
+toggle the same way: the setting reaches the machine as a request and
+`Gpu::SyncThreadWithConfig` acts on it at the next vblank, which is the machine's
+own thread and the only place the rasteriser can be started or stopped without
+racing a submission.
+
+Driven through the front end - a scratch copy with its own `psxemu.ini`, the
+menu command posted as a `WM_COMMAND` - the item ticks, `psxemu.ini` gains
+`gpu_thread = 1`, and the machine carries on without a hitch. What it does to
+the speed ceiling on the BIOS shell, at 300% with the recompiler:
+
+| | fps | of real time |
+|---|---|---|
+| Thread off | 85-98 | 144-165% |
+| Thread on | 109-111 | **184-188%** |
+
+**At 100% it changes nothing, and the timings say why**: `emulate` goes from 7.1
+to 8.5 ms while `idle` goes from 9.7 to 8.3, for the same 16.8 ms frame. The
+barrier at vblank is inside `RunOneFrame`, so waiting for the rasteriser is
+counted as emulating - and at 100% there is headroom either way, so there is
+nothing to win. The gain is only ever visible where the machine is the
+bottleneck.
+
+**It helps bug 90 as a side effect.** Short audio frames over 18 seconds at 300%
+fall from ~32,500 to ~16,000: the closer the machine gets to the speed asked
+for, the smaller the deficit the sound has to absorb.

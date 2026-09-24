@@ -183,6 +183,13 @@ struct EmuConfig {
   // freeing the ground out from under it.
   bool recompiler = false;
 
+  // Rasterise on a thread of its own, behind a queue of parsed primitives
+  // (phase 7 of Docs/Threading-Plan.md). The GPU's timing stays on the machine
+  // thread either way - only the pixels move - and every read of VRAM waits
+  // for the rasteriser, so a threaded run is byte-identical to an unthreaded
+  // one. Read once, when the GPU is initialised.
+  bool gpu_thread = true;
+
   // --- BIOS ---------------------------------------------------------------
   // Which image in the front end's BIOS folder to boot, by filename alone -
   // "SCPH1001.BIN", not a path. The folder is the front end's to know

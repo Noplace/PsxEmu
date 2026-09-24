@@ -109,6 +109,7 @@ namespace psxemu {
     // already always uses the same hand-off, regardless of this setting.
     void TickSkipBiosIntro(HWND window, bool on);
     void TickRecompiler(HWND window, bool on);
+    void TickGpuThread(HWND window, bool on);
 
     // EmuConfig::pause_in_menus and EmuConfig::show_timings.
     void TickPauseInMenus(HWND window, bool on);

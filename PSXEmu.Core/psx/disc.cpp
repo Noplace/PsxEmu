@@ -1008,6 +1008,42 @@ void Disc::SynthesiseSectorHeader(uint8_t* sector, uint32_t lba,
   }
 }
 
+// One sector out of an image file, through the read-ahead block described in
+// disc.h. A hit is a memcpy; a miss reads a block of sectors and serves this one
+// out of its front. Sequential reads - which is nearly all of them - hit
+// thirty-one times in thirty-two.
+//
+// A short read at the end of the file is not a failure as long as the sector
+// asked for came back whole: the block deliberately reaches past it.
+bool Disc::ReadFileSector(const Source& source, long long offset, uint32_t wanted,
+                          uint8_t* out) const {
+  if (source.ahead_offset >= 0 && offset >= source.ahead_offset &&
+      offset + static_cast<long long>(wanted) <=
+          source.ahead_offset + static_cast<long long>(source.ahead_size)) {
+    memcpy(out, &source.ahead[static_cast<size_t>(offset - source.ahead_offset)],
+           wanted);
+    return true;
+  }
+
+  const size_t block =
+      static_cast<size_t>(kReadAheadSectors) *
+      (source.sector_size > 0 ? source.sector_size : kRawSectorSize);
+  if (source.ahead.size() < block)
+    source.ahead.resize(block);
+
+  source.ahead_offset = -1;
+  source.ahead_size = 0;
+  if (_fseeki64(source.file, offset, SEEK_SET) != 0)
+    return false;
+  const size_t got = fread(&source.ahead[0], 1, block, source.file);
+  if (got < wanted)
+    return false;
+  source.ahead_offset = offset;
+  source.ahead_size = static_cast<uint32_t>(got);
+  memcpy(out, &source.ahead[0], wanted);
+  return true;
+}
+
 bool Disc::ReadSector(uint32_t lba, uint8_t* out) const {
   if (sources_.empty() || out == nullptr)
     return false;
@@ -1054,9 +1090,7 @@ bool Disc::ReadSector(uint32_t lba, uint8_t* out) const {
                               : static_cast<uint32_t>(kRawSectorSize);
 
   if (source.file != nullptr) {
-    if (_fseeki64(source.file, byte_offset, SEEK_SET) != 0)
-      return false;
-    if (fread(out, 1, wanted, source.file) != wanted)
+    if (!ReadFileSector(source, byte_offset, wanted, out))
       return false;
   } else if (source.device != nullptr) {
     HANDLE handle = static_cast<HANDLE>(source.device);

@@ -201,6 +201,7 @@ namespace psxemu {
         UpdateCdTimingMenu();
         UpdateSkipBiosIntroMenu();
         UpdateRecompilerMenu();
+        UpdateGpuThreadMenu();
         UpdatePauseInMenusMenu();
         UpdateShowTimingsMenu();
         UpdateBiosConsoleMenu();
@@ -787,6 +788,19 @@ namespace psxemu {
     void App::SetRecompiler(bool on) {
         config_.recompiler = on;
         UpdateRecompilerMenu();
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+    }
+
+    void App::UpdateGpuThreadMenu() { TickGpuThread(window_, config_.gpu_thread); }
+
+    // Rasterising on a thread of its own (bug 91). Safe to turn on or off mid-game:
+    // the setting reaches the machine as a request and Gpu::SyncThreadWithConfig acts
+    // on it at the next vblank, which is on the machine's own thread and the only
+    // place that can start or stop the rasteriser without racing a submission.
+    void App::SetGpuThread(bool on) {
+        config_.gpu_thread = on;
+        UpdateGpuThreadMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
     }
@@ -1511,6 +1525,10 @@ namespace psxemu {
 
             case kCommandRecompiler:
                 SetRecompiler(!config_.recompiler);
+                break;
+
+            case kCommandGpuThread:
+                SetGpuThread(!config_.gpu_thread);
                 break;
 
             case kCommandPauseInMenus:

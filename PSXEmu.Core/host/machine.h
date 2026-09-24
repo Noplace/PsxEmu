@@ -160,6 +160,13 @@ class Machine {
   bool view_vram_ = false;
   utilities::FrameLimiter limiter_;
   utilities::SpeedResampler resampler_;
+  // The speed the machine is actually managing, in multiples of real time,
+  // smoothed over about a fifth of a second. The sound is resampled by this
+  // rather than by the setting: at a speed the host cannot reach the two are
+  // not the same, and resampling by the setting hands the device fewer samples
+  // than it needs for every second it runs. See PumpAudio.
+  double achieved_speed_ = 1.0;
+
   std::vector<int16_t> scratch_;     // one read of the SPU's samples
   std::vector<int16_t> resampled_;   // the same, stretched for the speed
   uint64_t frame_number_ = 0;        // frames published

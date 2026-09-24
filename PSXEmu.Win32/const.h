@@ -74,6 +74,7 @@ namespace psxemu {
         kCommandCdMechanicalTiming,
         kCommandSkipBiosIntro,
         kCommandRecompiler,
+        kCommandGpuThread,
         kCommandControllerTypeFirst,
         kCommandControllerTypeLast = kCommandControllerTypeFirst + 11,   // 2 ports x 6 types
         kCommandInputSourceFirst,

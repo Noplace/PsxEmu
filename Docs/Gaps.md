@@ -5,7 +5,9 @@ game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 [Bugs-Found.md](Bugs-Found.md) for what has already been fixed.
 
 Last audited 2026-09-21, after bug 82 (the mouse's three motion modes), with
-the GP0 queue entry below brought up to date after bug 87. Every
+the GP0 queue entry below, the harness counts and the speed-ceiling entry
+brought up to date after bugs 87 to 91 (the GPU's drawing cost, the interlaced
+field, the audio resample and phase 7's rasteriser thread). Every
 entry below was re-read against the code, not carried forward: each claim was
 checked at the line it describes, and what follows is what that reading found.
 
@@ -49,8 +51,9 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 297, gte 106, timer 70, sio 146, spu 108, gpu 48, mdec 85, media 271, mc 77, debug 174 - 1,382
-checks, no failures (re-run 2026-09-21, after bugs 78-84). The two that were failing when this document was last
+cpu 297, gte 106, timer 70, sio 146, spu 108, gpu 63, mdec 85, media 271, mc 77, debug 174 - 1,397
+checks, no failures, and 1,979 across all seventeen harnesses (re-run
+2026-09-23, after bugs 78-89). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
@@ -456,7 +459,8 @@ Missing or unproven:
 `psxemu.ini` holds `audio_volume`, `audio_backend` (WASAPI or DirectSound),
 `graphics_backend` (D3D11 or D3D12), `video_filter`, controller type and input
 source per port, the multitap player sources, `frame_limiter`,
-`cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `bios_file`,
+`cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `gpu_thread`,
+`bios_file`,
 `emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console`,
 `sio1_to_console`, `mouse_motion` and `mouse_dpi` - twenty keys, which is
 every field `StoreConfig` writes.
@@ -505,23 +509,82 @@ in Menus, off by default. What is left of that plan is its phase 7, a thread for
 the rasteriser, which is worth about 12% with the recompiler on and nothing like
 a priority.
 
-### Emulation speeds above about 110% do nothing
+### The emulation speed ceiling is the scene, not the front end
 
-Emulation > Speed offers 50 to 300% (bug 81) and the setting reaches the frame
-limiter, but the front end cannot emulate faster than about 110% of real time,
-so 150, 200, 250 and 300% all come out the same. Measured on an idle machine
-with the BIOS shell booted, in a minimised window: 59.3 fps at 100%, then
-65.4, 65.2, 66.0 and 65.0. Turning the frame limiter off entirely - "as fast
-as whatever blocks first" - sits at the same rate, so the limiter is not what
-is holding it.
+Emulation > Speed offers 50 to 300% (bug 81). What actually happens, measured
+2026-09-23 on the BIOS shell with `show_timings` on, driving a scratch copy of
+the front end with its own `psxemu.ini`:
 
-`boot_runner` reaches 1.68x real time headless on the same host, so this is
-not the emulation being that slow. The difference is everything the GUI adds
-and the harness does not: a presenter, an audio device that consumes in real
-time, and the thread hand-offs between them - plus the minimised window, which
-was not ruled out. Which of those is the ceiling is unmeasured. 50% and 150%
-both do what they say, so nothing here is broken, but the top of the range is
-currently decoration.
+| Speed asked | Recompiler | Interpreter |
+|---|---|---|
+| 100% | 59.3 fps (100%) | 59.3 fps (100%) |
+| 150% | 88.9 fps (150%) | 63.9-65.9 fps (108-111%) |
+| 200% | 96.9-100.4 fps (163-169%) | - |
+| 300% | 93.9-100.0 fps (158-169%) | 64.5-66.5 fps (109-112%) |
+
+So on the BIOS shell the ceiling is about **1.65-1.70x with the recompiler** and
+about **1.10x with the interpreter**: 150% is exact recompiled, 200% and above
+clamp. The shell is the worst case, though - see the per-scene table below, where
+a real game recompiled reaches 3-4x and 300% is real.
+
+**This entry used to say the ceiling was about 110% and blamed the front end** -
+"a presenter, an audio device that consumes in real time, and the thread
+hand-offs between them, plus the minimised window". All of that was wrong, and
+the numbers behind it were taken with the interpreter, which is the 110% column
+above.
+
+What the per-frame accounting says at the ceiling: **hand-off 0.11-0.15 ms,
+idle 0.0 ms, present ~2 ms on the video thread's own time.** The machine thread
+is spending every millisecond it has inside `RunOneFrame` and none of it
+waiting for anything. A visible window measures the same as a minimised one, so
+that factor is ruled out too. `SampleRing::Write` drops what does not fit rather
+than blocking, so the audio device cannot hold the machine back either.
+
+The ceiling is simply what a frame of emulation costs, against a 16.86 ms real
+frame - **and that is per scene, not per emulator, which is what makes the
+table above misleading on its own.** The BIOS shell is the most expensive thing
+in the test set: 640x480 interlaced, drawing heavily. Marginal cost per frame,
+measured with `boot_runner`:
+
+| Scene | Interpreted | Recompiled | Recompiled + `gpu_thread` |
+|---|---|---|---|
+| BIOS shell | 18.00 ms (0.94x) | 8.24 ms (2.05x) | 6.90 ms (2.44x) |
+| Ridge Racer | - | 4.07 ms (4.14x) | 3.60 ms (4.68x) |
+| Wild Arms | 13.06 ms (1.29x) | 3.79 ms (4.45x) | 3.22 ms (5.24x) |
+
+The recompiled column moved down after bugs 89 and 91 - the interlaced field
+skip halved the shell's pixel work, and the rasteriser moved to a thread - so
+the figures here are lower than the ones this entry first recorded.
+
+So **in a real game with the recompiler, 200% and 300% do work** - Wild Arms has
+headroom for 5x and Ridge Racer for 4.7x with the rasteriser on its own thread,
+and 4.5x and 4.1x without. The shell clamps at about 165% because
+the shell is slow, not because the front end or the speed setting is. The 4.09 ms
+here matches Threading-Plan.md's own 4.4 ms for the same game, measured
+independently.
+
+Interpreted, a game sits near 1.3x, so 150% is roughly the honest top of the
+range on that CPU.
+
+**And the "`boot_runner` reaches 1.68x, so it is not the emulation" argument was
+a measurement mistake worth recording.** That 1.68x is `boot_runner`'s *first*
+400 frames - the boot animation, 11.37 ms a frame. The steady shell menu, which
+is what the front end was showing, costs 18.00 ms a frame interpreted and 10.54
+ms recompiled. Compared like with like the front end is *marginally faster* than
+the harness, not 35% slower: there is no front-end overhead to find. Marginal
+cost per frame, not total time over a run that includes the boot, is the figure
+to use.
+
+**One real defect this turned up, now fixed (bug 90).** Sound was resampled by
+the speed *asked for* rather than the speed achieved, so at 300% on a host good
+for 165% the device was handed about 55% of the samples it needed and the rest
+was silence. The ratio is now the rate the machine is actually managing, and the
+ring's trim has the authority to refill after a shortfall. At every speed the
+host can reach - 50, 100, 150% - sound is gapless. At a speed it cannot reach a
+1.8% deficit remains, down from 45%, for two structural reasons: the smoothed
+rate lags a scene getting heavier, and the audio thread always fills the device's
+writable room with silence rather than waiting, so the ring cannot build a
+cushion.
 
 ### Never run against the reference
 

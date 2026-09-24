@@ -79,6 +79,10 @@ class Disc {
   // of track 1 is kLeadInSectors.
   bool ReadSector(uint32_t lba, uint8_t* out) const;
 
+  // How many sectors a read-ahead block covers. Thirty-two of them is about
+  // 75 KB, which is one network round trip instead of thirty-two.
+  static const uint32_t kReadAheadSectors = 32;
+
   int track_count() const { return static_cast<int>(tracks_.size()); }
   const Track& track(int index) const { return tracks_[index]; }
 
@@ -103,7 +107,23 @@ class Disc {
     uint32_t data_offset;   // where the 2048 user bytes start in a sector
     uint32_t sector_count;
     std::string name;
+
+    // Read-ahead. A disc is read almost entirely forwards, a sector at a time,
+    // and every one of those used to be a seek and a 2,352-byte read - which on
+    // an image sitting on a network share is a round trip each. Reading a block
+    // of sectors and serving the rest from it turns thirty-two of those into
+    // one. Purely a cache: the bytes handed back are the same bytes.
+    //
+    // Mutable because reading a sector does not change the disc, and
+    // Disc::ReadSector is const for that reason.
+    mutable std::vector<uint8_t> ahead;
+    mutable long long ahead_offset = -1;   // where the block starts in the file
+    mutable uint32_t ahead_size = 0;       // how much of it came back
   };
+
+  // One sector out of an image file, through the read-ahead block above.
+  bool ReadFileSector(const Source& source, long long offset, uint32_t wanted,
+                      uint8_t* out) const;
 
   struct TrackSource {
     int source;             // index into sources_
