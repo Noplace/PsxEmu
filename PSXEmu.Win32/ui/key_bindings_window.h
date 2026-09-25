@@ -26,8 +26,8 @@
 // change is handed to the app at once, which saves it and passes it to the input thread - there
 // is no OK button to forget.
 
-#include "framework.h"
-#include "keyboard.h"
+#include "app/framework.h"
+#include "input/keyboard.h"
 
 #include <functional>
 

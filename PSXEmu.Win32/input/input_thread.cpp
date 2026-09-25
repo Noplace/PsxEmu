@@ -16,9 +16,9 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "input_thread.h"
+#include "input/input_thread.h"
 
-#include "controller_bindings.h"
+#include "input/controller_bindings.h"
 #include "tools/letterbox.h"
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION

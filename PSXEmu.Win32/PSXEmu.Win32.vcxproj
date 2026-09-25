@@ -80,51 +80,51 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="app.cpp" />
-    <ClCompile Include="console_window.cpp" />
-    <ClCompile Include="memcard_editor.cpp" />
-    <ClCompile Include="key_bindings_window.cpp" />
-    <ClCompile Include="controller_bindings_window.cpp" />
-    <ClCompile Include="debugger_window.cpp" />
-    <ClCompile Include="d3d11_presenter.cpp" />
-    <ClCompile Include="d3d12_graphics_engine.cpp" />
-    <ClCompile Include="opengl_engine.cpp" />
-    <ClCompile Include="vulkan_engine.cpp" />
-    <ClCompile Include="engine_factory.cpp" />
-    <ClCompile Include="input_thread.cpp" />
-    <ClCompile Include="main.cpp" />
-    <ClCompile Include="video_presenter.cpp" />
-    <ClCompile Include="menu.cpp" />
-    <ClCompile Include="win32_dialogs.cpp" />
-    <ClCompile Include="win32_paths.cpp" />
+    <ClCompile Include="app\app.cpp" />
+    <ClCompile Include="ui\console_window.cpp" />
+    <ClCompile Include="ui\memcard_editor.cpp" />
+    <ClCompile Include="ui\key_bindings_window.cpp" />
+    <ClCompile Include="ui\controller_bindings_window.cpp" />
+    <ClCompile Include="ui\debugger_window.cpp" />
+    <ClCompile Include="graphics\d3d11_presenter.cpp" />
+    <ClCompile Include="graphics\d3d12_graphics_engine.cpp" />
+    <ClCompile Include="graphics\opengl_engine.cpp" />
+    <ClCompile Include="graphics\vulkan_engine.cpp" />
+    <ClCompile Include="app\engine_factory.cpp" />
+    <ClCompile Include="input\input_thread.cpp" />
+    <ClCompile Include="app\main.cpp" />
+    <ClCompile Include="graphics\video_presenter.cpp" />
+    <ClCompile Include="app\menu.cpp" />
+    <ClCompile Include="app\win32_dialogs.cpp" />
+    <ClCompile Include="app\win32_paths.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="app.h" />
-    <ClInclude Include="app_icon.h" />
-    <ClInclude Include="resource.h" />
-    <ClInclude Include="console_window.h" />
-    <ClInclude Include="memcard_editor.h" />
-    <ClInclude Include="key_bindings_window.h" />
-    <ClInclude Include="controller_bindings.h" />
-    <ClInclude Include="controller_bindings_window.h" />
-    <ClInclude Include="debugger_window.h" />
-    <ClInclude Include="const.h" />
-    <ClInclude Include="d3d11_presenter.h" />
-    <ClInclude Include="d3d12_graphics_engine.h" />
-    <ClInclude Include="opengl_engine.h" />
-    <ClInclude Include="gl_functions.h" />
-    <ClInclude Include="vulkan_engine.h" />
-    <ClInclude Include="vk_functions.h" />
-    <ClInclude Include="d3dx12.h" />
-    <ClInclude Include="engine_factory.h" />
-    <ClInclude Include="framework.h" />
-    <ClInclude Include="gamepad.h" />
-    <ClInclude Include="igraphicsengine.h" />
-    <ClInclude Include="input_thread.h" />
-    <ClInclude Include="keyboard.h" />
-    <ClInclude Include="video_presenter.h" />
-    <ClInclude Include="menu.h" />
-    <ClInclude Include="mouse.h" />
+    <ClInclude Include="app\app.h" />
+    <ClInclude Include="app\app_icon.h" />
+    <ClInclude Include="Resource\resource.h" />
+    <ClInclude Include="ui\console_window.h" />
+    <ClInclude Include="ui\memcard_editor.h" />
+    <ClInclude Include="ui\key_bindings_window.h" />
+    <ClInclude Include="input\controller_bindings.h" />
+    <ClInclude Include="ui\controller_bindings_window.h" />
+    <ClInclude Include="ui\debugger_window.h" />
+    <ClInclude Include="app\const.h" />
+    <ClInclude Include="graphics\d3d11_presenter.h" />
+    <ClInclude Include="graphics\d3d12_graphics_engine.h" />
+    <ClInclude Include="graphics\opengl_engine.h" />
+    <ClInclude Include="graphics\gl_functions.h" />
+    <ClInclude Include="graphics\vulkan_engine.h" />
+    <ClInclude Include="graphics\vk_functions.h" />
+    <ClInclude Include="graphics\d3dx12.h" />
+    <ClInclude Include="app\engine_factory.h" />
+    <ClInclude Include="app\framework.h" />
+    <ClInclude Include="input\gamepad.h" />
+    <ClInclude Include="graphics\igraphicsengine.h" />
+    <ClInclude Include="input\input_thread.h" />
+    <ClInclude Include="input\keyboard.h" />
+    <ClInclude Include="graphics\video_presenter.h" />
+    <ClInclude Include="app\menu.h" />
+    <ClInclude Include="input\mouse.h" />
     <ClInclude Include="shaders\glsl_filters.h" />
     <ClInclude Include="shaders\spirv_filters.h" />
     <ClInclude Include="shaders\legacy_shaders.h" />
@@ -133,8 +133,8 @@
     <ClInclude Include="shaders\superxbr_pass0.h" />
     <ClInclude Include="shaders\superxbr_pass1.h" />
     <ClInclude Include="shaders\superxbr_pass2.h" />
-    <ClInclude Include="win32_dialogs.h" />
-    <ClInclude Include="win32_paths.h" />
+    <ClInclude Include="app\win32_dialogs.h" />
+    <ClInclude Include="app\win32_paths.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\PSXEmu.Core\PSXEmu.Core.vcxproj">
@@ -238,7 +238,7 @@
     <Image Include="Resource\app_icon.ico" />
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="psxemu.rc" />
+    <ResourceCompile Include="Resource\psxemu.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

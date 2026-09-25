@@ -16,13 +16,13 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "app.h"
-#include "app_icon.h"
+#include "app/app.h"
+#include "app/app_icon.h"
 
-#include "keyboard.h"
-#include "menu.h"
-#include "win32_dialogs.h"
-#include "win32_paths.h"
+#include "input/keyboard.h"
+#include "app/menu.h"
+#include "app/win32_dialogs.h"
+#include "app/win32_paths.h"
 
 #include <shellapi.h>   // ShellExecuteA, to open the BIOS folder from its menu
 

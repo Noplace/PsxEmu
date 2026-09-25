@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #pragma once
 
-#include "igraphicsengine.h"
+#include "graphics/igraphicsengine.h"
 
 #include <d3d11.h>
 #include <cstdint>

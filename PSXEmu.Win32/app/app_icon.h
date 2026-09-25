@@ -25,8 +25,8 @@
 // from it with proper filtering, where LoadIcon would shrink it crudely. It is a Common Controls 6
 // function, which the manifest dependency in memcard_editor.cpp brings in.
 
-#include "framework.h"
-#include "resource.h"
+#include "app/framework.h"
+#include "Resource/resource.h"
 
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")

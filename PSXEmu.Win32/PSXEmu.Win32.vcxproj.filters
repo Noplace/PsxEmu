@@ -1,0 +1,221 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="app">
+      <UniqueIdentifier>{40f378d8-e677-401d-822b-7c50c3b1ad4a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics">
+      <UniqueIdentifier>{93fc28e0-ee49-4b1c-93d2-db5de7a17c10}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="input">
+      <UniqueIdentifier>{c112c9e8-f7ff-4bc7-9911-ce9ccb2dc704}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Resource">
+      <UniqueIdentifier>{aacdc87e-e3b7-4ff7-87cc-570eecedd60d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Resource\superxbr">
+      <UniqueIdentifier>{76f07072-fc32-437c-b2ca-34963b36ceb2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="shaders">
+      <UniqueIdentifier>{dd71069c-b6ed-4cee-b159-748fd2c84109}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ui">
+      <UniqueIdentifier>{884d381c-9b4b-4a77-83c2-1592f493b38e}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="app\app.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\console_window.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\memcard_editor.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\key_bindings_window.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\controller_bindings_window.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\debugger_window.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\d3d11_presenter.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\d3d12_graphics_engine.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\opengl_engine.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\vulkan_engine.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="app\engine_factory.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClCompile Include="input\input_thread.cpp">
+      <Filter>input</Filter>
+    </ClCompile>
+    <ClCompile Include="app\main.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\video_presenter.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="app\menu.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClCompile Include="app\win32_dialogs.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+    <ClCompile Include="app\win32_paths.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="app\app.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ClInclude Include="app\app_icon.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ClInclude Include="Resource\resource.h">
+      <Filter>Resource</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\console_window.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\memcard_editor.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\key_bindings_window.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="input\controller_bindings.h">
+      <Filter>input</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\controller_bindings_window.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\debugger_window.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="app\const.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\d3d11_presenter.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\d3d12_graphics_engine.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\opengl_engine.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\gl_functions.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\vulkan_engine.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\vk_functions.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\d3dx12.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="app\engine_factory.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ClInclude Include="app\framework.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ClInclude Include="input\gamepad.h">
+      <Filter>input</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\igraphicsengine.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="input\input_thread.h">
+      <Filter>input</Filter>
+    </ClInclude>
+    <ClInclude Include="input\keyboard.h">
+      <Filter>input</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\video_presenter.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="app\menu.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ClInclude Include="input\mouse.h">
+      <Filter>input</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\glsl_filters.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\spirv_filters.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\legacy_shaders.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\ps_scanline_filter.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\ps_xbrz_filter.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\superxbr_pass0.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\superxbr_pass1.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\superxbr_pass2.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="app\win32_dialogs.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ClInclude Include="app\win32_paths.h">
+      <Filter>app</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Resource\ps_scanline_filter.hlsl">
+      <Filter>Resource</Filter>
+    </FxCompile>
+    <FxCompile Include="Resource\ps_xbrz_filter.hlsl">
+      <Filter>Resource</Filter>
+    </FxCompile>
+    <FxCompile Include="Resource\superxbr\superxbr_pass0.hlsl">
+      <Filter>Resource\superxbr</Filter>
+    </FxCompile>
+    <FxCompile Include="Resource\superxbr\superxbr_pass1.hlsl">
+      <Filter>Resource\superxbr</Filter>
+    </FxCompile>
+    <FxCompile Include="Resource\superxbr\superxbr_pass2.hlsl">
+      <Filter>Resource\superxbr</Filter>
+    </FxCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Resource\superxbr\superxbr_common.hlsli">
+      <Filter>Resource\superxbr</Filter>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="Resource\app_icon.ico">
+      <Filter>Resource</Filter>
+    </Image>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="Resource\psxemu.rc">
+      <Filter>Resource</Filter>
+    </ResourceCompile>
+  </ItemGroup>
+</Project>

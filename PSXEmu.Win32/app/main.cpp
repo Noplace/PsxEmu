@@ -26,9 +26,9 @@
 // everything it owns is released on the way out.
 //
 
-#include "framework.h"
+#include "app/framework.h"
 
-#include "app.h"
+#include "app/app.h"
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
     psxemu::App app;

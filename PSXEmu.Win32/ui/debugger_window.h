@@ -44,7 +44,7 @@
 // changing sixty times a second would be noise. The disassembly and the breakpoint list are
 // refreshed on every request, running or not.
 
-#include "framework.h"
+#include "app/framework.h"
 
 #include "psx/debugger.h"
 

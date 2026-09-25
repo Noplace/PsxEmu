@@ -16,11 +16,11 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "memcard_editor.h"
-#include "app_icon.h"
+#include "ui/memcard_editor.h"
+#include "app/app_icon.h"
 
-#include "const.h"
-#include "win32_dialogs.h"
+#include "app/const.h"
+#include "app/win32_dialogs.h"
 
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")

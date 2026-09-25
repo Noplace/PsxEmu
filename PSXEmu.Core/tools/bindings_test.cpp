@@ -12,7 +12,7 @@
 // included for their inline code only.
 
 #include "platform/input_bindings.h"
-#include "../../PSXEmu.Win32/controller_bindings.h"
+#include "../../PSXEmu.Win32/input/controller_bindings.h"
 
 #include <cstdio>
 #include <string>

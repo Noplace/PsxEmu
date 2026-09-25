@@ -25,7 +25,7 @@
 // path, which is what lets the app hold one line per question ("where do save states go") rather
 // than the answer to it.
 
-#include "framework.h"
+#include "app/framework.h"
 
 namespace psxemu {
 

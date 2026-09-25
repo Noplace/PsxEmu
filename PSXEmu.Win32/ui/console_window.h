@@ -26,7 +26,7 @@
 // all: it is handed text and shows it. Closing the window only hides it, and it keeps collecting
 // while hidden, so opening it later shows what was already written.
 
-#include "framework.h"
+#include "app/framework.h"
 
 #include <functional>
 

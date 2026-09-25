@@ -18,8 +18,8 @@
 *****************************************************************************************************************/
 #pragma once
 
-#include "igraphicsengine.h"
-#include "gl_functions.h"
+#include "graphics/igraphicsengine.h"
+#include "graphics/gl_functions.h"
 
 #include <string>
 #include <unordered_map>

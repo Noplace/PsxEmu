@@ -32,10 +32,10 @@
 // is one line, bind_<slot>_<device>, written only when it differs from the default, so the file
 // grows by a line per map someone actually changed.
 
-#include "framework.h"
-#include "const.h"
-#include "keyboard.h"
-#include "win32_paths.h"   // Widen
+#include "app/framework.h"
+#include "app/const.h"
+#include "input/keyboard.h"
+#include "app/win32_paths.h"   // Widen
 #include "platform/input_bindings.h"
 
 namespace psxemu {

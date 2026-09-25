@@ -86,7 +86,7 @@ int Sio::Initialize() {
   // The front end re-asserts its configured choice every frame - the same
   // way it already does for `connected` - so resetting to the power-on
   // default here rather than trying to preserve whatever was set before is
-  // enough; see PSXEmu.Win32/main.cpp's per-frame input block.
+  // enough; see App::ApplyInput in PSXEmu.Win32/app/app.cpp.
   controller_type_[0] = kDualShock;
   controller_type_[1] = kDualShock;
 

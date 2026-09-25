@@ -34,7 +34,7 @@
 // The Khronos macros (VK_TRUE, VK_SUBPASS_EXTERNAL and so on) are kVk* constants instead, so this
 // and the real headers can be compiled together for that check.
 
-#include "framework.h"
+#include "app/framework.h"
 
 #include <cstddef>
 #include <cstdint>

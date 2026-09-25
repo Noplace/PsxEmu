@@ -39,21 +39,21 @@
 // System, which is why every baseline in Docs/Test-Suite.md still holds, and why host_test can
 // check a threaded BIOS boot against boot_runner instruction for instruction.
 
-#include "framework.h"
+#include "app/framework.h"
 
-#include "const.h"
-#include "console_window.h"
-#include "debugger_window.h"
-#include "memcard_editor.h"
-#include "key_bindings_window.h"
-#include "controller_bindings.h"
-#include "controller_bindings_window.h"
-#include "engine_factory.h"
+#include "app/const.h"
+#include "ui/console_window.h"
+#include "ui/debugger_window.h"
+#include "ui/memcard_editor.h"
+#include "ui/key_bindings_window.h"
+#include "input/controller_bindings.h"
+#include "ui/controller_bindings_window.h"
+#include "app/engine_factory.h"
 #include "host/audio_output.h"
 #include "host/machine.h"
 #include "host/video_output.h"
-#include "input_thread.h"
-#include "video_presenter.h"
+#include "input/input_thread.h"
+#include "graphics/video_presenter.h"
 
 #include <atomic>
 #include <functional>

@@ -32,7 +32,7 @@
 // the run's first id. Reordering a table without reordering EmuConfig's matching kValid* list
 // silently remaps the settings file.
 
-#include "framework.h"
+#include "app/framework.h"
 #include "platform/input_bindings.h"   // PadInput, the gamepad defaults in kKeyBindings
 
 namespace psxemu {

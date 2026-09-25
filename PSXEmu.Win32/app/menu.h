@@ -25,7 +25,7 @@
 // machine rather than about the menu, so it belongs to the application. This file knows what the
 // menu contains and how a value is shown in it, both of which are decided by the tables in const.h.
 
-#include "framework.h"
+#include "app/framework.h"
 
 namespace psxemu {
 

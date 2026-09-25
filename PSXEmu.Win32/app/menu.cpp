@@ -16,10 +16,10 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "menu.h"
+#include "app/menu.h"
 
-#include "const.h"
-#include "win32_paths.h"   // Widen, for a filename read off disk into a wide menu label
+#include "app/const.h"
+#include "app/win32_paths.h"   // Widen, for a filename read off disk into a wide menu label
 
 namespace psxemu {
 

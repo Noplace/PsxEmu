@@ -36,7 +36,7 @@
 // The index is fixed at construction rather than found by searching every
 // free XInput slot the way this used to work: which physical pad backs
 // "Gamepad 1" is now the player's own choice, made explicit through the
-// Input menu's per-port source mapping (see PSXEmu.Win32/main.cpp), so there
+// Input menu's per-port source mapping (see App::ApplyInput in app/app.cpp), so there
 // is nothing left here to search for or claim.
 //
 // Whether any of this actually reaches the emulated game is not this class's

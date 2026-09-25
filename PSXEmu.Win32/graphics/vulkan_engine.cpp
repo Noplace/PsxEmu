@@ -16,7 +16,7 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "vulkan_engine.h"
+#include "graphics/vulkan_engine.h"
 
 #include "shaders/spirv_filters.h"
 #include "tools/letterbox.h"

@@ -26,7 +26,7 @@
 // not ship them, so this declares just the few dozen the engine calls, with the values the
 // Khronos registry gives, rather than vendoring a loader for a thousand functions it never uses.
 
-#include "framework.h"
+#include "app/framework.h"
 
 #include <GL/gl.h>
 

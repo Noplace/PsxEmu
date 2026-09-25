@@ -26,7 +26,7 @@
 // the call site; this only owns the fact that all of them are titled the same and that the four
 // pickers differ by two flags.
 
-#include "framework.h"
+#include "app/framework.h"
 
 namespace psxemu {
 

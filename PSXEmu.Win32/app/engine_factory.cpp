@@ -16,13 +16,13 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "engine_factory.h"
+#include "app/engine_factory.h"
 
-#include "d3d11_presenter.h"
-#include "d3d12_graphics_engine.h"
-#include "opengl_engine.h"
-#include "vulkan_engine.h"
-#include "win32_dialogs.h"
+#include "graphics/d3d11_presenter.h"
+#include "graphics/d3d12_graphics_engine.h"
+#include "graphics/opengl_engine.h"
+#include "graphics/vulkan_engine.h"
+#include "app/win32_dialogs.h"
 #include "audio/wasapiaudioengine.h"
 #include "audio/dsoundaudioengine.h"
 #include "shaders/glsl_filters.h"

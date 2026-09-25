@@ -29,7 +29,7 @@
 // card is flagged as swapped so the game reads its directory again. The parsing is the core's,
 // psx/mc_directory.h.
 
-#include "framework.h"
+#include "app/framework.h"
 
 #include "psx/mc_directory.h"
 

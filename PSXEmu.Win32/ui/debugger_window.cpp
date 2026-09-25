@@ -16,11 +16,11 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "debugger_window.h"
-#include "app_icon.h"
+#include "ui/debugger_window.h"
+#include "app/app_icon.h"
 
-#include "const.h"
-#include "win32_dialogs.h"
+#include "app/const.h"
+#include "app/win32_dialogs.h"
 
 #include "psx/bios_calls.h"
 #include "psx/disasm.h"

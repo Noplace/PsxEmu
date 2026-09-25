@@ -30,12 +30,12 @@
 // on the UI thread at all. Nothing here touches the machine: it only fills a host::InputExchange,
 // which the machine reads once a frame.
 
-#include "framework.h"
+#include "app/framework.h"
 
-#include "gamepad.h"
-#include "controller_bindings.h"
+#include "input/gamepad.h"
+#include "input/controller_bindings.h"
 #include "host/input_exchange.h"
-#include "mouse.h"
+#include "input/mouse.h"
 
 #include <array>
 #include <atomic>

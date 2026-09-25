@@ -21,7 +21,7 @@
 // The real Windows mouse as a PSX mouse's two inputs - the counterpart to gamepad.h and keyboard.h
 // beside it, and the only source Sio::kMouse ever reads from. Unlike a pad's input_source, which
 // port a mouse's buttons and motion feed is not a player choice - it is always the real mouse,
-// whichever port is set to Sio::kMouse - see PSXEmu.Win32/app.cpp's PollInput.
+// whichever port is set to Sio::kMouse - see App::ApplyInput in PSXEmu.Win32/app/app.cpp.
 //
 // Where the movement comes from depends on which of utilities::MouseMotion the person picked, and
 // that choice is the whole of what this file is about - see the enum's own comment in
@@ -47,7 +47,7 @@
 // still need that gate applied by the caller, since GetAsyncKeyState reads the whole system rather
 // than this window.
 
-#include "framework.h"
+#include "app/framework.h"
 
 #include "platform/mouse_scaling.h"
 

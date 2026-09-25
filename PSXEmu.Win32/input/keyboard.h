@@ -32,8 +32,8 @@
 // psxemu.ini by name (key_cross = X) so the file stays readable, and edited in Settings > Input >
 // Controller Bindings.
 
-#include "framework.h"
-#include "const.h"
+#include "app/framework.h"
+#include "app/const.h"
 
 #include <array>
 

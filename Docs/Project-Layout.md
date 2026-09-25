@@ -89,37 +89,44 @@ PsxEmu/
       make_test_disc.cpp       writes a synthetic disc image
       make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format
       letterbox.h
-  PSXEmu.Win32/                front end: a window, Direct3D, input
-    PSXEmu.Win32.vcxproj
-    main.cpp                   wWinMain, and nothing else
-    framework.h                the include set every file here opens with
-    const.h                    every constant: window names, menu ids, the choice tables
-    app.h/.cpp                 class App - the UI thread: window, menus, settings, and the
-                               four threads everything else runs on
-    menu.h/.cpp                builds the menu bar; ticks an item against a value
-    engine_factory.h/.cpp      brings up a graphics and an audio engine, each with a fallback
-    video_presenter.h/.cpp     what the video thread draws with: a Direct3D engine
-    input_thread.h/.cpp        the input thread: pads, keyboard, raw mouse at 1 kHz
-    win32_paths.h/.cpp         command line, BIOS, settings file, data root, disc-derived names
-    win32_dialogs.h/.cpp       the file pickers and the message boxes
-    app_icon.h                 the application icon, for every window class
-    psxemu.rc  resource.h      compiles Resource/app_icon.ico into the exe
-    console_window.h/.cpp      Emulation > BIOS Console: the BIOS's putchar/puts/printf output
-    memcard_editor.h/.cpp      File > Memory Cards > Memory Card Editor, both slots side by side
-    keyboard.h                 key names for psxemu.ini, and the default keyboard and pad maps
-    controller_bindings.h      every binding, per port and device: defaults, psxemu.ini, mapping
-    controller_bindings_window.h/.cpp  Settings > Input > Controller Bindings: the drawn pad
-    key_bindings_window.h/.cpp the older keyboard-only list, kept but off the menu
-    debugger_window.h/.cpp     Emulation > Debugger: disassembly, registers, breakpoints, stepping
-    gamepad.h                  one XInput slot: its controls, both sticks, both motors
-    igraphicsengine.h          what a presenter has to be able to do
-    d3d11_presenter.h/.cpp     uploads the core framebuffer and draws it; no filters
-    d3d12_graphics_engine.h/.cpp   the same, plus the ported pixel-shader filters
-    opengl_engine.h/.cpp       the same again in OpenGL 3.3, on a child window of its own
-    gl_functions.h             the OpenGL past 1.1 the engine asks the driver for
-    vulkan_engine.h/.cpp       the same again in Vulkan 1.0, on a child window of its own
-    vk_functions.h             the Vulkan the engine uses, declared here; vulkan-1.dll is loaded
+  PSXEmu.Win32/                front end: a window, four renderers, input
+    PSXEmu.Win32.vcxproj       and .filters, which shows these folders in Solution Explorer
+    app/                       the application: the UI thread and what it is made of
+      main.cpp                 wWinMain, and nothing else
+      framework.h              the include set every file here opens with
+      const.h                  every constant: window names, menu ids, the choice tables
+      app.h/.cpp               class App - the UI thread: window, menus, settings, full screen,
+                               and the four threads everything else runs on
+      menu.h/.cpp              builds the menu bar; ticks an item against a value
+      engine_factory.h/.cpp    brings up a graphics and an audio engine, each with a fallback
+      win32_paths.h/.cpp       command line, BIOS, settings file, data root, disc-derived names
+      win32_dialogs.h/.cpp     the file pickers and the message boxes
+      app_icon.h               the application icon, for every window class
+    graphics/                  the renderers, all behind one interface
+      igraphicsengine.h        what a presenter has to be able to do
+      video_presenter.h/.cpp   what the video thread draws with, and the menus' asks of it
+      d3d11_presenter.h/.cpp   uploads the core framebuffer and draws it; no filters
+      d3d12_graphics_engine.h/.cpp   the same, plus the ported pixel-shader filters
+      d3dx12.h                 Microsoft's D3D12 helpers, vendored as they come
+      opengl_engine.h/.cpp     the same again in OpenGL 3.3, on a child window of its own
+      gl_functions.h           the OpenGL past 1.1 the engine asks the driver for
+      vulkan_engine.h/.cpp     the same again in Vulkan 1.0, on a child window of its own
+      vk_functions.h           the Vulkan the engine uses, declared here; vulkan-1.dll is loaded
                                at run time, nothing is linked
+    input/                     the host's devices, and what they press
+      input_thread.h/.cpp      the input thread: pads, keyboard, raw mouse at 1 kHz
+      keyboard.h               key names for psxemu.ini, and the default keyboard and pad maps
+      gamepad.h                one XInput slot: its controls, both sticks, both motors
+      mouse.h                  the host mouse, raw or captured, as a PSX mouse's counts
+      controller_bindings.h    every binding, per port and device: defaults, psxemu.ini, mapping
+    ui/                        the tool windows
+      controller_bindings_window.h/.cpp  Settings > Input > Controller Bindings: the drawn pad
+      key_bindings_window.h/.cpp  the older keyboard-only list, kept but off the menu
+      memcard_editor.h/.cpp    File > Memory Cards > Memory Card Editor, both slots side by side
+      console_window.h/.cpp    Emulation > BIOS Console: the BIOS's putchar/puts/printf output
+      debugger_window.h/.cpp   Emulation > Debugger: disassembly, registers, breakpoints, stepping
+    Resource/                  the filters' HLSL, the icon, and psxemu.rc + resource.h, which
+                               compile the icon into the exe
     shaders/                   filter shaders, compiled into headers by the build, and
                                glsl_filters.h, the same filters in GLSL for OpenGL and Vulkan,
                                spirv_filters.h, that GLSL compiled for Vulkan (generated by

@@ -32,8 +32,8 @@
 // follows the port's type - a DualShock or Dual Analog gets sticks, L3/R3 and ANALOG; the original
 // digital pad does not.
 
-#include "framework.h"
-#include "controller_bindings.h"
+#include "app/framework.h"
+#include "input/controller_bindings.h"
 
 #include <functional>
 

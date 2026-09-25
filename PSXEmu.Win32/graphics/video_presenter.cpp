@@ -16,11 +16,11 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "video_presenter.h"
+#include "graphics/video_presenter.h"
 
-#include "const.h"   // RendererHasFilters
+#include "app/const.h"   // RendererHasFilters
 #include "psx/gpu_core.h"
-#include "win32_dialogs.h"
+#include "app/win32_dialogs.h"
 
 namespace psxemu {
 

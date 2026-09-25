@@ -27,9 +27,9 @@
 // which posts to the window's own thread; a message box raised from here would be a wait on the
 // thread that is supposed to be free.
 
-#include "framework.h"
+#include "app/framework.h"
 
-#include "engine_factory.h"
+#include "app/engine_factory.h"
 #include "host/video_output.h"
 
 #include <functional>

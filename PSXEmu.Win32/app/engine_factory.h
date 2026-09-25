@@ -25,9 +25,9 @@
 // an IAudioEngine and never learns which one it got - which is what lets the Video menu swap the
 // renderer under a running machine without anything else being told.
 
-#include "framework.h"
+#include "app/framework.h"
 
-#include "igraphicsengine.h"
+#include "graphics/igraphicsengine.h"
 #include "audio/iaudioengine.h"
 
 namespace psxemu {
