@@ -97,6 +97,33 @@ bool Export(const uint8_t* card, int first_block, std::vector<uint8_t>* mcs, std
 // save of the same name is cleared first, as the BIOS's own copy does.
 bool Import(uint8_t* card, const std::vector<uint8_t>& mcs, std::string* error);
 
+// ---- Other tools' files ----------------------------------------------------------------------
+//
+// Card managers and other emulators wrap cards and saves in formats of their own. These unwrap
+// them into what the functions above take - a 128 KB image, or a .mcs - recognising each by
+// what is in the file rather than by its name. The formats and their headers are the ones
+// DuckStation reads.
+
+// A whole card: the plain 128 KB image, which a dozen extensions hold as it is (.mcr, .mcd,
+// .mc, .srm, .psm, .ps, .ddf, .bin); a DexDrive .gme, 3,904 bytes of header in front of it
+// (and padded out if the file stops short, as some do); a Connectix VGS .mem or .vgs, 64 bytes
+// starting "VgsM"; or a .psx card, 256 bytes starting "PSV". `format` names which, for a
+// message. False, with the reason, for anything else, or a card that is not formatted.
+bool CardFromFile(const std::vector<uint8_t>& file, std::vector<uint8_t>* card,
+                  std::string* format, std::string* error);
+
+// A single save as a .mcs: a .mcs as it is, or a raw save - its 1-15 blocks with no directory
+// frame in front, which is how several tools export one. A raw save has no name of its own,
+// so `file_title` - the file's name without its extension, which is what such a save is named
+// after (BASLUS-01013LOM...) - stands in, cut to the 20 characters a directory frame holds.
+bool SaveFromFile(const std::vector<uint8_t>& file, const std::string& file_title,
+                  std::vector<uint8_t>* mcs, std::string* error);
+
+// Every live save on `source`, imported onto `card` one at a time, as far as they fit.
+// `report` says how many went, and which did not and why. False if none did, and then `card`
+// is left exactly as it was.
+bool ImportCard(uint8_t* card, const uint8_t* source, std::string* report);
+
 }  // namespace mcdir
 }  // namespace psx
 }  // namespace emulation

@@ -34,6 +34,10 @@ namespace psxemu {
         MessageBoxW(owner, message, kWindowTitle, MB_OK | MB_ICONWARNING);
     }
 
+    void ShowInformation(HWND owner, const wchar_t* message) {
+        MessageBoxW(owner, message, kWindowTitle, MB_OK | MB_ICONINFORMATION);
+    }
+
     std::string ChooseFile(HWND window, FileDialog mode, const char* filter,
                            const char* default_extension) {
         char file[MAX_PATH] = { 0 };

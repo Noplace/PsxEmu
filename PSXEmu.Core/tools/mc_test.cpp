@@ -347,6 +347,109 @@ int ListCard(const char* path) {
   return 0;
 }
 
+// Other tools' files (mcdir::CardFromFile, SaveFromFile, ImportCard): the same card and the
+// same saves have to come out of every wrapper they arrive in.
+void TestOtherFormats() {
+  Group("other tools' cards and saves");
+  Card source = FormattedCard();
+  std::string error;
+  mcdir::Import(source.data(), MakeSave("BASLUS-01013LOM", 3, 0x5A), &error);
+  mcdir::Import(source.data(), MakeSave("BESCES-00867RR", 1, 0x33), &error);
+
+  // The same card in each wrapper.
+  struct Wrapper { const char* name; std::vector<uint8_t> file; };
+  std::vector<Wrapper> wrappers;
+  wrappers.push_back({ "raw", source });
+  {
+    std::vector<uint8_t> gme(0xF40, 0);
+    memcpy(gme.data(), "123-456-STD", 11);
+    gme.insert(gme.end(), source.begin(), source.end());
+    wrappers.push_back({ "DexDrive .gme", gme });
+  }
+  {
+    std::vector<uint8_t> vgs(64, 0);
+    memcpy(vgs.data(), "VgsM", 4);
+    vgs.insert(vgs.end(), source.begin(), source.end());
+    wrappers.push_back({ "VGS .mem", vgs });
+  }
+  {
+    std::vector<uint8_t> psx(256, 0);
+    memcpy(psx.data(), "PSV", 3);
+    psx.insert(psx.end(), source.begin(), source.end());
+    wrappers.push_back({ ".psx card", psx });
+  }
+  for (const Wrapper& wrapper : wrappers) {
+    std::vector<uint8_t> card;
+    std::string format;
+    const bool ok = mcdir::CardFromFile(wrapper.file, &card, &format, &error);
+    char what[96];
+    snprintf(what, sizeof(what), "a %s card unwraps to the card inside it", wrapper.name);
+    Check(ok && card == source, what);
+  }
+  {
+    // Some .gme files stop short; what is there is kept and the rest is blank.
+    std::vector<uint8_t> gme(0xF40, 0);
+    memcpy(gme.data(), "123-456-STD", 11);
+    gme.insert(gme.end(), source.begin(), source.begin() + 4 * mcdir::kBlockSize);
+    std::vector<uint8_t> card;
+    Check(mcdir::CardFromFile(gme, &card, nullptr, &error) && card.size() == mcdir::kCardSize &&
+              memcmp(card.data(), source.data(), 4 * mcdir::kBlockSize) == 0,
+          "a short .gme keeps what it has");
+  }
+  {
+    std::vector<uint8_t> card;
+    Check(!mcdir::CardFromFile(std::vector<uint8_t>(1000, 0), &card, nullptr, &error),
+          "a file that is no card is refused");
+    Check(!mcdir::CardFromFile(std::vector<uint8_t>(mcdir::kCardSize, 0), &card, nullptr, &error),
+          "and so is an unformatted one, which holds no saves");
+  }
+
+  // A whole card imported onto another: every save that fits, and an account of the rest.
+  Card target = FormattedCard();
+  mcdir::Import(target.data(), MakeSave("BESCES-00867RR", 1, 0x77), &error);   // already there
+  mcdir::Import(target.data(), MakeSave("FILLER", 11, 0x11), &error);          // leaves 3 free
+  std::string report;
+  Check(mcdir::ImportCard(target.data(), source.data(), &report), "a card's saves import");
+  const auto saves = mcdir::List(target.data(), false);
+  bool lom = false;
+  for (const auto& save : saves)
+    lom = lom || save.filename == "BASLUS-01013LOM";
+  Check(lom, "the one that fits is on the card");
+  CheckEqual(mcdir::FreeBlocks(target.data()), 0, "in the three free blocks");
+  Check(report.find("Copied 1 of 2") != std::string::npos &&
+            report.find("BESCES-00867RR") != std::string::npos,
+        "and the report names the one already there");
+  {
+    Card full = FormattedCard();
+    mcdir::Import(full.data(), MakeSave("FULL", 15, 0x22), &error);
+    const Card before = full;
+    Check(!mcdir::ImportCard(full.data(), source.data(), &report), "nothing fits: refused");
+    Check(full == before, "and the card is exactly as it was");
+  }
+
+  // A raw save: its blocks alone, named after its file.
+  const std::vector<uint8_t> mcs = MakeSave("BASLUS-00000", 2, 0x44);
+  const std::vector<uint8_t> raw(mcs.begin() + mcdir::kFrameSize, mcs.end());
+  std::vector<uint8_t> converted;
+  Check(mcdir::SaveFromFile(raw, "BASLUS-01251FF9-SAVE01EXTRA", &converted, &error),
+        "a raw save converts");
+  Card card = FormattedCard();
+  Check(mcdir::Import(card.data(), converted, &error), "and imports");
+  const auto raw_saves = mcdir::List(card.data(), false);
+  Check(raw_saves.size() == 1 && raw_saves[0].filename == "BASLUS-01251FF9-SAVE",
+        "named after its file, cut to 20 characters");
+  Check(raw_saves.size() == 1 && raw_saves[0].blocks == 2 && raw_saves[0].title == L"TEST",
+        "two blocks, and its title read from the data");
+  Check(memcmp(&card[raw_saves.empty() ? 0 : raw_saves[0].first_block * mcdir::kBlockSize],
+               raw.data(), mcdir::kBlockSize) == 0,
+        "the data exactly as it was");
+  Check(mcdir::SaveFromFile(mcs, "ignored", &converted, &error) && converted == mcs,
+        "a .mcs passes through untouched");
+  std::vector<uint8_t> not_a_save(mcdir::kBlockSize, 0);
+  Check(!mcdir::SaveFromFile(not_a_save, "X", &converted, &error),
+        "a block that does not start with a title is not taken for a save");
+}
+
 int main(int argc, char** argv) {
   if (argc > 1)
     return ListCard(argv[1]);
@@ -357,6 +460,7 @@ int main(int argc, char** argv) {
   TestDeleteUndelete();
   TestRoundTrip();
   TestTheFile();
+  TestOtherFormats();
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

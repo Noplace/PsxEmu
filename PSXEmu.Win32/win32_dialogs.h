@@ -42,6 +42,8 @@ namespace psxemu {
     // the preferred renderer was not there, so the other one is running.
     void ShowError(HWND owner, const wchar_t* message);
     void ShowWarning(HWND owner, const wchar_t* message);
+    // Something worth saying about what went right: which saves an import copied.
+    void ShowInformation(HWND owner, const wchar_t* message);
 
     // ---------------------------------------------------------------------------------------------
     // File pickers

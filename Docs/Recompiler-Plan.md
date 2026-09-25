@@ -208,7 +208,8 @@ interpreted and not compiled.
 The harness already answers this, and it is the strongest argument for doing
 this project here rather than anywhere else:
 
-- **The framebuffer checksum must not move.** `c7c8db90c5984798` for the BIOS
+- **The framebuffer checksum must not move.** `435bad9a6c5e4004` (it was
+  `c7c8db90c5984798` before bug 105, which the runs below were measured against) for the BIOS
   shell at 400 frames, and the twelve-disc table in
   [Test-Suite.md](Test-Suite.md) for real games - which did not exist when this
   was written and is the better instrument: a JIT that breaks one game's timing

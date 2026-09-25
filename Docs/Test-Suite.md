@@ -92,7 +92,7 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 63 checks, 0 failures.**
+**Current: 67 checks, 0 failures.**
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
@@ -124,6 +124,12 @@ produces 365 from it, Metal Gear Solid's codec registers produce 318 rather
 than 368 (bug 50 - the extra 50 columns were VRAM past the framebuffer), and
 a window wider than the mode, or an inverted one, falls back rather than
 sampling off the end.
+
+And the fill rule (bug 105): two opaque triangles sharing a diagonal give the
+same pixels whichever is drawn first, every pixel of the diagonal drawn by
+exactly one of them; two semi-transparent quads side by side blend their shared
+column once; and of two opaque quads side by side, the right-hand one owns the
+shared column.
 
 ## media_test
 
@@ -228,7 +234,7 @@ operations, and the card file underneath (`psx/mc.h`). No BIOS, no window. With
 a card's path it lists that card instead - saves, blocks, titles, icons - and
 never writes it.
 
-**Current: 77 checks, 0 failures.**
+**Current: 97 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -238,6 +244,7 @@ never writes it.
 | `delete and undelete` | A1h/A2h/A3h with the links kept; undelete giving back the card byte for byte; undelete refused once a block has been reused |
 | `export everything, format, import it back` | the same saves, names, sizes, titles and bytes after a round trip through a formatted card, with a deleted save's hole in the middle |
 | `the card file` | a new card written formatted; a game's write staying in memory until a second passes with none, then flushed atomically; eject saving an unflushed write; the wipe - out of the slot and back in from disk - keeping both; inserting over a card saving the old one; a file that is not 128 KB refused without disturbing the card that is in |
+| `other tools' cards and saves` | a DexDrive `.gme`, a VGS `.mem` and a `.psx` each unwrapping to the same card as the raw one, a short `.gme` padded, and a file of no known kind, a too-short one and an unformatted card refused; a card's saves imported past a duplicate, which the report names, and onto a full card refused with the card unchanged; a raw headerless save named after its file and cut to 20 characters, a `.mcs` passed through, and blocks that do not open with "SC" refused (bug 106) |
 
 Mutation-tested when written: a flush that wrote nothing failed six of these,
 and a delete that cleared the links (as DuckStation's does) failed the
@@ -520,7 +527,7 @@ side, with a sequence number in every item.
   for every one published; mouse motion adding up exactly across a racing
   publisher and taker; a doorbell that does not lose a ring that came first.
 - **The machine's thread.** A threaded BIOS boot lands on **boot_runner's own
-  instruction count and checksum** - 93,049,815 and `c7c8db90c5984798` - which
+  instruction count and checksum** - 93,049,815 and `435bad9a6c5e4004` - which
   is the assertion that threading changed nothing about what the machine
   computes. Then again with pause and resume requests thrown at it from another
   thread as fast as it will take them (432 of them, same numbers), and again
@@ -573,13 +580,13 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 297 | | `gpu_test` | 63 |
+| `cpu_test` | 297 | | `gpu_test` | 67 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 350 |
 | `sio_test` | 203 | | `spu_test` | 144 |
-| `mc_test` | 77 | | `debug_test` | 174 |
+| `mc_test` | 97 | | `debug_test` | 174 |
 
-**1,569 checks, 0 failures**, all ten green. Each harness's own section above
+**1,593 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon: every setting in `EmuConfig`
@@ -644,7 +651,7 @@ and what they decided, are in the plan's step 6.
 |---|---|
 | instructions | 93,049,815 |
 | resolution | 640x478 |
-| framebuffer checksum | `c7c8db90c5984798` |
+| framebuffer checksum | `435bad9a6c5e4004` |
 | non-black (visible) | 305,920 of 305,920 |
 | unimplemented paths | 0 |
 | GTE commands | 0 - the shell menu is entirely 2D |
@@ -656,6 +663,12 @@ and what they decided, are in the plan's step 6.
 | texels 4-bit / 15-bit | 3,159,000 / 0 |
 | CD-ROM commands | 3 |
 | SPU | 297,483 frames, 64 key-ons, peak 27,547/23,860 |
+
+**The checksum moved to `435bad9a6c5e4004`** with bug 105, the fill rule applied to
+opaque triangles too, and nothing else did: the same instructions, the same
+305,920 non-black pixels. What changed is 349 pixels on the right-hand edges of
+the shell's orange diamond, which lose the one-pixel fringe - and the single
+pixel at its apex - that an edge pixel drawn by both sides gave it.
 
 **And then to 93,049,815** (bug 88), with the checksum, every pixel, all 16,913
 GP0 words, all 1,153 primitives, the 908 interrupts and every register
@@ -764,15 +777,24 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 | Air Combat | `a1e228e8a2ee662c` | `51080ad999e88621` | `5109d78c91007c12` | 51,200 | 320x240 | 241,800 | 5,262 |
 | Wild Arms | `a94d9bb38769a360` | `e53c89cb43c0075b` | `b828d822ec27badf` | 61,440 | 320x240 | 92,363 | 3,715 |
 | Wild Arms 2 (cd1) | `55565300d8dc9411` | `81007d90c767846a` | `1742c42883771622` | 76,800 | 320x240 | 0 | 100 |
-| Vandal Hearts | `837e5d63d4faa1cc` | `7c1297df773e7342` | `fc66e49c14bf8861` | 76,725 | 320x240 | 127,500 | 5,230 |
+| Vandal Hearts | `eac4dfab83da3880` | `7c1297df773e7342` | `fc66e49c14bf8861` | 76,725 | 320x240 | 127,500 | 5,230 |
 | Legend of Mana | `e13bb6ec78144cc9` | `9797912c492383e1` | `b16eaf3906c9d6dd` | 76,312 | 320x240 | 154,500 | 5,313 |
-| Ridge Racer | `a727da8b232bddfd` | `2758d5485cdcc39e` | `952129b672f3fa12` | 76,463 | 320x240 | 0 | 1,578 |
+| Ridge Racer | `a727da8b232bddfd` | `615989b7725635c2` | `fc77d928fb3c4159` | 76,461 | 320x240 | 0 | 1,578 |
 | Bomberman Party Ed. | `4a31d7a6c52734a4` | `45e058b70ed827c2` | `3ba049eea7e64970` | 68,913 | 320x240 | 145,800 | 4,652 |
 | Area 51 | `d7e8093204d0085b` | `5b1c23ab7d41b7d0` | `c20fec6d8f189e8d` | 51,855 | 256x240 | 100,080 | 5,490 |
 | Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `fb1d8340ba2617e0` | 75,943 | 320x240 | 0 | 668 |
 | Final Fantasy VIII | `aedac3154f8a0383` | `f3ee4d06bf3e0383` | `c184351a7e528d32` | 4,002 | 640x480 | 0 | 1,187 |
 | Ace Combat 3 | `2d039a3114a00858` | `8b98ad87bd86ef11` | `b7d1c35c356ae822` | 54,862 | 320x240 | 80,864 | 2,255 |
 | Captain Tsubasa J | `f0779890ee9b1bb0` | `add4d55f3196ad03` | `816d516f2ba1d3f8` | 76,800 | 320x240 | 59,100 | 3,759 |
+
+Re-recorded after bug 105 (the fill rule on opaque triangles too): three
+checkpoints moved, and no instruction count - it is a change of pixels only.
+Vandal Hearts at frame 1000, the licence screen, and Ridge Racer at frames 2000
+and 3000, each by 148 pixels. Checked at 5x: the PlayStation logo's "P" loses a
+stray pixel above its top-left corner and a few stair pixels on its slanted top,
+and a mountain peak behind Ridge Racer's attract mode loses a one-pixel spike on
+its apex - both edge pixels a triangle drew that the rule gives to nothing.
+Ridge Racer's frame 3000 has two fewer non-black pixels for it.
 
 **Run with `--recompiler`, 2026-09-25: identical at all 36 checkpoints.** Every
 disc gives the same checksum, non-black count and resolution at frames 1000,

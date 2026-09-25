@@ -53,9 +53,9 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 297, gte 106, timer 70, sio 203, spu 144, gpu 63, mdec 85, media 350, mc 77, debug 174 - 1,569
-checks, no failures, and 2,151 across all seventeen harnesses (re-run
-2026-09-25, after bugs 78-104 - with the rasteriser threaded, now the default).
+cpu 297, gte 106, timer 70, sio 203, spu 144, gpu 67, mdec 85, media 350, mc 97, debug 174 - 1,593
+checks, no failures, and 2,175 across all seventeen harnesses (re-run
+2026-09-25, after bugs 78-106 - with the rasteriser threaded, now the default).
 `host_test`'s two real-speed checks fail now and then on a busy host, before a
 change as well as after it; see Test-Suite.md. The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
@@ -67,14 +67,19 @@ time: the harnesses test what a unit test can reach, and "the screen is one
 column narrower than it should be" is not that. The per-game table in
 Test-Suite.md is - it moved Ridge Racer and nothing else.
 
-### The fill rule is still gated on semi-transparency
+### The fill rule applies to every triangle now - and shading is not bit-exact
 
-`RasterTriangle` applies the top-left bias only when `state.semi_transparent`
-is set. Hardware's fill rule does not know what blending is, and with bug 59's
-polarity fix the gate should be unnecessary - but un-gating it moves which
-texel wins on every adjacent opaque tile edge, which is what put seams through
-Wild Arms' overworld when the rule was upside down. It wants checking against
-that game, not against a unit test.
+The gate that kept it to semi-transparent triangles is gone (bug 105). It was
+checked the way this entry asked: against Wild Arms' field, the scene the seams
+were reported in, with no seam either way - and against 20 more of the saved
+games' states, JaCzekanski's `gpu/triangle` reference, and the twelve discs.
+
+That reference turned up something else. Away from the edges, this core's
+Gouraud shading differs from it by one step of 5-bit colour at about 26,000 of
+the triangle's pixels, in a fine regular pattern: the colour is interpolated
+here per pixel from barycentric weights, where hardware steps it along each
+line in fixed point. `gpu/rectangles` differs at 4,693 pixels the same way.
+Nobody would see it; a checksum against another emulator would.
 
 ### Baselines - refreshed, and now a real table
 
@@ -440,12 +445,14 @@ held in memory and written whole, atomically, a second after a game stops
 writing (and on pause, eject, cold boot and exit). File > Memory Cards inserts,
 creates and ejects per slot while a game runs, and the Memory Card Editor
 lists both cards with icons and titles and deletes, undeletes, exports and
-imports `.mcs`, copies between slots and formats (bug 69,
-[Memory-Cards-Plan.md](Memory-Cards-Plan.md)). What is left:
+imports, copies between slots and formats (bug 69,
+[Memory-Cards-Plan.md](Memory-Cards-Plan.md)). Import takes single saves
+(`.mcs`, or a raw headerless save) and the saves on a whole card from another
+tool: raw, DexDrive `.gme`, VGS `.mem`/`.vgs` or `.psx` (bug 106). What is left:
 
-- **Only `.mcs` single saves import.** No whole-card formats other than the
-  raw 128 KB (`.gme`, `.vgs`, `.psx` from other tools), and no raw
-  headerless saves.
+- **A card from another tool cannot be inserted as it is**, only imported onto
+  one of PSXEmu's. Insert says so and why: a card is written back to its own
+  file as a plain 128 KB image, which would drop the tool's header.
 - **Card contents are not in save states.** Loading a state leaves the cards
   as they are, which is the usual choice, but a state saved before a game
   wrote its save and loaded after it does not undo the save.

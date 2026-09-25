@@ -269,6 +269,13 @@ namespace psxemu {
     inline constexpr const char* kSaveFilter =
         "Single Save (*.mcs)\0*.mcs\0"
         "All files (*.*)\0*.*\0";
+    // What the memory card editor's Import takes: a save, or a whole card from another tool
+    // whose saves are copied across - see mcdir::CardFromFile and SaveFromFile. A raw save is
+    // named after its file and has no extension of its own, hence All files.
+    inline constexpr const char* kImportFilter =
+        "Saves and Cards (*.mcs;*.mcr;*.mcd;*.gme;*.mem;*.vgs;*.psx;*.mc;*.srm;*.psm;*.ps;*.ddf;*.bin)\0"
+        "*.mcs;*.mcr;*.mcd;*.gme;*.mem;*.vgs;*.psx;*.mc;*.srm;*.psm;*.ps;*.ddf;*.bin\0"
+        "All files (*.*)\0*.*\0";
 
     // The debugger's labels: text, one "address name" per line.
     inline constexpr const char* kLabelFilter =

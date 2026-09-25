@@ -6387,3 +6387,144 @@ against its cue.
 The writer's FLAC is VERBATIM: correct FLAC that compresses nothing. So in
 chdman's "best per hunk" it only wins on silence. It exists to test the
 decoder, not to make small files.
+
+## 105. The fill rule stopped at semi-transparent triangles
+
+`psx/gpu.cpp`
+
+Gaps.md: the top-left rule was still gated on `state.semi_transparent`. The
+gate went in on 2026-09-09 for seams in Wild Arms' field, while the rule itself
+was upside down. Bug 59 turned the rule the right way up but left the gate,
+because removing it moves opaque edges in the very game that had the seams, and
+that wanted checking against the game. So an opaque triangle drew all three of
+its edges. A pixel exactly on an edge two triangles share was drawn by both,
+and the later one won. A triangle on its own drew its right and bottom edges,
+which hardware leaves out of every polygon, whatever the blending (psx-spx).
+
+**Fix.** The gate is gone, and every triangle follows the rule.
+
+**Checked against the game first**, then against everything else to hand. Each
+comparison used two `boot_runner` builds that differ only in the gate.
+
+- **21 saved-game states from 13 games**, the user's own, loaded read-only and
+  run two frames.
+  - Twelve come out identical, among them Wild Arms' town (st1).
+  - The other nine differ at 31 to 142 pixels each:
+
+    | State | Pixels |
+    |---|---|
+    | Wild Arms' field (st3) | 70 |
+    | Silent Hill | 142 |
+    | Final Fantasy VIII | 94 and 119 |
+    | Crash Bandicoot 2 | 107 |
+    | Gunfighter | 106 and 31 |
+    | Ridge Racer Type 4 | 71 |
+    | Captain Tsubasa J | 59 |
+
+  - Every changed pixel was marked and looked at 5-8x. Each is a single pixel
+    on a triangle's edge, scattered along the edges, never a run down one,
+    which is what a seam is.
+  - Wild Arms' field shows the same ground in both builds, tiles meeting as
+    they did. The one visible change is a texel along a diagonal.
+- **JaCzekanski's `gpu/triangle`**, against the reference VRAM image the test
+  ships. The two builds disagree at 7 pixels, and at all 7 the build without
+  the gate matches the reference (compared at 5 bits per channel).
+  `gpu/quad`, `gpu/rectangles` and `gpu/clipping` are identical in both builds.
+- **The BIOS boot**, 400 frames:
+  - Instructions are unchanged at 93,049,815, with the same 305,920 non-black
+    pixels.
+  - 349 pixels move, on the right-hand edges of the shell's orange diamond,
+    which lose a one-pixel fringe and the single pixel at its apex.
+  - The checksum moved from `c7c8db90c5984798` to `435bad9a6c5e4004`, and
+    `host_test` carries the new one.
+- **The twelve discs, 3,000 frames.** Every instruction count and sector
+  count is unchanged. Three checkpoints moved by 148 pixels each:
+  - Vandal Hearts at frame 1000: the PlayStation logo's "P" loses a stray pixel
+    above its corner and a few stair pixels.
+  - Ridge Racer at frames 2000 and 3000: a mountain behind the attract mode
+    loses a one-pixel spike on its peak.
+
+**Tests.** `gpu_test`'s `TestOpaqueSharedEdgeUsesLastDrawnPrimitive` was
+written for the gate and asserted "whichever was drawn last". That is what the
+gate gave, not what hardware does. Two quads side by side share no column at
+all, since each covers its extent half-open, so the test is now
+`TestOpaqueAdjacentQuadsShareNoColumn`.
+
+`TestOpaqueSharedDiagonalIgnoresDrawOrder` is new. It draws two opaque
+triangles sharing a diagonal, in both orders, and requires the same pixels
+either way, with every pixel of the diagonal drawn by exactly one of them.
+With the gate put back it fails at 40 pixels. `gpu_test` has 67 checks.
+
+**Found on the way, not fixed.** Away from the edges, `gpu/triangle`'s
+reference and this core's Gouraud shading differ by one step of 5-bit colour
+at about 26,000 pixels, in a fine regular pattern, in both builds.
+`gpu/rectangles` differs at 4,693. The colour is interpolated here per pixel
+from barycentric weights, where hardware steps it along each line in fixed
+point. See Gaps.md.
+
+## 106. Memory card files from other tools
+
+Gaps.md: "Only `.mcs` single saves import." The editor's Import took a `.mcs`,
+a directory frame followed by the save's blocks, and nothing else. A card from
+DexDrive or another emulator could not be used at all unless it was already a
+raw 128 KB image.
+
+**What Import takes now** (`mcdir::CardFromFile`, `SaveFromFile` and
+`ImportCard` in `psx/mc_directory.h`). The layouts are the ones DuckStation's
+card importer reads.
+
+- **Whole cards.** Import copies every save on the card across, not the card
+  itself:
+  - a raw 128 KB card (`.mcr`, `.mcd`, `.mc`, `.srm`, `.psm`, `.ps`, `.ddf`,
+    `.bin`)
+  - a DexDrive `.gme`, a card behind a 3,904-byte header that opens
+    "123-456-STD". One that stops short of a whole card is padded out with
+    zeroes, as DuckStation does, and one that is really a raw card with the
+    wrong extension is read as that.
+  - a Connectix VGS `.mem` or `.vgs`, behind a 64-byte "VgsM" header
+  - a `.psx`, behind a 256-byte "PSV" header
+
+  A save that will not go, for instance because a save of that name is
+  already there or there is no room, is listed by name with its reason, and
+  the rest are still copied. The message reads, for example, "Copied 1 of 2
+  saves. Not copied: BESCES-00867RR: A save with the same name is already on
+  the card." If none can be copied, the card is left exactly as it was. An
+  unformatted card is refused, saying so.
+- **Single saves.**
+  - a `.mcs`, as before
+  - a raw save: just its blocks, the first opening with "SC". Other tools write
+    these with no extension, named after the save's directory name. The name
+    comes from the file's, cut to the 20 characters the directory holds.
+
+The type is decided by content, not by extension, so the filter's "All files"
+works. The file dialog lists all the extensions above.
+
+**Insert** still takes only a raw card. A card in the slot is written back to
+its own file as a plain 128 KB image, so a `.gme` inserted as it is would lose
+its header on the first save. Inserting one now says which kind it is, and
+points to the editor's Import, instead of saying the file is the wrong size.
+
+**Two small front-end fixes on the way.**
+- The editor read at most 128 KB of any file it opened, so a `.gme`, which is
+  larger, came back as "Could not read that file." It now reads up to twice
+  that.
+- An editor action that succeeds with something to say, as a partial card
+  import does, shows it as information. Before, a message was only shown when
+  something failed.
+
+**Verified.**
+- **`mc_test` 97** (77 before): a group of 20 for the other formats.
+  - Each wrapper gives back the same card, and a short `.gme` is padded.
+  - Unknown, too-short and unformatted files are refused.
+  - A card import that meets a duplicate copies the rest and names the
+    duplicate. One onto a full card is refused and leaves it unchanged.
+  - A raw save is named from its file and cut to 20 characters, a `.mcs` goes
+    through untouched, and blocks that do not open with "SC" are refused.
+- **The front end**, driven through its own menus on a scratch build:
+  - A two-save `.gme` imported onto an empty card: "Copied 2 of 2 saves.", two
+    rows.
+  - The same `.gme` again: "Copied 0 of 2 saves.", naming both as already on
+    the card, and still two rows.
+  - A raw save with no extension: a third row.
+  - Inserting the `.gme` into a slot: the message naming it a DexDrive card.
+  - The card file afterwards was still 131,072 bytes.

@@ -100,7 +100,9 @@ namespace psxemu {
             fseek(fp, 0, SEEK_END);
             const long size = ftell(fp);
             fseek(fp, 0, SEEK_SET);
-            if (size <= 0 || size > static_cast<long>(mcdir::kCardSize)) {
+            // Up to a card with another tool's header in front - a DexDrive .gme is the
+            // largest, 3,904 bytes more than the card - with room to spare.
+            if (size <= 0 || size > static_cast<long>(2 * mcdir::kCardSize)) {
                 fclose(fp);
                 return false;
             }
@@ -387,12 +389,36 @@ namespace psxemu {
             }
 
             case kImport: {
-                const std::string path = ChooseFile(window_, FileDialog::kOpen, kSaveFilter, "mcs");
+                // A single save goes onto the card as it is. A whole card - this one's own
+                // format or another tool's - has every save on it copied across, as far as
+                // they fit, so nothing already on this card is lost.
+                const std::string path = ChooseFile(window_, FileDialog::kOpen, kImportFilter, nullptr);
                 if (path.empty())
                     return;
-                std::vector<uint8_t> mcs;
-                if (!ReadBytes(path, &mcs)) {
+                std::vector<uint8_t> bytes;
+                if (!ReadBytes(path, &bytes)) {
                     ShowWarning(window_, L"Could not read that file.");
+                    return;
+                }
+                std::vector<uint8_t> source;
+                std::string card_error;
+                if (mcdir::CardFromFile(bytes, &source, nullptr, &card_error)) {
+                    host_.edit(pane.which, [source](uint8_t* card, std::string* e) {
+                        return mcdir::ImportCard(card, source.data(), e);
+                    });
+                    break;
+                }
+                // A raw save is named after its file: the name without folder or extension.
+                std::string title = path.substr(path.find_last_of("\\/") + 1);
+                const size_t dot = title.find_last_of('.');
+                if (dot != std::string::npos && dot > 0)
+                    title.erase(dot);
+                std::vector<uint8_t> mcs;
+                std::string save_error;
+                if (!mcdir::SaveFromFile(bytes, title, &mcs, &save_error)) {
+                    // A file the size of a card was meant as one.
+                    const std::string& why = bytes.size() >= mcdir::kCardSize ? card_error : save_error;
+                    ShowWarning(window_, Widen(why).c_str());
                     return;
                 }
                 host_.edit(pane.which, [mcs](uint8_t* card, std::string* e) {

@@ -1512,23 +1512,24 @@ namespace emulation {
             const Vertex& c = (area > 0) ? v2 : v1;
             const int32_t double_area = (area > 0) ? area : -area;
 
-            // The bias only needs to break the tie for semi-transparent draws - an
-            // opaque pixel accepted by both triangles on a shared edge just gets
-            // repainted the second time, which is invisible *when both triangles agree
-            // on the colour there*. That holds for a quad's own two halves (one
-            // texture, one continuous UV), but not for two independent opaque
-            // primitives that happen to share an edge and sample different textures:
-            // forcing the geometric tie-break there changes which primitive's texel
-            // wins the boundary column from "whichever was drawn last" to "whichever
-            // owns the edge under this rule", and those disagree constantly for a
-            // ground built from many small, differently-textured tiles - Wild Arms
-            // showed this as fine seams through the whole field, tile edges sampling
-            // the wrong neighbour's texture. Silent Hill's hatching was a
-            // semi-transparent problem specifically (bug is additive blending twice),
-            // so gate the bias on that instead of applying it unconditionally.
-            const int32_t bias0 = state.semi_transparent ? EdgeBias(b.x - a.x, b.y - a.y) : 0;
-            const int32_t bias1 = state.semi_transparent ? EdgeBias(c.x - b.x, c.y - b.y) : 0;
-            const int32_t bias2 = state.semi_transparent ? EdgeBias(a.x - c.x, a.y - c.y) : 0;
+            // The fill rule, for every triangle: a pixel exactly on an edge belongs
+            // to the triangle for which that edge is a top or left one, so of two
+            // triangles sharing an edge exactly one draws it, and a triangle alone
+            // leaves its right and bottom edges undrawn. The hardware leaves them
+            // out of every polygon, whatever the blending (psx-spx).
+            //
+            // It used to apply to semi-transparent triangles only (bug 105). Silent
+            // Hill's hatching - an additive blend applied twice on a shared edge -
+            // was where it came in, and applying it to everything put seams through
+            // Wild Arms' field. But the rule was upside down then (bug 59), keeping
+            // right edges and dropping left ones; with it the right way round, the
+            // same field scene shows no seams, and opaque triangles no longer come
+            // out a pixel fatter on their right and bottom diagonals than the
+            // hardware draws them, or depend on draw order for who owns a shared
+            // edge.
+            const int32_t bias0 = EdgeBias(b.x - a.x, b.y - a.y);
+            const int32_t bias1 = EdgeBias(c.x - b.x, c.y - b.y);
+            const int32_t bias2 = EdgeBias(a.x - c.x, a.y - c.y);
 
             // Inclusive now: `right` and `bottom` are the last pixel to draw, not one past it.
             for (int32_t y = top; y <= bottom; ++y) {

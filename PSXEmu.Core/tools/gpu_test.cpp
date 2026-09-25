@@ -563,21 +563,14 @@ void TestPolylineTerminatorIsNotAVertex(System* system) {
 }
 
 // Two adjacent opaque flat quads share a vertical edge (A's right edge is
-// B's left edge, both at x=416). Regression for the fix that scoped the
-// top-left edge-bias rule to semi-transparent primitives only: applying it
-// unconditionally (the fully-regressed state) still passed the coverage
-// test (every pixel drawn exactly once, no gaps) but changed which of the
-// two *independent, differently-coloured* primitives owns the shared edge
-// column from "whichever was drawn last" to "whichever the edge-direction
-// rule geometrically favours" - and for a ground built from many small
-// differently-textured tiles (Wild Arms' overworld) that shows up as fine
-// seams through the whole field, tile edges sampling the wrong neighbour.
-// For a single quad's own two triangles this is invisible (same texture,
-// continuous data either way), which is why it was not caught by the fix
-// that introduced the bias.
-void TestOpaqueSharedEdgeUsesLastDrawnPrimitive(System* system) {
-  printf("two independent opaque quads sharing an edge: the later one wins "
-         "the shared column, same as before edge-biasing existed\n");
+// B's left edge, both at x=416). The shared column is B's: a quad's own
+// extent is half-open, so A stops at x=415 and never draws it, whichever is
+// drawn first. This used to be described as "the later one wins", from when
+// the fill rule was kept to semi-transparent triangles (bug 105) - but it
+// never depended on that; the diagonal test below is the one that does.
+void TestOpaqueAdjacentQuadsShareNoColumn(System* system) {
+  printf("two opaque quads side by side: the shared column is the right-hand "
+         "one's\n");
   system->gpu().WriteStatus(0x00000000);  // GP1(00h) reset
   system->gpu().WriteData(0xE3000000);                          // top-left (0,0)
   system->gpu().WriteData(0xE4000000 | (450u << 10) | 450u);    // bottom-right
@@ -609,8 +602,72 @@ void TestOpaqueSharedEdgeUsesLastDrawnPrimitive(System* system) {
   CheckEqual(vram[408 * 1024 + 404], kRed15,   "A's interior is red");
   CheckEqual(vram[408 * 1024 + 428], kGreen15, "B's interior is green");
   CheckEqual(vram[408 * 1024 + 416], kGreen15,
-             "the shared edge column belongs to B, the later draw - not "
-             "geometrically reassigned to A");
+             "the shared edge column belongs to B, the right-hand quad");
+}
+
+// Two opaque triangles sharing a diagonal, drawn in both orders (bug 105).
+// The fill rule gives every pixel on the diagonal to exactly one of them, by
+// geometry, so the picture is the same either way round - and no pixel of it
+// is left undrawn. With the rule kept to semi-transparent triangles, an
+// opaque pair both drew the diagonal and whichever went second took it.
+void TestOpaqueSharedDiagonalIgnoresDrawOrder(System* system) {
+  printf("two opaque triangles sharing a diagonal: the same pixels whichever is "
+         "drawn first\n");
+  const uint32_t kRed   = 0x0000FF;
+  const uint32_t kGreen = 0x00FF00;
+  // Upper-right triangle (x > y side) and lower-left one, sharing the
+  // diagonal from (300,300) to (340,340).
+  auto upper = [&](uint32_t colour) {
+    system->gpu().WriteData(0x20000000 | colour);
+    system->gpu().WriteData((300u << 16) | 300u);
+    system->gpu().WriteData((300u << 16) | 340u);
+    system->gpu().WriteData((340u << 16) | 340u);
+  };
+  auto lower = [&](uint32_t colour) {
+    system->gpu().WriteData(0x20000000 | colour);
+    system->gpu().WriteData((300u << 16) | 300u);
+    system->gpu().WriteData((340u << 16) | 340u);
+    system->gpu().WriteData((340u << 16) | 300u);
+  };
+  auto clear = [&]() {
+    system->gpu().WriteStatus(0x00000000);
+    system->gpu().WriteData(0xE3000000);
+    system->gpu().WriteData(0xE4000000 | (450u << 10) | 450u);
+    system->gpu().WriteData(0x02000000);                  // fill black
+    system->gpu().WriteData((290u << 16) | 290u);
+    system->gpu().WriteData((64u << 16) | 64u);
+  };
+  std::vector<uint16_t> first, second;
+  clear();
+  upper(kRed);
+  lower(kGreen);
+  RunGpu(system);
+  {
+    const VramView vram{system};
+    for (uint32_t y = 290; y < 350; ++y)
+      for (uint32_t x = 290; x < 350; ++x)
+        first.push_back(vram[y * 1024 + x]);
+  }
+  clear();
+  lower(kGreen);
+  upper(kRed);
+  RunGpu(system);
+  {
+    const VramView vram{system};
+    for (uint32_t y = 290; y < 350; ++y)
+      for (uint32_t x = 290; x < 350; ++x)
+        second.push_back(vram[y * 1024 + x]);
+    CheckEqual(vram[310 * 1024 + 330], 0x001F, "the upper triangle is red");
+    CheckEqual(vram[330 * 1024 + 310], 0x03E0, "the lower one green");
+    bool diagonal_drawn = true;
+    for (uint32_t i = 301; i < 339; ++i)
+      diagonal_drawn = diagonal_drawn && vram[i * 1024 + i] != 0;
+    Check(diagonal_drawn, "every pixel on the shared diagonal is drawn by one of them");
+  }
+  uint32_t differing = 0;
+  for (size_t i = 0; i < first.size(); ++i)
+    differing += first[i] != second[i];
+  CheckEqual(differing, 0, "and the same one, whichever was drawn first");
 }
 
 // Silent Hill regression: two adjacent semi-transparent flat quads sharing a
@@ -742,7 +799,8 @@ int main() {
   TestGp0QueueFillsAndDrains(system);
   TestTextureBit15BecomesTheMaskBit(system);
   TestPolylineTerminatorIsNotAVertex(system);
-  TestOpaqueSharedEdgeUsesLastDrawnPrimitive(system);
+  TestOpaqueAdjacentQuadsShareNoColumn(system);
+  TestOpaqueSharedDiagonalIgnoresDrawOrder(system);
   TestSemiTransparentSharedEdgeBlendsOnce(system);
   TestVisibleWidthFollowsTheDisplayWindow(system);
 

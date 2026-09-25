@@ -19,6 +19,9 @@
 #include "psx/psx.h"
 #include "psx/mc_directory.h"
 
+#include <algorithm>
+#include <cstring>
+
 namespace emulation {
 namespace psx {
 namespace mcdir {
@@ -370,6 +373,109 @@ bool Import(uint8_t* card, const std::vector<uint8_t>& mcs, std::string* error) 
     Seal(dir);
     memcpy(Frame(card, blocks[i], 0), mcs.data() + kFrameSize + i * kBlockSize, kBlockSize);
   }
+  return true;
+}
+
+bool CardFromFile(const std::vector<uint8_t>& file, std::vector<uint8_t>* card,
+                  std::string* format, std::string* error) {
+  auto starts = [&file](const char* magic) {
+    const size_t length = strlen(magic);
+    return file.size() >= length && memcmp(file.data(), magic, length) == 0;
+  };
+  const size_t kGmeHeader = 0xF40;
+  size_t header = 0;
+  std::string name;
+  if (starts("123-456-STD") || file.size() == kGmeHeader + kCardSize) {
+    header = kGmeHeader;
+    name = "DexDrive (.gme)";
+  } else if (starts("VgsM") && file.size() == 64 + kCardSize) {
+    header = 64;
+    name = "Connectix VGS (.mem)";
+  } else if (starts("PSV") && file.size() == 256 + kCardSize) {
+    header = 256;
+    name = ".psx";
+  } else if (file.size() == kCardSize) {
+    name = "raw";
+  } else {
+    if (error) *error = "Not a memory card this can read.";
+    return false;
+  }
+  if (file.size() < header + kBlockSize) {
+    if (error) *error = "That " + name + " card is too short to hold anything.";
+    return false;
+  }
+  card->assign(kCardSize, 0);
+  const size_t present = std::min(file.size() - header, kCardSize);
+  memcpy(card->data(), file.data() + header, present);
+  if (!IsFormatted(card->data())) {
+    if (error) *error = "The card in that file is not formatted, so it holds no saves.";
+    return false;
+  }
+  if (format) *format = name;
+  return true;
+}
+
+bool SaveFromFile(const std::vector<uint8_t>& file, const std::string& file_title,
+                  std::vector<uint8_t>* mcs, std::string* error) {
+  const size_t max_blocks = kBlocks - 1;
+  // A .mcs: its directory frame, then its blocks - what Import takes already.
+  if (file.size() > kFrameSize && (file.size() - kFrameSize) % kBlockSize == 0 &&
+      (file.size() - kFrameSize) / kBlockSize <= max_blocks) {
+    *mcs = file;
+    return true;
+  }
+  // A raw save: just the blocks, the first opening with its title frame's "SC".
+  if (file.size() >= kBlockSize && file.size() % kBlockSize == 0 &&
+      file.size() / kBlockSize <= max_blocks && file[0] == 'S' && file[1] == 'C') {
+    const std::string name = file_title.substr(0, kNameLength);
+    if (name.empty()) {
+      if (error) *error = "A raw save is named after its file, and this one has no name.";
+      return false;
+    }
+    mcs->assign(kFrameSize, 0);
+    uint8_t* dir = mcs->data();
+    dir[kStateOffset] = kFirst;
+    Write32(dir + kSizeOffset, static_cast<uint32_t>(file.size()));
+    Write16(dir + kNextOffset, kEndOfChain);
+    memcpy(dir + kNameOffset, name.data(), name.size());
+    Seal(dir);
+    mcs->insert(mcs->end(), file.begin(), file.end());
+    return true;
+  }
+  if (error)
+    *error = "Not a save this can read: a .mcs, or a raw save of 1-15 blocks starting with its "
+             "title.";
+  return false;
+}
+
+bool ImportCard(uint8_t* card, const uint8_t* source, std::string* report) {
+  const std::vector<Save> saves = List(source, false);
+  if (saves.empty()) {
+    if (report) *report = "That card has no saves on it.";
+    return false;
+  }
+  // Onto a copy, so a card none of them fit on is left exactly as it was.
+  std::vector<uint8_t> work(card, card + kCardSize);
+  int copied = 0;
+  std::string skipped;
+  for (const Save& save : saves) {
+    std::vector<uint8_t> mcs;
+    std::string why;
+    if (Export(source, save.first_block, &mcs, &why) && Import(work.data(), mcs, &why)) {
+      ++copied;
+      continue;
+    }
+    skipped += "\n" + save.filename + ": " + why;
+  }
+  if (report) {
+    *report = "Copied " + std::to_string(copied) + " of " + std::to_string(saves.size()) +
+              (saves.size() == 1 ? " save." : " saves.");
+    if (!skipped.empty())
+      *report += "\n\nNot copied:" + skipped;
+  }
+  if (copied == 0)
+    return false;
+  memcpy(card, work.data(), kCardSize);
   return true;
 }
 

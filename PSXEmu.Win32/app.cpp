@@ -1047,10 +1047,11 @@ namespace psxemu {
             auto cards = SnapshotCards(machine.system());
             PostToUi([this, cards = std::move(cards), ok, error] {
                 card_editor_.SetCards(cards);
-                if (!ok) {
-                    const std::wstring message(error.begin(), error.end());
+                const std::wstring message(error.begin(), error.end());
+                if (!ok)
                     ShowWarning(window_, message.c_str());
-                }
+                else if (!message.empty())
+                    ShowInformation(window_, message.c_str());   // what an import copied
             });
         });
     }
@@ -1066,9 +1067,36 @@ namespace psxemu {
             PostToUi([this, ok, path] {
                 if (!ok) {
                     const bool exists = GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
-                    ShowWarning(window_,
-                                exists ? L"That is not a memory card. A card file is exactly 128 KB."
-                                       : L"Could not open that memory card file.");
+                    // A card another tool wrapped - a DexDrive .gme, say - cannot go in as it
+                    // is: an inserted card is written back to its own file, as a plain image.
+                    // Its saves can be copied onto one, though.
+                    std::vector<uint8_t> bytes, inner;
+                    std::string format;
+                    bool wrapped = false;
+                    if (exists) {
+                        if (FILE* fp = fopen(path.c_str(), "rb")) {
+                            uint8_t buffer[65536];
+                            size_t got;
+                            while ((got = fread(buffer, 1, sizeof(buffer), fp)) > 0 &&
+                                   bytes.size() < 4 * emulation::psx::mcdir::kCardSize)
+                                bytes.insert(bytes.end(), buffer, buffer + got);
+                            fclose(fp);
+                        }
+                        wrapped = emulation::psx::mcdir::CardFromFile(bytes, &inner, &format, nullptr) &&
+                                  format != "raw";
+                    }
+                    if (wrapped) {
+                        const std::wstring message =
+                            L"That is a " + std::wstring(format.begin(), format.end()) +
+                            L" card, which cannot be inserted as it is: a card is written back to "
+                            L"its own file as a plain 128 KB image.\n\nTo use its saves, open File "
+                            L"> Memory Cards > Memory Card Editor and Import it onto a card.";
+                        ShowWarning(window_, message.c_str());
+                    } else {
+                        ShowWarning(window_,
+                                    exists ? L"That is not a memory card. A card file is exactly 128 KB."
+                                           : L"Could not open that memory card file.");
+                    }
                 }
                 if (card_editor_.visible())
                     RefreshMemoryCardEditor();
