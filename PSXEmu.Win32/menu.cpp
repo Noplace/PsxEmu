@@ -77,6 +77,19 @@ namespace psxemu {
             AppendMenuW(slot_menu, MF_STRING, insert_ids[slot], L"&Insert Card...");
             AppendMenuW(slot_menu, MF_STRING, create_ids[slot], L"&New Card...");
             AppendMenuW(slot_menu, MF_STRING, eject_ids[slot], L"&Eject");
+            // The three a multitap in this port adds (bug 99). Each disc gets its own of these
+            // too, loaded when the port is a multitap; these are for putting in some other card.
+            AppendMenuW(slot_menu, MF_SEPARATOR, 0, nullptr);
+            for (int card = 0; card < 3; ++card) {
+                HMENU card_menu = CreatePopupMenu();
+                const int first = kCommandMultitapCardFirst + (slot * 3 + card) * 3;
+                AppendMenuW(card_menu, MF_STRING, first + 0, L"&Insert Card...");
+                AppendMenuW(card_menu, MF_STRING, first + 1, L"&New Card...");
+                AppendMenuW(card_menu, MF_STRING, first + 2, L"&Eject");
+                const wchar_t* names[3] = { L"Multitap Card &B", L"Multitap Card &C",
+                                            L"Multitap Card &D" };
+                AppendMenuW(slot_menu, MF_POPUP, reinterpret_cast<UINT_PTR>(card_menu), names[card]);
+            }
             AppendMenuW(cards, MF_POPUP, reinterpret_cast<UINT_PTR>(slot_menu),
                         slot == 0 ? L"Slot &1" : L"Slot &2");
         }
@@ -221,6 +234,22 @@ namespace psxemu {
                 AppendMenuW(multitap_port[port], MF_POPUP,
                             reinterpret_cast<UINT_PTR>(player_source), kPlayerLabels[player]);
             }
+            // And what each player is (bug 98), below the sources.
+            static constexpr const wchar_t* kTypeLabels[4] = {
+                L"Player A &Type", L"Player B T&ype", L"Player C Ty&pe", L"Player D Typ&e" };
+            const int type_count = static_cast<int>(std::size(kMultitapPlayerTypeChoices));
+            AppendMenuW(multitap_port[port], MF_SEPARATOR, 0, nullptr);
+            for (int player = 0; player < 4; ++player) {
+                HMENU player_type = CreatePopupMenu();
+                for (int i = 0; i < type_count; ++i) {
+                    const int offset = (port * 4 + player) * type_count + i;
+                    AppendMenuW(player_type, MF_STRING,
+                                static_cast<UINT_PTR>(kCommandMultitapTypeFirst + offset),
+                                kMultitapPlayerTypeChoices[i].label);
+                }
+                AppendMenuW(multitap_port[port], MF_POPUP,
+                            reinterpret_cast<UINT_PTR>(player_type), kTypeLabels[player]);
+            }
         }
 
         HMENU input = CreatePopupMenu();
@@ -256,6 +285,12 @@ namespace psxemu {
         AppendMenuW(mouse, MF_POPUP, reinterpret_cast<UINT_PTR>(mouse_motion), L"&Motion");
         AppendMenuW(mouse, MF_POPUP, reinterpret_cast<UINT_PTR>(mouse_dpi), L"Mouse &DPI");
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(mouse), L"Mo&use");
+
+        // The ANALOG button, for pads the keyboard's ANALOG key does not reach (bug 97).
+        HMENU analog = CreatePopupMenu();
+        AppendMenuW(analog, MF_STRING, static_cast<UINT_PTR>(kCommandAnalogButtonPort1), L"Port &1");
+        AppendMenuW(analog, MF_STRING, static_cast<UINT_PTR>(kCommandAnalogButtonPort2), L"Port &2");
+        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(analog), L"Press &ANALOG Button");
 
         AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(input, MF_STRING, static_cast<UINT_PTR>(kCommandKeyBindings),
@@ -501,6 +536,33 @@ namespace psxemu {
                     EnableMenuItem(bar, id, MF_BYCOMMAND | (is_multitap ? MF_ENABLED : MF_GRAYED));
                 }
             }
+            for (int i = 0; i < 9; ++i) {   // cards B-D x Insert, New, Eject
+                const UINT id = static_cast<UINT>(kCommandMultitapCardFirst + port * 9 + i);
+                EnableMenuItem(bar, id, MF_BYCOMMAND | (is_multitap ? MF_ENABLED : MF_GRAYED));
+            }
+        }
+    }
+
+    void TickMultitapTypes(
+        HWND window, const std::array<std::array<std::string, 4>, 2>& types,
+        const std::array<std::string, 2>& controller_types) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            return;
+        const int type_count = static_cast<int>(std::size(kMultitapPlayerTypeChoices));
+        for (int port = 0; port < 2; ++port) {
+            const bool is_multitap =
+                ParseControllerType(controller_types[port]) == emulation::psx::Sio::kMultitap;
+            for (int player = 0; player < 4; ++player) {
+                for (int i = 0; i < type_count; ++i) {
+                    const int offset = (port * 4 + player) * type_count + i;
+                    const UINT id = static_cast<UINT>(kCommandMultitapTypeFirst + offset);
+                    const bool on = is_multitap &&
+                                    (types[port][player] == kMultitapPlayerTypeChoices[i].key);
+                    CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+                    EnableMenuItem(bar, id, MF_BYCOMMAND | (is_multitap ? MF_ENABLED : MF_GRAYED));
+                }
+            }
         }
     }
 
@@ -626,6 +688,8 @@ namespace psxemu {
             return Sio::kNone;
         if (key == "multitap")
             return Sio::kMultitap;
+        if (key == "guncon")
+            return Sio::kGunCon;
         return Sio::kDualShock;
     }
 

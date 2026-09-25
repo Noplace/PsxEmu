@@ -47,9 +47,9 @@ namespace psxemu {
         return map;
     }
 
-    // The buttons held right now, as the Sio::k* bitmask.
-    inline uint16_t ReadKeyboardPad(const KeyMap& map) {
-        uint16_t buttons = 0;
+    // The buttons held right now, as the Sio::k* bitmask - and kAnalogKey above them.
+    inline uint32_t ReadKeyboardPad(const KeyMap& map) {
+        uint32_t buttons = 0;
         for (int i = 0; i < kPadButtons; ++i) {
             if (map[i] != 0 && (GetAsyncKeyState(map[i]) & 0x8000))
                 buttons |= kKeyBindings[i].button;

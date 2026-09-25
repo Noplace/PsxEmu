@@ -64,6 +64,8 @@ namespace psxemu {
         struct State {
             bool left = false;
             bool right = false;
+            bool middle = false;
+            bool back = false;
             int32_t dx = 0;
             int32_t dy = 0;
         };
@@ -249,6 +251,8 @@ namespace psxemu {
 
             state.left = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
             state.right = (GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
+            state.middle = (GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0;
+            state.back = (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) != 0;
             return state;
         }
 

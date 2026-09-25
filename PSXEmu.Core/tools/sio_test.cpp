@@ -259,6 +259,106 @@ void TestStatusQueryReportsTheMode(System* system) {
   leave_config();
 }
 
+// 0x46, 0x47 and 0x4C each take a question in the first byte the host sends
+// and answer it in bytes 4-7 (bug 96). They used to reply zeros, and 0x4C
+// answered 04h whatever it was asked. psx-spx's and DuckStation's values.
+void TestCapabilityQueries(System* system) {
+  printf("0x46, 0x47 and 0x4C answer the question they are asked\n");
+  FreshPad(system, 0);
+  PadHarness pad(system);
+  const uint8_t enter[1] = { 0x01 };
+  pad.Command(0, 0x43, enter, 1, nullptr, 0);
+
+  const uint8_t query0[6] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+  const uint8_t query1[6] = { 0x01, 0x00, 0x00, 0x00, 0x00, 0x00 };
+  const uint8_t query2[6] = { 0x02, 0x00, 0x00, 0x00, 0x00, 0x00 };
+  uint8_t reply[16] = {};
+
+  auto tail = [&](const uint8_t* want, const char* what) {
+    const bool same = reply[4] == want[0] && reply[5] == want[1] &&
+                      reply[6] == want[2] && reply[7] == want[3];
+    if (!same)
+      printf("    got %02X %02X %02X %02X\n", reply[4], reply[5], reply[6], reply[7]);
+    Check(same, what);
+  };
+
+  pad.Command(0, 0x46, query0, 6, reply, sizeof(reply));
+  { const uint8_t want[4] = { 0x01, 0x02, 0x00, 0x0A }; tail(want, "0x46 query 0 answers 01 02 00 0A"); }
+  pad.Command(0, 0x46, query1, 6, reply, sizeof(reply));
+  { const uint8_t want[4] = { 0x01, 0x01, 0x01, 0x14 }; tail(want, "0x46 query 1 answers 01 01 01 14"); }
+  pad.Command(0, 0x46, query2, 6, reply, sizeof(reply));
+  { const uint8_t want[4] = { 0x00, 0x00, 0x00, 0x00 }; tail(want, "0x46 any other query answers zeros"); }
+
+  pad.Command(0, 0x47, query0, 6, reply, sizeof(reply));
+  { const uint8_t want[4] = { 0x02, 0x00, 0x01, 0x00 }; tail(want, "0x47 query 0 answers 02 00 01 00"); }
+  pad.Command(0, 0x47, query1, 6, reply, sizeof(reply));
+  { const uint8_t want[4] = { 0x00, 0x00, 0x00, 0x00 }; tail(want, "0x47 any other query answers zeros"); }
+
+  pad.Command(0, 0x4C, query0, 6, reply, sizeof(reply));
+  { const uint8_t want[4] = { 0x00, 0x04, 0x00, 0x00 }; tail(want, "0x4C query 0 answers 04 in byte 5"); }
+  pad.Command(0, 0x4C, query1, 6, reply, sizeof(reply));
+  { const uint8_t want[4] = { 0x00, 0x07, 0x00, 0x00 }; tail(want, "0x4C query 1 answers 07 in byte 5"); }
+
+  const uint8_t leave[1] = { 0x00 };
+  pad.Command(0, 0x43, leave, 1, nullptr, 0);
+}
+
+// The ANALOG button (bug 97): the player switching the pad's mode, which the
+// game can refuse by locking it.
+void TestAnalogButton(System* system) {
+  printf("the ANALOG button switches the mode unless the game has locked it\n");
+  FreshPad(system, 0);
+  PadHarness pad(system);
+  uint8_t reply[16] = {};
+
+  auto poll_id = [&]() -> int {
+    const int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+    return n > 0 ? reply[0] : -1;
+  };
+
+  CheckEqual(poll_id(), 0x41, "a fresh DualShock polls as a digital pad");
+  system->sio().PressAnalogButton(0);
+  CheckEqual(poll_id(), 0x73, "one press and it polls as analog");
+  CheckEqual(pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply)), 8,
+             "with the eight-byte analog reply");
+  system->sio().PressAnalogButton(0);
+  CheckEqual(poll_id(), 0x41, "a second press puts it back to digital");
+
+  // The game locks it into analog: 0x44 with mode 1 and lock 3.
+  const uint8_t enter[1] = { 0x01 };
+  const uint8_t leave[1] = { 0x00 };
+  const uint8_t analog_locked[2] = { 0x01, 0x03 };
+  pad.Command(0, 0x43, enter, 1, nullptr, 0);
+  pad.Command(0, 0x44, analog_locked, 2, nullptr, 0);
+  pad.Command(0, 0x43, leave, 1, nullptr, 0);
+  CheckEqual(poll_id(), 0x73, "the game switched it to analog and locked it");
+  system->sio().PressAnalogButton(0);
+  CheckEqual(poll_id(), 0x73, "and the button is refused while it is locked");
+
+  // A press in the middle of a transfer waits for it to end, so the transfer
+  // keeps the length it started with.
+  FreshPad(system, 0);
+  pad.Begin(0);
+  pad.Exchange(0x01);
+  CheckEqual(pad.Exchange(0x42), 0x41, "a poll starts as digital");
+  system->sio().PressAnalogButton(0);
+  pad.Exchange(0x00);   // status
+  pad.Exchange(0x00);   // buttons low
+  pad.Exchange(0x00);   // buttons high - a digital reply ends here
+  CheckEqual(pad.Acknowledged() ? 1 : 0, 0,
+             "the transfer the press arrived in still ends at four bytes");
+  pad.End();
+  CheckEqual(poll_id(), 0x73, "and the next one sees the new mode");
+
+  // A plain digital pad has no ANALOG button to press.
+  system->sio().set_controller_type(0, Sio::kDigital);
+  FreshPad(system, 0);
+  system->sio().PressAnalogButton(0);
+  CheckEqual(poll_id(), 0x41, "a digital pad ignores it");
+  system->sio().set_controller_type(0, Sio::kDualShock);   // leave it as found
+  FreshPad(system, 0);
+}
+
 void TestAxesRoundTrip(System* system) {
   printf("analog axes\n");
   FreshPad(system, 0);
@@ -580,6 +680,127 @@ void TestMultitapMethod2IndependentPlayers(System* system) {
              "player C sees its own buttons, not player A's");
 
   system->sio().set_controller_type(0, Sio::kDualShock);
+}
+
+// Each of a multitap's players can be a different kind of pad (bug 98).
+void TestMultitapPlayerTypes(System* system) {
+  printf("multitap: each player can be a different kind of pad, or nothing\n");
+  system->sio().set_controller_type(0, Sio::kMultitap);
+  system->sio().set_multitap_player_type(0, 0, Sio::kDualShock);
+  system->sio().set_multitap_player_type(0, 1, Sio::kDigital);
+  system->sio().set_multitap_player_type(0, 2, Sio::kNone);
+  system->sio().set_multitap_player_type(0, 3, Sio::kDualAnalog);
+  for (int player = 0; player < 4; ++player)
+    system->sio().set_connected(0, player != 2, player);
+  PadHarness pad(system);
+  uint8_t reply[16] = {};
+  const uint8_t enter[1] = { 0x01 };
+  const uint8_t leave[1] = { 0x00 };
+  const uint8_t go_analog[2] = { 0x01, 0x02 };
+
+  // Player A, a DualShock, takes the configuration handshake.
+  int n = pad.Command(0, 0x43, enter, 1, reply, sizeof(reply), 0x01);
+  Check(n > 1, "player A, a DualShock, takes 0x43");
+  pad.Command(0, 0x43, leave, 1, nullptr, 0, 0x01);
+
+  // Player B, a digital pad, has no configuration mode to enter.
+  n = pad.Command(0, 0x43, enter, 1, reply, sizeof(reply), 0x02);
+  CheckEqual(n, 1, "player B, a digital pad, refuses 0x43 at the command byte");
+  n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x02);
+  CheckEqual(reply[0], 0x41, "and polls as a digital pad");
+
+  // Player C, set to nothing, does not answer at all.
+  n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x03);
+  CheckEqual(n, 0, "player C, set to nothing, gives no /ACK");
+
+  // Player D, a Dual Analog, goes analog like a DualShock.
+  pad.Command(0, 0x43, enter, 1, nullptr, 0, 0x04);
+  pad.Command(0, 0x44, go_analog, 2, nullptr, 0, 0x04);
+  pad.Command(0, 0x43, leave, 1, nullptr, 0, 0x04);
+  n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x04);
+  CheckEqual(reply[0], 0x73, "player D, a Dual Analog, can be put into analog mode");
+
+  // Changing a player's type is a different pad in that socket.
+  system->sio().set_multitap_player_type(0, 3, Sio::kDualShock);
+  system->sio().set_connected(0, true, 3);
+  n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply), 0x04);
+  CheckEqual(reply[0], 0x41, "a new pad in D's socket starts digital again");
+
+  for (int player = 0; player < 4; ++player)
+    system->sio().set_multitap_player_type(0, player, Sio::kDualShock);
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  FreshPad(system, 0);
+}
+
+// Reads one sector over the bus the way a game does: the card address, 52h,
+// the sector number, then 128 bytes of data. Returns how many data bytes came
+// back - zero if nothing answered the address.
+int ReadCardSector(PadHarness& pad, int port, uint8_t address, uint16_t sector,
+                   uint8_t* data) {
+  pad.Begin(port);
+  pad.Exchange(address);
+  if (!pad.Acknowledged()) {
+    pad.End();
+    return 0;
+  }
+  pad.Exchange(0x52);                                   // read
+  pad.Exchange(0x00);                                   // 5Ah
+  pad.Exchange(0x00);                                   // 5Dh
+  pad.Exchange(static_cast<uint8_t>(sector >> 8));
+  pad.Exchange(static_cast<uint8_t>(sector));
+  for (int i = 0; i < 4; ++i)                           // 5Ch 5Dh and the sector echoed
+    pad.Exchange(0x00);
+  int n = 0;
+  for (; n < 128; ++n)
+    data[n] = pad.Exchange(0x00);
+  pad.End();
+  return n;
+}
+
+// A multitap's four card slots (bug 99): 81h-84h reach slot A-D, slot A is the
+// port's own card, and an empty slot does not answer.
+void TestMultitapMemoryCards(System* system) {
+  printf("multitap: 81h-84h reach four separate memory card slots\n");
+  char dir[MAX_PATH] = {};
+  GetTempPathA(MAX_PATH, dir);
+  const char* names[3] = { "sio_test_card_a.mcr", "sio_test_card_b.mcr", "sio_test_card_c.mcr" };
+  for (int slot = 0; slot < 3; ++slot) {
+    const std::string path = std::string(dir) + names[slot];
+    emulation::psx::MC& card = system->mc(0, slot);
+    card.CreateFile(path.c_str());
+    // A sector each card can be told apart by.
+    uint8_t mark[128];
+    memset(mark, 0xA0 + slot, sizeof(mark));
+    card.WriteSector(0x100, mark);
+  }
+  system->mc(0, 3).Eject();   // slot D left empty
+
+  system->sio().set_controller_type(0, Sio::kMultitap);
+  system->sio().set_connected(0, true, 0);
+  PadHarness pad(system);
+  uint8_t data[128] = {};
+
+  CheckEqual(ReadCardSector(pad, 0, 0x81, 0x100, data), 128, "81h reads slot A");
+  CheckEqual(data[0], 0xA0, "and it is the port's own card");
+  CheckEqual(ReadCardSector(pad, 0, 0x82, 0x100, data), 128, "82h reads slot B");
+  CheckEqual(data[0], 0xA1, "a different card");
+  CheckEqual(ReadCardSector(pad, 0, 0x83, 0x100, data), 128, "83h reads slot C");
+  CheckEqual(data[0], 0xA2, "and another");
+  CheckEqual(ReadCardSector(pad, 0, 0x84, 0x100, data), 0,
+             "84h, an empty slot, does not answer");
+
+  // Without a multitap there is one card slot, and only 81h reaches it.
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  FreshPad(system, 0);
+  CheckEqual(ReadCardSector(pad, 0, 0x81, 0x100, data), 128, "a plain port still reads its card");
+  CheckEqual(data[0], 0xA0, "the same card as slot A");
+  CheckEqual(ReadCardSector(pad, 0, 0x82, 0x100, data), 0,
+             "and 82h reaches nothing without a multitap");
+
+  for (int slot = 0; slot < 3; ++slot) {
+    system->mc(0, slot).Eject();
+    DeleteFileA((std::string(dir) + names[slot]).c_str());
+  }
 }
 
 void TestNonMultitapPortIgnoresExtraSelectBytes(System* system) {
@@ -1085,6 +1306,98 @@ void TestSio1SurvivesSaveState(System* system) {
 
 }  // namespace
 
+// A GunCon (5A63h): answers 42h with its ID, three buttons and where it is
+// aimed, and nothing else.
+void TestGunConReply(System* system) {
+  using emulation::psx::Gpu;
+  printf("guncon: id, buttons and position come back in the right shape\n");
+  system->sio().set_controller_type(0, Sio::kGunCon);
+  system->sio().set_connected(0, true);
+  PadHarness pad(system);
+  uint8_t reply[16] = {};
+
+  // A 320-wide picture, the usual NTSC display range: beam on from dot 608 to
+  // 3168 (320 dots of 8 clocks) and lines 16 to 256.
+  Gpu& gpu = system->gpu();
+  gpu.WriteStatus(0x08000001);                          // 320 wide, 240 lines
+  gpu.WriteStatus(0x06000000 | (3168u << 12) | 608u);
+  gpu.WriteStatus(0x07000000 | (256u << 10) | 16u);
+
+  system->sio().set_guncon(0, false, false, false, 0.5f, 0.5f);
+  int n = pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(n, 8, "a GunCon's reply is eight bytes");
+  CheckEqual(reply[0], 0x63, "id low byte");
+  CheckEqual(reply[1], 0x5A, "id high byte");
+  CheckEqual(reply[2], 0xFF, "nothing held: buttons low byte all ones");
+  CheckEqual(reply[3], 0xFF, "and the high byte");
+  // The middle of the picture: dot 608 + 160 x 8 = 1888, in the gun's 8 MHz
+  // counts 1888 / 6.6528 = 283; line 16 + 120 = 136.
+  CheckEqual(reply[4] | (reply[5] << 8), 283, "X is the beam's dot in 8 MHz counts");
+  CheckEqual(reply[6] | (reply[7] << 8), 136, "Y is the beam's line");
+
+  system->sio().set_guncon(0, true, false, false, 0.0f, 0.0f);
+  pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[3], 0xDF, "the trigger is bit 13, active low");
+  CheckEqual(reply[4] | (reply[5] << 8), 91, "the left edge is where the beam turns on (608 / 6.6528)");
+  CheckEqual(reply[6] | (reply[7] << 8), 16, "the top edge is the first line shown");
+
+  system->sio().set_guncon(0, false, true, true, 0.5f, 0.5f);
+  pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[2], 0xF7, "A is bit 3");
+  CheckEqual(reply[3], 0xBF, "B is bit 14");
+
+  // Aimed off the picture, the gun sees no beam and says so the way the real
+  // one does - which a game takes as a shot off the screen, the reload.
+  system->sio().set_guncon(0, true, false, false, 1.2f, 0.5f);
+  pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[4] | (reply[5] << 8), 0x0001, "off the screen: X is 0001h");
+  CheckEqual(reply[6] | (reply[7] << 8), 0x000A, "and Y is 000Ah");
+
+  // Both fields shown at once: 480 rows in the picture, still 240 lines.
+  gpu.WriteStatus(0x08000025);
+  system->sio().set_guncon(0, false, false, false, 0.5f, 0.5f);
+  pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[6] | (reply[7] << 8), 136, "interlaced, the middle is still line 136");
+  gpu.WriteStatus(0x08000001);
+
+  // It has no configuration mode, and drops out at any other command.
+  const uint8_t enter[1] = { 0x01 };
+  n = pad.Command(0, 0x43, enter, 1, reply, sizeof(reply));
+  CheckEqual(n, 1, "43h: no /ACK after the command byte");
+  CheckEqual(reply[0], 0xFF, "and no ID either");
+
+  // A pad on the other port is untouched by any of it.
+  FreshPad(system, 1);
+  n = pad.Command(1, 0x42, nullptr, 0, reply, sizeof(reply));
+  CheckEqual(reply[0], 0x41, "the other port's pad still answers as a pad");
+
+  // Unplugged, nothing answers.
+  system->sio().set_connected(0, false);
+  CheckEqual(pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply)), 0,
+             "an unplugged GunCon gives no /ACK");
+  system->sio().set_connected(0, true);
+}
+
+// The gun's kind is in a state (as the port's controller type); what it is
+// doing is not, and comes from the front end again after a load.
+void TestGunConSurvivesSaveState(System* system) {
+  printf("guncon: a state keeps the port a GunCon\n");
+  system->sio().set_controller_type(0, Sio::kGunCon);
+  system->sio().set_connected(0, true);
+  const std::string path = "Temp\\tools\\guncon_state_test.sav";
+  Check(system->SaveState(path).empty(), "save succeeds");
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  Check(system->LoadState(path).empty(), "load succeeds");
+  CheckEqual(system->sio().controller_type(0), Sio::kGunCon, "port 0 is a GunCon again");
+  PadHarness pad(system);
+  uint8_t reply[16] = {};
+  system->sio().set_guncon(0, true, false, false, 0.5f, 0.5f);
+  CheckEqual(pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply)), 8, "and answers as one");
+  CheckEqual(reply[3], 0xDF, "with the trigger it is told about now");
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  FreshPad(system, 0);
+}
+
 int main() {
   System* system = new System();
   system->InitializeWithoutBios();
@@ -1117,7 +1430,13 @@ int main() {
   TestMultitapSurvivesSaveState(system);
   TestDigitalPadRefusesConfigCommands(system);
   TestEnterConfigReplyCarriesTheButtons(system);
+  TestCapabilityQueries(system);
+  TestAnalogButton(system);
+  TestMultitapPlayerTypes(system);
+  TestMultitapMemoryCards(system);
   TestDualShockRefusesConfigCommandsOutsideConfigMode(system);
+  TestGunConReply(system);
+  TestGunConSurvivesSaveState(system);
 
   TestSio1ResetState(system);
   TestSio1EmptyReceiveFifoReadsOnes(system);

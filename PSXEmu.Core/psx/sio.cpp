@@ -116,6 +116,90 @@ int Sio::Deinitialize() {
 // ride along as one memset-shaped blob the way io.Plain(pad_) used to
 // serialise it - each field is written out explicitly instead, in a fixed
 // order both directions agree on.
+// Whether a multitap acknowledges an address byte selecting `player`. For its
+// own all-players reply (method 1) it answers for itself, whoever is plugged
+// in. Addressing one player directly (method 2) passes the byte through to that
+// player, so an empty socket gives no /ACK - DuckStation's multitap does the
+// same. This used to acknowledge whenever the multitap itself was there, so an
+// unplugged player answered as if present, and a player set to nothing would
+// have answered as a DualShock (bug 98).
+bool Sio::MultitapAnswers(int port, int player) const {
+  const Multitap& tap = static_cast<const Multitap&>(*pad_[port]);
+  if (tap.pending_long_response)
+    return true;
+  return tap.players[player].connected && multitap_type_[port][player] != kNone;
+}
+
+void Sio::set_multitap_player_type(int port, int player, ControllerType type) {
+  if (port < 0 || port >= 2 || player < 0 || player >= 4)
+    return;
+  if (type != kDigital && type != kDualAnalog && type != kDualShock && type != kNone)
+    return;
+  if (multitap_type_[port][player] == type)
+    return;
+  multitap_type_[port][player] = type;
+  // A different pad in that socket forgets what the last one negotiated -
+  // analog mode, configuration mode, the rumble mapping - and an empty one
+  // is simply unplugged.
+  if (pad_[port] != nullptr && pad_[port]->is_multitap())
+    static_cast<Multitap&>(*pad_[port]).players[player] = Pad();
+}
+
+void Sio::PressAnalogButton(int port, int player) {
+  if (port < 0 || port >= 2 || pad_[port] == nullptr)
+    return;
+  const bool multitap = pad_[port]->is_multitap();
+  if (multitap && (player < 0 || player >= 4))
+    return;
+  // Only the two pads with an analog mode have the button. Behind a multitap
+  // it is the player's own type that decides (bug 98).
+  const ControllerType type = multitap ? multitap_type_[port][player] : controller_type_[port];
+  if (type != kDualShock && type != kDualAnalog)
+    return;
+
+  const int slot = multitap ? player : 0;
+  if (target_ != kTargetNone && selected_slot() == port) {
+    analog_press_pending_[port][slot] = true;
+    return;
+  }
+  Pad* pad = ResolvePad(port, player);
+  if (pad != nullptr)
+    ToggleAnalogMode(*pad);
+}
+
+// What pressing the button does. DuckStation's behaviour, with one part left
+// out on purpose: once a pad has been in configuration mode DuckStation also
+// reports 00h instead of 5Ah as the reply's second byte until the game next
+// enters configuration mode, to tell it the mode changed - and then needs its
+// game database to stop that from wedging games like Tomb Raider, whose loader
+// enters configuration mode once and never again. There is no such database
+// here. A game still sees the change: the pad's ID, and the length of its
+// reply, both change on the very next poll.
+void Sio::ToggleAnalogMode(Pad& pad) {
+  if (!pad.connected || pad.analog_locked)
+    return;
+  pad.analog_mode = !pad.analog_mode;
+  // A new mode starts with no motors mapped, as DuckStation does, rather than
+  // leaving one running that the game configured for the other mode.
+  for (uint8_t& motor : pad.rumble_map)
+    motor = 0xFF;
+  pad.motor_small = 0;
+  pad.motor_large = 0;
+}
+
+void Sio::ApplyPendingAnalogPresses() {
+  for (int port = 0; port < 2; ++port) {
+    for (int slot = 0; slot < 4; ++slot) {
+      if (!analog_press_pending_[port][slot])
+        continue;
+      analog_press_pending_[port][slot] = false;
+      Pad* pad = ResolvePad(port, slot);
+      if (pad != nullptr)
+        ToggleAnalogMode(*pad);
+    }
+  }
+}
+
 void Sio::Pad::Serialise(StateIO& io) {
   io.Plain(connected);
   io.Plain(buttons);
@@ -295,22 +379,42 @@ uint8_t Sio::Exchange(uint8_t data) {
     // psx-spx: they select its Players B/C/D the same way 0x01 selects A -
     // so an ordinary pad's port behaves byte-for-byte as it always has.
     target_ = kTargetNone;
+    // A new exchange begins here, so whatever the last one held off is safe now.
+    ApplyPendingAnalogPresses();
     if (data == 0x01) {
       if (controller_type_[port] == kMouse) {
         if (mouse_[port].connected)
           target_ = kTargetMouse;
+      } else if (controller_type_[port] == kGunCon) {
+        if (pad_[port]->connected)
+          target_ = kTargetGunCon;
       } else if (pad_[port]->connected) {
         if (pad_[port]->is_multitap()) {
-          target_ = kTargetMultitap;
-          static_cast<Multitap&>(*pad_[port]).selected_player = 0;
+          if (MultitapAnswers(port, 0)) {
+            target_ = kTargetMultitap;
+            static_cast<Multitap&>(*pad_[port]).selected_player = 0;
+          }
         } else {
           target_ = kTargetPad;
         }
       }
     } else if (data >= 0x02 && data <= 0x04 && pad_[port]->is_multitap() &&
                pad_[port]->connected) {
-      target_ = kTargetMultitap;
-      static_cast<Multitap&>(*pad_[port]).selected_player = data - 0x01;
+      if (MultitapAnswers(port, data - 0x01)) {
+        target_ = kTargetMultitap;
+        static_cast<Multitap&>(*pad_[port]).selected_player = data - 0x01;
+      }
+    } else if (data >= 0x81 && data <= 0x84 && pad_[port]->is_multitap() &&
+               pad_[port]->connected) {
+      // Behind a multitap, 81h-84h pick card slot A-D (bug 99). Which one is
+      // kept in selected_player for the length of the card transfer - the field
+      // a state already saves, so a transfer caught mid-way resumes on the
+      // right card without a change to the state format.
+      const int slot = data - 0x81;
+      if (system().mc(port, slot).connected()) {
+        target_ = kTargetMemoryCard;
+        static_cast<Multitap&>(*pad_[port]).selected_player = slot;
+      }
     } else if (data == 0x81 && system().mc(port).connected()) {
       target_ = kTargetMemoryCard;
     }
@@ -321,11 +425,18 @@ uint8_t Sio::Exchange(uint8_t data) {
   }
 
   if (target_ == kTargetMemoryCard) {
-    return ExchangeMemoryCard(data, system().mc(port));
+    const int card_slot = pad_[port]->is_multitap()
+                              ? static_cast<Multitap&>(*pad_[port]).selected_player
+                              : 0;
+    return ExchangeMemoryCard(data, system().mc(port, card_slot));
   }
 
   if (target_ == kTargetMouse) {
     return ExchangeMouse(data, port);
+  }
+
+  if (target_ == kTargetGunCon) {
+    return ExchangeGunCon(data, port);
   }
 
   if (target_ == kTargetMultitap || target_ == kTargetMultitapAll) {
@@ -542,21 +653,49 @@ uint8_t Sio::ExchangeController(uint8_t data, Pad& pad, ControllerType type,
       else if (payload_index == 4) out = 0x01;
       break;
 
+    // Three capability queries, each asked a question by the first byte the
+    // host sends - which arrives with payload byte 0 and decides bytes 2-5.
+    // It is held in the exchange's scratch byte until then; nothing else
+    // uses scratch during these commands. The replies are psx-spx's and
+    // DuckStation's, for the DualShock (SCPH-1200). They used to be zeros,
+    // with a guess for 0x4C (bug 96).
     case 0x46:
+      // "Get variable response A" - query 0 and query 1 have their own
+      // answers; any other query gets zeros.
+      if (payload_index == 0)
+        x.scratch = data;
+      if (payload_index >= 2 && payload_index <= 5) {
+        static const uint8_t kQuery0[4] = { 0x01, 0x02, 0x00, 0x0A };
+        static const uint8_t kQuery1[4] = { 0x01, 0x01, 0x01, 0x14 };
+        if (x.scratch == 0x00)
+          out = kQuery0[payload_index - 2];
+        else if (x.scratch == 0x01)
+          out = kQuery1[payload_index - 2];
+      }
+      break;
+
     case 0x47:
-      // Capability queries close to nothing exercises. Acknowledged with
-      // the right shape so a game that tries them does not stall waiting
-      // for a reply that never comes; the exact bytes have not been
-      // checked against real hardware and default to zero rather than a
-      // guess.
-      out = 0x00;
+      // "Get variable response B" - only query 0 means anything.
+      if (payload_index == 0)
+        x.scratch = data;
+      if (x.scratch == 0x00) {
+        if (payload_index == 2) out = 0x02;
+        else if (payload_index == 4) out = 0x01;
+      }
       break;
 
     case 0x4C:
-      // Which kind of DualShock this is - 0x04 here, since pressure-
-      // sensitive buttons (which would make it 0x07, a DualShock 2) are
-      // not implemented.
-      out = (payload_index == 3) ? 0x04 : 0x00;
+      // "Get variable response C" - byte 3 answers query 0 with 04h and
+      // query 1 with 07h. This used to answer 04h whatever was asked, and
+      // read 07h as meaning "a DualShock 2 with pressure-sensitive buttons".
+      // It does not: it is only the answer to the second query. This pad is
+      // a DualShock either way, which is what PlayStation software expects.
+      if (payload_index == 0)
+        x.scratch = data;
+      if (payload_index == 3) {
+        if (x.scratch == 0x00) out = 0x04;
+        else if (x.scratch == 0x01) out = 0x07;
+      }
       break;
 
     case 0x4D:
@@ -653,7 +792,8 @@ uint8_t Sio::ExchangeMultitap(uint8_t data, int port) {
       ++transfer_step_;
       return 0x80;   // ID low - 5A80h says "multitap".
     }
-    return ExchangeBusPad(data, tap.players[tap.selected_player], kDualShock);
+    return ExchangeBusPad(data, tap.players[tap.selected_player],
+                         multitap_type_[port][tap.selected_player]);
   }
 
   if (step == 2) {
@@ -677,7 +817,8 @@ uint8_t Sio::ExchangeMultitap(uint8_t data, int port) {
       return 0x5A;   // ID high, same byte every device on this bus uses.
     }
     const uint8_t out =
-        ExchangeBusPad(data, tap.players[tap.selected_player], kDualShock);
+        ExchangeBusPad(data, tap.players[tap.selected_player],
+                         multitap_type_[port][tap.selected_player]);
     tap.pending_long_response = next_wants_long;
     return out;
   }
@@ -688,8 +829,9 @@ uint8_t Sio::ExchangeMultitap(uint8_t data, int port) {
 
     Pad& player = tap.players[tap.selected_player];
     uint8_t reply = 0xFF;
-    if (!tap.block_done && player.connected) {
-      reply = ExchangeController(data, player, kDualShock, tap.block);
+    const ControllerType type = multitap_type_[port][tap.selected_player];
+    if (!tap.block_done && player.connected && type != kNone) {
+      reply = ExchangeController(data, player, type, tap.block);
       tap.block_done = !tap.block.acknowledged;
     } else {
       tap.block_done = true;
@@ -710,7 +852,8 @@ uint8_t Sio::ExchangeMultitap(uint8_t data, int port) {
 
   // Method 2, continuing: still a pure passthrough to whichever player was
   // selected.
-  return ExchangeBusPad(data, tap.players[tap.selected_player], kDualShock);
+  return ExchangeBusPad(data, tap.players[tap.selected_player],
+                         multitap_type_[port][tap.selected_player]);
 }
 
 // The byte psx-spx calls the mouse's "switches": bits 8-9 of the halfword
@@ -786,6 +929,77 @@ uint8_t Sio::ExchangeMouse(uint8_t data, int slot) {
   ++transfer_step_;
   acknowledge_ = (transfer_step_ <= kTotalLength);
   return out;
+}
+
+// The GunCon side of an exchange, from the second byte on. It answers 42h and
+// nothing else - no configuration mode, no 43h, no rumble - with its ID
+// (5A63h), its buttons, and where it saw the beam: eight bytes, the same shape
+// DuckStation and psx-spx give. The buttons are a pad's active-low halfword
+// with only three bits in use - trigger in bit 13, A in bit 3, B in bit 14.
+uint8_t Sio::ExchangeGunCon(uint8_t data, int port) {
+  const GunCon& gun = guncon_[port];
+  const int step = transfer_step_;
+  const int kTotalLength = 8;
+
+  if (step == 1) {
+    // Any other command is not one it has, and it drops out there.
+    const bool poll = (data == 0x42);
+    acknowledge_ = poll;
+    ++transfer_step_;
+    return poll ? 0x63 : 0xFF;   // ID low - 5A63h says "GunCon"
+  }
+  if (step > kTotalLength) {
+    acknowledge_ = false;
+    return 0xFF;
+  }
+
+  uint16_t buttons = 0xFFFF;
+  if (gun.trigger) buttons &= ~(1u << 13);
+  if (gun.a) buttons &= ~(1u << 3);
+  if (gun.b) buttons &= ~(1u << 14);
+  uint16_t x = 0;
+  uint16_t y = 0;
+  GunConPosition(port, &x, &y);
+
+  uint8_t out = 0xFF;
+  switch (step) {
+    case 2: out = 0x5A; break;   // ID high
+    case 3: out = static_cast<uint8_t>(buttons); break;
+    case 4: out = static_cast<uint8_t>(buttons >> 8); break;
+    case 5: out = static_cast<uint8_t>(x); break;
+    case 6: out = static_cast<uint8_t>(x >> 8); break;
+    case 7: out = static_cast<uint8_t>(y); break;
+    case 8: out = static_cast<uint8_t>(y >> 8); break;
+    default: break;
+  }
+  ++transfer_step_;
+  acknowledge_ = (transfer_step_ <= kTotalLength);
+  return out;
+}
+
+// X is how long after the line began the gun saw the beam, counted by its own
+// 8 MHz clock; Y is which line. Off the screen it sees no beam, and says so the
+// way the real gun does, X=0001h Y=000Ah - which a game reads as a shot off
+// the edge, the reload.
+//
+// Worked out afresh for each byte rather than latched: the front end only
+// moves the gun between frames, and a reply is over in microseconds, so every
+// byte of one reply sees the same aim - and there is nothing to save in a state.
+void Sio::GunConPosition(int port, uint16_t* x, uint16_t* y) {
+  const GunCon& gun = guncon_[port];
+  uint32_t dot = 0;
+  uint32_t line = 0;
+  if (!system().gpu().BeamPositionAt(gun.x, gun.y, &dot, &line)) {
+    *x = 0x0001;
+    *y = 0x000A;
+    return;
+  }
+  // The GPU's clock is 33.8688 MHz x 11/7 = 53.2224 MHz, 6.6528 of its clocks
+  // to one of the gun's.
+  const double gpu_clock = 33868800.0 * Gpu::kGpuClockNumerator /
+                           Gpu::kGpuClockDenominator;
+  *x = static_cast<uint16_t>(static_cast<double>(dot) * 8000000.0 / gpu_clock);
+  *y = static_cast<uint16_t>(line);
 }
 
 uint8_t Sio::Read08(uint32_t address) {

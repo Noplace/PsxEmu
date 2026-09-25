@@ -146,6 +146,7 @@ namespace psxemu {
         void SetSkipBiosIntro(bool on);
         void SetRecompiler(bool on);
         void SetGpuThread(bool on);
+        void PressAnalogButton(int port);
         void SetGpuTransferTiming(bool on);
         void SetICacheTiming(bool on);
         void SetAudioBackend(const std::string& key);
@@ -163,8 +164,12 @@ namespace psxemu {
         // change to one of them. Both run on the machine's thread and answer by posting the
         // cards back to the editor.
         void RefreshMemoryCardEditor();
-        void EditMemoryCard(int slot, MemoryCardEditor::Edit edit);
-        void EjectMemoryCard(int slot);
+        // `card` is port * 4 + slot, the numbering the editor uses: 0 and 4 are the ports' own
+        // cards, and the rest the ones a multitap adds (bug 99).
+        void EditMemoryCard(int card, MemoryCardEditor::Edit edit);
+        void InsertMemoryCard(int card);
+        void NewMemoryCard(int card);
+        void EjectMemoryCard(int card);
 
         // Emulation > Debugger. On the machine's thread: a snapshot of the debugger around
         // `center` (DebuggerWindow::kAtPc for the pc), posted to the window. `from_halt` says the
@@ -195,6 +200,8 @@ namespace psxemu {
         void UpdateControllerTypeMenu();
         void UpdateInputSourceMenu();
         void UpdateMultitapSourceMenu();
+        void UpdateMultitapTypeMenu();
+        void SetMultitapType(int port, int player, const std::string& key);
         void UpdateFrameLimiterMenu();
         void UpdateSpeedMenu();
         void UpdateCdTimingMenu();
@@ -223,10 +230,13 @@ namespace psxemu {
         void SetUserPaused(bool paused);
 
         // Gives the disc just mounted its own pair of memory cards, in
-        // memcards_root\<disc>\card1.mcr and card2.mcr. Runs on the machine's thread, from the
+        // memcards_root\<disc>\card1.mcr and card2.mcr - and, behind a port with a multitap, the
+        // three more it adds, card1b.mcr to card1d.mcr. Runs on the machine's thread, from the
         // boot paths - and on this one at startup, before the threads exist.
         void LoadOrCreateMemoryCardsForDisc(emulation::psx::System& system,
                                             const std::string& disc_path);
+        void LoadOrCreateMemoryCard(emulation::psx::System& system, int port, int slot);
+        void SyncMultitapCards(emulation::psx::System& system, bool new_disc);
 
         // While a menu - or a dialog opened from one - is up. Pauses the machine only if
         // EmuConfig::pause_in_menus asks for it; counted, since a dialog can open over a menu.
@@ -299,6 +309,8 @@ namespace psxemu {
         // Per-user data, under Documents\My Games\PSXEmu.
         std::string data_root_;
         std::string memcards_root_;
+        // The folder the current disc's cards are in; empty until a disc boots. Machine thread.
+        std::string card_dir_;
         std::string savestates_root_;
         std::string bios_root_;
         std::string settings_path_;
@@ -329,6 +341,9 @@ namespace psxemu {
         // Frames each port has left to sit empty before the controller just chosen for it is
         // plugged in - see SetControllerType. Zero is the steady state.
         std::array<int, 2> replug_frames_ = { 0, 0 };
+        // Whether each pad's ANALOG key was held last frame, so a press is acted on once rather
+        // than every frame it is held. The machine's thread, like the replug counters.
+        bool analog_held_[2][4] = {};
         std::array<std::string, 2> plugged_type_ = { "", "" };
 
         // Emulation > BIOS Console. The window is the UI thread's; the session number is the

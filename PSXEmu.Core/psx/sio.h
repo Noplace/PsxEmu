@@ -104,8 +104,12 @@ class Sio : public Component {
   //   kMultitap   - the SCPH-1070 multiplayer adaptor (ID 5A80h): four
   //                 pads (Players A-D) behind one port - see class
   //                 Multitap and ExchangeMultitap.
+  //   kGunCon     - Namco's GunCon light gun (NPC-103, ID 5A63h): a trigger,
+  //                 A and B, and where on the screen it points - see struct
+  //                 GunCon and ExchangeGunCon.
+  // Saved in a state as its number, so a new kind only ever goes on the end.
   enum ControllerType { kDigital, kDualAnalog, kDualShock, kMouse, kNone,
-                        kMultitap };
+                        kMultitap, kGunCon };
 
   Sio();
   ~Sio();
@@ -164,6 +168,15 @@ class Sio : public Component {
     mouse_[slot].accum_dy += dy;
   }
 
+  // A light gun's buttons, and where it is aimed: `x` and `y` are fractions
+  // of the picture's width and height (0,0 its top left corner), anything
+  // outside 0-1 off the edge of the screen - which is how a GunCon game is
+  // told to reload. Harmless on a port not holding a GunCon.
+  void set_guncon(int port, bool trigger, bool a, bool b, float x, float y) {
+    if (port < 0 || port >= 2) return;
+    guncon_[port] = GunCon{ trigger, a, b, x, y };
+  }
+
   // A pad that is freshly connected forgets whatever a previous one had
   // negotiated - defined out of line because that is more than a field
   // assignment now. `player` - see set_buttons.
@@ -179,6 +192,18 @@ class Sio : public Component {
   // do not each have their own type yet (see class Multitap), so there is
   // no `player` parameter here.
   void set_controller_type(int port, ControllerType type);
+
+  // What each of a Multitap's four players is (bug 98): a digital pad, a Dual
+  // Analog, a DualShock, or nothing. Anything else is refused - a mouse or a
+  // second multitap behind a multitap is not something this emulates. A change
+  // is a different pad in that socket, so the player starts fresh, the way a
+  // port's own type change does. Not saved in a state: it is the front end's
+  // standing choice, and the front end sets it again every frame.
+  void set_multitap_player_type(int port, int player, ControllerType type);
+  ControllerType multitap_player_type(int port, int player) const {
+    return (port >= 0 && port < 2 && player >= 0 && player < 4)
+               ? multitap_type_[port][player] : kDualShock;
+  }
   ControllerType controller_type(int port) const {
     return (port >= 0 && port < 2) ? controller_type_[port] : kDualShock;
   }
@@ -203,9 +228,20 @@ class Sio : public Component {
     if (large_motor != nullptr) *large_motor = pad->motor_large;
   }
 
+  // The ANALOG button on a Dual Analog or DualShock pad (bug 97): flips the
+  // pad between digital and analog mode, which changes its ID (5A41h/5A73h)
+  // and the length of its reply - the way the player, not the game, chooses.
+  // Refused while the game has locked the mode (command 0x44), exactly as the
+  // real button is. A press that lands mid-transfer waits for the transfer to
+  // end, so an exchange never changes length under itself. Nothing on a
+  // digital pad, a mouse or an empty port: none of them has the button.
+  // `player` - see set_buttons.
+  void PressAnalogButton(int port, int player = 0);
+
   void Serialise(StateIO& io);
 
  private:
+
   // How far one command exchange with one pad has got: which byte it is on
   // (1 is the command byte), the command it is carrying out, the one byte it
   // may have to carry from where it arrives to where it can be acted on (see
@@ -283,12 +319,9 @@ class Sio : public Component {
 
     Pad players[4];   // A, B, C, D
 
-    // v1: every player behaves as a full DualShock unconditionally -
-    // ExchangeMultitap passes kDualShock for all four rather than reading
-    // a per-player type, because there isn't one yet. Adding
-    // `ControllerType player_type[4]` later, gated the same way
-    // ExchangeController already gates a port's own type, is a small
-    // addition to this class, not a redesign.
+    // What each player is lives in Sio::multitap_type_, not here: this object
+    // is rebuilt from the port's type when a state loads, and the per-player
+    // choice is the front end's, not part of the machine's state (bug 98).
 
     // Method 1's "the next transfer should be the long all-players
     // response" latch - psx-spx: setting it does NOT change the current
@@ -351,7 +384,19 @@ class Sio : public Component {
   // kTargetMultitapAll is set only once it has committed to the long
   // all-players response - see ExchangeMultitap.
   enum Target { kTargetNone, kTargetPad, kTargetMemoryCard, kTargetMouse,
-               kTargetMultitap, kTargetMultitapAll };
+               kTargetMultitap, kTargetMultitapAll, kTargetGunCon };
+
+  // What a GunCon is doing, from the front end every frame. Not saved in a
+  // state: like a pad's buttons it is whatever the player is doing now, and
+  // the gun keeps nothing else - its connection is the port's Pad, and how
+  // far into a reply it is, transfer_step_.
+  struct GunCon {
+    bool trigger = false;
+    bool a = false;
+    bool b = false;
+    float x = -1.0f;   // off the screen until told otherwise
+    float y = -1.0f;
+  };
 
   // Polymorphic so a port can hold either an ordinary Pad or a Multitap -
   // see the class comment on Pad. Never null after Initialize(); changing
@@ -359,7 +404,11 @@ class Sio : public Component {
   // the same "fresh (un)plug" idea set_controller_type already documents.
   std::unique_ptr<Pad> pad_[2];
   Mouse mouse_[2];
+  GunCon guncon_[2];
   ControllerType controller_type_[2] = { kDualShock, kDualShock };
+  ControllerType multitap_type_[2][4] = {
+      { kDualShock, kDualShock, kDualShock, kDualShock },
+      { kDualShock, kDualShock, kDualShock, kDualShock } };
 
   uint16_t control_;
   uint16_t mode_;
@@ -380,6 +429,15 @@ class Sio : public Component {
   int32_t ack_pulse_timer_;
 
   int selected_slot() const { return (control_ & 0x2000) ? 1 : 0; }
+
+  // An ANALOG press waiting for the transfer it arrived during to end - see
+  // PressAnalogButton. Not saved: a state taken in the few microseconds
+  // between a press and the end of the transfer it arrived in would lose
+  // that one press, which is not worth a change to the state format.
+  bool analog_press_pending_[2][4] = {};
+  void ToggleAnalogMode(Pad& pad);
+  bool MultitapAnswers(int port, int player) const;
+  void ApplyPendingAnalogPresses();
 
   // Resolves which Pad a setter/getter should actually touch: the port's
   // own pad normally, or one of a Multitap's four players when it holds
@@ -424,6 +482,9 @@ class Sio : public Component {
   // reply shares no structure with a pad's: one fixed length, no command
   // byte ever changes it, see ExchangeMouse.
   uint8_t ExchangeMouse(uint8_t data, int slot);
+  uint8_t ExchangeGunCon(uint8_t data, int port);
+  // The gun's two position fields, X and Y, as it would count them now.
+  void GunConPosition(int port, uint16_t* x, uint16_t* y);
   uint8_t MouseSwitchesByte(const Mouse& mouse) const;
   // Sends as much of an accumulated motion value as one signed byte can
   // carry and keeps whatever does not fit for the next poll, rather than

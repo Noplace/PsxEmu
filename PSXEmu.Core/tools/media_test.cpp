@@ -1596,6 +1596,33 @@ void TestSettingsFile(const std::string& directory) {
           "pausing in menus and showing timings survive the round trip");
   }
 
+  // What each multitap player is (bug 98), and the GunCon as a port's type:
+  // every player a DualShock by default, each choice kept, and a name the
+  // file does not know left at the default rather than taken on trust.
+  {
+    EmuConfig config;
+    Check(config.multitap_player_type[1][3] == "dualshock",
+          "every multitap player is a DualShock by default");
+    config.multitap_player_type[0][1] = "digital";
+    config.multitap_player_type[1][3] = "none";
+    config.controller_type[1] = "guncon";
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.multitap_player_type[0][1] == "digital" &&
+              loaded.multitap_player_type[1][3] == "none" &&
+              loaded.multitap_player_type[0][0] == "dualshock",
+          "each multitap player's type survives the round trip, and only its own");
+    Check(loaded.controller_type[1] == "guncon", "a GunCon port survives the round trip");
+
+    out.SetString("multitap_port1_player_c_type", "light_saber");
+    EmuConfig rejected;
+    emulation::psx::LoadConfig(out, rejected);
+    Check(rejected.multitap_player_type[0][2] == "dualshock",
+          "an unknown multitap player type is ignored");
+  }
+
   // The BIOS console window: closed by default, and remembered open.
   {
     EmuConfig config;

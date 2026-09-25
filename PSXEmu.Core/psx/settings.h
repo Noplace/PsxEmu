@@ -170,6 +170,10 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
                               "_player_" + std::string(1, char('a' + player)) +
                               "_source";
       f.SetString(key.c_str(), c.multitap_player_source[port][player]);
+      const std::string type_key = "multitap_port" + std::to_string(port + 1) +
+                                   "_player_" + std::string(1, char('a' + player)) +
+                                   "_type";
+      f.SetString(type_key.c_str(), c.multitap_player_type[port][player]);
     }
   }
   f.SetBool("frame_limiter", c.frame_limiter);
@@ -237,6 +241,13 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
           f.GetString(key.c_str(), c.multitap_player_source[port][player]);
       if (IsValidChoice(source, EmuConfig::kValidInputSources))
         c.multitap_player_source[port][player] = source;
+      const std::string type_key = "multitap_port" + std::to_string(port + 1) +
+                                   "_player_" + std::string(1, char('a' + player)) +
+                                   "_type";
+      const std::string type =
+          f.GetString(type_key.c_str(), c.multitap_player_type[port][player]);
+      if (IsValidChoice(type, EmuConfig::kValidMultitapPlayerTypes))
+        c.multitap_player_type[port][player] = type;
     }
   }
 

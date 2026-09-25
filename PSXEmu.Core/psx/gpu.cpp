@@ -19,6 +19,7 @@
 #include "psx/psx.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace emulation {
     namespace psx {
@@ -1667,6 +1668,25 @@ namespace emulation {
             if (lines > kVramHeight)
                 lines = kVramHeight;
             display_height_ = lines;
+        }
+
+        // The inverse of what UpdateDisplaySize and ResolveFramebuffer do: the frame starts
+        // where the beam turns on, X1 (rounded down to a whole dot, as the GPU paints it) and Y1,
+        // and each of its pixels is one dot clock wide and one line tall - two frame rows to a
+        // line when both fields are shown at once. The same arithmetic as DuckStation's light
+        // guns, so a game calibrated against one lines up here too.
+        bool Gpu::BeamPositionAt(float x, float y, uint32_t* dot, uint32_t* line) const {
+            if (!(x >= 0.0f && x < 1.0f && y >= 0.0f && y < 1.0f))
+                return false;
+            const uint32_t divider = dot_clock_divider();
+            const uint32_t start = (horizontal_display_start_ / divider) * divider;
+            const float column = x * static_cast<float>(display_width_);
+            const float row = y * static_cast<float>(display_height_);
+            const bool both_fields = status_.vres && status_.vertical_interlace;
+            *dot = start + static_cast<uint32_t>(std::lround(column * static_cast<float>(divider)));
+            const uint32_t frame_row = static_cast<uint32_t>(std::lround(row));
+            *line = vertical_display_start_ + (both_fields ? frame_row / 2 : frame_row);
+            return true;
         }
 
         void Gpu::ResolveFramebuffer() {

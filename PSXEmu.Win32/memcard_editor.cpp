@@ -40,13 +40,14 @@ namespace psxemu {
         const int kIdSlotBase = 1000;
         const int kIdsPerSlot = 16;
         const int kIdList = 15;   // within a slot's block
+        const int kIdSelector = 13;
         const int kIdShowDeleted = 2000;
         const int kIdRefresh = 2001;
 
         const int kIconPixels = 32;   // the card's 16x16, doubled
 
         const wchar_t* const kButtonLabels[] = {
-            L"Delete", L"Undelete", L"Export...", L"Import...", L"Copy to Slot %d", L"Format...",
+            L"Delete", L"Undelete", L"Export...", L"Import...", L"Copy to %s", L"Format...",
         };
 
         std::wstring Widen(const std::string& text) {
@@ -109,6 +110,16 @@ namespace psxemu {
             return read == bytes->size();
         }
 
+        // What the selector calls a card: its port, and which socket - A is the port's own.
+        std::wstring CardName(int card) {
+            const wchar_t letter = static_cast<wchar_t>(L'A' + card % 4);
+            std::wstring name = L"Port " + std::to_wstring(card / 4 + 1) + L", Card ";
+            name += letter;
+            if (card % 4 != 0)
+                name += L" (multitap)";
+            return name;
+        }
+
     }   // namespace
 
     MemoryCardEditor::~MemoryCardEditor() {
@@ -168,6 +179,14 @@ namespace psxemu {
         for (int slot = 0; slot < kSlots; ++slot) {
             Pane& pane = panes_[slot];
             const int base = kIdSlotBase + slot * kIdsPerSlot;
+            // Left pane Port 1's own card, right pane Port 2's, as this has always opened.
+            pane.which = (slot == 0) ? 0 : 4;
+            pane.selector = make(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                                 base + kIdSelector);
+            for (int card = 0; card < kCards; ++card)
+                SendMessageW(pane.selector, CB_ADDSTRING, 0,
+                             reinterpret_cast<LPARAM>(CardName(card).c_str()));
+            SendMessageW(pane.selector, CB_SETCURSEL, pane.which, 0);
             pane.label = make(L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS, base + 14);
             pane.list = make(WC_LISTVIEWW, L"",
                              LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | WS_BORDER | WS_TABSTOP,
@@ -190,7 +209,7 @@ namespace psxemu {
 
             for (int b = 0; b < kButtonCount; ++b) {
                 wchar_t label[64];
-                swprintf_s(label, kButtonLabels[b], 2 - slot);   // "Copy to Slot 2" from slot 1
+                swprintf_s(label, kButtonLabels[b], slot == 0 ? L"Right" : L"Left");
                 pane.buttons[b] = make(L"BUTTON", label, BS_PUSHBUTTON | WS_TABSTOP, base + b);
             }
         }
@@ -221,10 +240,11 @@ namespace psxemu {
         return window_ != nullptr && IsWindowVisible(window_);
     }
 
-    void MemoryCardEditor::SetCards(const std::array<Snapshot, 2>& cards) {
+    void MemoryCardEditor::SetCards(const std::array<Snapshot, kCards>& cards) {
+        cards_ = cards;
         for (int slot = 0; slot < kSlots; ++slot) {
             Pane& pane = panes_[slot];
-            const Snapshot& card = cards[slot];
+            const Snapshot& card = cards_[pane.which];
             if (card.inserted == pane.card.inserted && card.filename == pane.card.filename &&
                 card.image == pane.card.image)
                 continue;
@@ -247,7 +267,8 @@ namespace psxemu {
         ImageList_RemoveAll(pane.icons);
         pane.saves.clear();
 
-        std::wstring label = L"Slot " + std::to_wstring(slot + 1) + L": ";
+        // The selector already says which card this is; the label says what is in it.
+        std::wstring label;
         const bool readable = pane.card.inserted &&
                               pane.card.image.size() == mcdir::kCardSize;
         if (!readable) {
@@ -317,7 +338,10 @@ namespace psxemu {
         for (int slot = 0; slot < kSlots; ++slot) {
             const Pane& pane = panes_[slot];
             const bool inserted = pane.card.inserted;
-            const bool other_inserted = panes_[1 - slot].card.inserted;
+            // Copying needs a card on the other side, and a different one: both panes can show
+            // the same card.
+            const bool other_inserted = panes_[1 - slot].card.inserted &&
+                                        panes_[1 - slot].which != pane.which;
             const mcdir::Save* save = Selected(slot);
             EnableWindow(pane.buttons[kDelete], save != nullptr && !save->deleted);
             EnableWindow(pane.buttons[kUndelete], save != nullptr && save->deleted);
@@ -340,7 +364,7 @@ namespace psxemu {
                     return;
                 const int block = save->first_block;
                 const bool undo = (button == kUndelete);
-                host_.edit(slot, [block, undo](uint8_t* card, std::string* e) {
+                host_.edit(pane.which, [block, undo](uint8_t* card, std::string* e) {
                     return undo ? mcdir::Undelete(card, block, e) : mcdir::Delete(card, block, e);
                 });
                 break;
@@ -371,7 +395,7 @@ namespace psxemu {
                     ShowWarning(window_, L"Could not read that file.");
                     return;
                 }
-                host_.edit(slot, [mcs](uint8_t* card, std::string* e) {
+                host_.edit(pane.which, [mcs](uint8_t* card, std::string* e) {
                     return mcdir::Import(card, mcs, e);
                 });
                 break;
@@ -385,7 +409,7 @@ namespace psxemu {
                     ShowWarning(window_, Widen(error).c_str());
                     return;
                 }
-                host_.edit(1 - slot, [mcs](uint8_t* card, std::string* e) {
+                host_.edit(panes_[1 - slot].which, [mcs](uint8_t* card, std::string* e) {
                     return mcdir::Import(card, mcs, e);
                 });
                 break;
@@ -393,12 +417,12 @@ namespace psxemu {
 
             case kFormat: {
                 const std::wstring question =
-                    L"Format the card in slot " + std::to_wstring(slot + 1) +
+                    L"Format " + CardName(pane.which) +
                     L"?\n\nEvery save on it is erased, deleted ones included.";
                 if (MessageBoxW(window_, question.c_str(), kWindowTitle,
                                 MB_OKCANCEL | MB_ICONWARNING | MB_DEFBUTTON2) != IDOK)
                     return;
-                host_.edit(slot, [](uint8_t* card, std::string*) {
+                host_.edit(pane.which, [](uint8_t* card, std::string*) {
                     mcdir::Format(card);
                     return true;
                 });
@@ -413,7 +437,7 @@ namespace psxemu {
     void MemoryCardEditor::Layout(int width, int height) {
         const int margin = 10;
         const int bar = 26;           // the top row: show-deleted and refresh
-        const int label_height = 20;
+        const int label_height = 26;   // the card selector sits on this row
         const int button_height = 28;
         const int pane_width = (width - margin * 3) / 2;
 
@@ -427,7 +451,10 @@ namespace psxemu {
         for (int slot = 0; slot < kSlots; ++slot) {
             const Pane& pane = panes_[slot];
             const int x = margin + slot * (pane_width + margin);
-            MoveWindow(pane.label, x, top, pane_width, label_height, TRUE);
+            const int selector_width = 190;
+            MoveWindow(pane.selector, x, top - 2, selector_width, 220, TRUE);
+            MoveWindow(pane.label, x + selector_width + 8, top + 1, pane_width - selector_width - 8,
+                       label_height, TRUE);
             MoveWindow(pane.list, x, list_top, pane_width, list_height > 50 ? list_height : 50,
                        TRUE);
             const int gap = 4;
@@ -488,8 +515,20 @@ namespace psxemu {
                 } else if (id >= kIdSlotBase && id < kIdSlotBase + kSlots * kIdsPerSlot) {
                     const int slot = (id - kIdSlotBase) / kIdsPerSlot;
                     const int button = (id - kIdSlotBase) % kIdsPerSlot;
-                    if (button < kButtonCount)
+                    if (button == kIdSelector) {
+                        if (HIWORD(wparam) == CBN_SELCHANGE) {
+                            Pane& pane = self->panes_[slot];
+                            const LRESULT pick = SendMessageW(pane.selector, CB_GETCURSEL, 0, 0);
+                            if (pick >= 0 && pick < kCards) {
+                                pane.which = static_cast<int>(pick);
+                                pane.card = self->cards_[pane.which];
+                                self->Fill(slot);
+                                self->UpdateButtons();
+                            }
+                        }
+                    } else if (button < kButtonCount) {
                         self->OnButton(slot, static_cast<Button>(button));
+                    }
                 }
                 return 0;
             }

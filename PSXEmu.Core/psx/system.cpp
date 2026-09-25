@@ -70,6 +70,9 @@ int System::InitializeWithoutBios() {
   spu_.set_system(this);
   mc_[0].set_system(this);
   mc_[1].set_system(this);
+  for (auto& port : multitap_mc_)
+    for (MC& card : port)
+      card.set_system(this);
   kernel_.set_system(this);
   gte_.set_system(this);
 
@@ -81,6 +84,9 @@ int System::InitializeWithoutBios() {
   spu_.Initialize();
   mc_[0].Initialize();
   mc_[1].Initialize();
+  for (auto& port : multitap_mc_)
+    for (MC& card : port)
+      card.Initialize();
   kernel_.Initialize();
   debugger_.Reset();
   gte_.Initialize();
@@ -101,6 +107,9 @@ int System::Deinitialize() {
   //kernel_.De
   mc_[0].Deinitialize();
   mc_[1].Deinitialize();
+  for (auto& port : multitap_mc_)
+    for (MC& card : port)
+      card.Deinitialize();
   spu_.Deinitialize();
   gpu_.Deinitialize();
   cpu_.Deinitialize();

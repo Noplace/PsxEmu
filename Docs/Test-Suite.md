@@ -133,7 +133,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 271 checks, 0 failures.**
+**Current: 275 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -244,14 +244,15 @@ interface written for the test: SIO0 (`psx/sio.h`), which is the controller and
 memory card port, and SIO1 (`psx/sio1.h`), the serial socket on the back. No
 BIOS, no window.
 
-**Current: 146 checks, 0 failures.**
+**Current: 203 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
 | the pad | a digital pad's four-byte poll and its buttons; an empty slot never acknowledging; the acknowledge line as a pulse that releases itself (bug 46) |
-| the DualShock handshake | 0x43/0x44/0x45 gated on configuration mode, entering analog and locking it, the status query, the axes, both rumble mappings, a reconnect forgetting the negotiation, and each controller type refusing what it does not have |
+| the DualShock handshake | 0x43/0x44/0x45 gated on configuration mode, entering analog and locking it, the status query, the axes, both rumble mappings, a reconnect forgetting the negotiation, and each controller type refusing what it does not have; every byte of the 46h/47h/4Ch capability replies for both queries (bug 96); the ANALOG button flipping the mode, refused by a digital pad and by a locked mode, and held until an exchange in progress is over (bug 97) |
 | the mouse | its id, switches and axes, and movement draining across as many polls as it takes |
-| the multitap | both addressing methods, per-player state, the escalation rules, and a round trip through a save state |
+| the multitap | both addressing methods, per-player state, the escalation rules, and a round trip through a save state; each player a different type, and an empty socket giving no /ACK (bug 98); 81h-84h reaching four different cards, an empty card socket silent, and 82h reaching nothing without a multitap (bug 99) |
+| the GunCon | its eight-byte reply, each button bit, X and Y at the middle and corner of a 320x240 picture and the middle of an interlaced one, the off-screen reply, refusing 43h, an unplugged gun silent, and a save state keeping the port a GunCon (bug 100) |
 | `sio1` | the serial port with nothing plugged into it: the reset state, an empty receive FIFO reading as the idle line, the registers keeping what is written, the status being read-only, the two strobes not sticking, byte/halfword/word access reaching the right halves, transmitting only when enabled and raising IRQ8 when armed, acknowledging clearing the latch, the baud-rate timer counting down and reloading, the console redirect on and off, and a save-state round trip |
 
 ## debug_test
@@ -556,14 +557,15 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 63 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
-| `timer_test` | 70 | | `media_test` | 271 |
-| `sio_test` | 146 | | `spu_test` | 108 |
+| `timer_test` | 70 | | `media_test` | 275 |
+| `sio_test` | 203 | | `spu_test` | 108 |
 | `mc_test` | 77 | | `debug_test` | 174 |
 
-**1,397 checks, 0 failures**, all ten green. Each harness's own section above
+**1,458 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
-`pause_in_menus` and `show_timings` settings arrived: every setting in
-`EmuConfig` round-trips through the file, and those are settings.)
+`pause_in_menus` and `show_timings` settings arrived, and four more with the
+multitap players' types and the GunCon: every setting in `EmuConfig`
+round-trips through the file, and those are settings.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12

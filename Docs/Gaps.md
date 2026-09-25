@@ -441,20 +441,21 @@ imports `.mcs`, copies between slots and formats (bug 69,
 
 ### Controllers
 
-Digital pad, DualShock (with the real analog/rumble negotiation), mouse,
-multitap and "nothing plugged in" are implemented and covered by `sio_test`.
-Missing or unproven:
+Digital pad, Dual Analog, DualShock (with the real analog/rumble negotiation,
+its capability replies, and an ANALOG button), mouse, multitap (a type per
+player, and four memory card slots), GunCon and "nothing plugged in" are
+implemented and covered by `sio_test` - see Bugs-Found 96-100. Missing or
+unproven:
 
-- **No lightgun.** It needs the GPU's beam position latched on the trigger.
-- **No ANALOG button.** Mode switching is only ever the game's doing; a disc
-  that expects the player to press it finds nothing does.
-- **The multitap's four memory card slots** (`0x81`-`0x84`). The core side is
-  small; the Win32 side hand-duplicates two card slots and would need
-  rebuilding for eight.
-- **Every multitap player is a DualShock**; there is a per-player source but
-  no per-player type.
-- **`0x46`/`0x47`** answer with the right shape and zero content, and `0x4C`
-  reports a DualShock, not a DualShock 2 (no pressure-sensitive buttons).
+- **The GunCon has never met a GunCon game.** Its reply is DuckStation's byte
+  for byte, and where it says the beam is uses DuckStation's arithmetic, but no
+  disc on the share supports it. Point Blank or Time Crisis would settle it.
+- **No Konami Justifier** (Hyper Blaster). It works differently - the GPU raises
+  IRQ10 as the beam passes the gun. Area 51, the one light-gun disc on the
+  share, is a Justifier game, though it also takes the mouse.
+- **The ANALOG button leaves out DuckStation's 00h status byte**, which tells a
+  game its mode changed behind its back and needs a game database to be safe
+  (bug 97). A game that only notices through that byte will not notice.
 - **The mouse has never met a mouse-aware game.** Its reply follows psx-spx,
   and how much a hand movement is worth is now a choice rather than the
   guessed divisor it was (bug 82): Input > Mouse > Motion offers the desktop

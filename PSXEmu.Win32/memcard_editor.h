@@ -53,7 +53,7 @@ namespace psxemu {
 
         struct Host {
             std::function<void()> refresh;               // ask for fresh snapshots
-            std::function<void(int slot, Edit edit)> edit;
+            std::function<void(int card, Edit edit)> edit;   // card = port * 4 + slot
             std::function<void()> on_closed;
         };
 
@@ -67,15 +67,23 @@ namespace psxemu {
         void Show(bool on);
         bool visible() const;
 
-        // Fresh snapshots of both slots. Redraws a slot only if its image changed, so the
+        // Every card slot there is (bug 99): two ports of four, a port's own card first and
+        // then the three sockets a multitap adds - card = port * 4 + slot. Each pane shows the
+        // one its selector picks, which starts as Port 1 and Port 2's own cards, the two this
+        // editor always showed.
+        static const int kCards = 8;
+
+        // Fresh snapshots of every slot. Redraws a pane only if its card changed, so the
         // once-a-second refresh does not flicker or lose the selection.
-        void SetCards(const std::array<Snapshot, 2>& cards);
+        void SetCards(const std::array<Snapshot, kCards>& cards);
 
      private:
         static const int kSlots = 2;
         enum Button { kDelete, kUndelete, kExport, kImport, kCopy, kFormat, kButtonCount };
 
         struct Pane {
+            HWND selector = nullptr;   // which of the eight cards this pane shows
+            int which = 0;
             HWND label = nullptr;
             HWND list = nullptr;
             HWND buttons[kButtonCount] = {};
@@ -97,6 +105,7 @@ namespace psxemu {
         HWND refresh_ = nullptr;
         HFONT font_ = nullptr;
         Pane panes_[kSlots];
+        std::array<Snapshot, kCards> cards_;
         Host host_;
     };
 

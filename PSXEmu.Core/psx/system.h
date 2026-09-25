@@ -101,6 +101,12 @@ class System {
   Spu& spu() { return spu_; };
   IOInterface& io() { return io_; };
   MC& mc(int slot) { return mc_[slot]; }
+  // A port's four memory card slots (bug 99). Slot 0 is the port's own card - the one mc(port)
+  // has always meant, so a card and its saves stay where they were - and 1-3 are the extra
+  // sockets a multitap adds, which the card bus reaches as 82h-84h. A slot with no file loaded
+  // is an empty socket.
+  static const int kCardSlotsPerPort = 4;
+  MC& mc(int port, int slot) { return slot == 0 ? mc_[port] : multitap_mc_[port][slot - 1]; }
   Kernel& kernel() { return kernel_; };
   // Breakpoints and stepping (psx/debugger.h). After StepInstruction, debugger().halted() says
   // the step was a halt - nothing ran - and whoever is running the machine stops and does not
@@ -219,6 +225,7 @@ class System {
   Spu spu_;
   IOInterface io_;
   MC mc_[2];
+  MC multitap_mc_[2][3];
   Kernel kernel_;
   Debugger debugger_{this};
   GTE gte_;

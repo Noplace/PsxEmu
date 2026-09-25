@@ -34,10 +34,18 @@ struct PadReading {
 struct HostInput {
   static const int kPads = 4;   // XInput's slots, "Gamepad 1".."Gamepad 4"
 
-  uint16_t keyboard = 0;        // Sio::k* bitmask of the bound keys held
+  uint32_t keyboard = 0;        // Sio::k* bitmask of the bound keys held, and the
+                                // ANALOG key in bit 16 (the front end's kAnalogKey)
   PadReading pads[kPads];
   bool mouse_left = false;
   bool mouse_right = false;
+  bool mouse_middle = false;
+  bool mouse_back = false;      // the side button nearer the wrist, XBUTTON1
+  // Where the Windows cursor is over the picture, as fractions of its width
+  // and height - (0,0) its top left corner, anything outside 0-1 off it, over
+  // the letterbox bars or outside the window. For a light gun.
+  float pointer_x = -1.0f;
+  float pointer_y = -1.0f;
   int32_t mouse_dx = 0;         // motion not yet handed to the machine
   int32_t mouse_dy = 0;
   bool focused = false;         // whether the emulator's window has focus

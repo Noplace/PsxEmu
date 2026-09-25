@@ -158,6 +158,15 @@ class Gpu : public GpuCore {
   // paints, which is what decides the visible width.
   uint32_t horizontal_display_start() const { return horizontal_display_start_; }
   uint32_t horizontal_display_end() const { return horizontal_display_end_; }
+
+  // Where the beam is when it paints a point of the picture - `x` and `y` as
+  // fractions of the frame's width and height, the frame framebuffer() hands
+  // out and the front end shows. `dot` is in GPU clocks into the scanline, the
+  // unit horizontal_display_start() is in, and `line` counts from the top of
+  // the field. A light gun reports this: it sees the beam go past the point it
+  // is aimed at, and a game turns that back into a place on the screen. False
+  // for a point off the picture, where a gun sees no beam at all.
+  bool BeamPositionAt(float x, float y, uint32_t* dot, uint32_t* line) const;
   uint32_t status_raw() const { return status_.raw; }
 
   // The GPU runs at 11/7 of the CPU clock, and a scanline is this many GPU

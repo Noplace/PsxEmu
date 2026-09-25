@@ -78,7 +78,7 @@ namespace psxemu {
         kCommandGpuTransferTiming,
         kCommandICacheTiming,
         kCommandControllerTypeFirst,
-        kCommandControllerTypeLast = kCommandControllerTypeFirst + 11,   // 2 ports x 6 types
+        kCommandControllerTypeLast = kCommandControllerTypeFirst + 13,   // 2 ports x 7 types
         kCommandInputSourceFirst,
         kCommandInputSourceLast = kCommandInputSourceFirst + 9,   // 2 ports x 5 sources
         // Player A-D source for whichever port(s) are set to Multitap - greyed out otherwise. A
@@ -86,6 +86,8 @@ namespace psxemu {
         // its four players' sources are ticked/dispatched independently.
         kCommandMultitapSourceFirst,
         kCommandMultitapSourceLast = kCommandMultitapSourceFirst + 39,   // 2 ports x 4 players x 5 sources
+        kCommandMultitapTypeFirst,
+        kCommandMultitapTypeLast = kCommandMultitapTypeFirst + 31,   // 2 ports x 4 players x 4 types
         // The BIOS images found in the data folder. Unlike every other run here, what these ids
         // mean is not a table in this file but whatever is on disk when the menu was last filled -
         // see App::RefreshBiosMenu, which holds the list the nth id resolves through.
@@ -112,6 +114,12 @@ namespace psxemu {
         kCommandRecentDiscLast = kCommandRecentDiscFirst + 7,   // kMaxRecentDiscs
         kCommandClearRecentDiscs,
         kCommandKeyBindings,
+        kCommandAnalogButtonPort1,
+        kCommandAnalogButtonPort2,
+        // Insert, New and Eject for the cards a multitap adds, B-D behind each port (bug 99) -
+        // greyed out for a port with no multitap. Card A is the port's own, kCommand*Slot1/2.
+        kCommandMultitapCardFirst,
+        kCommandMultitapCardLast = kCommandMultitapCardFirst + 17,   // 2 ports x 3 cards x 3 actions
         kCommandDebugger,
         kCommandExit,
     };
@@ -208,8 +216,8 @@ namespace psxemu {
         { "superxbr",    L"Super-&xBR (3 pass)" },
     };
 
-    // What a port can hold - the three real PS1 controllers, a mouse, a multitap, or nothing at
-    // all - in the order EmuConfig::kValidControllerTypes and Sio::ControllerType both list them.
+    // What a port can hold - the three real PS1 controllers, a mouse, a multitap, a GunCon, or
+    // nothing at all - in the order EmuConfig::kValidControllerTypes and Sio::ControllerType both list them.
     struct ControllerTypeChoice { const char* key; const wchar_t* label; };
 
     inline constexpr ControllerTypeChoice kControllerTypeChoices[] = {
@@ -219,12 +227,21 @@ namespace psxemu {
         { "mouse",       L"&Mouse" },
         { "none",        L"&None (Disconnected)" },
         { "multitap",    L"Multi&tap (4 players)" },
+        { "guncon",      L"&GunCon (light gun)" },
     };
 
     // The sources a PSX port - or, for a Multitap, one of its four players - can be mapped to, in
     // the order EmuConfig::kValidInputSources lists them. Front-end-only - Sio has no notion of
     // where a port's buttons come from, only what they are.
     struct InputSourceChoice { const char* key; const wchar_t* label; };
+
+    // What a multitap's player can be (bug 98), in EmuConfig::kValidMultitapPlayerTypes order.
+    inline constexpr ControllerTypeChoice kMultitapPlayerTypeChoices[] = {
+        { "digital",     L"&Original (Digital)" },
+        { "dual_analog", L"&Dual Analog (no rumble)" },
+        { "dualshock",   L"Dual&Shock" },
+        { "none",        L"&None (Disconnected)" },
+    };
 
     inline constexpr InputSourceChoice kInputSourceChoices[] = {
         { "keyboard", L"&Keyboard" },
@@ -308,9 +325,14 @@ namespace psxemu {
     // is stored under in psxemu.ini, and what Settings > Input > Keyboard Bindings calls it. The
     // keys themselves are the person's to change - see keyboard.h - and this is only where they
     // start.
+    // The ANALOG button is not one of the pad's sixteen button bits: pressing it changes the
+    // pad's mode rather than being reported to the game. So it rides above them, in bit 16, and
+    // App::ApplyInput takes it back out (bug 97).
+    inline constexpr uint32_t kAnalogKey = 1u << 16;
+
     struct KeyBinding {
         int key;
-        uint16_t button;
+        uint32_t button;   // a Sio::k* bit, or kAnalogKey
         const char* setting;
         const wchar_t* label;
     };
@@ -331,6 +353,7 @@ namespace psxemu {
         { '2',       emulation::psx::Sio::kR2,       "key_r2",       L"R2" },
         { VK_RETURN, emulation::psx::Sio::kStart,    "key_start",    L"Start" },
         { VK_SHIFT,  emulation::psx::Sio::kSelect,   "key_select",   L"Select" },
+        { 'E',       kAnalogKey,                     "key_analog",   L"ANALOG" },
     };
     // clang-format on
     inline constexpr int kPadButtons = static_cast<int>(std::size(kKeyBindings));

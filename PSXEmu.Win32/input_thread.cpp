@@ -19,6 +19,7 @@
 #include "input_thread.h"
 
 #include "keyboard.h"
+#include "tools/letterbox.h"
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
@@ -34,6 +35,26 @@ namespace psxemu {
         // microseconds. What it buys is that the reading the machine takes is never more than a
         // millisecond old, and that a slow device cannot make a frame late.
         const int kPollIntervalMs = 1;
+
+        // Where the cursor is over the picture, as fractions of it. The presenters both draw the
+        // frame into a 4:3 letterbox of the client area (d3d11_presenter.cpp,
+        // d3d12_graphics_engine.cpp), so this works it out the same way rather than asking the
+        // video thread. Nothing here sends a message, so it is safe from this thread.
+        void PointerOverPicture(HWND window, float* x, float* y) {
+            *x = -1.0f;
+            *y = -1.0f;
+            POINT cursor = {};
+            RECT client = {};
+            if (!GetCursorPos(&cursor) || !ScreenToClient(window, &cursor) ||
+                !GetClientRect(window, &client) || client.right <= 0 || client.bottom <= 0)
+                return;
+            const LetterboxRect picture = ComputeLetterboxRect(client.right, client.bottom,
+                                                               4.0f / 3.0f);
+            if (picture.width <= 0.0f || picture.height <= 0.0f)
+                return;
+            *x = (static_cast<float>(cursor.x) + 0.5f - picture.x) / picture.width;
+            *y = (static_cast<float>(cursor.y) + 0.5f - picture.y) / picture.height;
+        }
 
     }   // namespace
 
@@ -133,6 +154,9 @@ namespace psxemu {
             const Mouse::State mouse = mouse_.Poll(reading.focused);
             reading.mouse_left = mouse.left;
             reading.mouse_right = mouse.right;
+            reading.mouse_middle = mouse.middle;
+            reading.mouse_back = mouse.back;
+            PointerOverPicture(main_window_, &reading.pointer_x, &reading.pointer_y);
             if (reading.focused) {
                 reading.mouse_dx = mouse.dx;
                 reading.mouse_dy = mouse.dy;

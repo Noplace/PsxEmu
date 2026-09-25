@@ -6005,3 +6005,214 @@ for the rasteriser. The tests now read the same way, through a `VramView` whose
 
 `gpu_test` 63, `sio_test` 146 and `timer_test` 70, all green with the rasteriser
 threaded, which is now the path they exercise by default.
+
+## 96. The 46h, 47h and 4Ch replies were the right shape and empty
+
+Gaps.md: "`0x46`/`0x47` answer with the right shape and zero content, and `0x4C`
+reports a DualShock, not a DualShock 2."
+
+Each of the three is a question with a parameter: the first byte the host sends
+after the command picks what is being asked, and bytes 2-5 of the payload are
+the answer. The pad answered every question with zeros, except 4Ch, which
+answered 04h in byte 3 whatever it was asked. A game that asks its pad which
+actuators and modes it has asks through these, and was told it has none.
+
+The replies now follow DuckStation's DualShock (`analog_controller.cpp`):
+
+| Command | Query 0 | Query 1 |
+|---|---|---|
+| 46h | `01 02 00 0A` | `01 01 01 14` |
+| 47h | `02 00 01 00` | zeros |
+| 4Ch | byte 3 = `04` | byte 3 = `07` |
+
+The Gaps entry, and the comment it came from, had 4Ch wrong: `07` is not "a
+DualShock 2 with pressure-sensitive buttons". It is the answer to the second
+query. The replies above are the whole of a DualShock's, and nothing on the
+PlayStation reads pressure.
+
+The parameter is held in the exchange's scratch byte from payload 0 to the end
+of the reply. That byte is already in a save state, so the state format did not
+change.
+
+`sio_test` checks every reply byte for both queries of all three commands. A
+control build with the old zeros fails them.
+
+### What it changes in games
+
+This is the one controller change that moves games with nothing new selected.
+Four of the twelve regression discs - Ace Combat 3, Bomberman Party Edition,
+FF8 and Legend of Mana - run a different number of instructions. Rebuilding with
+only these replies taken back out puts all four back exactly, and a second run
+of the old build repeats itself exactly, so it is these replies and nothing
+else.
+
+What moved is libpad setting up the DualShock. Counting pad commands over 2,000
+frames:
+
+| | 45h | 46h | 47h | 4Ch | 44h (set mode) |
+|---|---|---|---|---|---|
+| Legend of Mana, zeros | 2 | 2 | 3 | 6 | 0 |
+| Legend of Mana, real replies | 6 | 8 | 10 | 18 | 1 |
+| Ace Combat 3, zeros | 2 | 2 | 3 | 6 | 1 |
+| Ace Combat 3, real replies | 6 | 8 | 10 | 18 | 2 |
+
+Told the pad had no actuators and no modes, libpad gave up partway. Legend of
+Mana never set its pad's mode at all. With the real replies it runs the whole
+sequence, as it would on a console, and the extra exchanges shift the game's
+timing slightly.
+
+Every picture sampled at frames 1000, 2000 and 3000 is identical but one: Ace
+Combat 3's title screen at frame 2000, where 96 pixels differ. They are the
+pulsing marker beside PRESS START BUTTON, caught at another point of its pulse.
+
+## 97. There was no ANALOG button
+
+A game could put a DualShock into analog mode, but the player could not. The
+front end now has the button: Input > Press ANALOG Button > Port 1 / Port 2, and
+a bindable key (`key_analog`, E by default) that presses it on whichever pad the
+keyboard drives, a multitap's players included.
+
+What a press does is DuckStation's behaviour. Only a DualShock or Dual Analog
+has the button. A game that has locked the mode (44h with the lock set) keeps
+it, and so does an unplugged pad. The mode flips, and any motors the game had
+mapped for the old mode are dropped. The pad's ID and the length of its reply
+change on the next poll, and that is how a game sees the change.
+
+**One part of DuckStation's behaviour is left out on purpose.** After a pad has
+been in configuration mode, DuckStation reports 00h instead of 5Ah as the
+second reply byte until the game enters configuration mode again. That tells the
+game the mode changed behind its back. It then needs its game database to keep
+that from wedging games like Tomb Raider, whose loader enters configuration mode
+once and never again. This emulator has no game database, so the 00h is not
+sent.
+
+**A press waits for the exchange in progress.** The front end presses between
+frames, but the bus can be mid-reply. A mode that changed between the ID byte
+and the axes would give a reply with a digital ID and analog length. So a press
+that arrives while that port is being talked to is held until the next exchange
+starts. The flag for this is not saved in a state: a state holds the port as it
+was, and a press is only ever a frame old.
+
+## 98. Every multitap player was a DualShock, and an empty socket answered
+
+Gaps.md: "Every multitap player is a DualShock; there is a per-player source but
+no per-player type."
+
+Each player can now be a digital pad, a Dual Analog, a DualShock or nothing:
+Input > Multitap Port N > Player A-D Type, saved as
+`multitap_portN_player_X_type`. Changing a player's type is a different pad in
+that socket, so it forgets what the last one negotiated.
+
+That exposed a second fault. **Addressing a player directly (02h-04h, or 01h
+for player A) was acknowledged whenever the multitap itself was there**. An
+unplugged player answered as if present, and a player set to nothing would
+have answered as a DualShock. The multitap passes that byte through to the
+socket, so an empty socket gives no /ACK. DuckStation's multitap does the same,
+and so does this one now. The all-players reply (method 1) still answers for
+itself, whoever is plugged in.
+
+The per-player types are set by the front end every frame, like the port's own
+type, and are not in a save state. Nothing about the state format changed.
+
+## 99. The multitap's four memory card slots
+
+Gaps.md: "The multitap's four memory card slots (`0x81`-`0x84`)."
+
+A multitap has a card socket for each player. Behind one, 81h-84h reach card
+A-D, where card A is the port's own card: the one that has always been
+`card1.mcr`, so nobody's saves move. An empty socket does not answer, and
+without a multitap only 81h means anything, as before.
+
+Which card a transfer is talking to is kept in the multitap's
+`selected_player`. That field is already in a save state, so a transfer caught
+mid-sector resumes on the right card and the state format did not change. Card
+contents are files and were never in states.
+
+The front end:
+
+- **Each disc gets cards B-D too**, `card1b.mcr` to `card1d.mcr` beside
+  `card1.mcr`, for a port set to multitap. They load when the disc boots, and
+  when a port is switched to multitap mid-game. The switch only fills empty
+  sockets, since a card already there may be one the player put in by hand.
+  Behind a port with no multitap they are ejected when the disc changes, so a
+  multitap plugged in later never finds the last game's cards.
+- **File > Memory Cards > Slot N** gains Multitap Card B/C/D, each with Insert,
+  New and Eject. They are greyed out for a port with no multitap.
+- **The Memory Card Editor keeps its two panes**, and each now has a selector
+  over all eight cards. The selectors start on Port 1's and Port 2's own cards,
+  which is the view it always had. Copy goes to whichever card the other pane
+  shows, and is disabled when both panes show the same card.
+
+`sio_test` reads a marked sector through 81h, 82h and 83h and gets three
+different cards, gets no answer from an empty 84h, and gets no answer from 82h
+on a port without a multitap.
+
+## 100. A GunCon light gun
+
+Gaps.md: "No lightgun."
+
+Input > Port N > GunCon (light gun), `controller_type_portN = guncon`. This is
+Namco's GunCon (NPC-103, ID 5A63h), the light gun most PlayStation shooting
+games support. Konami's Justifier, which works through the GPU's IRQ10 instead,
+is not implemented.
+
+**The protocol.** The GunCon answers 42h and nothing else. There is no
+configuration mode, no 43h and no rumble. It replies with its ID, a 16-bit
+active-low button word (trigger bit 13, A bit 3, B bit 14), then X and Y. It
+gives the same eight bytes as DuckStation.
+
+**X and Y are where the gun saw the beam**, not a place on the screen. Y is the
+scanline, and X is how long after the line began, counted by the gun's own
+8 MHz clock. `Gpu::BeamPositionAt` inverts what the display does: the frame
+starts where the beam turns on, at GP1(06)'s X1 (rounded down to a whole dot)
+and GP1(07)'s Y1, and each pixel is one dot clock wide and one line tall. When
+both fields are shown at once, two frame rows make one line. X is that dot
+divided by 6.6528 (53.2224 MHz / 8 MHz). This is DuckStation's arithmetic, so a
+game calibrated against DuckStation lines up the same here. Aimed off the
+picture, the gun sees no beam and reports X=0001h, Y=000Ah, which games read as
+a shot off the screen: the reload.
+
+**The front end aims with the Windows cursor**, which becomes a crosshair over
+the window. The input thread works out where the cursor sits in the 4:3
+letterboxed picture, the same rectangle both presenters draw into. Left button
+is the trigger. Right button fires off the screen, so reloading doesn't mean
+dragging the cursor off the picture. Middle button is A and the back side
+button is B, and the port's own input source gives them too: Cross for A, Circle
+for B (DuckStation's choice). Clicks only count while the window has focus.
+
+**Nothing about the gun is in a save state beyond what already was.** Its
+connection is the port's pad, and how far into a reply it is lives in
+`transfer_step_`. Where it is aimed and what is held come from the front end
+every frame. `ControllerType` and the exchange target each gained a value at the
+end. Both are saved as numbers, so every existing state loads unchanged.
+
+`sio_test` checks the reply's shape, each button bit, X and Y at the middle and
+the top-left corner of a 320x240 NTSC picture, the off-screen reply, Y in an
+interlaced picture, refusing 43h, and a save-state round trip. A control build
+that did not halve interlaced rows reported line 256 for the middle of the
+picture instead of 136, and failed the check.
+
+**Not tested in a game.** None of the discs on the share support the GunCon.
+Area 51, the only light-gun title there, is a Justifier game.
+
+### Verified, 2026-09-24 (96-100)
+
+- **Every harness green**: `sio_test` 203 (146 before this work), `media_test`
+  275 (271; the multitap player types and the GunCon type round-trip through
+  the settings file, and an unknown player type is refused), and the other
+  fifteen unchanged.
+- **BIOS boot identical**: 93,049,815 instructions and `c7c8db90c5984798`
+  over 400 frames.
+- **Twelve discs, old build against new**: eight identical to the instruction.
+  The other four are bug 96's, above.
+- **The multitap cards in the GUI**: booting a disc with port 1 on a multitap
+  created `card1b.mcr` to `card1d.mcr` beside `card1.mcr` and `card2.mcr`, and
+  switching port 2 to a multitap mid-game created `card2b.mcr` to `card2d.mcr`.
+  The B-D menu items were greyed out for the port without one. The editor's
+  selectors listed all eight cards and opened on Port 1 A and Port 2 A. Copy was
+  disabled with both panes on the same card, and Eject emptied the pane showing
+  that card.
+- **The GunCon in the GUI**: with port 1 set to GunCon from the menu, PadTest
+  1.1 reported PORT 1 as "Not supported", a device it does not know that does
+  answer. With port 1 set to none it reported "Not connected". The frames came
+  from a GUI save state loaded into `boot_runner`.

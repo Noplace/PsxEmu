@@ -86,6 +86,12 @@ namespace psxemu {
     void TickInputSources(HWND window, const std::array<std::string, 2>& sources,
                           const std::array<std::string, 2>& controller_types);
 
+    // The kind of pad each of a Multitap's four players is, and the Memory Cards items for the
+    // three cards a multitap adds - both greyed out for a port with no multitap.
+    void TickMultitapTypes(
+        HWND window, const std::array<std::array<std::string, 4>, 2>& types,
+        const std::array<std::string, 2>& controller_types);
+
     // The source each of a Multitap's four players comes from, for whichever port(s) are actually
     // set to Sio::kMultitap - greyed out for a port that is not, the same way TickInputSources
     // greys out a port's own source for a type that does not use one.

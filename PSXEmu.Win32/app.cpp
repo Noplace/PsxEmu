@@ -90,8 +90,8 @@ namespace psxemu {
         {
             MemoryCardEditor::Host host;
             host.refresh = [this] { RefreshMemoryCardEditor(); };
-            host.edit = [this](int slot, MemoryCardEditor::Edit edit) {
-                EditMemoryCard(slot, std::move(edit));
+            host.edit = [this](int card, MemoryCardEditor::Edit edit) {
+                EditMemoryCard(card, std::move(edit));
             };
             card_editor_.Create(instance, window_, std::move(host));
         }
@@ -196,6 +196,7 @@ namespace psxemu {
         UpdateControllerTypeMenu();
         UpdateInputSourceMenu();
         UpdateMultitapSourceMenu();
+        UpdateMultitapTypeMenu();
         UpdateFrameLimiterMenu();
         UpdateSpeedMenu();
         UpdateCdTimingMenu();
@@ -531,6 +532,7 @@ namespace psxemu {
         struct SourceReading {
             bool connected = true;   // the keyboard is always "there"
             uint16_t buttons = 0;
+            bool analog = false;     // the ANALOG key is held
             uint8_t left_x = 0x80, left_y = 0x80, right_x = 0x80, right_y = 0x80;
             int rumble_target = -1;   // which XInput slot feels this reading's motors
         };
@@ -539,7 +541,8 @@ namespace psxemu {
             int pad = -1;
             switch (source) {
                 case InputSource::kKeyboard:
-                    r.buttons = input.focused ? input.keyboard : 0;
+                    r.buttons = input.focused ? static_cast<uint16_t>(input.keyboard) : 0;
+                    r.analog = input.focused && (input.keyboard & kAnalogKey) != 0;
                     return r;
                 case InputSource::kGamepad1: pad = 0; break;
                 case InputSource::kGamepad2: pad = 1; break;
@@ -559,6 +562,14 @@ namespace psxemu {
         // Rumble is an output, not an input, so it is not gated on focus - the machine keeps
         // running in the background, and a real console would not silence a controller's motor
         // because another window has focus. The input thread applies what is left here.
+        // The ANALOG key acts when it goes down, not for as long as it is held - one press, one
+        // change of mode, the same as the real button.
+        auto apply_analog = [this, &system](int port, int player, const SourceReading& r) {
+            if (r.analog && !analog_held_[port][player])
+                system.sio().PressAnalogButton(port, player);
+            analog_held_[port][player] = r.analog;
+        };
+
         auto apply_rumble = [this, &system](int port, int player, const SourceReading& r) {
             if (r.rumble_target < 0)
                 return;
@@ -585,16 +596,45 @@ namespace psxemu {
                 continue;
             }
 
+            // A GunCon aims with the Windows cursor: where it sits over the picture is where the
+            // gun points. The left button is the trigger. The right one fires it off the edge of the
+            // screen - how a GunCon game is told to reload, and otherwise a matter of dragging the
+            // cursor off the picture first. A is the middle button, B the back side button, and
+            // the port's own source gives them too - Cross for A and Circle for B, DuckStation's
+            // choice. Clicks only count while the window has focus: the click that gives it focus
+            // is a shot, the ones on some other window are not.
+            if (controller_type[port] == Sio::kGunCon) {
+                const SourceReading r = read_source(ParseInputSource(config.input_source[port]));
+                const bool focused = input.focused;
+                const bool offscreen = focused && input.mouse_right;
+                const bool trigger = focused && (input.mouse_left || input.mouse_right);
+                const bool a = (focused && input.mouse_middle) || (r.buttons & Sio::kCross) != 0;
+                const bool b = (focused && input.mouse_back) || (r.buttons & Sio::kCircle) != 0;
+                system.sio().set_connected(port, true);
+                system.sio().set_guncon(port, trigger, a, b, offscreen ? -1.0f : input.pointer_x,
+                                        offscreen ? -1.0f : input.pointer_y);
+                continue;
+            }
+
             // A Multitap sources each of its four players independently; otherwise this is exactly
             // the single-pad path below, run four times.
             if (controller_type[port] == Sio::kMultitap) {
                 for (int player = 0; player < 4; ++player) {
+                    // What this player is, every frame, the way the port's own type is set above.
+                    const Sio::ControllerType player_type =
+                        ParseControllerType(config.multitap_player_type[port][player]);
+                    system.sio().set_multitap_player_type(port, player, player_type);
+                    if (player_type == Sio::kNone) {
+                        system.sio().set_connected(port, false, player);
+                        continue;
+                    }
                     const InputSource source =
                         ParseInputSource(config.multitap_player_source[port][player]);
                     const SourceReading r = read_source(source);
                     system.sio().set_connected(port, r.connected, player);
                     system.sio().set_buttons(port, r.buttons, player);
                     system.sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y, player);
+                    apply_analog(port, player, r);
                     apply_rumble(port, player, r);
                 }
                 continue;
@@ -605,6 +645,7 @@ namespace psxemu {
             system.sio().set_connected(port, r.connected);
             system.sio().set_buttons(port, r.buttons);
             system.sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y);
+            apply_analog(port, /*player=*/0, r);
             apply_rumble(port, /*player=*/0, r);
         }
     }
@@ -708,8 +749,12 @@ namespace psxemu {
         // (or, for kMultitap, its four players' source items) should be greyed out.
         UpdateInputSourceMenu();
         UpdateMultitapSourceMenu();
+        UpdateMultitapTypeMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
+        // A port just given a multitap gets the disc's cards B-D in its three new sockets.
+        if (key == "multitap")
+            PostToMachine([this](Machine& machine) { SyncMultitapCards(machine.system(), false); });
         // Whether any port is a mouse decides whether the cursor may be captured.
         SendMouseSettingsToInput();
     }
@@ -725,6 +770,19 @@ namespace psxemu {
         SendConfigToMachine();
     }
 
+    void App::UpdateMultitapTypeMenu() {
+        TickMultitapTypes(window_, config_.multitap_player_type, config_.controller_type);
+    }
+
+    void App::SetMultitapType(int port, int player, const std::string& key) {
+        if (port < 0 || port >= 2 || player < 0 || player >= 4)
+            return;
+        config_.multitap_player_type[port][player] = key;
+        UpdateMultitapTypeMenu();
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+    }
+
     void App::UpdateMultitapSourceMenu() {
         TickMultitapSources(window_, config_.multitap_player_source, config_.controller_type);
     }
@@ -734,6 +792,7 @@ namespace psxemu {
             return;
         config_.multitap_player_source[port][player] = key;
         UpdateMultitapSourceMenu();
+        UpdateMultitapTypeMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
     }
@@ -832,6 +891,12 @@ namespace psxemu {
         SendConfigToMachine();
     }
 
+    // The ANALOG button from the menu, for a pad the keyboard is not driving - an XInput pad has
+    // no spare button to put it on. On a multitap port it presses player A's (bug 97).
+    void App::PressAnalogButton(int port) {
+        PostToMachine([port](Machine& machine) { machine.system().sio().PressAnalogButton(port); });
+    }
+
     void App::UpdatePauseInMenusMenu() { TickPauseInMenus(window_, config_.pause_in_menus); }
 
     void App::SetPauseInMenus(bool on) {
@@ -926,11 +991,13 @@ namespace psxemu {
 
     namespace {
 
-        // On the machine's thread: copies of both cards, for the editor to read on its own.
-        std::array<MemoryCardEditor::Snapshot, 2> SnapshotCards(System& system) {
-            std::array<MemoryCardEditor::Snapshot, 2> cards;
-            for (int slot = 0; slot < 2; ++slot) {
-                const emulation::psx::MC& mc = system.mc(slot);
+        // On the machine's thread: copies of every card slot, for the editor to read on its own -
+        // both ports' own cards and the three a multitap adds behind each (bug 99).
+        std::array<MemoryCardEditor::Snapshot, MemoryCardEditor::kCards> SnapshotCards(
+            System& system) {
+            std::array<MemoryCardEditor::Snapshot, MemoryCardEditor::kCards> cards;
+            for (int slot = 0; slot < MemoryCardEditor::kCards; ++slot) {
+                const emulation::psx::MC& mc = system.mc(slot / 4, slot % 4);
                 cards[slot].inserted = mc.connected();
                 if (mc.connected()) {
                     cards[slot].filename = mc.filename();
@@ -953,13 +1020,14 @@ namespace psxemu {
     // The edit runs against the live card, between frames. If it changed anything the card is
     // flagged as swapped - so a game re-reads the directory rather than trusting what it read
     // before - and saved at once, since an editor's change is one the person means to keep.
-    void App::EditMemoryCard(int slot, MemoryCardEditor::Edit edit) {
-        PostToMachine([this, slot, edit = std::move(edit)](Machine& machine) {
-            emulation::psx::MC& mc = machine.system().mc(slot);
+    void App::EditMemoryCard(int card, MemoryCardEditor::Edit edit) {
+        PostToMachine([this, card, edit = std::move(edit)](Machine& machine) {
+            emulation::psx::MC& mc = machine.system().mc(card / 4, card % 4);
             std::string error;
             bool ok = false;
             if (!mc.connected()) {
-                error = "There is no card in slot " + std::to_string(slot + 1) + ".";
+                error = "There is no card in port " + std::to_string(card / 4 + 1) + ", card " +
+                        std::string(1, static_cast<char>('A' + card % 4)) + ".";
             } else if (edit(mc.data(), &error)) {
                 mc.Modified();
                 ok = mc.Flush();
@@ -977,9 +1045,46 @@ namespace psxemu {
         });
     }
 
-    void App::EjectMemoryCard(int slot) {
-        PostToMachine([this, slot](Machine& machine) {
-            machine.system().mc(slot).Eject();
+    void App::InsertMemoryCard(int card) {
+        MenuPause held(this);
+        const std::string path = ChooseFile(window_, FileDialog::kOpen, kCardFilter, "mcr");
+        if (path.empty())
+            return;
+        PostToMachine([this, card, path](Machine& machine) {
+            // Inserting ejects - and so saves - whatever card was in the slot first.
+            const bool ok = machine.system().mc(card / 4, card % 4).LoadFile(path.c_str()) == S_OK;
+            PostToUi([this, ok, path] {
+                if (!ok) {
+                    const bool exists = GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+                    ShowWarning(window_,
+                                exists ? L"That is not a memory card. A card file is exactly 128 KB."
+                                       : L"Could not open that memory card file.");
+                }
+                if (card_editor_.visible())
+                    RefreshMemoryCardEditor();
+            });
+        });
+    }
+
+    void App::NewMemoryCard(int card) {
+        MenuPause held(this);
+        const std::string path = ChooseFile(window_, FileDialog::kSave, kCardFilter, "mcr");
+        if (path.empty())
+            return;
+        PostToMachine([this, card, path](Machine& machine) {
+            const bool ok = machine.system().mc(card / 4, card % 4).CreateFile(path.c_str()) == S_OK;
+            PostToUi([this, ok] {
+                if (!ok)
+                    ShowWarning(window_, L"Could not create that memory card file.");
+                if (card_editor_.visible())
+                    RefreshMemoryCardEditor();
+            });
+        });
+    }
+
+    void App::EjectMemoryCard(int card) {
+        PostToMachine([this, card](Machine& machine) {
+            machine.system().mc(card / 4, card % 4).Eject();
             PostToUi([this] {
                 if (card_editor_.visible())
                     RefreshMemoryCardEditor();
@@ -1158,34 +1263,63 @@ namespace psxemu {
         if (memcards_root_.empty())
             return;
 
-        const std::string dir = memcards_root_ + "\\" + DiscIdentifier(disc_path);
-        EnsureDirectory(dir);
+        card_dir_ = memcards_root_ + "\\" + DiscIdentifier(disc_path);
+        EnsureDirectory(card_dir_);
+        for (int port = 0; port < 2; ++port)
+            LoadOrCreateMemoryCard(system, port, 0);
+        SyncMultitapCards(system, true);
+    }
 
-        for (int slot = 0; slot < 2; ++slot) {
-            const std::string path = dir + "\\card" + std::to_string(slot + 1) + ".mcr";
-            if (system.mc(slot).LoadFile(path.c_str()) == S_OK)
-                continue;
-
-            // LoadFile fails for two different reasons and only one is worth saying anything
-            // about: no card there yet, which is the ordinary case for a game played for the first
-            // time, or a file that exists but is not a valid 128 KB card, which CreateFile is
-            // about to overwrite.
-            FILE* existing = fopen(path.c_str(), "rb");
-            const bool had_file = existing != nullptr;
-            if (existing != nullptr)
-                fclose(existing);
-
-            if (system.mc(slot).CreateFile(path.c_str()) != S_OK) {
-                const std::wstring message =
-                    L"Could not create a memory card for slot " + std::to_wstring(slot + 1) + L".";
-                PostToUi([this, message] { ShowWarning(window_, message.c_str()); });
-            } else if (had_file) {
-                const std::wstring message =
-                    L"The memory card file for slot " + std::to_wstring(slot + 1) +
-                    L" was not a valid 128 KB card and has been reset:\n\n" +
-                    std::wstring(path.begin(), path.end());
-                PostToUi([this, message] { ShowWarning(window_, message.c_str()); });
+    // The cards a multitap adds, B-D behind each port that has one (bug 99), kept beside the
+    // port's own: card1b.mcr to card1d.mcr. Loaded when a disc boots and when a port is switched
+    // to a multitap mid-game - then only into an empty socket, since a card already there may be
+    // one the player put in by hand. Behind a port with no multitap they are ejected when the disc
+    // changes, so a multitap plugged in later never finds the last game's cards.
+    void App::SyncMultitapCards(System& system, bool new_disc) {
+        for (int port = 0; port < 2; ++port) {
+            const bool multitap = system.config().controller_type[port] == "multitap";
+            for (int slot = 1; slot < System::kCardSlotsPerPort; ++slot) {
+                emulation::psx::MC& mc = system.mc(port, slot);
+                if (!multitap) {
+                    if (new_disc)
+                        mc.Eject();
+                } else if ((new_disc || !mc.connected()) && !card_dir_.empty()) {
+                    LoadOrCreateMemoryCard(system, port, slot);
+                }
             }
+        }
+    }
+
+    void App::LoadOrCreateMemoryCard(System& system, int port, int slot) {
+        std::string name = "card" + std::to_string(port + 1);
+        std::wstring which = L"slot " + std::to_wstring(port + 1);
+        if (slot > 0) {
+            name += static_cast<char>('a' + slot);
+            which += L", multitap card ";
+            which += static_cast<wchar_t>(L'A' + slot);
+        }
+        const std::string path = card_dir_ + "\\" + name + ".mcr";
+        emulation::psx::MC& mc = system.mc(port, slot);
+        if (mc.LoadFile(path.c_str()) == S_OK)
+            return;
+
+        // LoadFile fails for two different reasons and only one is worth saying anything about:
+        // no card there yet, which is the ordinary case for a game played for the first time, or a
+        // file that exists but is not a valid 128 KB card, which CreateFile is about to overwrite.
+        FILE* existing = fopen(path.c_str(), "rb");
+        const bool had_file = existing != nullptr;
+        if (existing != nullptr)
+            fclose(existing);
+
+        if (mc.CreateFile(path.c_str()) != S_OK) {
+            const std::wstring message = L"Could not create a memory card for " + which + L".";
+            PostToUi([this, message] { ShowWarning(window_, message.c_str()); });
+        } else if (had_file) {
+            const std::wstring message =
+                L"The memory card file for " + which +
+                L" was not a valid 128 KB card and has been reset:\n\n" +
+                std::wstring(path.begin(), path.end());
+            PostToUi([this, message] { ShowWarning(window_, message.c_str()); });
         }
     }
 
@@ -1298,6 +1432,13 @@ namespace psxemu {
                 if (app != nullptr && LOWORD(lparam) == HTCLIENT && app->input_ != nullptr &&
                     app->input_->capturing_mouse()) {
                     SetCursor(nullptr);
+                    return TRUE;
+                }
+                // A light gun aims with the cursor, so over the picture it is a crosshair.
+                if (app != nullptr && LOWORD(lparam) == HTCLIENT &&
+                    (app->config_.controller_type[0] == "guncon" ||
+                     app->config_.controller_type[1] == "guncon")) {
+                    SetCursor(LoadCursorW(nullptr, IDC_CROSS));
                     return TRUE;
                 }
                 break;
@@ -1436,52 +1577,25 @@ namespace psxemu {
             }
 
             case kCommandOpenMemoryCardSlot1:
-            case kCommandOpenMemoryCardSlot2: {
-                const int slot = (command == kCommandOpenMemoryCardSlot1) ? 0 : 1;
-                MenuPause held(this);
-                const std::string path = ChooseFile(window_, FileDialog::kOpen, kCardFilter, "mcr");
-                if (path.empty())
-                    break;
-                PostToMachine([this, slot, path](Machine& machine) {
-                    // Inserting ejects - and so saves - whatever card was in the slot first.
-                    const bool ok = machine.system().mc(slot).LoadFile(path.c_str()) == S_OK;
-                    PostToUi([this, ok, path] {
-                        if (!ok) {
-                            const bool exists =
-                                GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
-                            ShowWarning(window_,
-                                        exists ? L"That is not a memory card. A card file is "
-                                                 L"exactly 128 KB."
-                                               : L"Could not open that memory card file.");
-                        }
-                        if (card_editor_.visible())
-                            RefreshMemoryCardEditor();
-                    });
-                });
+            case kCommandOpenMemoryCardSlot2:
+                InsertMemoryCard(command == kCommandOpenMemoryCardSlot1 ? 0 : 4);
                 break;
-            }
 
             case kCommandCreateMemoryCardSlot1:
-            case kCommandCreateMemoryCardSlot2: {
-                const int slot = (command == kCommandCreateMemoryCardSlot1) ? 0 : 1;
-                MenuPause held(this);
-                const std::string path = ChooseFile(window_, FileDialog::kSave, kCardFilter, "mcr");
-                if (path.empty())
-                    break;
-                PostToMachine([this, slot, path](Machine& machine) {
-                    const bool ok = machine.system().mc(slot).CreateFile(path.c_str()) == S_OK;
-                    PostToUi([this, ok] {
-                        if (!ok)
-                            ShowWarning(window_, L"Could not create that memory card file.");
-                        if (card_editor_.visible())
-                            RefreshMemoryCardEditor();
-                    });
-                });
+            case kCommandCreateMemoryCardSlot2:
+                NewMemoryCard(command == kCommandCreateMemoryCardSlot1 ? 0 : 4);
                 break;
-            }
 
             case kCommandKeyBindings:
                 key_bindings_.Show(key_map_);
+                break;
+
+            case kCommandAnalogButtonPort1:
+                PressAnalogButton(0);
+                break;
+
+            case kCommandAnalogButtonPort2:
+                PressAnalogButton(1);
                 break;
 
             case kCommandClearRecentDiscs:
@@ -1491,7 +1605,7 @@ namespace psxemu {
 
             case kCommandEjectMemoryCardSlot1:
             case kCommandEjectMemoryCardSlot2:
-                EjectMemoryCard(command == kCommandEjectMemoryCardSlot1 ? 0 : 1);
+                EjectMemoryCard(command == kCommandEjectMemoryCardSlot1 ? 0 : 4);
                 break;
 
             case kCommandMemoryCardEditor:
@@ -1640,6 +1754,22 @@ namespace psxemu {
                     const int player = (offset / source_count) % 4;
                     SetMultitapSource(port, player,
                                       kInputSourceChoices[offset % source_count].key);
+                } else if (command >= kCommandMultitapCardFirst &&
+                           command <= kCommandMultitapCardLast) {
+                    // (port * 3 + card B-D) * 3 + action, as menu.cpp's CreateMainMenu builds it.
+                    const int offset = command - kCommandMultitapCardFirst;
+                    const int card = (offset / 9) * 4 + (offset / 3) % 3 + 1;
+                    switch (offset % 3) {
+                        case 0: InsertMemoryCard(card); break;
+                        case 1: NewMemoryCard(card); break;
+                        default: EjectMemoryCard(card); break;
+                    }
+                } else if (command >= kCommandMultitapTypeFirst &&
+                           command <= kCommandMultitapTypeLast) {
+                    const int type_count = static_cast<int>(std::size(kMultitapPlayerTypeChoices));
+                    const int offset = command - kCommandMultitapTypeFirst;
+                    SetMultitapType(offset / (4 * type_count), (offset / type_count) % 4,
+                                    kMultitapPlayerTypeChoices[offset % type_count].key);
                 } else if (command >= kCommandMouseMotionFirst &&
                            command <= kCommandMouseMotionLast) {
                     SetMouseMotion(kMouseMotionChoices[command - kCommandMouseMotionFirst].key);
