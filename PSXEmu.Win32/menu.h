@@ -34,6 +34,11 @@ namespace psxemu {
     // CreateWindowExW and letting the window own it from then on.
     HMENU CreateMainMenu();
 
+    // The window's menu bar, showing or not. Full screen takes the bar off the window
+    // (App::SetFullscreen) and keeps it in a window property under kDetachedMenuProp, and every
+    // tick made meanwhile still has to land on it, so the bar is right when it comes back.
+    HMENU MenuBar(HWND window);
+
     // Fills in Settings > BIOS from the images actually found in the data folder, ticking whichever
     // one is in use, and appends the rescan and open-folder items under them. The only menu whose
     // contents are not a table in const.h, so the only one that has to be built after startup - and
@@ -129,6 +134,7 @@ namespace psxemu {
     // EmuConfig::sio1_to_console - whether what the serial port transmits is
     // shown in that same console.
     void TickSerialToConsole(HWND window, bool on);
+    void TickFullscreen(HWND window, bool on);
 
     // EmuConfig::mouse_motion and EmuConfig::mouse_dpi - how a host mouse's movement becomes a
     // PSX mouse's counts, and what the host mouse's own resolution is.

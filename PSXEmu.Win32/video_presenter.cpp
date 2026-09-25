@@ -26,9 +26,9 @@ namespace psxemu {
 
     using emulation::host::VideoFrame;
 
-    D3DPresenter::D3DPresenter(HWND window, HWND gl_window,
+    D3DPresenter::D3DPresenter(const RenderWindows& windows,
                                std::function<void(std::function<void()>)> to_ui)
-        : window_(window), gl_window_(gl_window), to_ui_(std::move(to_ui)) {
+        : window_(windows.main), windows_(windows), to_ui_(std::move(to_ui)) {
         RECT client = {};
         GetClientRect(window_, &client);
         width_ = client.right - client.left;
@@ -50,8 +50,7 @@ namespace psxemu {
         const GraphicsBackend preferred = ParseGraphicsBackend(renderer);
         std::wstring warning;
         std::string opened;
-        engine_ = CreateGraphicsEngine(preferred, window_, gl_window_, width_, height_, &opened,
-                                       &warning);
+        engine_ = CreateGraphicsEngine(preferred, windows_, width_, height_, &opened, &warning);
         if (engine_ == nullptr) {
             renderer_.clear();
             filter_.clear();

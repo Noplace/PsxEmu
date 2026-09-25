@@ -39,12 +39,12 @@ namespace psxemu {
     class D3DPresenter : public emulation::host::Presenter {
      public:
         // `to_ui` runs a piece of work on the UI thread - App::PostToUi.
-        // `gl_window` is the child the OpenGL engine draws into (App::CreateGlSurface); the Direct3D
-        // engines draw into `window`.
-        D3DPresenter(HWND window, HWND gl_window, std::function<void(std::function<void()>)> to_ui);
+        // `windows` says where each engine draws (App::CreateRenderSurfaces).
+        D3DPresenter(const RenderWindows& windows,
+                     std::function<void(std::function<void()>)> to_ui);
         ~D3DPresenter() override;
 
-        // Brings up `renderer` ("d3d11", "d3d12" or "opengl") with `filter` on it, at the window's
+        // Brings up `renderer` ("d3d11", "d3d12", "opengl" or "vulkan") with `filter` on it, at the window's
         // current client size. False if no engine could be created at all, which is fatal to the
         // front end and is reported through `to_ui`.
         bool Open(const std::string& renderer, const std::string& filter);
@@ -67,7 +67,7 @@ namespace psxemu {
         bool Create(const std::string& renderer, const std::string& filter);
 
         HWND window_;
-        HWND gl_window_;
+        RenderWindows windows_;
         std::function<void(std::function<void()>)> to_ui_;
         std::unique_ptr<IGraphicsEngine> engine_;
         std::string renderer_;

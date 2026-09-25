@@ -190,6 +190,9 @@ namespace psxemu {
         AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(filter), L"&Filter");
         AppendMenuW(video, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewVram), L"View &VRAM");
+        AppendMenuW(video, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandFullscreen),
+                    L"F&ull Screen\tAlt+Enter");
 
         // Two ports, each with its own controller-type choice and its own input source - four small
         // popups rather than one flat list, so ticking one port's choice never has to be told apart
@@ -333,9 +336,16 @@ namespace psxemu {
         return bar;
     }
 
+    HMENU MenuBar(HWND window) {
+        HMENU bar = GetMenu(window);
+        if (bar == nullptr)
+            bar = static_cast<HMENU>(GetPropW(window, kDetachedMenuProp));
+        return bar;
+    }
+
     void PopulateBiosMenu(HWND window, const std::vector<std::string>& files,
                           const std::string& current) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         HMENU bios = FindTaggedPopup(bar, kBiosMenuTag);
@@ -377,7 +387,7 @@ namespace psxemu {
     }
 
     void PopulateRecentDiscsMenu(HWND window, const std::vector<std::string>& discs) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         HMENU recent = FindTaggedPopup(bar, kRecentDiscsMenuTag);
@@ -412,7 +422,7 @@ namespace psxemu {
     }
 
     void TickVolume(HWND window, float current) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         for (size_t i = 0; i < std::size(kVolumeSteps); ++i) {
@@ -423,7 +433,7 @@ namespace psxemu {
     }
 
     void TickSpeed(HWND window, float current) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         // Never greyed. A speed does need the frame limiter - with it off the
@@ -440,7 +450,7 @@ namespace psxemu {
 
     // An empty `backend` - no output could be opened - leaves both unticked, which is the truth.
     void TickAudioBackend(HWND window, const std::string& backend) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         for (size_t i = 0; i < std::size(kAudioBackendChoices); ++i) {
@@ -451,7 +461,7 @@ namespace psxemu {
     }
 
     void TickRenderer(HWND window, const std::string& backend) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         for (size_t i = 0; i < std::size(kBackendChoices); ++i) {
@@ -462,7 +472,7 @@ namespace psxemu {
     }
 
     void TickFilter(HWND window, const std::string& backend, const std::string& filter) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         const bool filters_available = RendererHasFilters(backend);
@@ -475,7 +485,7 @@ namespace psxemu {
     }
 
     void TickControllerTypes(HWND window, const std::array<std::string, 2>& types) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         const int type_count = static_cast<int>(std::size(kControllerTypeChoices));
@@ -492,7 +502,7 @@ namespace psxemu {
 
     void TickInputSources(HWND window, const std::array<std::string, 2>& sources,
                           const std::array<std::string, 2>& controller_types) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         const int source_count = static_cast<int>(std::size(kInputSourceChoices));
@@ -521,7 +531,7 @@ namespace psxemu {
     void TickMultitapSources(
         HWND window, const std::array<std::array<std::string, 4>, 2>& sources,
         const std::array<std::string, 2>& controller_types) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         const int source_count = static_cast<int>(std::size(kInputSourceChoices));
@@ -548,7 +558,7 @@ namespace psxemu {
     void TickMultitapTypes(
         HWND window, const std::array<std::array<std::string, 4>, 2>& types,
         const std::array<std::string, 2>& controller_types) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         const int type_count = static_cast<int>(std::size(kMultitapPlayerTypeChoices));
@@ -569,7 +579,7 @@ namespace psxemu {
     }
 
     void TickFrameLimiter(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandFrameLimiter),
@@ -577,7 +587,7 @@ namespace psxemu {
     }
 
     void TickCdTiming(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandCdMechanicalTiming),
@@ -585,7 +595,7 @@ namespace psxemu {
     }
 
     void TickSkipBiosIntro(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandSkipBiosIntro),
@@ -593,7 +603,7 @@ namespace psxemu {
     }
 
     void TickRecompiler(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandRecompiler),
@@ -601,7 +611,7 @@ namespace psxemu {
     }
 
     void TickGpuThread(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandGpuThread),
@@ -609,7 +619,7 @@ namespace psxemu {
     }
 
     void TickGpuTransferTiming(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandGpuTransferTiming),
@@ -617,7 +627,7 @@ namespace psxemu {
     }
 
     void TickICacheTiming(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandICacheTiming),
@@ -625,7 +635,7 @@ namespace psxemu {
     }
 
     void TickPauseInMenus(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandPauseInMenus),
@@ -633,7 +643,7 @@ namespace psxemu {
     }
 
     void TickShowTimings(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandShowTimings),
@@ -641,7 +651,7 @@ namespace psxemu {
     }
 
     void TickBiosConsole(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandBiosConsole),
@@ -649,7 +659,7 @@ namespace psxemu {
     }
 
     void TickMouseMotion(HWND window, const std::string& key) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         for (size_t i = 0; i < std::size(kMouseMotionChoices); ++i) {
@@ -660,7 +670,7 @@ namespace psxemu {
     }
 
     void TickMouseDpi(HWND window, int dpi) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         for (size_t i = 0; i < std::size(kMouseDpiChoices); ++i) {
@@ -671,10 +681,18 @@ namespace psxemu {
     }
 
     void TickSerialToConsole(HWND window, bool on) {
-        HMENU bar = GetMenu(window);
+        HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandSerialToConsole),
+                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickFullscreen(HWND window, bool on) {
+        HMENU bar = MenuBar(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandFullscreen),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
     }
 

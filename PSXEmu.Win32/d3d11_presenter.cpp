@@ -128,6 +128,16 @@ namespace psxemu {
         if (FAILED(result))
             return false;
 
+        // DXGI watches the window for Alt+Enter and, left alone, answers it with exclusive full
+        // screen. Full screen here is the front end's own borderless kind (App::SetFullscreen),
+        // so it is told not to - the same as D3D12GraphicsEngine does.
+        IDXGIFactory* factory = nullptr;
+        if (SUCCEEDED(swap_chain_->GetParent(__uuidof(IDXGIFactory),
+                                             reinterpret_cast<void**>(&factory)))) {
+            factory->MakeWindowAssociation(window, DXGI_MWA_NO_ALT_ENTER);
+            Release(&factory);
+        }
+
         if (!CreateRenderTarget())
             return false;
 

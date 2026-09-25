@@ -57,10 +57,12 @@ namespace psxemu {
         return map;
     }
 
-    // Keys the window already answers to: Space pauses, F1-F8 load and save states, Escape is
-    // how the binding editor cancels. A pad button on one of them would do both.
+    // Keys the window already answers to: Space pauses, F1-F8 load and save states, F11 and
+    // Escape go in and out of full screen, and Escape is how the binding editors cancel. A pad
+    // button on one of them would do both.
     inline bool IsReservedKey(int key) {
-        return key == VK_SPACE || key == VK_ESCAPE || (key >= VK_F1 && key <= VK_F8);
+        return key == VK_SPACE || key == VK_ESCAPE || key == VK_F11 ||
+               (key >= VK_F1 && key <= VK_F8);
     }
 
     namespace detail {

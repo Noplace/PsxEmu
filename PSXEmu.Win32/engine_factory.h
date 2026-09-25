@@ -32,18 +32,26 @@
 
 namespace psxemu {
 
-    enum class GraphicsBackend { kD3D11, kD3D12, kOpenGL };
+    enum class GraphicsBackend { kD3D11, kD3D12, kOpenGL, kVulkan };
 
-    // The settings key ("d3d11", "d3d12", "opengl") as that enum; anything else is Direct3D 11,
+    // Where each engine draws: the Direct3D ones into the main window, OpenGL and Vulkan each into
+    // a child window of its own - see App::CreateRenderSurfaces for why.
+    struct RenderWindows {
+        HWND main = nullptr;
+        HWND opengl = nullptr;
+        HWND vulkan = nullptr;
+    };
+
+    // The settings key ("d3d11", "d3d12", "opengl", "vulkan") as that enum; anything else is Direct3D 11,
     // the default.
     GraphicsBackend ParseGraphicsBackend(const std::string& key);
     const char* GraphicsBackendKey(GraphicsBackend backend);
 
     // Tries `preferred` first; if that engine's own device creation fails, tries the others in turn
-    // (Direct3D 11, then 12, then OpenGL) and warns that it did, rather than failing outright - a
-    // machine that can do one almost always can do another. Only if both fail does this return null, which the caller treats as a hard
-    // failure (at startup) or a "could not switch, and could not go back either" one (mid session,
-    // from the Video menu).
+    // (Direct3D 11, then 12, then OpenGL, then Vulkan) and warns that it did, rather than failing
+    // outright - a machine that can do one almost always can do another. Only if every one fails
+    // does this return null, which the caller treats as a hard failure (at startup) or a "could
+    // not switch, and could not go back either" one (mid session, from the Video menu).
     //
     // `*active_backend` is set to whichever engine actually ended up running, which the caller uses
     // instead of the requested one for menu ticks and persisted state from here on.
@@ -52,15 +60,16 @@ namespace psxemu {
     // `*warning`, and the caller shows it. This runs on the video thread now, and a message box
     // from any thread but the window's is a wait on the window's thread - see Docs/Threading-
     // Plan.md's rules. Empty means nothing to say.
-    // The Direct3D engines draw into `window`, OpenGL into `gl_window` - see App::CreateGlSurface.
-    std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred, HWND window,
-                                                          HWND gl_window, int width, int height,
+    std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred,
+                                                          const RenderWindows& windows,
+                                                          int width, int height,
                                                           std::string* active_backend,
                                                           std::wstring* warning);
 
     // Compiles every ported filter into the engine at once - cheap (startup-cost shader compiles,
     // not per-frame work), so there is no reason to defer any of them until first selected. HLSL
-    // for Direct3D 12, the GLSL ports for OpenGL (shaders/glsl_filters.h), under the same keys.
+    // for Direct3D 12, the GLSL ports for OpenGL (shaders/glsl_filters.h), and the same GLSL as
+    // SPIR-V for Vulkan (shaders/spirv_filters.h), all under the same keys.
     // Only worth calling on an engine that supports filters at all; see RendererHasFilters.
     void LoadAllFilters(IGraphicsEngine& engine, GraphicsBackend backend);
 

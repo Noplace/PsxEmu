@@ -18,6 +18,10 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
+#include <iterator>
+
 // Every video filter, in GLSL for the OpenGL engine: a line-for-line port of the HLSL ones
 // (legacy_shaders.h, Resource/ps_scanline_filter.hlsl, ps_xbrz_filter.hlsl and superxbr/), under
 // the same keys, so the Video > Filter menu means the same thing whichever renderer draws it.
@@ -47,6 +51,34 @@ uniform vec4 u_params;
 uniform vec2 u_frag_y;
 vec4 FragPosition() {
     return vec4(gl_FragCoord.x, u_frag_y.x + u_frag_y.y * gl_FragCoord.y, gl_FragCoord.zw);
+}
+)GLSL";
+
+    // The same header for Vulkan, which compiles the same bodies to SPIR-V (make_spirv.cpp, into
+    // spirv_filters.h). Vulkan GLSL wants explicit bindings and a push-constant block in place of
+    // loose uniforms, and needs no FragPosition arithmetic: its gl_FragCoord already counts down
+    // from the top of the target, as SV_Position does. Bindings 0-4 are the same five samplers.
+    inline constexpr const char kVulkanFilterHeader[] = R"GLSL(#version 450
+layout(location = 0) in vec2 v_uv;
+layout(location = 0) out vec4 o_color;
+layout(set = 0, binding = 0) uniform sampler2D u_point;          // s0: point, wrap
+layout(set = 0, binding = 1) uniform sampler2D u_linear;         // s1: linear, wrap
+layout(set = 0, binding = 2) uniform sampler2D u_point_clamp;    // s2: point, clamp to edge
+layout(set = 0, binding = 3) uniform sampler2D u_linear_clamp;   // s3: linear, clamp to edge
+layout(set = 0, binding = 4) uniform sampler2D u_original;       // t1 through s2
+layout(push_constant) uniform Params { vec4 u_params; };         // outW, outH, inW, inH
+vec4 FragPosition() { return gl_FragCoord; }
+)GLSL";
+
+    // Vulkan's vertex shader: the same big triangle, with uv (0,0) at the top left. Vulkan's clip
+    // space already has y pointing down, and its render targets and textures both start at the
+    // top row, so nothing is flipped anywhere; the viewport and scissor place it, as in D3D12.
+    inline constexpr const char kVulkanVertexShader[] = R"GLSL(#version 450
+layout(location = 0) out vec2 v_uv;
+void main() {
+    vec2 uv = vec2((gl_VertexIndex << 1) & 2, gl_VertexIndex & 2);
+    v_uv = uv;
+    gl_Position = vec4(uv * 2.0 - 1.0, 0.0, 1.0);
 }
 )GLSL";
 
@@ -593,5 +625,41 @@ void main() {
         { "superxbr_pass2", { kGlslSuperXbrCommon, kGlslSuperXbrPass2, kGlslSuperXbrBlend } },
     };
     // clang-format on
+
+    // Every shader the Vulkan engine runs, as the pieces make_spirv.cpp joins and compiles: the
+    // vertex shader, the pass-through, the blit that ends a chain, then kGlslFilters in order, each
+    // behind kVulkanFilterHeader. spirv_filters.h holds their SPIR-V in the same order.
+    struct VulkanShaderSource {
+        const char* key;
+        const char* parts[4];   // joined in order; unused ones null
+    };
+
+    inline constexpr size_t kVulkanShaderCount = 3 + std::size(kGlslFilters);
+
+    constexpr VulkanShaderSource VulkanShaderSourceAt(size_t index) {
+        if (index == 0)
+            return { "vertex", { kVulkanVertexShader, nullptr, nullptr, nullptr } };
+        if (index == 1)
+            return { "default", { kVulkanFilterHeader, kGlslDefault, nullptr, nullptr } };
+        if (index == 2)
+            return { "blit", { kVulkanFilterHeader, kGlslBlit, nullptr, nullptr } };
+        const GlslFilter& filter = kGlslFilters[index - 3];
+        return { filter.key,
+                 { kVulkanFilterHeader, filter.parts[0], filter.parts[1], filter.parts[2] } };
+    }
+
+    // FNV-1a, 64-bit, of one piece of shader source (0 for none). spirv_filters.h records the
+    // hash of every piece it was compiled from and checks them at compile time, so a filter
+    // changed here without its SPIR-V being rebuilt stops the build instead of drawing the old one.
+    constexpr uint64_t ShaderSourceHash(const char* text) {
+        if (text == nullptr)
+            return 0;
+        uint64_t hash = 14695981039346656037ull;
+        for (; *text != 0; ++text) {
+            hash ^= static_cast<unsigned char>(*text);
+            hash *= 1099511628211ull;
+        }
+        return hash;
+    }
 
 }   // namespace psxemu

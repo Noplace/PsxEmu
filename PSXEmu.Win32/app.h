@@ -82,7 +82,7 @@ namespace psxemu {
 
         bool Initialize(HINSTANCE instance, int show_command);
         bool CreateAppWindow(HINSTANCE instance);
-        bool CreateGlSurface(HINSTANCE instance);
+        bool CreateRenderSurfaces(HINSTANCE instance);
         bool CreateMachine();
 
         // Starts input, audio, video and the machine, in that order - outputs before the thing
@@ -158,6 +158,9 @@ namespace psxemu {
         void SetShowTimings(bool on);
         void SetShowBiosConsole(bool on);
         void SetSerialToConsole(bool on);
+        // Borderless full screen over the monitor the window is on, and back to the window as it
+        // was. Alt+Enter or F11 toggles it, Escape leaves it, and so does Settings > Video.
+        void SetFullscreen(bool on);
         void SetMouseMotion(const std::string& key);
         void SetMouseDpi(int dpi);
         // On the machine's thread, after every frame: what the BIOS console gained, posted to the
@@ -280,8 +283,10 @@ namespace psxemu {
 
         // Not owned - the window owns itself once created, and destroys itself on WM_DESTROY.
         HWND window_ = nullptr;
-        // The child window the OpenGL engine draws into (CreateGlSurface). This thread owns it.
+        // The child windows the OpenGL and Vulkan engines draw into (CreateRenderSurfaces). This
+        // thread owns them.
         HWND gl_surface_ = nullptr;
+        HWND vk_surface_ = nullptr;
 
         // The emulated machine. Created here, then driven only by the machine's thread until
         // StopThreads has returned.
@@ -370,6 +375,10 @@ namespace psxemu {
         // machine's thread too, so a boot or a state load knows whether to send it a snapshot.
         DebuggerWindow debugger_;
         std::atomic<bool> debugger_open_{false};
+
+        // Full screen, and where the window was before it, which leaving puts back.
+        bool fullscreen_ = false;
+        WINDOWPLACEMENT windowed_placement_ = { sizeof(WINDOWPLACEMENT) };
 
         std::vector<std::string> recent_discs_;   // most recent first
 

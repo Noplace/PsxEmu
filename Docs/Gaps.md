@@ -499,7 +499,7 @@ unproven:
 ### Settings cover little
 
 `psxemu.ini` holds `audio_volume`, `audio_backend` (WASAPI or DirectSound),
-`graphics_backend` (D3D11, D3D12 or OpenGL), `video_filter`, controller type and input
+`graphics_backend` (D3D11, D3D12, OpenGL or Vulkan), `video_filter`, controller type and input
 source per port, the multitap player sources and types, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `gpu_thread`,
 `gpu_transfer_timing`, `icache_timing`, `bios_file`,
@@ -522,7 +522,8 @@ to boot.
 ### The front end is minimal
 
 A window, menus for disc, reset, pause, volume, video filter, controllers,
-which BIOS to boot and how fast to run (50-300%), D3D11, D3D12 and OpenGL presenters,
+which BIOS to boot and how fast to run (50-300%), D3D11, D3D12, OpenGL and Vulkan presenters
+(all of them in a window or borderless full screen, Alt+Enter or F11),
 keyboard/XInput/mouse input, and a speed readout in the title bar (bug 49) that
 Emulation > Show Timings expands into where each frame's time went, and a BIOS
 console window (Emulation > BIOS Console, bug 66) showing what software prints

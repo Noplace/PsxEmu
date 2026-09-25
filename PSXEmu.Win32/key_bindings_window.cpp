@@ -237,7 +237,8 @@ namespace psxemu {
                 } else if (IsReservedKey(key)) {
                     const std::wstring status =
                         KeyLabel(key) + L" is taken by the emulator itself (Space pauses, F1-F8 "
-                                        L"load and save states). Press another key, or Escape.";
+                                        L"load and save states, F11 is full screen). Press "
+                                        L"another key, or Escape.";
                     SetWindowTextW(self->status_, status.c_str());
                 } else {
                     self->Bind(self->capturing_, key);

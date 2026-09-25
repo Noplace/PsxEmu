@@ -6723,3 +6723,91 @@ The comparison was trusted only once the same planted change showed up in it:
 **Not covered.** A machine without OpenGL 3.3, and so the fallback, which has
 not been seen to happen. Games other than the BIOS shell: the renderer only
 ever sees finished frames, so what it draws does not depend on the game.
+
+## 109. A Vulkan renderer, and borderless full screen on all four
+
+**Vulkan** is the fourth choice under Settings > Video > Renderer
+(`vulkan_engine.h/.cpp`, `graphics_backend = vulkan`). It is Vulkan 1.0,
+arranged like the Direct3D 12 and OpenGL engines:
+- the frame goes into a texture drawn into the 4:3 letterbox
+- every filter is a fragment shader
+- Super-xBR's passes render into textures before a linear blit
+- the placement uses a fractional viewport and D3D12's scissor, which Vulkan,
+  unlike OpenGL, can state directly
+
+It keeps the extra weight small:
+- **No DLL shipped, nothing linked.** `vulkan-1.dll`, the Vulkan loader, comes
+  with every current GPU driver. It is opened at run time, and a machine
+  without it falls back to Direct3D, as the other renderers do.
+- **No Khronos headers vendored.** They are 1.3 MB. `vk_functions.h` declares
+  the 79 functions, 68 structures and the constants the engine uses. A scratch
+  build compiled it against the official headers (1.4.337, Apache-2.0) with
+  688 `static_assert`s: every structure's size and member offsets, every
+  constant, and every function's parameter count and sizes. All pass, and a
+  planted wrong offset fails the build.
+- **No shader compiler in the build.** Vulkan takes only SPIR-V, and nothing in
+  Windows or Visual Studio makes it (the Windows SDK's `dxc` is built without
+  SPIR-V). So the shaders are compiled ahead of time from the same GLSL the
+  OpenGL engine uses:
+  - `glsl_filters.h` gained a Vulkan header (explicit bindings and a
+    push-constant block).
+  - `shaders/make_spirv.cpp` runs Khronos's glslang over every shader and
+    writes `shaders/spirv_filters.h`: 14 shaders, about 110 KB in the exe.
+  - `shaders/build_spirv.bat <glslang.exe>` rebuilds it. That is needed only
+    after changing a filter, and glslang is needed only then.
+  - `spirv_filters.h` records a hash of every piece of GLSL each shader came
+    from and `static_assert`s them against `glsl_filters.h`. A filter changed
+    without rebuilding its SPIR-V stops the build with "spirv_filters.h is
+    older than glsl_filters.h: run shaders\build_spirv.bat". Changing one
+    number in the CRT filter did exactly that.
+- **It draws into a child window of its own,** like OpenGL
+  (`App::CreateRenderSurfaces`). How Vulkan presents depends on each GPU's
+  driver, so it does not share a window with DXGI's flip-model swap chains.
+
+**Compared with Direct3D 12** in the same way as OpenGL (bug 108): the BIOS
+menu paused, every filter switched in and captured, at 477x356.
+- **Pass-through filters (None, Nearest, HQ2X): identical.**
+- **Sharp Bilinear, Scanline, SuperEagle, both xBRZ: differ by at most 1** (up
+  to 27,236 pixels by 1). Each API's texture filter keeps a different number of
+  bits of sub-texel position.
+- **CRT:** 28 pixels differ by more than 2.
+- **Super-xBR:** differs at its rounding ties, as OpenGL does, for the reason
+  given in bug 108.
+
+Switching Direct3D 11 → Vulkan → OpenGL → Vulkan → Direct3D 12 → Vulkan →
+Direct3D 11 showed each renderer's own frame. Vulkan and OpenGL were identical
+to Direct3D 12 on the pass-through.
+
+Direct3D 11 differs from 12 on the pass-through at five columns, spaced evenly
+across the picture. Those are columns whose pixel centres land exactly on a
+texel edge, which its vertex shader rounds the other way. That predates this
+change.
+
+**Borderless full screen**, for every renderer: Alt+Enter or F11 toggles it,
+Escape leaves it, and Settings > Video > Full Screen does both. It works the
+way current games do it: the window loses its frame and menu bar and covers
+the monitor it is on (`App::SetFullscreen`). No renderer is involved. Each
+follows the new client size through `WM_SIZE`, as for any resize, and there is
+no exclusive mode, so Alt+Tab and a second monitor behave normally.
+
+Three details make it work:
+- **Menu ticks keep working while the bar is off.** The menu bar waits in a
+  window property, and `MenuBar()` - which every menu tick now goes through -
+  finds it there.
+- **Direct3D 11 no longer grabs Alt+Enter.** DXGI watches for Alt+Enter and
+  answers it with exclusive full screen unless told not to. Direct3D 12 already
+  opted out; Direct3D 11 did not, and now calls
+  `MakeWindowAssociation(DXGI_MWA_NO_ALT_ENTER)` too.
+- **F11 is reserved** from the key bindings, as Space and F1-F8 are.
+
+Tested on all four renderers:
+- Alt+Enter took the window from 1312x1078 at (52,52) to 2560x1600 at (0,0),
+  borderless, with no menu.
+- Escape, F11 and Alt+Enter again each went in or out, and back put the window
+  exactly where it was.
+- In full screen, the screen's centre was the BIOS menu's blue and the left
+  edge black: the 4:3 picture's side bar on a 16:10 screen, drawn at full
+  size.
+
+One side effect: Enter is Start on the default keyboard layout, so Alt+Enter
+also presses Start for a moment while the game has focus.

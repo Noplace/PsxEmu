@@ -43,7 +43,9 @@ namespace psxemu {
 
     inline constexpr wchar_t kWindowClass[] = L"PSXEmuWindow";
     inline constexpr wchar_t kWindowTitle[] = L"PSXEmu";
-    inline constexpr wchar_t kGlSurfaceClass[] = L"PSXEmuGLSurface";
+    inline constexpr wchar_t kRenderSurfaceClass[] = L"PSXEmuRenderSurface";
+    // Where the menu bar waits while full screen has taken it off the window - see MenuBar.
+    inline constexpr wchar_t kDetachedMenuProp[] = L"PSXEmuDetachedMenu";
 
     // ---------------------------------------------------------------------------------------------
     // Menu command ids
@@ -68,7 +70,7 @@ namespace psxemu {
         kCommandAudioBackendFirst,
         kCommandAudioBackendLast = kCommandAudioBackendFirst + 1,   // WASAPI, DirectSound
         kCommandRendererFirst,
-        kCommandRendererLast = kCommandRendererFirst + 2,   // Direct3D 11, 12, OpenGL
+        kCommandRendererLast = kCommandRendererFirst + 3,   // Direct3D 11, 12, OpenGL, Vulkan
         kCommandFilterFirst,
         kCommandFilterLast = kCommandFilterFirst + 9,   // None + 9 filters
         kCommandViewVram,
@@ -126,6 +128,9 @@ namespace psxemu {
         // Settings > Input > Controller Bindings. kCommandKeyBindings above still opens the older
         // keyboard-only list, which is no longer on the menu.
         kCommandControllerBindings,
+        // Settings > Video > Full Screen, and Alt+Enter or F11 anywhere: borderless, over the whole
+        // monitor the window is on.
+        kCommandFullscreen,
         kCommandExit,
     };
 
@@ -202,12 +207,14 @@ namespace psxemu {
         { "d3d11", L"Direct3D &11" },
         { "d3d12", L"Direct3D &12" },
         { "opengl", L"&OpenGL" },
+        { "vulkan", L"&Vulkan" },
     };
 
-    // Whether a renderer runs the video filters: Direct3D 12 does, from HLSL, and OpenGL does, from
-    // the GLSL ports of the same shaders. Direct3D 11 has none.
+    // Whether a renderer runs the video filters: Direct3D 12 does, from HLSL; OpenGL does, from the
+    // GLSL ports of the same shaders; and Vulkan does, from that GLSL compiled to SPIR-V. Direct3D
+    // 11 has none.
     inline bool RendererHasFilters(const std::string& key) {
-        return key == "d3d12" || key == "opengl";
+        return key == "d3d12" || key == "opengl" || key == "vulkan";
     }
 
     // The filter choices - None plus the ones ported from GBAEmu (see shaders/) and the multi-pass

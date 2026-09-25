@@ -89,6 +89,7 @@
     <ClCompile Include="d3d11_presenter.cpp" />
     <ClCompile Include="d3d12_graphics_engine.cpp" />
     <ClCompile Include="opengl_engine.cpp" />
+    <ClCompile Include="vulkan_engine.cpp" />
     <ClCompile Include="engine_factory.cpp" />
     <ClCompile Include="input_thread.cpp" />
     <ClCompile Include="main.cpp" />
@@ -112,6 +113,8 @@
     <ClInclude Include="d3d12_graphics_engine.h" />
     <ClInclude Include="opengl_engine.h" />
     <ClInclude Include="gl_functions.h" />
+    <ClInclude Include="vulkan_engine.h" />
+    <ClInclude Include="vk_functions.h" />
     <ClInclude Include="d3dx12.h" />
     <ClInclude Include="engine_factory.h" />
     <ClInclude Include="framework.h" />
@@ -123,6 +126,7 @@
     <ClInclude Include="menu.h" />
     <ClInclude Include="mouse.h" />
     <ClInclude Include="shaders\glsl_filters.h" />
+    <ClInclude Include="shaders\spirv_filters.h" />
     <ClInclude Include="shaders\legacy_shaders.h" />
     <ClInclude Include="shaders\ps_scanline_filter.h" />
     <ClInclude Include="shaders\ps_xbrz_filter.h" />

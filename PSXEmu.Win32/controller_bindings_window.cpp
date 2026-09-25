@@ -927,7 +927,8 @@ namespace psxemu {
                 } else if (IsReservedKey(key)) {
                     self->SetStatus(BindingCodeLabel(kKeyboardDevice, key) +
                                     L" is taken by the emulator itself (Space pauses, F1-F8 load "
-                                    L"and save states). Press another key, or Escape.");
+                                    L"and save states, F11 is full screen). Press another key, "
+                                    L"or Escape.");
                 } else {
                     self->Bind(self->capturing_, key);
                 }

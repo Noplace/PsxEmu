@@ -193,25 +193,27 @@ namespace psxemu {
                                   this);
         if (window_ == nullptr)
             return false;
-        return CreateGlSurface(instance);
+        return CreateRenderSurfaces(instance);
     }
 
-    // The window OpenGL draws into: a child covering the whole client area, hidden until the
-    // OpenGL engine shows it.
+    // The windows OpenGL and Vulkan draw into: one child each, covering the whole client area,
+    // hidden until that engine shows it.
     //
-    // It cannot draw into the main window itself. Both Direct3D engines present through a DXGI
+    // Neither can draw into the main window itself. Both Direct3D engines present through a DXGI
     // flip-model swap chain, and once one has presented to a window, Windows goes on showing that
     // window's last Direct3D frame: OpenGL drawing there afterwards is never seen. Switching the
     // renderer from Direct3D to OpenGL did exactly that - the picture froze on the last Direct3D
-    // frame. This window never has a swap chain.
+    // frame. How Vulkan presents is up to each GPU's driver, so it gets a window of its own too
+    // rather than depending on one. Neither window ever has a DXGI swap chain.
     //
-    // It is made here, on the UI thread, so that this thread owns it and answers its messages;
-    // the video thread only draws into it and shows or hides it with ShowWindowAsync. It is
-    // transparent to the mouse, so clicks and the cursor are the main window's as before.
-    bool App::CreateGlSurface(HINSTANCE instance) {
+    // They are made here, on the UI thread, so that this thread owns them and answers their
+    // messages; the video thread only draws into them and shows or hides them with
+    // ShowWindowAsync. They are transparent to the mouse, so clicks and the cursor are the main
+    // window's as before.
+    bool App::CreateRenderSurfaces(HINSTANCE instance) {
         WNDCLASSEXW surface_class = {};
         surface_class.cbSize = sizeof(surface_class);
-        // CS_OWNDC: the OpenGL engine keeps the window's DC for as long as its context lives.
+        // CS_OWNDC: the OpenGL engine keeps its window's DC for as long as its context lives.
         surface_class.style = CS_OWNDC;
         surface_class.lpfnWndProc = [](HWND window, UINT message, WPARAM wparam,
                                        LPARAM lparam) -> LRESULT {
@@ -219,21 +221,25 @@ namespace psxemu {
                 case WM_NCHITTEST:
                     return HTTRANSPARENT;
                 case WM_ERASEBKGND:
-                    return 1;   // OpenGL covers every pixel
+                    return 1;   // the engine covers every pixel
             }
             return DefWindowProcW(window, message, wparam, lparam);
         };
         surface_class.hInstance = instance;
-        surface_class.lpszClassName = kGlSurfaceClass;
+        surface_class.lpszClassName = kRenderSurfaceClass;
         if (RegisterClassExW(&surface_class) == 0)
             return false;
 
         RECT client = {};
         GetClientRect(window_, &client);
-        gl_surface_ = CreateWindowExW(0, kGlSurfaceClass, L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0,
-                                      client.right, client.bottom, window_, nullptr, instance,
-                                      nullptr);
-        return gl_surface_ != nullptr;
+        for (HWND* surface : { &gl_surface_, &vk_surface_ }) {
+            *surface = CreateWindowExW(0, kRenderSurfaceClass, L"", WS_CHILD | WS_CLIPSIBLINGS, 0,
+                                       0, client.right, client.bottom, window_, nullptr, instance,
+                                       nullptr);
+            if (*surface == nullptr)
+                return false;
+        }
+        return true;
     }
 
     bool App::CreateMachine() {
@@ -374,7 +380,7 @@ namespace psxemu {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
                 auto presenter = std::make_unique<D3DPresenter>(
-                    window_, gl_surface_,
+                    RenderWindows{ window_, gl_surface_, vk_surface_ },
                     [this](std::function<void()> work) { PostToUi(std::move(work)); });
                 if (!presenter->Open(start_renderer, start_filter)) {
                     PostToUi([this] {
@@ -774,8 +780,8 @@ namespace psxemu {
             // d3d11) as well as a stray click on a greyed item - either way, say why rather than
             // doing nothing.
             ShowWarning(window_,
-                        L"Filters need the Direct3D 12 or OpenGL renderer. Switch renderer "
-                        L"first (Settings > Video > Renderer).");
+                        L"Filters need the Direct3D 12, OpenGL or Vulkan renderer. Switch "
+                        L"renderer first (Settings > Video > Renderer).");
             return;
         }
         config_.video_filter = key;
@@ -1517,11 +1523,13 @@ namespace psxemu {
                 if (app != nullptr && app->video_ != nullptr && wparam != SIZE_MINIMIZED) {
                     const int width = LOWORD(lparam);
                     const int height = HIWORD(lparam);
-                    // The OpenGL surface follows the client area here, on the thread that owns
-                    // it, before the video thread hears of the new size.
-                    if (app->gl_surface_ != nullptr)
-                        SetWindowPos(app->gl_surface_, nullptr, 0, 0, width, height,
-                                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+                    // The OpenGL and Vulkan surfaces follow the client area here, on the thread
+                    // that owns them, before the video thread hears of the new size.
+                    for (HWND surface : { app->gl_surface_, app->vk_surface_ }) {
+                        if (surface != nullptr)
+                            SetWindowPos(surface, nullptr, 0, 0, width, height,
+                                         SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
+                    }
                     // The swap chain belongs to the video thread; resizing it from here would be
                     // two threads in one device. It shows the current frame again afterwards, so
                     // the window is not left stretched until the next one arrives.
@@ -1582,6 +1590,24 @@ namespace psxemu {
                     app->OnKeyDown(wparam);
                 return 0;
 
+            // Alt+Enter: the full-screen key almost every PC game and emulator uses. It arrives
+            // as a system key, since Alt is held; anything else with Alt keeps its usual meaning
+            // (Alt alone opens the menu bar). Bit 29 is "Alt is down"; bit 30 set means a repeat,
+            // which would toggle it back and forth for as long as the keys are held.
+            case WM_SYSKEYDOWN:
+                if (app != nullptr && wparam == VK_RETURN && (lparam & (1 << 29)) != 0) {
+                    if ((lparam & (1 << 30)) == 0 && !app->stopping_)
+                        app->SetFullscreen(!app->fullscreen_);
+                    return 0;
+                }
+                break;
+
+            // Handled, so Alt+Enter does not also beep for a menu mnemonic it did not find.
+            case WM_SYSCHAR:
+                if (wparam == VK_RETURN)
+                    return 0;
+                break;
+
             case WM_CLOSE:
                 // Every thread is stopped before the window goes: the video thread has a swap
                 // chain on it, and the machine has a report to post to it.
@@ -1600,9 +1626,46 @@ namespace psxemu {
         return DefWindowProcW(window, message, wparam, lparam);
     }
 
+    // Borderless full screen, the way current games do it: the window loses its frame and its menu
+    // bar and covers the monitor it is on, and every renderer simply follows the new client size
+    // through WM_SIZE. No exclusive mode, so Alt+Tab, other windows and a second monitor behave
+    // as they do with any window. The menu bar is kept in a window property while it is off, and
+    // MenuBar() finds it there, so ticks made meanwhile are right when it comes back.
+    void App::SetFullscreen(bool on) {
+        if (on == fullscreen_ || window_ == nullptr)
+            return;
+        const LONG_PTR style = GetWindowLongPtrW(window_, GWL_STYLE);
+        if (on) {
+            MONITORINFO monitor = { sizeof(monitor) };
+            if (!GetWindowPlacement(window_, &windowed_placement_) ||
+                !GetMonitorInfoW(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST), &monitor))
+                return;
+            SetPropW(window_, kDetachedMenuProp, GetMenu(window_));
+            SetMenu(window_, nullptr);
+            SetWindowLongPtrW(window_, GWL_STYLE, (style & ~WS_OVERLAPPEDWINDOW) | WS_POPUP);
+            const RECT& area = monitor.rcMonitor;
+            SetWindowPos(window_, HWND_TOP, area.left, area.top, area.right - area.left,
+                         area.bottom - area.top, SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+        } else {
+            SetWindowLongPtrW(window_, GWL_STYLE, (style & ~WS_POPUP) | WS_OVERLAPPEDWINDOW);
+            SetMenu(window_, static_cast<HMENU>(GetPropW(window_, kDetachedMenuProp)));
+            RemovePropW(window_, kDetachedMenuProp);
+            SetWindowPlacement(window_, &windowed_placement_);
+            SetWindowPos(window_, nullptr, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
+                             SWP_FRAMECHANGED);
+        }
+        fullscreen_ = on;
+        TickFullscreen(window_, on);
+    }
+
     void App::OnKeyDown(WPARAM key) {
         if (stopping_)
             return;
+        if (key == VK_F11)
+            SetFullscreen(!fullscreen_);
+        if (key == VK_ESCAPE && fullscreen_)
+            SetFullscreen(false);
         if (key == VK_SPACE)
             SetUserPaused(!paused_by_user_);
         // F1-F8: plain loads that slot, Ctrl+ saves it. Both also become the slot the Save
@@ -1759,9 +1822,13 @@ namespace psxemu {
                 break;
             }
 
+            case kCommandFullscreen:
+                SetFullscreen(!fullscreen_);
+                break;
+
             case kCommandViewVram: {
                 view_vram_ = !view_vram_;
-                HMENU bar = GetMenu(window_);
+                HMENU bar = MenuBar(window_);
                 if (bar != nullptr) {
                     CheckMenuItem(bar, static_cast<UINT>(kCommandViewVram),
                                   MF_BYCOMMAND | (view_vram_ ? MF_CHECKED : MF_UNCHECKED));

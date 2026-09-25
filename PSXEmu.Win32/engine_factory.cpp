@@ -21,10 +21,12 @@
 #include "d3d11_presenter.h"
 #include "d3d12_graphics_engine.h"
 #include "opengl_engine.h"
+#include "vulkan_engine.h"
 #include "win32_dialogs.h"
 #include "audio/wasapiaudioengine.h"
 #include "audio/dsoundaudioengine.h"
 #include "shaders/glsl_filters.h"
+#include "shaders/spirv_filters.h"
 #include "shaders/legacy_shaders.h"
 #include "shaders/ps_scanline_filter.h"
 #include "shaders/ps_xbrz_filter.h"
@@ -34,8 +36,9 @@
 
 namespace psxemu {
 
-    std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred, HWND window,
-                                                          HWND gl_window, int width, int height,
+    std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred,
+                                                          const RenderWindows& windows,
+                                                          int width, int height,
                                                           std::string* active_backend,
                                                           std::wstring* warning) {
         if (warning != nullptr)
@@ -46,9 +49,13 @@ namespace psxemu {
                 engine = std::make_unique<D3D12GraphicsEngine>();
             else if (backend == GraphicsBackend::kOpenGL)
                 engine = std::make_unique<OpenGLGraphicsEngine>();
+            else if (backend == GraphicsBackend::kVulkan)
+                engine = std::make_unique<VulkanGraphicsEngine>();
             else
                 engine = std::make_unique<psxemu::D3D11Presenter>();
-            const HWND target = backend == GraphicsBackend::kOpenGL ? gl_window : window;
+            const HWND target = backend == GraphicsBackend::kOpenGL   ? windows.opengl
+                                : backend == GraphicsBackend::kVulkan ? windows.vulkan
+                                                                      : windows.main;
             if (target != nullptr && engine->Initialize(target, width, height))
                 return engine;
             return nullptr;
@@ -57,6 +64,7 @@ namespace psxemu {
             switch (backend) {
                 case GraphicsBackend::kD3D12: return L"Direct3D 12";
                 case GraphicsBackend::kOpenGL: return L"OpenGL 3.3";
+                case GraphicsBackend::kVulkan: return L"Vulkan";
                 default: return L"Direct3D 11";
             }
         };
@@ -67,7 +75,8 @@ namespace psxemu {
         }
 
         for (const GraphicsBackend fallback :
-             { GraphicsBackend::kD3D11, GraphicsBackend::kD3D12, GraphicsBackend::kOpenGL }) {
+             { GraphicsBackend::kD3D11, GraphicsBackend::kD3D12, GraphicsBackend::kOpenGL,
+               GraphicsBackend::kVulkan }) {
             if (fallback == preferred)
                 continue;
             if (std::unique_ptr<IGraphicsEngine> engine = try_backend(fallback)) {
@@ -90,6 +99,8 @@ namespace psxemu {
             return GraphicsBackend::kD3D12;
         if (key == "opengl")
             return GraphicsBackend::kOpenGL;
+        if (key == "vulkan")
+            return GraphicsBackend::kVulkan;
         return GraphicsBackend::kD3D11;
     }
 
@@ -97,11 +108,26 @@ namespace psxemu {
         switch (backend) {
             case GraphicsBackend::kD3D12: return "d3d12";
             case GraphicsBackend::kOpenGL: return "opengl";
+            case GraphicsBackend::kVulkan: return "vulkan";
             default: return "d3d11";
         }
     }
 
     void LoadAllFilters(IGraphicsEngine& engine, GraphicsBackend backend) {
+        if (backend == GraphicsBackend::kVulkan) {
+            // The same GLSL, compiled ahead of time to SPIR-V: the first three are the engine's own
+            // (vertex shader, pass-through, blit), the rest the filters, under the same keys.
+            for (size_t i = 3; i < std::size(kSpirvShaders); ++i) {
+                const SpirvShader& shader = kSpirvShaders[i];
+                engine.LoadCustomPixelShader(shader.key,
+                                             reinterpret_cast<const uint8_t*>(shader.code),
+                                             shader.words * sizeof(uint32_t));
+            }
+            engine.LoadShaderChain("superxbr", { { "superxbr_pass0", 2 },
+                                                 { "superxbr_pass1", 2 },
+                                                 { "superxbr_pass2", 2 } });
+            return;
+        }
         if (backend == GraphicsBackend::kOpenGL) {
             // The GLSL ports, under the same keys. A Super-xBR pass is joined from its pieces.
             for (const GlslFilter& filter : kGlslFilters) {
