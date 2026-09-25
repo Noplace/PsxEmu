@@ -33,6 +33,7 @@
 // silently remaps the settings file.
 
 #include "framework.h"
+#include "platform/input_bindings.h"   // PadInput, the gamepad defaults in kKeyBindings
 
 namespace psxemu {
 
@@ -42,6 +43,7 @@ namespace psxemu {
 
     inline constexpr wchar_t kWindowClass[] = L"PSXEmuWindow";
     inline constexpr wchar_t kWindowTitle[] = L"PSXEmu";
+    inline constexpr wchar_t kGlSurfaceClass[] = L"PSXEmuGLSurface";
 
     // ---------------------------------------------------------------------------------------------
     // Menu command ids
@@ -66,7 +68,7 @@ namespace psxemu {
         kCommandAudioBackendFirst,
         kCommandAudioBackendLast = kCommandAudioBackendFirst + 1,   // WASAPI, DirectSound
         kCommandRendererFirst,
-        kCommandRendererLast = kCommandRendererFirst + 1,   // Direct3D 11, 12
+        kCommandRendererLast = kCommandRendererFirst + 2,   // Direct3D 11, 12, OpenGL
         kCommandFilterFirst,
         kCommandFilterLast = kCommandFilterFirst + 9,   // None + 9 filters
         kCommandViewVram,
@@ -121,6 +123,9 @@ namespace psxemu {
         kCommandMultitapCardFirst,
         kCommandMultitapCardLast = kCommandMultitapCardFirst + 17,   // 2 ports x 3 cards x 3 actions
         kCommandDebugger,
+        // Settings > Input > Controller Bindings. kCommandKeyBindings above still opens the older
+        // keyboard-only list, which is no longer on the menu.
+        kCommandControllerBindings,
         kCommandExit,
     };
 
@@ -182,7 +187,7 @@ namespace psxemu {
     // EmuConfig::kValidMouseDpis holds them. Only "hardware" reads this.
     inline constexpr int kMouseDpiChoices[] = { 400, 800, 1600, 3200 };
 
-    // The two renderer choices, in the order the Video > Renderer menu and
+    // The renderer choices, in the order the Video > Renderer menu and
     // EmuConfig::kValidGraphicsBackends both list them.
     struct BackendChoice { const char* key; const wchar_t* label; };
 
@@ -196,7 +201,14 @@ namespace psxemu {
     inline constexpr BackendChoice kBackendChoices[] = {
         { "d3d11", L"Direct3D &11" },
         { "d3d12", L"Direct3D &12" },
+        { "opengl", L"&OpenGL" },
     };
+
+    // Whether a renderer runs the video filters: Direct3D 12 does, from HLSL, and OpenGL does, from
+    // the GLSL ports of the same shaders. Direct3D 11 has none.
+    inline bool RendererHasFilters(const std::string& key) {
+        return key == "d3d12" || key == "opengl";
+    }
 
     // The filter choices - None plus the ones ported from GBAEmu (see shaders/) and the multi-pass
     // Super-xBR, in the order the Video > Filter menu and EmuConfig::kValidVideoFilters both list them. Only D3D12 supports
@@ -338,32 +350,72 @@ namespace psxemu {
     inline constexpr uint32_t kAnalogKey = 1u << 16;
 
     struct KeyBinding {
-        int key;
+        int key;           // the keyboard default
+        int pad;           // the gamepad default, a utilities::PadInput
         uint32_t button;   // a Sio::k* bit, or kAnalogKey
         const char* setting;
         const wchar_t* label;
     };
 
+    // The gamepad defaults are the layout gamepad.h used to hard-wire: by position, so A (the
+    // bottom face button) is Cross; the triggers are L2/R2; Back is Select. A pad has no spare
+    // button for ANALOG, and the keyboard has no stick to press, so each leaves one unbound.
+    // L3 and R3 came last, after the settings file already held the rest, so they sit at the end
+    // rather than beside L1/L2.
     // clang-format off
     inline constexpr KeyBinding kKeyBindings[] = {
-        { VK_UP,     emulation::psx::Sio::kUp,       "key_up",       L"Up" },
-        { VK_DOWN,   emulation::psx::Sio::kDown,     "key_down",     L"Down" },
-        { VK_LEFT,   emulation::psx::Sio::kLeft,     "key_left",     L"Left" },
-        { VK_RIGHT,  emulation::psx::Sio::kRight,    "key_right",    L"Right" },
-        { 'X',       emulation::psx::Sio::kCross,    "key_cross",    L"Cross" },
-        { 'Z',       emulation::psx::Sio::kSquare,   "key_square",   L"Square" },
-        { 'S',       emulation::psx::Sio::kCircle,   "key_circle",   L"Circle" },
-        { 'A',       emulation::psx::Sio::kTriangle, "key_triangle", L"Triangle" },
-        { 'Q',       emulation::psx::Sio::kL1,       "key_l1",       L"L1" },
-        { 'W',       emulation::psx::Sio::kR1,       "key_r1",       L"R1" },
-        { '1',       emulation::psx::Sio::kL2,       "key_l2",       L"L2" },
-        { '2',       emulation::psx::Sio::kR2,       "key_r2",       L"R2" },
-        { VK_RETURN, emulation::psx::Sio::kStart,    "key_start",    L"Start" },
-        { VK_SHIFT,  emulation::psx::Sio::kSelect,   "key_select",   L"Select" },
-        { 'E',       kAnalogKey,                     "key_analog",   L"ANALOG" },
+        { VK_UP,     utilities::kPadDpadUp,    emulation::psx::Sio::kUp,       "key_up",       L"Up" },
+        { VK_DOWN,   utilities::kPadDpadDown,  emulation::psx::Sio::kDown,     "key_down",     L"Down" },
+        { VK_LEFT,   utilities::kPadDpadLeft,  emulation::psx::Sio::kLeft,     "key_left",     L"Left" },
+        { VK_RIGHT,  utilities::kPadDpadRight, emulation::psx::Sio::kRight,    "key_right",    L"Right" },
+        { 'X',       utilities::kPadA,         emulation::psx::Sio::kCross,    "key_cross",    L"Cross" },
+        { 'Z',       utilities::kPadX,         emulation::psx::Sio::kSquare,   "key_square",   L"Square" },
+        { 'S',       utilities::kPadB,         emulation::psx::Sio::kCircle,   "key_circle",   L"Circle" },
+        { 'A',       utilities::kPadY,         emulation::psx::Sio::kTriangle, "key_triangle", L"Triangle" },
+        { 'Q',       utilities::kPadLB,        emulation::psx::Sio::kL1,       "key_l1",       L"L1" },
+        { 'W',       utilities::kPadRB,        emulation::psx::Sio::kR1,       "key_r1",       L"R1" },
+        { '1',       utilities::kPadLT,        emulation::psx::Sio::kL2,       "key_l2",       L"L2" },
+        { '2',       utilities::kPadRT,        emulation::psx::Sio::kR2,       "key_r2",       L"R2" },
+        { VK_RETURN, utilities::kPadStart,     emulation::psx::Sio::kStart,    "key_start",    L"Start" },
+        { VK_SHIFT,  utilities::kPadBack,      emulation::psx::Sio::kSelect,   "key_select",   L"Select" },
+        { 'E',       utilities::kPadNone,      kAnalogKey,                     "key_analog",   L"ANALOG" },
+        { 0,         utilities::kPadLS,        emulation::psx::Sio::kL3,       "key_l3",       L"L3" },
+        { 0,         utilities::kPadRS,        emulation::psx::Sio::kR3,       "key_r3",       L"R3" },
     };
     // clang-format on
     inline constexpr int kPadButtons = static_cast<int>(std::size(kKeyBindings));
+
+    // Where a set of bindings applies: a port's own pad, or one of a multitap's four players.
+    // Each has its own bindings for each device in kInputSourceChoices, stored as
+    // bind_<key>_<device> - except Port 1 on the keyboard, which is the key_* settings above and
+    // what the settings file has always held. `player` is -1 for the port itself.
+    struct BindingSlot {
+        const char* key;
+        const wchar_t* label;
+        int port;
+        int player;
+    };
+
+    // clang-format off
+    inline constexpr BindingSlot kBindingSlots[] = {
+        { "port1",  L"Port 1",                        0, -1 },
+        { "port2",  L"Port 2",                        1, -1 },
+        { "port1a", L"Port 1 Multitap - Player A",    0,  0 },
+        { "port1b", L"Port 1 Multitap - Player B",    0,  1 },
+        { "port1c", L"Port 1 Multitap - Player C",    0,  2 },
+        { "port1d", L"Port 1 Multitap - Player D",    0,  3 },
+        { "port2a", L"Port 2 Multitap - Player A",    1,  0 },
+        { "port2b", L"Port 2 Multitap - Player B",    1,  1 },
+        { "port2c", L"Port 2 Multitap - Player C",    1,  2 },
+        { "port2d", L"Port 2 Multitap - Player D",    1,  3 },
+    };
+    // clang-format on
+    inline constexpr int kBindingSlotCount = static_cast<int>(std::size(kBindingSlots));
+
+    // The slot a port's own pad, or a multitap player on it, reads its bindings from.
+    inline constexpr int BindingSlotFor(int port, int player) {
+        return player < 0 ? port : 2 + port * 4 + player;
+    }
 
     // How long a port stays empty when the Input menu swaps its controller for a different kind,
     // before the new one is plugged in - see App::SetControllerType. About a second, roughly what

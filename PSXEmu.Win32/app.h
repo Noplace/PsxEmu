@@ -46,6 +46,8 @@
 #include "debugger_window.h"
 #include "memcard_editor.h"
 #include "key_bindings_window.h"
+#include "controller_bindings.h"
+#include "controller_bindings_window.h"
 #include "engine_factory.h"
 #include "host/audio_output.h"
 #include "host/machine.h"
@@ -55,6 +57,7 @@
 
 #include <atomic>
 #include <functional>
+#include <mutex>
 
 namespace psxemu {
 
@@ -79,6 +82,7 @@ namespace psxemu {
 
         bool Initialize(HINSTANCE instance, int show_command);
         bool CreateAppWindow(HINSTANCE instance);
+        bool CreateGlSurface(HINSTANCE instance);
         bool CreateMachine();
 
         // Starts input, audio, video and the machine, in that order - outputs before the thing
@@ -186,10 +190,15 @@ namespace psxemu {
         void NoteRecentDisc(const std::string& path);
         void SaveRecentDiscs();
 
-        // Settings > Input > Keyboard Bindings. Kept in the settings file as key_up, key_cross
-        // and so on, and handed to the input thread whenever they change.
-        void LoadKeyBindings();
+        // Settings > Input > Controller Bindings. Kept in the settings file (controller_bindings.h);
+        // on every change the input thread is told which keys to read and the machine thread gets
+        // a fresh copy to map them through.
+        void LoadControllerBindings();
+        void SetControllerBindings(const ControllerBindings& bindings);
+        // The older keyboard-only list, off the menu now: Port 1 on the keyboard.
         void SetKeyBindings(const KeyMap& map);
+        // The bindings window's "Use for This Port".
+        void SetSlotSource(int slot, const std::string& key);
 
         void RefreshBiosMenu();
         void SelectBios(int index);
@@ -271,6 +280,8 @@ namespace psxemu {
 
         // Not owned - the window owns itself once created, and destroys itself on WM_DESTROY.
         HWND window_ = nullptr;
+        // The child window the OpenGL engine draws into (CreateGlSurface). This thread owns it.
+        HWND gl_surface_ = nullptr;
 
         // The emulated machine. Created here, then driven only by the machine's thread until
         // StopThreads has returned.
@@ -362,7 +373,14 @@ namespace psxemu {
 
         std::vector<std::string> recent_discs_;   // most recent first
 
-        KeyMap key_map_ = DefaultKeyMap();
+        // Every controller binding: the UI thread's copy, which the windows edit, and the machine
+        // thread's, swapped in whole under the mutex whenever the first changes. ApplyInput takes
+        // the pointer once a frame and maps through it without holding the lock.
+        ControllerBindings bindings_;
+        std::mutex machine_bindings_mutex_;
+        std::shared_ptr<const ControllerBindings> machine_bindings_ =
+            std::make_shared<const ControllerBindings>();
+        ControllerBindingsWindow controller_bindings_;
         KeyBindingsWindow key_bindings_;
     };
 

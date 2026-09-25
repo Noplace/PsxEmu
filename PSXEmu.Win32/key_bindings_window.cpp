@@ -17,6 +17,7 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "key_bindings_window.h"
+#include "app_icon.h"
 
 #include "win32_paths.h"   // Widen
 
@@ -65,6 +66,8 @@ namespace psxemu {
             window_class.lpfnWndProc = WindowProc;
             window_class.hInstance = instance;
             window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+            window_class.hIcon = AppIcon(instance);
+            window_class.hIconSm = AppIconSmall(instance);
             window_class.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
             window_class.lpszClassName = kBindingsClass;
             if (RegisterClassExW(&window_class) == 0)

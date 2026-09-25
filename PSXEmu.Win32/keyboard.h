@@ -22,14 +22,15 @@
 // port uses when its EmuConfig::input_source says "keyboard".
 //
 // Far smaller than the gamepad because there is nothing to open, nothing to lose, and no state to
-// keep: GetAsyncKeyState reads the current keyboard from anywhere, so this is one pass over the
-// key map and no class to hold between calls. Whether the result reaches the emulated machine is
-// the caller's decision - the app withholds buttons while the window is unfocused, exactly as it
-// does for a gamepad.
+// keep: GetAsyncKeyState reads the current keyboard from anywhere. The input thread reads every key
+// some binding uses and publishes which are held; which pad buttons that makes is worked out on
+// the machine's thread, per port (controller_bindings.h). Whether the result reaches the emulated
+// machine is the caller's decision - the app withholds buttons while the window is unfocused,
+// exactly as it does for a gamepad.
 //
-// The map is the person's: one key per pad button, in kKeyBindings order, 0 for none, stored in
+// A map is the person's: one key per pad button, in kKeyBindings order, 0 for none, stored in
 // psxemu.ini by name (key_cross = X) so the file stays readable, and edited in Settings > Input >
-// Keyboard Bindings.
+// Controller Bindings.
 
 #include "framework.h"
 #include "const.h"
@@ -47,14 +48,13 @@ namespace psxemu {
         return map;
     }
 
-    // The buttons held right now, as the Sio::k* bitmask - and kAnalogKey above them.
-    inline uint32_t ReadKeyboardPad(const KeyMap& map) {
-        uint32_t buttons = 0;
-        for (int i = 0; i < kPadButtons; ++i) {
-            if (map[i] != 0 && (GetAsyncKeyState(map[i]) & 0x8000))
-                buttons |= kKeyBindings[i].button;
-        }
-        return buttons;
+    // The gamepad's own defaults, in the same button order. A pad's map is a KeyMap too: the
+    // codes are utilities::PadInput values rather than virtual keys.
+    inline KeyMap DefaultPadMap() {
+        KeyMap map = {};
+        for (int i = 0; i < kPadButtons; ++i)
+            map[i] = kKeyBindings[i].pad;
+        return map;
     }
 
     // Keys the window already answers to: Space pauses, F1-F8 load and save states, Escape is

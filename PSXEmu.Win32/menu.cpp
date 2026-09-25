@@ -293,8 +293,10 @@ namespace psxemu {
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(analog), L"Press &ANALOG Button");
 
         AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(input, MF_STRING, static_cast<UINT_PTR>(kCommandKeyBindings),
-                    L"&Keyboard Bindings...");
+        // Which key or pad control presses which button, per port and device. The older
+        // keyboard-only list (kCommandKeyBindings) is still in the front end but no longer here.
+        AppendMenuW(input, MF_STRING, static_cast<UINT_PTR>(kCommandControllerBindings),
+                    L"&Controller Bindings...");
 
         // Which API the sound goes out through. Beside the volume rather than in place of it, the
         // way Video holds Renderer and Filter side by side.
@@ -463,7 +465,7 @@ namespace psxemu {
         HMENU bar = GetMenu(window);
         if (bar == nullptr)
             return;
-        const bool filters_available = (backend == "d3d12");
+        const bool filters_available = RendererHasFilters(backend);
         for (size_t i = 0; i < std::size(kFilterChoices); ++i) {
             const UINT id = static_cast<UINT>(kCommandFilterFirst + i);
             const bool on = filters_available && (filter == kFilterChoices[i].key);

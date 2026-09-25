@@ -1,0 +1,6 @@
+// The front end's resources: the application icon, which is also the exe's icon in Explorer.
+// Everything else the front end shows - menus, windows, the controller picture - is built in code.
+
+#include "resource.h"
+
+IDI_APP_ICON ICON "Resource\\app_icon.ico"

@@ -17,6 +17,7 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "app.h"
+#include "app_icon.h"
 
 #include "keyboard.h"
 #include "menu.h"
@@ -138,8 +139,17 @@ namespace psxemu {
         ApplySettings();
         RefreshBiosMenu();
         LoadRecentDiscs();
-        LoadKeyBindings();
+        LoadControllerBindings();
         key_bindings_.Create(instance, window_, [this](const KeyMap& map) { SetKeyBindings(map); });
+        {
+            ControllerBindingsWindow::Host host;
+            host.config = [this]() -> const emulation::psx::EmuConfig& { return config_; };
+            host.on_change = [this](const ControllerBindings& bindings) {
+                SetControllerBindings(bindings);
+            };
+            host.set_source = [this](int slot, const std::string& key) { SetSlotSource(slot, key); };
+            controller_bindings_.Create(instance, window_, std::move(host));
+        }
 
         // Before the threads start, so this is still the only thread touching the machine.
         if (!command_line.disc.empty() && system_->LoadDisc(command_line.disc.c_str())) {
@@ -166,18 +176,64 @@ namespace psxemu {
         window_class.lpfnWndProc = WindowProc;
         window_class.hInstance = instance;
         window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        window_class.hIcon = AppIcon(instance);
+        window_class.hIconSm = AppIconSmall(instance);
         window_class.hbrBackground = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
         window_class.lpszClassName = kWindowClass;
         if (RegisterClassExW(&window_class) == 0)
             return false;
 
+        // WS_CLIPCHILDREN, so the window's own background never paints over the OpenGL surface.
         RECT bounds = { 0, 0, 640, 480 };
         AdjustWindowRect(&bounds, WS_OVERLAPPEDWINDOW, TRUE);
-        window_ =
-            CreateWindowExW(0, kWindowClass, kWindowTitle, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
-                            CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
-                            nullptr, CreateMainMenu(), instance, this);
-        return window_ != nullptr;
+        window_ = CreateWindowExW(0, kWindowClass, kWindowTitle,
+                                  WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
+                                  CW_USEDEFAULT, bounds.right - bounds.left,
+                                  bounds.bottom - bounds.top, nullptr, CreateMainMenu(), instance,
+                                  this);
+        if (window_ == nullptr)
+            return false;
+        return CreateGlSurface(instance);
+    }
+
+    // The window OpenGL draws into: a child covering the whole client area, hidden until the
+    // OpenGL engine shows it.
+    //
+    // It cannot draw into the main window itself. Both Direct3D engines present through a DXGI
+    // flip-model swap chain, and once one has presented to a window, Windows goes on showing that
+    // window's last Direct3D frame: OpenGL drawing there afterwards is never seen. Switching the
+    // renderer from Direct3D to OpenGL did exactly that - the picture froze on the last Direct3D
+    // frame. This window never has a swap chain.
+    //
+    // It is made here, on the UI thread, so that this thread owns it and answers its messages;
+    // the video thread only draws into it and shows or hides it with ShowWindowAsync. It is
+    // transparent to the mouse, so clicks and the cursor are the main window's as before.
+    bool App::CreateGlSurface(HINSTANCE instance) {
+        WNDCLASSEXW surface_class = {};
+        surface_class.cbSize = sizeof(surface_class);
+        // CS_OWNDC: the OpenGL engine keeps the window's DC for as long as its context lives.
+        surface_class.style = CS_OWNDC;
+        surface_class.lpfnWndProc = [](HWND window, UINT message, WPARAM wparam,
+                                       LPARAM lparam) -> LRESULT {
+            switch (message) {
+                case WM_NCHITTEST:
+                    return HTTRANSPARENT;
+                case WM_ERASEBKGND:
+                    return 1;   // OpenGL covers every pixel
+            }
+            return DefWindowProcW(window, message, wparam, lparam);
+        };
+        surface_class.hInstance = instance;
+        surface_class.lpszClassName = kGlSurfaceClass;
+        if (RegisterClassExW(&surface_class) == 0)
+            return false;
+
+        RECT client = {};
+        GetClientRect(window_, &client);
+        gl_surface_ = CreateWindowExW(0, kGlSurfaceClass, L"", WS_CHILD | WS_CLIPSIBLINGS, 0, 0,
+                                      client.right, client.bottom, window_, nullptr, instance,
+                                      nullptr);
+        return gl_surface_ != nullptr;
     }
 
     bool App::CreateMachine() {
@@ -318,7 +374,8 @@ namespace psxemu {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
                 auto presenter = std::make_unique<D3DPresenter>(
-                    window_, [this](std::function<void()> work) { PostToUi(std::move(work)); });
+                    window_, gl_surface_,
+                    [this](std::function<void()> work) { PostToUi(std::move(work)); });
                 if (!presenter->Open(start_renderer, start_filter)) {
                     PostToUi([this] {
                         ShowError(window_, L"Could not create a Direct3D device.");
@@ -356,7 +413,7 @@ namespace psxemu {
         machine_ = std::make_unique<Machine>(system_.get(), &video_->frames(), &audio_->samples(),
                                              hooks);
         input_ = std::make_unique<InputThread>(&machine_->input(), window_);
-        input_->SetKeyMap(key_map_);
+        input_->SetKeysInUse(KeysInUse(bindings_));
 
         input_->Start();
         audio_->Start(config_.audio_backend);
@@ -536,9 +593,18 @@ namespace psxemu {
             system.sio().set_controller_type(port, controller_type[port]);
         }
 
+        // The bindings as of this frame. The UI swaps in a new copy whenever one changes; the lock
+        // is held only long enough to take the pointer.
+        std::shared_ptr<const ControllerBindings> bindings;
+        {
+            std::lock_guard<std::mutex> lock(machine_bindings_mutex_);
+            bindings = machine_bindings_;
+        }
+
         // What one source (the keyboard, or one of the four XInput slots) is doing right now, in
-        // Sio's own vocabulary. Shared by the single-pad path below and each of a Multitap's four
-        // players.
+        // Sio's own vocabulary, through the bindings of the slot it is playing - a port, or one of
+        // a multitap's players (BindingSlotFor). Shared by the single-pad path below and each of
+        // a Multitap's four players.
         struct SourceReading {
             bool connected = true;   // the keyboard is always "there"
             uint16_t buttons = 0;
@@ -546,21 +612,21 @@ namespace psxemu {
             uint8_t left_x = 0x80, left_y = 0x80, right_x = 0x80, right_y = 0x80;
             int rumble_target = -1;   // which XInput slot feels this reading's motors
         };
-        auto read_source = [&input](InputSource source) {
+        auto read_source = [&input, &bindings](InputSource source, int slot) {
             SourceReading r;
-            int pad = -1;
-            switch (source) {
-                case InputSource::kKeyboard:
-                    r.buttons = input.focused ? static_cast<uint16_t>(input.keyboard) : 0;
-                    r.analog = input.focused && (input.keyboard & kAnalogKey) != 0;
-                    return r;
-                case InputSource::kGamepad1: pad = 0; break;
-                case InputSource::kGamepad2: pad = 1; break;
-                case InputSource::kGamepad3: pad = 2; break;
-                case InputSource::kGamepad4: pad = 3; break;
+            const int device = static_cast<int>(source);
+            const KeyMap& map = bindings->map[slot][device];
+            if (source == InputSource::kKeyboard) {
+                const uint32_t pressed = input.focused ? MapKeyboard(map, input.keys) : 0;
+                r.buttons = static_cast<uint16_t>(pressed);
+                r.analog = (pressed & kAnalogKey) != 0;
+                return r;
             }
+            const int pad = device - 1;   // Gamepad 1 is XInput slot 0
+            const uint32_t pressed = input.focused ? MapGamepad(map, input.pads[pad].inputs) : 0;
             r.connected = input.pads[pad].connected;
-            r.buttons = input.focused ? input.pads[pad].buttons : 0;
+            r.buttons = static_cast<uint16_t>(pressed);
+            r.analog = (pressed & kAnalogKey) != 0;
             r.left_x = input.pads[pad].left_x;
             r.left_y = input.pads[pad].left_y;
             r.right_x = input.pads[pad].right_x;
@@ -614,7 +680,8 @@ namespace psxemu {
             // choice. Clicks only count while the window has focus: the click that gives it focus
             // is a shot, the ones on some other window are not.
             if (controller_type[port] == Sio::kGunCon) {
-                const SourceReading r = read_source(ParseInputSource(config.input_source[port]));
+                const SourceReading r = read_source(ParseInputSource(config.input_source[port]),
+                                                    BindingSlotFor(port, -1));
                 const bool focused = input.focused;
                 const bool offscreen = focused && input.mouse_right;
                 const bool trigger = focused && (input.mouse_left || input.mouse_right);
@@ -640,7 +707,7 @@ namespace psxemu {
                     }
                     const InputSource source =
                         ParseInputSource(config.multitap_player_source[port][player]);
-                    const SourceReading r = read_source(source);
+                    const SourceReading r = read_source(source, BindingSlotFor(port, player));
                     system.sio().set_connected(port, r.connected, player);
                     system.sio().set_buttons(port, r.buttons, player);
                     system.sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y, player);
@@ -651,7 +718,7 @@ namespace psxemu {
             }
 
             const InputSource source = ParseInputSource(config.input_source[port]);
-            const SourceReading r = read_source(source);
+            const SourceReading r = read_source(source, BindingSlotFor(port, -1));
             system.sio().set_connected(port, r.connected);
             system.sio().set_buttons(port, r.buttons);
             system.sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y);
@@ -702,12 +769,12 @@ namespace psxemu {
     void App::UpdateFilterMenu() { TickFilter(window_, current_backend_, current_filter_); }
 
     void App::SetFilter(const std::string& key) {
-        if (current_backend_ != "d3d12") {
+        if (!RendererHasFilters(current_backend_)) {
             // Reachable from the settings file (a saved filter with graphics_backend reverted to
             // d3d11) as well as a stray click on a greyed item - either way, say why rather than
             // doing nothing.
             ShowWarning(window_,
-                        L"Filters require the Direct3D 12 renderer. Switch renderer "
+                        L"Filters need the Direct3D 12 or OpenGL renderer. Switch renderer "
                         L"first (Settings > Video > Renderer).");
             return;
         }
@@ -767,6 +834,7 @@ namespace psxemu {
             PostToMachine([this](Machine& machine) { SyncMultitapCards(machine.system(), false); });
         // Whether any port is a mouse decides whether the cursor may be captured.
         SendMouseSettingsToInput();
+        controller_bindings_.OnConfigChanged();
     }
 
     void App::UpdateInputSourceMenu() {
@@ -778,6 +846,7 @@ namespace psxemu {
         UpdateInputSourceMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
+        controller_bindings_.OnConfigChanged();
     }
 
     void App::UpdateMultitapTypeMenu() {
@@ -791,6 +860,7 @@ namespace psxemu {
         UpdateMultitapTypeMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
+        controller_bindings_.OnConfigChanged();
     }
 
     void App::UpdateMultitapSourceMenu() {
@@ -805,6 +875,7 @@ namespace psxemu {
         UpdateMultitapTypeMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
+        controller_bindings_.OnConfigChanged();
     }
 
     void App::UpdateFrameLimiterMenu() { TickFrameLimiter(window_, config_.frame_limiter); }
@@ -1446,6 +1517,11 @@ namespace psxemu {
                 if (app != nullptr && app->video_ != nullptr && wparam != SIZE_MINIMIZED) {
                     const int width = LOWORD(lparam);
                     const int height = HIWORD(lparam);
+                    // The OpenGL surface follows the client area here, on the thread that owns
+                    // it, before the video thread hears of the new size.
+                    if (app->gl_surface_ != nullptr)
+                        SetWindowPos(app->gl_surface_, nullptr, 0, 0, width, height,
+                                     SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
                     // The swap chain belongs to the video thread; resizing it from here would be
                     // two threads in one device. It shows the current frame again afterwards, so
                     // the window is not left stretched until the next one arrives.
@@ -1623,8 +1699,14 @@ namespace psxemu {
                 NewMemoryCard(command == kCommandCreateMemoryCardSlot1 ? 0 : 4);
                 break;
 
+            case kCommandControllerBindings:
+                controller_bindings_.Show(bindings_);
+                break;
+
+            // Off the menu since Controller Bindings replaced it, but still here: Port 1 on the
+            // keyboard, as a plain list.
             case kCommandKeyBindings:
-                key_bindings_.Show(key_map_);
+                key_bindings_.Show(bindings_.map[0][kKeyboardDevice]);
                 break;
 
             case kCommandAnalogButtonPort1:
@@ -1849,29 +1931,44 @@ namespace psxemu {
         }
     }
 
-    // A button missing from the file keeps its default; one present but empty stays unbound -
-    // clearing a key in the editor has to survive a restart.
-    void App::LoadKeyBindings() {
-        for (int i = 0; i < kPadButtons; ++i) {
-            const std::string name = settings_.GetString(
-                kKeyBindings[i].setting, KeyName(kKeyBindings[i].key));
-            key_map_[i] = KeyFromName(name);
-        }
+    void App::LoadControllerBindings() {
+        LoadBindings(settings_, &bindings_);
+        std::lock_guard<std::mutex> lock(machine_bindings_mutex_);
+        machine_bindings_ = std::make_shared<const ControllerBindings>(bindings_);
     }
 
-    void App::SetKeyBindings(const KeyMap& map) {
-        key_map_ = map;
+    void App::SetControllerBindings(const ControllerBindings& bindings) {
+        bindings_ = bindings;
         if (input_ != nullptr)
-            input_->SetKeyMap(key_map_);
+            input_->SetKeysInUse(KeysInUse(bindings_));
+        {
+            std::lock_guard<std::mutex> lock(machine_bindings_mutex_);
+            machine_bindings_ = std::make_shared<const ControllerBindings>(bindings_);
+        }
         if (settings_path_.empty())
             return;
         emulation::psx::SettingsFile updated = settings_;
-        for (int i = 0; i < kPadButtons; ++i)
-            updated.SetString(kKeyBindings[i].setting, KeyName(key_map_[i]));
+        StoreBindings(&updated, bindings_);
         if (updated.Serialise() == settings_.Serialise())
             return;
         settings_ = updated;
         settings_.Save(settings_path_);
+    }
+
+    void App::SetKeyBindings(const KeyMap& map) {
+        ControllerBindings bindings = bindings_;
+        bindings.map[0][kKeyboardDevice] = map;
+        SetControllerBindings(bindings);
+    }
+
+    void App::SetSlotSource(int slot, const std::string& key) {
+        if (slot < 0 || slot >= kBindingSlotCount)
+            return;
+        const BindingSlot& place = kBindingSlots[slot];
+        if (place.player < 0)
+            SetInputSource(place.port, key);
+        else
+            SetMultitapSource(place.port, place.player, key);
     }
 
     void App::LoadRecentDiscs() {

@@ -13,6 +13,7 @@ PsxEmu/
       frame_limiter.h          holds a front end's loop to the machine's frame rate
       speed_resampler.h        stretches the SPU's output to the emulation speed
       mouse_scaling.h          what a host mouse's movement is worth to a PSX mouse
+      input_bindings.h         a gamepad's controls as bits, and a binding map as arithmetic and text
     host/                      the only thread-aware part of Core - Docs/Threading-Plan.md
       doorbell.h               one per thread; everything that gives it work rings it
       request_queue.h          the one door into something another thread owns
@@ -83,6 +84,7 @@ PsxEmu/
       timing_test.cpp          bus timing against a real console (cpu/access-time)
       host_test.cpp            the threads and channels in host/
       frame_limiter_test.cpp  speed_resampler_test.cpp  letterbox_test.cpp
+      bindings_test.cpp        keys and pad controls onto PSX buttons, and the settings they live in
       wav_pitch.cpp            the note in a WAV boot_runner wrote
       make_test_disc.cpp       writes a synthetic disc image
       make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format
@@ -100,16 +102,23 @@ PsxEmu/
     input_thread.h/.cpp        the input thread: pads, keyboard, raw mouse at 1 kHz
     win32_paths.h/.cpp         command line, BIOS, settings file, data root, disc-derived names
     win32_dialogs.h/.cpp       the file pickers and the message boxes
+    app_icon.h                 the application icon, for every window class
+    psxemu.rc  resource.h      compiles Resource/app_icon.ico into the exe
     console_window.h/.cpp      Emulation > BIOS Console: the BIOS's putchar/puts/printf output
     memcard_editor.h/.cpp      File > Memory Cards > Memory Card Editor, both slots side by side
-    keyboard.h                 the keyboard as a digital pad, and key names for psxemu.ini
-    key_bindings_window.h/.cpp Settings > Input > Keyboard Bindings
+    keyboard.h                 key names for psxemu.ini, and the default keyboard and pad maps
+    controller_bindings.h      every binding, per port and device: defaults, psxemu.ini, mapping
+    controller_bindings_window.h/.cpp  Settings > Input > Controller Bindings: the drawn pad
+    key_bindings_window.h/.cpp the older keyboard-only list, kept but off the menu
     debugger_window.h/.cpp     Emulation > Debugger: disassembly, registers, breakpoints, stepping
-    gamepad.h                  one XInput slot: buttons, both sticks, both motors
+    gamepad.h                  one XInput slot: its controls, both sticks, both motors
     igraphicsengine.h          what a presenter has to be able to do
     d3d11_presenter.h/.cpp     uploads the core framebuffer and draws it; no filters
     d3d12_graphics_engine.h/.cpp   the same, plus the ported pixel-shader filters
-    shaders/                   filter shaders, compiled into headers by the build
+    opengl_engine.h/.cpp       the same again in OpenGL 3.3, on a child window of its own
+    gl_functions.h             the OpenGL past 1.1 the engine asks the driver for
+    shaders/                   filter shaders, compiled into headers by the build, and
+                               glsl_filters.h, the same filters in GLSL for OpenGL
   bios/                        the user's BIOS dump
   Docs/
   Build/                       MSBuild output
@@ -254,11 +263,14 @@ or `.mdf` image; a drive letter can
 be passed on the command line.
 
 Each of the two controller ports is fed from whatever Settings > Input > Port n
-Source says - the keyboard, or one of the two XInput pads - and holds whichever
-controller Settings > Input > Controller Port n says. The keyboard map is set in
-Settings > Input > Keyboard Bindings and kept in `psxemu.ini`; it starts as the
-table in `const.h`: arrows for the d-pad, X/Z/S/A for cross/square/circle/triangle,
-Q/W and 1/2 for the shoulders, Enter for start and Shift for select.
+Source says - the keyboard, or one of the four XInput pads - and holds whichever
+controller Settings > Input > Controller Port n says. Which key or pad control
+presses which button is set in Settings > Input > Controller Bindings, separately
+for each port, each multitap player and each device, and kept in `psxemu.ini`. It
+starts as the table in `const.h`: on the keyboard, arrows for the d-pad, X/Z/S/A
+for cross/square/circle/triangle, Q/W and 1/2 for the shoulders, Enter for start
+and Shift for select; on a pad, the Xbox layout by position (A is cross), the
+triggers for L2/R2 and Back for select.
 
 File > Recent Discs lists the last eight discs played, the most recent first.
 

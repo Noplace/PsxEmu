@@ -22,9 +22,13 @@
 namespace emulation {
 namespace host {
 
+// Raw rather than mapped: which pad button a control presses depends on the
+// port it is playing, and one pad can play more than one - so the machine's
+// thread maps it, through the bindings for that port (the front end's
+// ApplyInput).
 struct PadReading {
   bool connected = false;
-  uint16_t buttons = 0;   // Sio::k* bitmask
+  uint32_t inputs = 0;    // the controls held: bit n is utilities::PadInput n+1
   uint8_t left_x = 0x80;
   uint8_t left_y = 0x80;
   uint8_t right_x = 0x80;
@@ -34,8 +38,9 @@ struct PadReading {
 struct HostInput {
   static const int kPads = 4;   // XInput's slots, "Gamepad 1".."Gamepad 4"
 
-  uint32_t keyboard = 0;        // Sio::k* bitmask of the bound keys held, and the
-                                // ANALOG key in bit 16 (the front end's kAnalogKey)
+  // The keys held, one bit per virtual-key code (utilities::KeyHeld). Only
+  // the keys some binding uses are read; the rest stay clear.
+  uint32_t keys[8] = {};
   PadReading pads[kPads];
   bool mouse_left = false;
   bool mouse_right = false;

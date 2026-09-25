@@ -141,6 +141,14 @@ cl %FLAGS% /Fo:Temp\tools\obj_mousescale\ /Fe:Temp\tools\mouse_scaling_test.exe 
    PSXEmu.Core\tools\mouse_scaling_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
+rem Controller bindings: platform\input_bindings.h, and the front end's
+rem controller_bindings.h on top of it, for its inline code only - nothing of
+rem the front end is linked.
+if not exist Temp\tools\obj_bindings mkdir Temp\tools\obj_bindings
+cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_bindings\ /Fe:Temp\tools\bindings_test.exe ^
+   PSXEmu.Core\tools\bindings_test.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 rem The recompiler, which is being built beside the core rather than into it -
 rem nothing in psx\ includes any of this, and the emulator does not link it.
 rem Only the emitter files rec_test actually reaches are compiled; the rest of

@@ -54,8 +54,8 @@ that watches STAT's request bits closely rather than using DMA would not.
 ### Every harness is green
 
 cpu 297, gte 106, timer 70, sio 203, spu 144, gpu 67, mdec 85, media 350, mc 97, debug 174 - 1,593
-checks, no failures, and 2,175 across all seventeen harnesses (re-run
-2026-09-25, after bugs 78-106 - with the rasteriser threaded, now the default).
+checks, no failures, and 2,228 across all eighteen harnesses (re-run
+2026-09-25, after bugs 78-107 - with the rasteriser threaded, now the default).
 `host_test`'s two real-speed checks fail now and then on a busy host, before a
 change as well as after it; see Test-Suite.md. The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
@@ -499,7 +499,7 @@ unproven:
 ### Settings cover little
 
 `psxemu.ini` holds `audio_volume`, `audio_backend` (WASAPI or DirectSound),
-`graphics_backend` (D3D11 or D3D12), `video_filter`, controller type and input
+`graphics_backend` (D3D11, D3D12 or OpenGL), `video_filter`, controller type and input
 source per port, the multitap player sources and types, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `gpu_thread`,
 `gpu_transfer_timing`, `icache_timing`, `bios_file`,
@@ -507,9 +507,10 @@ source per port, the multitap player sources and types, `frame_limiter`,
 `sio1_to_console`, `mouse_motion` and `mouse_dpi` - twenty keys, which is
 every field `StoreConfig` writes.
 Beside those, the front end keeps its own keys in the same file: the eight
-most recent discs (`recent_disc_1`..`8`, File > Recent Discs) and the keyboard
-bindings (`key_up`, `key_cross` and so on, Settings > Input > Keyboard
-Bindings) - bug 70.
+most recent discs (`recent_disc_1`..`8`, File > Recent Discs) and the controller
+bindings - Port 1's keys as `key_up`, `key_cross` and so on (bug 70), and every
+other port and device as one `bind_<slot>_<device>` line, written only when it
+differs from the defaults (bug 107).
 
 `bios_file` is a filename rather than a path: the images live in
 `Documents\My Games\PSXEmu\bios`, which Settings > BIOS lists (anything in it
@@ -521,17 +522,20 @@ to boot.
 ### The front end is minimal
 
 A window, menus for disc, reset, pause, volume, video filter, controllers,
-which BIOS to boot and how fast to run (50-300%), D3D11 and D3D12 presenters,
+which BIOS to boot and how fast to run (50-300%), D3D11, D3D12 and OpenGL presenters,
 keyboard/XInput/mouse input, and a speed readout in the title bar (bug 49) that
 Emulation > Show Timings expands into where each frame's time went, and a BIOS
 console window (Emulation > BIOS Console, bug 66) showing what software prints
-through the BIOS, a memory card editor (bug 69), recent discs and a keyboard
-binding editor (bug 70), and a CPU debugger (Emulation > Debugger, bugs 71-75) with
-memory, watchpoints, a BIOS call log, a call stack, labels and device panes (see
+through the BIOS, a memory card editor (bug 69), recent discs, controller
+bindings (bug 107, which replaced bug 70's keyboard-only list), and a CPU
+debugger (Emulation > Debugger, bugs 71-75) with memory, watchpoints, a BIOS
+call log, a call stack, labels and device panes (see
 [Debugger-Plan.md](Debugger-Plan.md); PsyQ `.SYM` symbol files are not read yet) -
 and no settings dialog, deliberately:
-every setting is already in the menus. Only the keyboard is rebindable; an
-XInput pad's layout is fixed. Output a program sends to the serial port is
+every setting is already in the menus. Keys and pad controls are rebound per
+port and per device. Only XInput pads are read: a DualShock 4 or DualSense
+plugged in on its own, with nothing presenting it as an XInput pad, is not seen.
+Output a program sends to the serial port is
 shown when Emulation > Serial Port to Console is ticked, which puts it in the
 BIOS console window beside what the BIOS itself printed (bug 80). What a
 program sends to the expansion port's DUART directly is still not shown: those

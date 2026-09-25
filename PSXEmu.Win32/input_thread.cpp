@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #include "input_thread.h"
 
-#include "keyboard.h"
+#include "controller_bindings.h"
 #include "tools/letterbox.h"
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
@@ -60,7 +60,7 @@ namespace psxemu {
 
     InputThread::InputThread(emulation::host::InputExchange* exchange, HWND main_window)
         : exchange_(exchange), main_window_(main_window) {
-        SetKeyMap(DefaultKeyMap());
+        SetKeysInUse(KeysInUse(ControllerBindings()));
         // The window the cursor is recentred in, and Windows' own pointer settings, both of which
         // MouseMotion's modes need before the first poll.
         mouse_.SetWindow(main_window);
@@ -134,14 +134,15 @@ namespace psxemu {
 
             emulation::host::HostInput reading;
             reading.focused = (GetForegroundWindow() == main_window_);
-            KeyMap keys;
-            for (int i = 0; i < kPadButtons; ++i)
-                keys[i] = keys_[i].load(std::memory_order_relaxed);
-            reading.keyboard = ReadKeyboardPad(keys);
+            for (int key = 1; key < 256; ++key) {
+                if (keys_in_use_[key].load(std::memory_order_relaxed) &&
+                    (GetAsyncKeyState(key) & 0x8000) != 0)
+                    utilities::SetKeyHeld(reading.keys, key);
+            }
             for (int i = 0; i < emulation::host::HostInput::kPads; ++i) {
                 const Gamepad::State state = gamepads_[i].Poll();
                 reading.pads[i].connected = gamepads_[i].connected();
-                reading.pads[i].buttons = state.buttons;
+                reading.pads[i].inputs = state.inputs;
                 reading.pads[i].left_x = state.left_x;
                 reading.pads[i].left_y = state.left_y;
                 reading.pads[i].right_x = state.right_x;

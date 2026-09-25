@@ -119,6 +119,7 @@ class SettingsFile {
     values_[key] = s.str();
   }
   void SetString(const char* key, const std::string& v) { values_[key] = v; }
+  void Remove(const char* key) { values_.erase(key); }
 
  private:
   const std::string* Find(const char* key) const {

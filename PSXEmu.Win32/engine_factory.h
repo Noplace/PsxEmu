@@ -32,11 +32,16 @@
 
 namespace psxemu {
 
-    enum class GraphicsBackend { kD3D11, kD3D12 };
+    enum class GraphicsBackend { kD3D11, kD3D12, kOpenGL };
 
-    // Tries `preferred` first; if that engine's own device creation fails, tries the other one and
-    // warns that it did, rather than failing outright - a machine that can do one almost always can
-    // do the other. Only if both fail does this return null, which the caller treats as a hard
+    // The settings key ("d3d11", "d3d12", "opengl") as that enum; anything else is Direct3D 11,
+    // the default.
+    GraphicsBackend ParseGraphicsBackend(const std::string& key);
+    const char* GraphicsBackendKey(GraphicsBackend backend);
+
+    // Tries `preferred` first; if that engine's own device creation fails, tries the others in turn
+    // (Direct3D 11, then 12, then OpenGL) and warns that it did, rather than failing outright - a
+    // machine that can do one almost always can do another. Only if both fail does this return null, which the caller treats as a hard
     // failure (at startup) or a "could not switch, and could not go back either" one (mid session,
     // from the Video menu).
     //
@@ -47,15 +52,17 @@ namespace psxemu {
     // `*warning`, and the caller shows it. This runs on the video thread now, and a message box
     // from any thread but the window's is a wait on the window's thread - see Docs/Threading-
     // Plan.md's rules. Empty means nothing to say.
+    // The Direct3D engines draw into `window`, OpenGL into `gl_window` - see App::CreateGlSurface.
     std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred, HWND window,
-                                                          int width, int height,
+                                                          HWND gl_window, int width, int height,
                                                           std::string* active_backend,
                                                           std::wstring* warning);
 
-    // Compiles every ported filter into the engine at once - cheap (startup-cost D3DCompile calls,
-    // not per-frame work), so there is no reason to defer any of them until first selected. Only
-    // worth calling on an engine that supports filters at all; see IGraphicsEngine.
-    void LoadAllFilters(IGraphicsEngine& engine);
+    // Compiles every ported filter into the engine at once - cheap (startup-cost shader compiles,
+    // not per-frame work), so there is no reason to defer any of them until first selected. HLSL
+    // for Direct3D 12, the GLSL ports for OpenGL (shaders/glsl_filters.h), under the same keys.
+    // Only worth calling on an engine that supports filters at all; see RendererHasFilters.
+    void LoadAllFilters(IGraphicsEngine& engine, GraphicsBackend backend);
 
     enum class AudioBackend { kWasapi, kDirectSound };
 

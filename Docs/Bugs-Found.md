@@ -6528,3 +6528,198 @@ points to the editor's Import, instead of saying the file is the wrong size.
   - A raw save with no extension: a third row.
   - Inserting the `.gme` into a slot: the message naming it a DexDrive card.
   - The card file afterwards was still 131,072 bytes.
+
+## 107. Controller bindings: per port, per device, with the pad drawn
+
+Gaps.md: "Only the keyboard is rebindable; an XInput pad's layout is fixed."
+`gamepad.h` hard-wired the Xbox layout onto the PSX buttons. The keyboard had
+one map, shared by every port on the keyboard, so two players could not share
+one. A pad had no way to press ANALOG, and the keyboard had no L3 or R3.
+
+**What it is now.** Settings > Input > Controller Bindings replaces Keyboard
+Bindings on the menu.
+- **Choosing what to bind.** Pick a **port** (Port 1 or 2, or one of a
+  multitap's four players on either) and a **device** (the keyboard, or
+  Gamepad 1-4).
+- **The picture.** The window draws that port's controller with a line from
+  each button to a box holding what presses it. A DualShock or Dual Analog gets
+  sticks, L3/R3 and ANALOG; the original digital pad does not. A GunCon shows
+  only Cross and Circle, which are its A and B.
+- **Binding.** Click a box and press a key, or a pad control: a button, a
+  trigger, or a stick pushed one way. Right-click a box to clear it.
+- **The other buttons.**
+  - "Use for This Port" switches the port to the device being edited.
+  - "Copy to All Ports" gives every port the same layout for that device.
+- **Changes apply to the running game at once.**
+
+The window is drawn with GDI+, not loaded from an image, so there is no
+artwork to ship or license.
+
+**How it works underneath.**
+- **One map per slot and device**, ten slots by five devices
+  (`controller_bindings.h`). The arithmetic is `platform/input_bindings.h`,
+  which needs no Windows.
+- **The input thread publishes raw state.** Before, it mapped the keyboard
+  through one map and each pad through the fixed layout. Now it publishes which
+  keys are held, only the keys some binding uses, and which pad controls are
+  held (`HostInput`). The mapping moved to `App::ApplyInput` on the machine's
+  thread. It has to be there: which buttons a control presses depends on the
+  port it is playing, and one pad can play two.
+- **The machine thread gets a fresh copy of the bindings** under a mutex
+  whenever they change, and takes the pointer once a frame.
+- **The left stick still doubles as the d-pad**, except in a direction some
+  button is bound to, where it presses only that button.
+- **A pad can press ANALOG now, and the keyboard L3 and R3.** Both start
+  unbound.
+
+**The settings file.**
+- Port 1 on the keyboard is still `key_up`, `key_cross` and so on, so existing
+  files keep working.
+- Every other map is one `bind_<slot>_<device>` line, such as
+  `bind_port2_keyboard = up=I down=K ...`. It is written only when it differs
+  from the defaults.
+- A file from before this, with no `bindings_version`, gives every keyboard
+  slot Port 1's keys. Someone who changed them and plays Port 2 on the keyboard
+  keeps what they had.
+- `SettingsFile` gained `Remove`, so a map put back to its defaults loses its
+  line.
+
+The defaults are exactly the old behaviour: the old keyboard keys, and on a pad
+the layout `gamepad.h` hard-wired.
+
+The old Keyboard Bindings list is still in the front end, off the menu. It
+edits Port 1 on the keyboard.
+
+**Verified.**
+- **`bindings_test`, new, 53 checks.**
+  - Every control the pad had presses exactly the button it pressed before,
+    through the default map.
+  - Two ports on the keyboard with different keys.
+  - The stick-as-d-pad rule.
+  - The settings round trip, and the migration of an old file.
+  - Checked against two deliberate breakages: stick doubling that ignores
+    bindings fails one check, and a load without the migration fails two.
+- **`host_test`** exchanges the new key set.
+- **The window**, driven on a scratch build and captured to images:
+  - a DualShock on the keyboard and on Gamepad 1, and a digital pad
+  - a box waiting for a key, highlighted with its line and its button
+  - a key sent to it, with `psxemu.ini` read back afterwards:
+    - K for Port 1's Cross wrote `key_cross = K`
+    - M for Port 2's keyboard Cross, while Port 2 played Gamepad 2, wrote a
+      `bind_port2_keyboard` line and nothing else
+- **Not verified here:**
+  - binding from a real pad: there is none on this machine, so the capture
+    path's XInput polling ran only against "not connected"
+  - keys reaching a running game: the input thread only passes input while the
+    emulator's window is in the foreground, and taking the foreground from a
+    session running on someone's desktop is not something to do unasked. The
+    mapping the game sees is what `bindings_test` checks, and the defaults are
+    checked control by control.
+
+## 108. An OpenGL renderer, and four ways the first one was wrong
+
+Settings > Video > Renderer offers OpenGL beside Direct3D 11 and 12
+(`opengl_engine.h/.cpp`, `graphics_backend = opengl`).
+
+**How it works.**
+- **It follows `D3D12GraphicsEngine` step for step**, so the two can be
+  compared pixel for pixel:
+  - the frame is uploaded into a texture and drawn into the fixed 4:3
+    letterbox
+  - every filter is a fragment shader
+  - Super-xBR's three passes each render into a texture before a linear blit
+    puts the last one on screen
+- **Every filter has a GLSL copy.** `shaders/glsl_filters.h` ports each HLSL
+  filter line for line, under the same keys, so the Filter menu means the same
+  on both renderers.
+- **The samplers match D3D12's.** Its four static samplers (point and linear,
+  each wrapping or clamped) become four GL sampler objects. They sit on four
+  texture units that all hold the same input, so a port reads its input
+  exactly as the HLSL did, wrap or clamp. The untouched frame, HLSL's `t1`,
+  is on a fifth unit.
+- **No loader library is vendored.** The Windows SDK stops at OpenGL 1.1 and
+  ships no `glext.h`, so `gl_functions.h` declares the 31 functions and 18
+  constants the engine uses and asks the driver for them.
+- **It falls back like the others.** A driver without OpenGL 3.3 falls back to
+  Direct3D, with a message, as the other renderers do.
+
+**Verified by comparison with Direct3D 12.** The test builds a scratch copy,
+boots the BIOS, and pauses on the shell's menu. For each of the ten filters it
+switches to Direct3D 12 and captures the window, then switches to OpenGL and
+captures it again, and compares the two. It was run at two sizes: the picture
+shrunk (477x356 behind 200% display scaling) and enlarged (897x671, with the
+screen's pixels doubled).
+
+| Filter | Differing pixels, shrunk | Enlarged |
+|---|---|---|
+| None, SuperEagle, xBRZ (legacy) | 0 | one row of ties* |
+| Nearest, HQ2X | 0-112 | one row of ties* |
+| Sharp Bilinear | 200 | 1,220, none by more than 1 |
+| Scanline | 818, max 3 | 3,900, none by more than 1 |
+| xBRZ | 22, max 3 | 1,724 |
+| CRT-Lottes | 4,101, 84 by more than 2 | 18,212 |
+| Super-xBR | 484,274 | 1,715,658 |
+
+\* All 1,652 differing pixels in the enlarged pass-through are one row, row
+335, whose centre falls exactly on texel 240.0 (335.5 / 671 x 480). The two
+APIs break that tie in opposite directions. CRT's differences are the same
+kind of thing, in its `floor` and Gaussian weights.
+
+Super-xBR cannot match, and not because of the port. Its second pass renders
+at the size of its input, so `fract(uv * TextureSize)` is exactly 0.5, and
+`if (fp.x > 0.5)` chooses by the last bit of rounding. Nudging OpenGL's uv in
+that pass by 0.000001 changed 550,117 pixels of OpenGL's own output. That is
+more than the whole difference from Direct3D 12. Both are the same filter,
+choosing differently at every tie.
+
+**Four faults the comparison found in the first version.**
+
+1. **Switching from Direct3D to OpenGL froze the picture.**
+   - Both Direct3D engines present through a DXGI flip-model swap chain. Once
+     one has presented to a window, Windows goes on showing that window's last
+     Direct3D frame, and OpenGL drawing there afterwards is never seen.
+   - Started with OpenGL it worked, but a switch from Direct3D left the last
+     Direct3D frame on screen for good.
+   - OpenGL now draws into a child window of its own (`App::CreateGlSurface`).
+     The UI thread creates it and owns it, and no swap chain ever touches it.
+     The engine shows it with `ShowWindowAsync` when it starts and hides it
+     when it stops. It is transparent to the mouse (`HTTRANSPARENT`), so
+     clicks, the light gun's crosshair and the captured cursor are still the
+     main window's.
+   - Direct3D 11 → OpenGL → Direct3D 12 → OpenGL → Direct3D 11 now each show
+     their own frame.
+2. **The picture sat up to half a pixel off.**
+   - D3D takes the letterbox as a fractional viewport. GL's viewport is whole
+     pixels, and rounding it moved every column's texel. The pass-through
+     differed at 63,790 pixels.
+   - OpenGL now draws over the whole target, places the picture over the
+     fractional rectangle in the vertex shader, and cuts it to the pixels
+     D3D12's viewport and scissor together allow. The pass-through then matched
+     exactly.
+3. **Sharp Bilinear differed at 449,000 pixels.**
+   - When the picture is smaller than the frame, the shader's `region_range`
+     is negative, and it calls `clamp(x, -r, r)` with the low bound above the
+     high one.
+   - HLSL defines that as `min(max(x, lo), hi)`. GLSL leaves it undefined, and
+     this driver answered differently.
+   - The port now spells out HLSL's definition. 200 pixels are left, all ties.
+4. **Super-xBR's passes compounded.**
+   - A chain pass's scale is a multiple of the emulator's frame (`ShaderPass`),
+     and D3D12 renders all three passes at twice the frame.
+   - The first OpenGL chain multiplied each pass by the one before: 2x, 4x,
+     then 8x, a 5120x3840 target for a 640x480 frame.
+
+**And two ways the comparison itself lied.**
+- **`PrintWindow` returned the same image** for both renderers even when a
+  deliberate change to two GLSL filters (CRT's mask level, one Super-xBR
+  weight) should have moved hundreds of thousands of pixels. It was showing
+  the last Direct3D frame, which is fault 1 seen from the outside.
+- **The screen capture from a DPI-unaware script** landed beside the window,
+  on part of the desktop.
+
+The comparison was trusted only once the same planted change showed up in it:
+389,886 pixels for CRT and 511,837 for Super-xBR.
+
+**Not covered.** A machine without OpenGL 3.3, and so the fallback, which has
+not been seen to happen. Games other than the BIOS shell: the renderer only
+ever sees finished frames, so what it draws does not depend on the game.

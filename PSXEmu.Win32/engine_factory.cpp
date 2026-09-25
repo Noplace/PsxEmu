@@ -20,9 +20,11 @@
 
 #include "d3d11_presenter.h"
 #include "d3d12_graphics_engine.h"
+#include "opengl_engine.h"
 #include "win32_dialogs.h"
 #include "audio/wasapiaudioengine.h"
 #include "audio/dsoundaudioengine.h"
+#include "shaders/glsl_filters.h"
 #include "shaders/legacy_shaders.h"
 #include "shaders/ps_scanline_filter.h"
 #include "shaders/ps_xbrz_filter.h"
@@ -33,7 +35,7 @@
 namespace psxemu {
 
     std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred, HWND window,
-                                                          int width, int height,
+                                                          HWND gl_window, int width, int height,
                                                           std::string* active_backend,
                                                           std::wstring* warning) {
         if (warning != nullptr)
@@ -42,40 +44,80 @@ namespace psxemu {
             std::unique_ptr<IGraphicsEngine> engine;
             if (backend == GraphicsBackend::kD3D12)
                 engine = std::make_unique<D3D12GraphicsEngine>();
+            else if (backend == GraphicsBackend::kOpenGL)
+                engine = std::make_unique<OpenGLGraphicsEngine>();
             else
                 engine = std::make_unique<psxemu::D3D11Presenter>();
-            if (engine->Initialize(window, width, height))
+            const HWND target = backend == GraphicsBackend::kOpenGL ? gl_window : window;
+            if (target != nullptr && engine->Initialize(target, width, height))
                 return engine;
             return nullptr;
         };
+        auto name = [](GraphicsBackend backend) {
+            switch (backend) {
+                case GraphicsBackend::kD3D12: return L"Direct3D 12";
+                case GraphicsBackend::kOpenGL: return L"OpenGL 3.3";
+                default: return L"Direct3D 11";
+            }
+        };
 
         if (std::unique_ptr<IGraphicsEngine> engine = try_backend(preferred)) {
-            *active_backend = (preferred == GraphicsBackend::kD3D12) ? "d3d12" : "d3d11";
+            *active_backend = GraphicsBackendKey(preferred);
             return engine;
         }
 
-        const GraphicsBackend fallback = (preferred == GraphicsBackend::kD3D12)
-                                             ? GraphicsBackend::kD3D11
-                                             : GraphicsBackend::kD3D12;
-        if (std::unique_ptr<IGraphicsEngine> engine = try_backend(fallback)) {
-            *active_backend = (fallback == GraphicsBackend::kD3D12) ? "d3d12" : "d3d11";
-            const wchar_t* preferred_name =
-                (preferred == GraphicsBackend::kD3D12) ? L"Direct3D 12" : L"Direct3D 11";
-            const wchar_t* fallback_name =
-                (fallback == GraphicsBackend::kD3D12) ? L"Direct3D 12" : L"Direct3D 11";
-            if (warning != nullptr) {
-                *warning = preferred_name;
-                *warning += L" was not available; using ";
-                *warning += fallback_name;
-                *warning += L" instead.";
+        for (const GraphicsBackend fallback :
+             { GraphicsBackend::kD3D11, GraphicsBackend::kD3D12, GraphicsBackend::kOpenGL }) {
+            if (fallback == preferred)
+                continue;
+            if (std::unique_ptr<IGraphicsEngine> engine = try_backend(fallback)) {
+                *active_backend = GraphicsBackendKey(fallback);
+                if (warning != nullptr) {
+                    *warning = name(preferred);
+                    *warning += L" was not available; using ";
+                    *warning += name(fallback);
+                    *warning += L" instead.";
+                }
+                return engine;
             }
-            return engine;
         }
 
         return nullptr;
     }
 
-    void LoadAllFilters(IGraphicsEngine& engine) {
+    GraphicsBackend ParseGraphicsBackend(const std::string& key) {
+        if (key == "d3d12")
+            return GraphicsBackend::kD3D12;
+        if (key == "opengl")
+            return GraphicsBackend::kOpenGL;
+        return GraphicsBackend::kD3D11;
+    }
+
+    const char* GraphicsBackendKey(GraphicsBackend backend) {
+        switch (backend) {
+            case GraphicsBackend::kD3D12: return "d3d12";
+            case GraphicsBackend::kOpenGL: return "opengl";
+            default: return "d3d11";
+        }
+    }
+
+    void LoadAllFilters(IGraphicsEngine& engine, GraphicsBackend backend) {
+        if (backend == GraphicsBackend::kOpenGL) {
+            // The GLSL ports, under the same keys. A Super-xBR pass is joined from its pieces.
+            for (const GlslFilter& filter : kGlslFilters) {
+                std::string source;
+                for (const char* part : filter.parts) {
+                    if (part != nullptr)
+                        source += part;
+                }
+                engine.LoadPixelShaderFromString(filter.key, source.c_str());
+            }
+            engine.LoadShaderChain("superxbr", { { "superxbr_pass0", 2 },
+                                                 { "superxbr_pass1", 2 },
+                                                 { "superxbr_pass2", 2 } });
+            return;
+        }
+
         engine.LoadPixelShaderFromString("nearest", kLegacyShaders[0]);
         engine.LoadPixelShaderFromString("bilinear", kLegacyShaders[1]);
         engine.LoadPixelShaderFromString("crt", kLegacyShaders[2]);

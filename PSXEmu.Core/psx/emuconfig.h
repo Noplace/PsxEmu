@@ -75,7 +75,7 @@ struct EmuConfig {
   // the D3D12 path existed - nobody's picture changes on upgrade unless they
   // opt in.
   std::string graphics_backend = "d3d11";
-  static const std::array<const char*, 2> kValidGraphicsBackends;
+  static const std::array<const char*, 3> kValidGraphicsBackends;
 
   // A pixel-shader filter, by the key it was loaded under - see
   // PSXEmu.Win32/shaders/. Empty means the engine's own built-in
@@ -300,8 +300,8 @@ struct EmuConfig {
 inline const float EmuConfig::kMinAudioVolume = 0.0f;
 inline const float EmuConfig::kMaxAudioVolume = 8.0f;
 
-inline const std::array<const char*, 2>
-    EmuConfig::kValidGraphicsBackends = { "d3d11", "d3d12" };
+inline const std::array<const char*, 3>
+    EmuConfig::kValidGraphicsBackends = { "d3d11", "d3d12", "opengl" };
 
 inline const std::array<const char*, 2>
     EmuConfig::kValidAudioBackends = { "wasapi", "dsound" };

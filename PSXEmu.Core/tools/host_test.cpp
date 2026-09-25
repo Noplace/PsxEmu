@@ -373,7 +373,7 @@ void InputExchangeChecks() {
     std::thread input([&] {
       for (int i = 1; i <= kReadings; ++i) {
         HostInput reading;
-        reading.keyboard = static_cast<uint16_t>(i);
+        reading.keys[0] = static_cast<uint32_t>(i);
         reading.mouse_dx = 1;
         reading.mouse_dy = -1;
         reading.focused = true;
@@ -395,7 +395,7 @@ void InputExchangeChecks() {
     printf("    %lld counts of motion across %d readings\n", dx, kReadings);
     Check(dx == kReadings && dy == -kReadings,
           "mouse motion adds up exactly: no count lost, none delivered twice");
-    Check(last.keyboard == static_cast<uint16_t>(kReadings) && last.focused,
+    Check(last.keys[0] == static_cast<uint32_t>(kReadings) && last.focused,
           "and levels are the latest reading");
   }
 

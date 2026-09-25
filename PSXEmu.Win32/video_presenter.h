@@ -18,11 +18,12 @@
 *****************************************************************************************************************/
 #pragma once
 
-// What the video thread draws with: a Direct3D engine, and the few things the menus can ask of it.
+// What the video thread draws with: a Direct3D or OpenGL engine, and the few things the menus can
+// ask of it. (The class is still called D3DPresenter, from before OpenGL.)
 //
-// Everything here runs on that thread and nowhere else - the D3D device, the swap chain and the
-// filters all belong to it, which is what lets vsync block it without the machine or the window
-// noticing (Docs/Threading-Plan.md). Anything it has to tell the user goes back through `to_ui`,
+// Everything here runs on that thread and nowhere else - the device or GL context, the swap chain
+// and the filters all belong to it, which is what lets vsync block it without the machine or the
+// window noticing (Docs/Threading-Plan.md). Anything it has to tell the user goes back through `to_ui`,
 // which posts to the window's own thread; a message box raised from here would be a wait on the
 // thread that is supposed to be free.
 
@@ -38,12 +39,14 @@ namespace psxemu {
     class D3DPresenter : public emulation::host::Presenter {
      public:
         // `to_ui` runs a piece of work on the UI thread - App::PostToUi.
-        D3DPresenter(HWND window, std::function<void(std::function<void()>)> to_ui);
+        // `gl_window` is the child the OpenGL engine draws into (App::CreateGlSurface); the Direct3D
+        // engines draw into `window`.
+        D3DPresenter(HWND window, HWND gl_window, std::function<void(std::function<void()>)> to_ui);
         ~D3DPresenter() override;
 
-        // Brings up `renderer` ("d3d11"/"d3d12") with `filter` on it, at the window's current
-        // client size. False if no engine could be created at all, which is fatal to the front end
-        // and is reported through `to_ui`.
+        // Brings up `renderer` ("d3d11", "d3d12" or "opengl") with `filter` on it, at the window's
+        // current client size. False if no engine could be created at all, which is fatal to the
+        // front end and is reported through `to_ui`.
         bool Open(const std::string& renderer, const std::string& filter);
 
         // host::Presenter, both on the video thread.
@@ -64,6 +67,7 @@ namespace psxemu {
         bool Create(const std::string& renderer, const std::string& filter);
 
         HWND window_;
+        HWND gl_window_;
         std::function<void(std::function<void()>)> to_ui_;
         std::unique_ptr<IGraphicsEngine> engine_;
         std::string renderer_;

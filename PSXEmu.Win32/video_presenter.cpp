@@ -18,6 +18,7 @@
 *****************************************************************************************************************/
 #include "video_presenter.h"
 
+#include "const.h"   // RendererHasFilters
 #include "psx/gpu_core.h"
 #include "win32_dialogs.h"
 
@@ -25,8 +26,9 @@ namespace psxemu {
 
     using emulation::host::VideoFrame;
 
-    D3DPresenter::D3DPresenter(HWND window, std::function<void(std::function<void()>)> to_ui)
-        : window_(window), to_ui_(std::move(to_ui)) {
+    D3DPresenter::D3DPresenter(HWND window, HWND gl_window,
+                               std::function<void(std::function<void()>)> to_ui)
+        : window_(window), gl_window_(gl_window), to_ui_(std::move(to_ui)) {
         RECT client = {};
         GetClientRect(window_, &client);
         width_ = client.right - client.left;
@@ -45,11 +47,11 @@ namespace psxemu {
     }
 
     bool D3DPresenter::Create(const std::string& renderer, const std::string& filter) {
-        const GraphicsBackend preferred =
-            (renderer == "d3d12") ? GraphicsBackend::kD3D12 : GraphicsBackend::kD3D11;
+        const GraphicsBackend preferred = ParseGraphicsBackend(renderer);
         std::wstring warning;
         std::string opened;
-        engine_ = CreateGraphicsEngine(preferred, window_, width_, height_, &opened, &warning);
+        engine_ = CreateGraphicsEngine(preferred, window_, gl_window_, width_, height_, &opened,
+                                       &warning);
         if (engine_ == nullptr) {
             renderer_.clear();
             filter_.clear();
@@ -57,10 +59,10 @@ namespace psxemu {
         }
 
         renderer_ = opened;
-        // Filters are a D3D12 feature here; on D3D11 nothing is loaded and nothing is ticked.
+        // Filters run on Direct3D 12 and OpenGL; on D3D11 nothing is loaded and nothing is ticked.
         filter_.clear();
-        if (renderer_ == "d3d12") {
-            LoadAllFilters(*engine_);
+        if (RendererHasFilters(renderer_)) {
+            LoadAllFilters(*engine_, ParseGraphicsBackend(renderer_));
             engine_->SetPixelShader(filter);
             filter_ = filter;
         }
@@ -130,7 +132,7 @@ namespace psxemu {
     }
 
     void D3DPresenter::SetFilter(const std::string& key) {
-        if (engine_ == nullptr || renderer_ != "d3d12")
+        if (engine_ == nullptr || !RendererHasFilters(renderer_))
             return;
         engine_->SetPixelShader(key);
         filter_ = key;

@@ -33,7 +33,7 @@
 #include "framework.h"
 
 #include "gamepad.h"
-#include "keyboard.h"
+#include "controller_bindings.h"
 #include "host/input_exchange.h"
 #include "mouse.h"
 
@@ -59,12 +59,13 @@ namespace psxemu {
         // "is the input thread alive at all".
         uint64_t polls() const { return polls_.load(std::memory_order_relaxed); }
 
-        // Any thread: the keyboard's pad buttons from the next poll on. One atomic per button, so
-        // a poll racing a change reads each button's old key or its new one - never a torn one -
-        // and nothing waits.
-        void SetKeyMap(const KeyMap& map) {
-            for (int i = 0; i < kPadButtons; ++i)
-                keys_[i].store(map[i], std::memory_order_relaxed);
+        // Any thread: which keys to read from the next poll on - every key some binding uses
+        // (KeysInUse). Which pad buttons they press is the machine thread's business. One atomic
+        // per key, so a poll racing a change reads each key's old answer or its new one, and
+        // nothing waits.
+        void SetKeysInUse(const std::array<bool, 256>& used) {
+            for (int i = 0; i < 256; ++i)
+                keys_in_use_[i].store(used[i], std::memory_order_relaxed);
         }
 
         // Any thread: how a host mouse's movement is turned into a PSX mouse's counts, and
@@ -99,7 +100,7 @@ namespace psxemu {
         std::thread thread_;
         std::atomic<bool> stop_{ false };
         std::atomic<uint64_t> polls_{ 0 };
-        std::array<std::atomic<int>, kPadButtons> keys_{};
+        std::array<std::atomic<bool>, 256> keys_in_use_{};
     };
 
 }   // namespace psxemu
