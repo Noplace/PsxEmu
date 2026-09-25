@@ -17,6 +17,8 @@
 #include <string>
 #include <vector>
 
+#include "tools/chd_writer.h"
+
 using emulation::psx::Cdrom;
 using emulation::psx::Disc;
 
@@ -1844,6 +1846,234 @@ void TestDiscBoot(emulation::psx::System* system, const std::string& directory) 
 }
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// CHD
+//
+// There is no chdman here, so tools/chd_writer.h writes the CHDs - chdman's
+// format and codecs, see there - and these check that reading one gives back
+// exactly the disc that went in.
+
+// A data sector as a disc has it: sync, a Mode 2 Form 1 header, a payload
+// that names the sector, and real ECC - so the writer strips the ECC, as
+// chdman does, and the reader has to regenerate it.
+void MakeDataSector(uint32_t lba, uint8_t* sector) {
+  static const uint8_t kSync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+  memset(sector, 0, Disc::kRawSectorSize);
+  memcpy(sector, kSync, sizeof(kSync));
+  Disc::LbaToMsf(lba, &sector[12], &sector[13], &sector[14]);
+  sector[15] = 0x02;
+  sector[18] = sector[22] = 0x08;               // submode: data
+  for (uint32_t i = 24; i < 24 + 2048; ++i)
+    sector[i] = static_cast<uint8_t>(lba * 3 + i);
+  ecc_generate(sector);
+}
+
+// CD audio with a byte pattern that is not symmetric, so a reader that gets
+// the byte order wrong reads different sound rather than the same.
+void MakeAudioSector(uint32_t seed, uint8_t* sector) {
+  for (uint32_t i = 0; i < Disc::kRawSectorSize; ++i)
+    sector[i] = static_cast<uint8_t>(seed * 5 + i * 7 + (i & 1) * 0x40);
+}
+
+// Tracks for the writer, read from a mounted disc the way tools/make_chd
+// reads them: each from its start to the next one's.
+std::vector<chd_writer::Track> TracksOf(const Disc& disc) {
+  std::vector<chd_writer::Track> tracks;
+  for (int i = 0; i < disc.track_count(); ++i) {
+    const uint32_t start = disc.track(i).start_lba;
+    const uint32_t end = (i + 1 < disc.track_count()) ? disc.track(i + 1).start_lba
+                                                     : disc.total_sectors();
+    chd_writer::Track track;
+    track.audio = disc.track(i).type == Disc::kTrackAudio;
+    track.frames = end - start;
+    track.read = [&disc, start](uint32_t index, uint8_t* sector) {
+      return disc.ReadSector(start + index, sector);
+    };
+    tracks.push_back(track);
+  }
+  return tracks;
+}
+
+// How many sectors, from 0 to past the end, two discs disagree on.
+uint32_t SectorsDiffering(const Disc& a, const Disc& b) {
+  uint32_t differing = 0;
+  uint8_t sa[Disc::kRawSectorSize], sb[Disc::kRawSectorSize];
+  const uint32_t end = (a.total_sectors() > b.total_sectors() ? a.total_sectors()
+                                                               : b.total_sectors()) + 2;
+  for (uint32_t lba = 0; lba < end; ++lba) {
+    const bool ra = a.ReadSector(lba, sa);
+    const bool rb = b.ReadSector(lba, sb);
+    if (ra != rb || (ra && memcmp(sa, sb, sizeof(sa)) != 0))
+      ++differing;
+  }
+  return differing;
+}
+
+void TestChd(const std::string& directory) {
+  printf("CHD\n");
+
+  // A mixed-mode disc: 60 data sectors, then 96 of audio of which the middle
+  // 40 are silence - whole hunks of it, which the writer stores once and
+  // refers back to, as chdman does.
+  const std::string bin = directory + "media_test_chd.bin";
+  const std::string cue = directory + "media_test_chd.cue";
+  {
+    FILE* fp = fopen(bin.c_str(), "wb");
+    uint8_t sector[Disc::kRawSectorSize];
+    for (uint32_t i = 0; i < 60; ++i) {
+      MakeDataSector(Disc::kLeadInSectors + i, sector);
+      fwrite(sector, 1, sizeof(sector), fp);
+    }
+    for (uint32_t i = 0; i < 96; ++i) {
+      if (i >= 28 && i < 68)
+        memset(sector, 0, sizeof(sector));
+      else
+        MakeAudioSector(i, sector);
+      fwrite(sector, 1, sizeof(sector), fp);
+    }
+    fclose(fp);
+  }
+  WriteText(cue,
+            "FILE \"media_test_chd.bin\" BINARY\r\n"
+            "  TRACK 01 MODE2/2352\r\n"
+            "    INDEX 01 00:00:00\r\n"
+            "  TRACK 02 AUDIO\r\n"
+            "    INDEX 01 00:00:60\r\n");
+  Disc original;
+  Check(original.Open(cue.c_str()), "the cue sheet it is made from opens");
+
+  struct Case { chd_writer::Codec codec; const char* name; };
+  const Case cases[] = { { chd_writer::Codec::kBest, "chdman's codecs, best per hunk" },
+                         { chd_writer::Codec::kLzma, "every hunk LZMA" },
+                         { chd_writer::Codec::kZlib, "every hunk zlib" },
+                         { chd_writer::Codec::kFlac, "every hunk FLAC" },
+                         { chd_writer::Codec::kNone, "every hunk stored raw" } };
+  const std::string chd = directory + "media_test.chd";
+  for (const Case& test : cases) {
+    BeginTest(test.name);
+    chd_writer::Stats stats;
+    const std::string error = chd_writer::Write(chd, TracksOf(original), test.codec, &stats);
+    Check(error.empty(), "the CHD was written");
+    Disc disc;
+    Check(disc.Open(chd.c_str()), "and opens");
+    CheckEqual(disc.track_count(), 2, "two tracks");
+    if (disc.track_count() == 2) {
+      CheckEqual(disc.track(0).start_lba, original.track(0).start_lba, "track 1 starts where the cue's does");
+      CheckEqual(disc.track(1).start_lba, original.track(1).start_lba, "and track 2");
+      CheckEqual(disc.track(1).length, original.track(1).length, "track 2 is as long");
+      Check(disc.track(1).type == Disc::kTrackAudio, "and audio");
+    }
+    CheckEqual(disc.total_sectors(), original.total_sectors(), "the same length");
+    CheckEqual(SectorsDiffering(original, disc), 0, "every sector the same as the cue's");
+    Check(stats.repeated > 0, "the silence was stored once and referred back to");
+    if (test.codec == chd_writer::Codec::kFlac)
+      Check(stats.flac > 0, "some hunks went through FLAC");
+    if (test.codec == chd_writer::Codec::kBest)
+      Check(stats.lzma > 0, "the data went through LZMA, ECC stripped");
+    disc.Close();
+    remove(chd.c_str());
+  }
+  original.Close();
+  remove(cue.c_str());
+  remove(bin.c_str());
+
+  BeginTest("a stored pregap is read, an unstored one is silence");
+  {
+    // Track 1: 100 data sectors. Track 2: 150 sectors of stored pregap, then
+    // 50 of audio. Track 3: 75 sectors of pregap the image leaves out, then 40
+    // of audio. So track 2 starts at 150 + 100 + 150 = 400 and track 3 at
+    // 400 + 50 + 75 = 525.
+    std::vector<chd_writer::Track> tracks(3);
+    tracks[0].frames = 100;
+    tracks[0].read = [](uint32_t i, uint8_t* s) { MakeDataSector(Disc::kLeadInSectors + i, s); return true; };
+    tracks[1].audio = true;
+    tracks[1].frames = 200;
+    tracks[1].stored_pregap = 150;
+    tracks[1].read = [](uint32_t i, uint8_t* s) { MakeAudioSector(1000 + i, s); return true; };
+    tracks[2].audio = true;
+    tracks[2].frames = 40;
+    tracks[2].unstored_pregap = 75;
+    tracks[2].read = [](uint32_t i, uint8_t* s) { MakeAudioSector(2000 + i, s); return true; };
+    Check(chd_writer::Write(chd, tracks, chd_writer::Codec::kBest).empty(), "written");
+    Disc disc;
+    Check(disc.Open(chd.c_str()), "opens");
+    CheckEqual(disc.track_count(), 3, "three tracks");
+    if (disc.track_count() == 3) {
+      CheckEqual(disc.track(1).start_lba, 400, "track 2 starts after its stored pregap");
+      CheckEqual(disc.track(2).start_lba, 525, "track 3 after its unstored one");
+      CheckEqual(disc.track(0).length, 250, "track 1 runs up to track 2, its pregap included");
+      CheckEqual(disc.track(1).length, 125, "and track 2 up to track 3");
+      CheckEqual(disc.total_sectors(), 565, "the disc ends after track 3");
+    }
+    uint8_t got[Disc::kRawSectorSize], want[Disc::kRawSectorSize];
+    MakeAudioSector(1000, want);
+    Check(disc.ReadSector(250, got) && memcmp(got, want, sizeof(got)) == 0,
+          "the stored pregap's first sector is where track 1 ends");
+    MakeAudioSector(1000 + 150, want);
+    Check(disc.ReadSector(400, got) && memcmp(got, want, sizeof(got)) == 0,
+          "track 2's first sector comes after it, in its own byte order");
+    memset(want, 0, sizeof(want));
+    Check(disc.ReadSector(500, got) && memcmp(got, want, sizeof(got)) == 0,
+          "the unstored pregap reads as silence");
+    MakeAudioSector(2000 + 39, want);
+    Check(disc.ReadSector(564, got) && memcmp(got, want, sizeof(got)) == 0,
+          "track 3's last sector");
+    Check(!disc.ReadSector(565, got), "and nothing past the end");
+    disc.Close();
+    remove(chd.c_str());
+  }
+
+  // One small valid CHD to take apart below.
+  std::vector<chd_writer::Track> one(1);
+  one[0].frames = 40;
+  one[0].read = [](uint32_t i, uint8_t* s) { MakeDataSector(Disc::kLeadInSectors + i, s); return true; };
+
+  BeginTest("a zstd CHD is refused, and says why");
+  {
+    chd_writer::Options options;
+    options.fourth_codec = CHD_CODEC_CD_ZSTD;
+    Check(chd_writer::Write(chd, one, chd_writer::Codec::kBest, nullptr, options).empty(), "written");
+    Disc disc;
+    Check(!disc.Open(chd.c_str()), "does not open");
+    Check(disc.open_error().find("zstd") != std::string::npos, "and the reason names zstd");
+    remove(chd.c_str());
+  }
+
+  BeginTest("a CHD with no track list is not a CD");
+  {
+    Check(chd_writer::Write(chd, one, chd_writer::Codec::kBest).empty(), "written");
+    FILE* fp = fopen(chd.c_str(), "r+b");
+    fseek(fp, 124, SEEK_SET);                 // the first metadata entry's tag
+    fwrite("XXXX", 1, 4, fp);
+    fclose(fp);
+    Disc disc;
+    Check(!disc.Open(chd.c_str()), "does not open");
+    Check(!disc.open_error().empty(), "and says so");
+    remove(chd.c_str());
+  }
+
+  BeginTest("a damaged CHD fails rather than mounting");
+  {
+    Check(chd_writer::Write(chd, one, chd_writer::Codec::kBest).empty(), "written");
+    FILE* fp = fopen(chd.c_str(), "rb");
+    std::vector<uint8_t> bytes;
+    uint8_t buffer[4096];
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof(buffer), fp)) > 0)
+      bytes.insert(bytes.end(), buffer, buffer + n);
+    fclose(fp);
+    fp = fopen(chd.c_str(), "wb");
+    fwrite(bytes.data(), 1, bytes.size() / 2, fp);   // cut off half way
+    fclose(fp);
+    Disc disc;
+    Check(!disc.Open(chd.c_str()), "a truncated CHD does not open");
+    WriteText(chd, "this is not a CHD at all");
+    Check(!disc.Open(chd.c_str()), "nor does one that is not a CHD");
+    remove(chd.c_str());
+  }
+}
+
 int main(int argc, char** argv) {
   // A second argument of "keep" leaves the generated images behind, which is
   // how boot_runner --boot-disc gets something to point at without a game.
@@ -1862,6 +2092,7 @@ int main(int argc, char** argv) {
   TestSiblingCueIsAdopted(directory);
   TestCloneCd(directory);
   TestMdsDescriptor(directory);
+  TestChd(directory);
   TestIso9660(directory);
   TestSystemCnf();
   TestSettingsFile(directory);

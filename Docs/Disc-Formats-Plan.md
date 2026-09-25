@@ -1,5 +1,24 @@
 # Disc formats: raw images, and compressed ones
 
+## Done since this was written: CHD
+
+The recommendation below was zip first and CHD later. CHD came first instead,
+as bug 104, because it is what people actually keep collections in. The seam
+is where this plan said: a CHD is another kind of `Source` in `Disc`, nothing
+outside `disc.cpp` changed, and `Disc::ReadSector` decompresses one hunk
+(eight sectors in chdman's layout) and keeps it.
+
+libchdr is vendored under `PSXEmu.Core/lib/` with the codecs chdman uses by
+default - LZMA, zlib and FLAC - and without zstd, which chdman only uses when
+asked for it. A zstd CHD is refused and says why. `lib/README-chd.md` has the
+sources and licences.
+
+This plan's own test was the one that settled it: `boot_runner` on Ridge
+Racer's CHD reaches the same checksum as on its cue sheet at every checkpoint,
+and plays the same CD music byte for byte. There is no chdman on this machine,
+so the CHDs were written by `tools/make_chd`, which writes chdman's format.
+See bug 104 for what that does and does not prove.
+
 ## Done since this was written: `.mds` / `.mdf`
 
 Alcohol 120%'s pair is read, by `Disc::OpenMds`. Opening either half works -

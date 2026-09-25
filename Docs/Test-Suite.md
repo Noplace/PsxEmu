@@ -133,7 +133,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 275 checks, 0 failures.**
+**Current: 350 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -152,6 +152,14 @@ Covers, in the order it runs:
   address 150 sectors ahead of its position in the file; that pregap reading
   as silence rather than as an error; and the descriptor being picked up when
   the image beside it is what was opened
+- **A CHD** (bug 104), written by `tools/chd_writer.h` since there is no
+  chdman here: the same track table and every sector the same as the cue sheet
+  it was made from, with each codec forced and with the best per hunk -
+  through ECC regeneration and repeated-hunk references; a stored pregap read
+  from where the CHD keeps it and an unstored one read as silence; a zstd CHD
+  refused with a reason that names zstd, one with no track list refused, and a
+  truncated file or one that is not a CHD failing cleanly. libchdr prints `NO
+  DSTREAM CREATED!` during the zstd check; that is expected
 - **The controller with an empty tray**: Getstat answers, GetID reports "no
   disc" as an INT5 rather than silence, and an unknown command still answers
 - **The controller with a disc**: GetID reports a licensed region, GetTN
@@ -512,7 +520,7 @@ side, with a sequence number in every item.
   for every one published; mouse motion adding up exactly across a racing
   publisher and taker; a doorbell that does not lose a ring that came first.
 - **The machine's thread.** A threaded BIOS boot lands on **boot_runner's own
-  instruction count and checksum** - 92,082,652 and `c7c8db90c5984798` - which
+  instruction count and checksum** - 93,049,815 and `c7c8db90c5984798` - which
   is the assertion that threading changed nothing about what the machine
   computes. Then again with pause and resume requests thrown at it from another
   thread as fast as it will take them (432 of them, same numbers), and again
@@ -530,6 +538,14 @@ side, with a sequence number in every item.
 
 The BIOS is `bios/SCPH1001.BIN` unless one is named, and the thread checks are
 skipped, loudly, without it.
+
+**The real-speed checks need a host with room to spare.** On 2026-09-25 two of
+them - the limiter holding 59.29 fps, and five seconds of sound with nothing
+short - failed now and then on this machine: once in three runs of a build from
+before the change being tested, and once in three after it, alternating, with
+the unthrottled boot time the same either way. That is a busy host, not a
+regression. When they fail, run the previous build the same way before looking
+for a cause in the change.
 
 What it cannot check is the Win32 side: the window, the Direct3D presenter and
 the real sound devices. Those were exercised by driving the built emulator with
@@ -559,11 +575,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 63 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
-| `timer_test` | 70 | | `media_test` | 275 |
+| `timer_test` | 70 | | `media_test` | 350 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 77 | | `debug_test` | 174 |
 
-**1,494 checks, 0 failures**, all ten green. Each harness's own section above
+**1,569 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon: every setting in `EmuConfig`

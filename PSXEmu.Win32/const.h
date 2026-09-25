@@ -260,8 +260,8 @@ namespace psxemu {
     // Double-null-terminated pairs of description and pattern, which is the shape OPENFILENAMEA
     // wants rather than anything this project chose.
     inline constexpr const char* kDiscFilter =
-        "Disc Images (*.cue;*.mds;*.bin;*.img;*.iso;*.mdf)\0"
-        "*.cue;*.mds;*.bin;*.img;*.iso;*.mdf\0"
+        "Disc Images (*.cue;*.chd;*.mds;*.ccd;*.bin;*.img;*.iso;*.mdf)\0"
+        "*.cue;*.chd;*.mds;*.ccd;*.bin;*.img;*.iso;*.mdf\0"
         "All files (*.*)\0*.*\0";
     inline constexpr const char* kCardFilter =
         "Memory Card (*.mcr;*.mcd)\0*.mcr;*.mcd\0"

@@ -53,9 +53,11 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 297, gte 106, timer 70, sio 203, spu 144, gpu 63, mdec 85, media 275, mc 77, debug 174 - 1,494
-checks, no failures, and 2,076 across all seventeen harnesses (re-run
-2026-09-25, after bugs 78-103 - with the rasteriser threaded, now the default). The two that were failing when this document was last
+cpu 297, gte 106, timer 70, sio 203, spu 144, gpu 63, mdec 85, media 350, mc 77, debug 174 - 1,569
+checks, no failures, and 2,151 across all seventeen harnesses (re-run
+2026-09-25, after bugs 78-104 - with the rasteriser threaded, now the default).
+`host_test`'s two real-speed checks fail now and then on a busy host, before a
+change as well as after it; see Test-Suite.md. The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
@@ -367,8 +369,12 @@ tens of thousands of commands with none unrecognised. The MVMVA garbage matrix
 
 ### Disc images
 
-- **No compressed containers** (CHD, ECM, PBP). Planned in
-  [Disc-Formats-Plan.md](Disc-Formats-Plan.md).
+- **CHD, but not ECM or PBP** ([Disc-Formats-Plan.md](Disc-Formats-Plan.md)).
+  CHDs mount through libchdr with chdman's default codecs (bug 104); one
+  compressed with zstd is refused with a message, since zstd is not built in.
+  Nothing here has read a CHD that chdman made - there is no chdman on this
+  machine, so the ones tested were written by `tools/chd_writer.h` to its
+  format.
 - **A CloneCD `.sub` is ignored.** `.ccd` is read now - the table of contents,
   and the `.img` beside it - but the 96 bytes of subchannel per sector that
   the third file holds are not. Nothing asks for them yet: GetQ synthesises

@@ -19,6 +19,20 @@ call "%VCVARS%" >nul
 cd /d "%~dp0..\.."
 if not exist Temp\tools\obj_boot mkdir Temp\tools\obj_boot
 
+rem The vendored C libraries under PSXEmu.Core\lib that disc.cpp reads CHD
+rem images through - libchdr, and the zlib, LZMA and (stub) zstd it decodes
+rem with - compiled once into one library every harness links. Warnings off:
+rem they are other people's code, kept as it came.
+set THIRD=PSXEmu.Core\lib
+if not exist Temp\tools\obj_thirdparty mkdir Temp\tools\obj_thirdparty
+cl /nologo /c /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /DZ7_ST /W0 ^
+   /I %THIRD%\libchdr\include /I %THIRD%\zlib /I %THIRD%\lzma /I %THIRD%\zstd_stub ^
+   /Fo:Temp\tools\obj_thirdparty\ %THIRD%\libchdr\src\*.c %THIRD%\zlib\*.c ^
+   %THIRD%\lzma\*.c %THIRD%\zstd_stub\*.c
+if errorlevel 1 exit /b 1
+lib /nologo /OUT:Temp\tools\thirdparty.lib Temp\tools\obj_thirdparty\*.obj
+if errorlevel 1 exit /b 1
+
 set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp ^
  PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\psx\kernel.cpp ^
  PSXEmu.Core\psx\mc.cpp PSXEmu.Core\psx\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
@@ -28,8 +42,9 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  PSXEmu.Core\psx\bios_calls.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
- /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core
-set LIBS=/link /SUBSYSTEM:CONSOLE user32.lib psapi.lib
+ /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I PSXEmu.Core\lib\libchdr\include ^
+ /I PSXEmu.Core\lib\zlib /I PSXEmu.Core\lib\lzma
+set LIBS=/link /SUBSYSTEM:CONSOLE user32.lib psapi.lib Temp\tools\thirdparty.lib
 
 cl %FLAGS% /Fo:Temp\tools\obj_boot\ /Fe:Temp\tools\boot_runner.exe ^
    PSXEmu.Core\tools\boot_runner.cpp %CORE% %LIBS%
@@ -63,6 +78,12 @@ if errorlevel 1 exit /b 1
 if not exist Temp\tools\obj_disc mkdir Temp\tools\obj_disc
 cl %FLAGS% /Fo:Temp\tools\obj_disc\ /Fe:Temp\tools\make_test_disc.exe ^
    PSXEmu.Core\tools\make_test_disc.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
+rem Any image PSXEmu mounts, written out as a CHD - tools\chd_writer.h.
+if not exist Temp\tools\obj_chd mkdir Temp\tools\obj_chd
+cl %FLAGS% /Fo:Temp\tools\obj_chd\ /Fe:Temp\tools\make_chd.exe ^
+   PSXEmu.Core\tools\make_chd.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_spu mkdir Temp\tools\obj_spu

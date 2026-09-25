@@ -42,6 +42,16 @@ namespace psxemu {
         // window procedure runs and deletes. Posted, never sent: see the rules in app.h.
         const UINT kMessageRunOnUi = WM_APP + 1;
 
+        // The warning for a disc image that did not mount: the reason, when the disc has one to
+        // give - a CHD compressed with zstd, say - and otherwise what does mount.
+        std::wstring DiscFailureText(const std::string& reason) {
+            std::wstring text = L"Could not read that disc image.\n\n";
+            if (!reason.empty())
+                return text + Widen(reason);
+            return text + L"Supported: .cue (with its .bin or .img), .chd, .mds (with its .mdf), "
+                          L".ccd (with its .img), .bin, .img, .iso.";
+        }
+
     }   // namespace
 
     App::~App() {
@@ -1168,11 +1178,9 @@ namespace psxemu {
             // stops at the menu.
             system.EjectDisc();
             if (!system.LoadDisc(path.c_str())) {
-                PostToUi([this] {
-                    ShowWarning(window_,
-                                L"Could not read that disc image.\n\n"
-                                L"Supported: .cue (with its .bin or .img), .mds (with its "
-                                L".mdf), .bin, .img, .iso.");
+                const std::string reason = system.cdrom().disc().open_error();
+                PostToUi([this, reason] {
+                    ShowWarning(window_, DiscFailureText(reason).c_str());
                 });
                 return;
             }
@@ -1542,8 +1550,9 @@ namespace psxemu {
                     break;
                 PostToMachine([this, path](Machine& machine) {
                     if (!machine.system().LoadDisc(path.c_str())) {
-                        PostToUi([this] {
-                            ShowWarning(window_, L"Could not read that disc image.");
+                        const std::string reason = machine.system().cdrom().disc().open_error();
+                        PostToUi([this, reason] {
+                            ShowWarning(window_, DiscFailureText(reason).c_str());
                         });
                         return;
                     }

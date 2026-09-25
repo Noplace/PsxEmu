@@ -6313,3 +6313,77 @@ still plays out whatever it already holds.
   new silence. About half the difference between the two is the reverb's
   content, which is the part that changed. Whether it now sounds more like a
   console is for a person with the recordings: `Temp\audio_ab\`.
+
+## 104. CHD disc images
+
+Gaps.md: "No compressed containers (CHD, ECM, PBP)." CHD is MAME's format and
+the one most PlayStation collections are kept in. A disc is split into hunks
+that are compressed independently, so any sector costs one hunk's
+decompression, and an image is typically half to two-thirds the size.
+
+**How it reads.** A CHD is another kind of `Source` in `Disc`, where
+Disc-Formats-Plan.md said the seam should go, and nothing outside `disc.cpp`
+changed. libchdr opens the container. `OpenChd` turns the per-track metadata
+into the same track table a cue sheet of the same disc gives, and
+`ReadSector` decompresses the hunk a sector falls in (eight sectors in
+chdman's layout) and keeps it for the next one. The conventions are
+chdman's, as DuckStation reads them:
+- each track's frames are padded to a multiple of four
+- a pregap whose type starts with `V` is stored at the front of its track;
+  any other pregap takes disc time with nothing behind it, and reads as
+  silence
+- a data track with no pregap has the standard two seconds
+- CD audio is stored big-endian and swapped back on the way out
+
+**What it brings with it.** libchdr is vendored under `PSXEmu.Core/lib/`, along
+with the LZMA SDK's decoder and zlib: the codecs chdman uses by default (LZMA
+for data, zlib, FLAC for audio). zstd is not included: chdman only uses it
+when asked, and a stub in its place makes a zstd CHD fail to open.
+`Disc::open_error()` says why, and the front end now shows a disc's reason
+when it fails to mount. `lib/README-chd.md` has the sources and licences.
+File > Boot disc offers `*.chd` (and `*.ccd`, which already mounted but was
+missing from the filter).
+
+**How it was tested, with no chdman on this machine.** `tools/chd_writer.h`
+writes CHDs in chdman's format:
+- version 5, with the compressed map, cdlz/cdzl/cdfl chosen per hunk and
+  repeated hunks referenced back
+- data sectors whose ECC checks out stored without their sync and ECC, which
+  the reader regenerates
+- one `CHT2` metadata entry per track
+
+`tools/make_chd` uses it to convert any image PSXEmu mounts.
+
+- **`media_test`, 75 new checks.** A mixed-mode disc gives the same track table
+  and identical sectors from its CHD as from its cue sheet. That holds with
+  every codec forced and with the best per hunk, and each run exercises ECC
+  regeneration and repeated-hunk references. A stored pregap reads from where
+  the CHD keeps it and an unstored one reads as silence, at the sectors they
+  should. A zstd CHD is refused naming zstd, and so is one with no track list;
+  a truncated file and a file that is not a CHD fail cleanly. With the audio
+  byte swap taken out, 56 sectors differ in every codec case and the pregap
+  test fails.
+- **Ridge Racer end to end.** Its cue and bin (14 tracks, 467 MB) went to a
+  392 MB CHD in 57 seconds, and to a second one with every hunk forced through
+  FLAC. All 198,802 sectors of both are identical to the cue's. `boot_runner`
+  reaches the same checksum at frames 1000, 2000 and 3000 on all three, with
+  the same instruction count and disc reads. The 1,099 sectors of CD music it
+  plays come out byte for byte the same, through LZMA and through FLAC.
+  Reading a CHD cost no measurable speed.
+- **PadTest** boots identically from CHDs written with each codec.
+- **The front end**, driven through File > Recent Discs: a CHD with `cdzs` in
+  its codec list brought up "Could not read that disc image" and the zstd
+  explanation, and a good one booted PadTest at 59.3 fps with its name in the
+  title bar.
+
+**What that does not prove.** Every CHD tested was written by
+`chd_writer.h`, not by chdman. libchdr is the reader every emulator uses for
+chdman's files, so what these runs rest on is the writer following chdman's
+conventions. The ones that decide where sectors land - track padding, the
+pregap types, audio byte order - were taken from libchdr and DuckStation's
+reader, not guessed. The first CHD made by chdman is still worth a boot
+against its cue.
+
+The writer's FLAC is VERBATIM: correct FLAC that compresses nothing. So in
+chdman's "best per hunk" it only wins on silence. It exists to test the
+decoder, not to make small files.

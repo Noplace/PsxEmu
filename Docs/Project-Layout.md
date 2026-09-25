@@ -40,7 +40,7 @@ PsxEmu/
       gpu_core.h               the interface the core talks to the GPU through
       gpu.h/.cpp               software GPU: VRAM, GP0/GP1, rasteriser
       cdrom.h/.cpp             CD-ROM controller: FIFOs, all 28 commands, CD-DA and XA-ADPCM
-      disc.h/.cpp              disc images: cue, mds/mdf, ccd/img, bin, iso, physical drive
+      disc.h/.cpp              disc images: cue, chd, mds/mdf, ccd/img, bin, iso, physical drive
       iso9660.h/.cpp           the filesystem: volume descriptor, directories, file lookup
       mdec.h/.cpp              motion decoder
       sio.h/.cpp               controller / memory card port: pad, DualShock, mouse, multitap
@@ -67,6 +67,8 @@ PsxEmu/
       emitter.h                executable memory and a byte cursor
       x86_extras.h             the instruction encodings
     lib/reccore/               the RecCore emitter, vendored and since replaced; built by nothing
+    lib/libchdr/ lib/lzma/ lib/zlib/ lib/zstd_stub/
+                               CHD reading, vendored unchanged and built as C (lib/README-chd.md)
     utilities/
       cdrom/iso9660.h          ISO9660 structures
       cdrom/cdrom.cpp          old host CD read, superseded by disc.cpp; not built
@@ -83,6 +85,7 @@ PsxEmu/
       frame_limiter_test.cpp  speed_resampler_test.cpp  letterbox_test.cpp
       wav_pitch.cpp            the note in a WAV boot_runner wrote
       make_test_disc.cpp       writes a synthetic disc image
+      make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format
       letterbox.h
   PSXEmu.Win32/                front end: a window, Direct3D, input
     PSXEmu.Win32.vcxproj

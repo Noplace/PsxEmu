@@ -172,12 +172,12 @@ actually is rather than from memory:
       instrumentation) but bug 39: key-on was discarding the loop point FF7 had
       just set, so every note played a third too much sample and came out a
       twelfth flat. `wav_pitch.cpp` and the `loopaddr` group in `spu_test` (8
-      checks) came out of it. What's left is a separate, already-known gap, not
-      a pitch bug: FF7's reverb-heavy mix runs through this core's two-tap
-      delay rather than the hardware's comb/all-pass network - see Gaps.md.
-- [~] **[Disc-Formats-Plan.md](Disc-Formats-Plan.md)** - `.mds`/`.mdf` and
-      `.ccd`/`.img` done; compressed containers (CHD, ECM, PBP) and track
-      layouts for a bare image with no descriptor are not.
+      checks) came out of it. The reverb its mix leans on was a two-tap delay
+      when this was written; it has been the documented network since
+      `1419d78`, matched to DuckStation by bug 102.
+- [~] **[Disc-Formats-Plan.md](Disc-Formats-Plan.md)** - `.mds`/`.mdf`,
+      `.ccd`/`.img` and CHD done (bug 104); ECM, PBP and track layouts for a
+      bare image with no descriptor are not.
 - [x] **[Recompiler-Plan.md](Recompiler-Plan.md)** - built and wired in,
       behind Emulation > Recompiler, off by default. 3.0-3.9x real time; the
       BIOS boot is identical, and a game's checksum is not yet, because
@@ -205,7 +205,7 @@ in [Test-Suite.md](Test-Suite.md), with their films, XA audio and CD music, and
 no game is known to be blocked. What is left is mostly timing: memory-region
 costs and amidog's CPU suite (Phase 5), and the recompiler's cycle accounting.
 Then the Phase 6 items still open - the memory card editor, compressed disc
-images, and a front end with a debugger and a settings dialog.
+images other than CHD, and a front end with a debugger and a settings dialog.
 
 One thing that was thought to be wrong and is not, kept here because it cost
 time: **the "rainbow smear" behind the BIOS menu's two entries is the shell's

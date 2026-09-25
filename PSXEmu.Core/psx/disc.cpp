@@ -23,6 +23,9 @@
 #include <cctype>
 #include <cstring>
 
+#include <libchdr/cdrom.h>
+#include <libchdr/chd.h>
+
 namespace emulation {
 namespace psx {
 
@@ -233,6 +236,8 @@ uint32_t Disc::MsfToLba(uint8_t minute, uint8_t second, uint8_t frame) {
 
 void Disc::Close() {
   for (size_t i = 0; i < sources_.size(); ++i) {
+    if (sources_[i].chd != nullptr)
+      chd_close(static_cast<chd_file*>(sources_[i].chd));
     if (sources_[i].file != nullptr)
       fclose(sources_[i].file);
     if (sources_[i].device != nullptr)
@@ -241,6 +246,7 @@ void Disc::Close() {
   sources_.clear();
   tracks_.clear();
   track_sources_.clear();
+  chd_runs_.clear();
   total_sectors_ = 0;
   path_.clear();
 }
@@ -292,6 +298,7 @@ std::string Disc::FindSibling(const std::string& image_path,
 
 bool Disc::Open(const char* path) {
   Close();
+  open_error_.clear();
   if (path == nullptr || path[0] == '\0')
     return false;
 
@@ -301,6 +308,8 @@ bool Disc::Open(const char* path) {
   bool ok = false;
   if (extension == ".cue")
     ok = OpenCue(path);
+  else if (extension == ".chd")
+    ok = OpenChd(path);
   else if (extension == ".mds") {
     ok = OpenMds(path);
     if (!ok) {
@@ -796,6 +805,166 @@ bool Disc::OpenCcd(const char* path, bool* scrambled_out) {
   return true;
 }
 
+// A CHD: MAME's compressed disc image. libchdr does the container and the
+// decompression; what is left here is the disc's layout, which a CD CHD keeps
+// in one metadata entry per track - "TRACK:2 TYPE:AUDIO SUBTYPE:NONE
+// FRAMES:4213 PREGAP:150 PGTYPE:VAUDIO PGSUB:RW POSTGAP:0", or the older form
+// with only the first four fields. Everything about turning that into sector
+// numbers follows chdman's conventions, as DuckStation reads them too:
+//
+//  - Each track's frames follow the last one's in the file, padded out to a
+//    multiple of four.
+//  - A PGTYPE starting with V means the pregap is stored, as the first PREGAP
+//    of the track's FRAMES. Otherwise the pregap takes disc time but has no
+//    frames, and reads as silence.
+//  - A data track with no pregap stated has the standard two seconds - for
+//    track 1, the lead-in every image here already assumes.
+//
+// The track list comes out the way a cue sheet of the same disc gives it: a
+// track starts at its index 1 and runs until the next one does, so a pregap
+// belongs to the end of the track before.
+bool Disc::OpenChd(const char* path) {
+  chd_file* chd = nullptr;
+  const chd_error opened = chd_open(path, CHD_OPEN_READ, nullptr, &chd);
+  if (opened != CHDERR_NONE) {
+    chd_header header;
+    bool zstd = false;
+    if (chd_read_header(path, &header) == CHDERR_NONE) {
+      for (int i = 0; i < 4; ++i)
+        zstd = zstd || header.compression[i] == CHD_CODEC_ZSTD ||
+               header.compression[i] == CHD_CODEC_CD_ZSTD;
+    }
+    if (zstd)
+      open_error_ = "This CHD is compressed with zstd, which this build cannot read. "
+                    "chdman's default codecs (LZMA, zlib and FLAC) all work.";
+    else if (opened == CHDERR_REQUIRES_PARENT)
+      open_error_ = "This CHD is a difference file that needs its parent CHD, "
+                    "which is not supported.";
+    else if (opened != CHDERR_FILE_NOT_FOUND)
+      open_error_ = std::string("Could not read the CHD: ") + chd_error_string(opened) + ".";
+    return false;
+  }
+
+  const chd_header* header = chd_get_header(chd);
+  const uint32_t frames_per_hunk =
+      header->unitbytes == CD_FRAME_SIZE ? header->hunkbytes / CD_FRAME_SIZE : 0;
+  if (frames_per_hunk == 0) {
+    open_error_ = "This CHD is not a CD image.";
+    chd_close(chd);
+    return false;
+  }
+
+  Source source;
+  source.file = nullptr;
+  source.device = nullptr;
+  source.sector_size = CD_FRAME_SIZE;
+  source.data_offset = 0;
+  source.sector_count = static_cast<uint32_t>(header->logicalbytes / CD_FRAME_SIZE);
+  source.name = path;
+  source.chd = chd;
+  source.chd_hunk_bytes = header->hunkbytes;
+  sources_.push_back(source);   // Close() closes it from here on
+
+  uint32_t disc_lba = 0;        // where the next track's pregap begins
+  uint32_t frame = 0;           // where its frames begin in the CHD
+  for (uint32_t index = 0;; ++index) {
+    char text[256] = {};
+    uint32_t length = 0;
+    int number = 0, frames = 0, pregap = 0, postgap = 0;
+    char type[64] = {}, subtype[64] = {}, pregap_type[64] = {}, pregap_sub[64] = {};
+    if (chd_get_metadata(chd, CDROM_TRACK_METADATA2_TAG, index, text, sizeof(text) - 1,
+                         &length, nullptr, nullptr) == CHDERR_NONE) {
+      if (sscanf(text,
+                 "TRACK:%d TYPE:%63s SUBTYPE:%63s FRAMES:%d PREGAP:%d PGTYPE:%63s "
+                 "PGSUB:%63s POSTGAP:%d",
+                 &number, type, subtype, &frames, &pregap, pregap_type, pregap_sub,
+                 &postgap) != 8) {
+        open_error_ = std::string("This CHD's track list is damaged: ") + text;
+        return false;
+      }
+    } else if (chd_get_metadata(chd, CDROM_TRACK_METADATA_TAG, index, text,
+                                sizeof(text) - 1, &length, nullptr,
+                                nullptr) == CHDERR_NONE) {
+      if (sscanf(text, "TRACK:%d TYPE:%63s SUBTYPE:%63s FRAMES:%d", &number, type,
+                 subtype, &frames) != 4) {
+        open_error_ = std::string("This CHD's track list is damaged: ") + text;
+        return false;
+      }
+    } else {
+      break;
+    }
+
+    const std::string mode = type;
+    uint32_t data_size = 0;
+    if (mode == "AUDIO" || mode == "MODE1_RAW" || mode == "MODE2_RAW" ||
+        mode == "MODE2_FORM_MIX")
+      data_size = kRawSectorSize;
+    else if (mode == "MODE2")
+      data_size = 2336;
+    else if (mode == "MODE1" || mode == "MODE2_FORM1")
+      data_size = 2048;
+    if (data_size == 0 || number != static_cast<int>(index) + 1 || frames <= 0) {
+      open_error_ = std::string("This CHD has a track this cannot read: ") + text;
+      return false;
+    }
+    const bool audio = (mode == "AUDIO");
+
+    const bool pregap_stored = pregap > 0 && pregap_type[0] == 'V';
+    uint32_t data_frames = static_cast<uint32_t>(frames);
+    if (pregap_stored) {
+      if (pregap >= frames) {
+        open_error_ = std::string("This CHD's track list is damaged: ") + text;
+        return false;
+      }
+      data_frames -= static_cast<uint32_t>(pregap);
+    }
+    if (pregap <= 0 && !audio)
+      pregap = static_cast<int>(kLeadInSectors);
+
+    // Track 1 starts where every image here starts it, after the lead-in,
+    // with whatever pregap it stores just in front.
+    const uint32_t start = tracks_.empty() ? kLeadInSectors
+                                           : disc_lba + static_cast<uint32_t>(pregap);
+    if (pregap_stored) {
+      if (static_cast<uint32_t>(pregap) > start) {
+        open_error_ = std::string("This CHD's track list is damaged: ") + text;
+        return false;
+      }
+      chd_runs_.push_back({ start - static_cast<uint32_t>(pregap),
+                            static_cast<uint32_t>(pregap), frame, data_size, audio });
+      frame += static_cast<uint32_t>(pregap);
+    }
+    chd_runs_.push_back({ start, data_frames, frame, data_size, audio });
+
+    Track track;
+    track.number = number;
+    track.type = audio ? kTrackAudio : kTrackData;
+    track.start_lba = start;
+    track.length = data_frames;
+    tracks_.push_back(track);
+    track_sources_.push_back({ 0, frame });
+
+    frame += data_frames;
+    frame = (frame + 3) & ~3u;
+    disc_lba = start + data_frames;
+  }
+
+  if (tracks_.empty()) {
+    open_error_ = "This CHD is not a CD image: it has no track list.";
+    return false;
+  }
+  if (frame > sources_[0].sector_count + 3) {
+    open_error_ = "This CHD is shorter than its own track list.";
+    return false;
+  }
+  // A track runs until the next one starts, so its stretch of pregap - stored
+  // or not - is part of it, as it is from a cue sheet.
+  for (size_t i = 0; i + 1 < tracks_.size(); ++i)
+    tracks_[i].length = tracks_[i + 1].start_lba - tracks_[i].start_lba;
+  total_sectors_ = tracks_.back().start_lba + tracks_.back().length;
+  return true;
+}
+
 bool Disc::OpenDevice(const char* path) {
   // Normalise "D:" or "D:\" into the device form CreateFile wants.
   std::string device = path;
@@ -1044,9 +1213,58 @@ bool Disc::ReadFileSector(const Source& source, long long offset, uint32_t wante
   return true;
 }
 
+// One sector of a CHD: the run it falls in says which frame, the frame says
+// which hunk, and a hunk is decompressed whole and kept until a sector outside
+// it is wanted.
+bool Disc::ReadChdSector(uint32_t lba, uint8_t* out) const {
+  const Source& source = sources_[0];
+  for (const ChdRun& run : chd_runs_) {
+    if (lba < run.lba || lba >= run.lba + run.count)
+      continue;
+    const uint32_t frame = run.frame + (lba - run.lba);
+    const uint32_t frames_per_hunk = source.chd_hunk_bytes / CD_FRAME_SIZE;
+    const uint32_t hunk = frame / frames_per_hunk;
+    if (hunk != source.chd_hunk_number) {
+      source.chd_hunk.resize(source.chd_hunk_bytes);
+      source.chd_hunk_number = 0xFFFFFFFFu;
+      if (chd_read(static_cast<chd_file*>(source.chd), hunk, source.chd_hunk.data()) !=
+          CHDERR_NONE)
+        return false;
+      source.chd_hunk_number = hunk;
+    }
+    const uint8_t* in = &source.chd_hunk[(frame % frames_per_hunk) * CD_FRAME_SIZE];
+    memset(out, 0, kRawSectorSize);
+    if (run.audio) {
+      // Stored big-endian; the controller wants CD audio as it comes off a
+      // disc, low byte first.
+      for (uint32_t i = 0; i < kRawSectorSize; i += 2) {
+        out[i] = in[i + 1];
+        out[i + 1] = in[i];
+      }
+    } else {
+      memcpy(out, in, run.data_size);
+    }
+    SynthesiseSectorHeader(out, lba, run.data_size);
+    return true;
+  }
+
+  // Not stored: a pregap the CHD leaves out, which on a disc is silence - the
+  // same answer a cue sheet's unstored gap gets. Outside the tracks
+  // altogether is still a failed read.
+  for (const Track& track : tracks_) {
+    if (lba >= track.start_lba && lba < track.start_lba + track.length) {
+      memset(out, 0, kRawSectorSize);
+      return true;
+    }
+  }
+  return false;
+}
+
 bool Disc::ReadSector(uint32_t lba, uint8_t* out) const {
   if (sources_.empty() || out == nullptr)
     return false;
+  if (sources_[0].chd != nullptr)
+    return ReadChdSector(lba, out);
 
   // Find the track this sector falls in.
   int track_index = -1;

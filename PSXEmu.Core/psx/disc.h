@@ -34,6 +34,9 @@ namespace psx {
     .cue          a sheet naming one or more binary files and their tracks
     .mds .mdf     Alcohol 120%'s descriptor and the sectors it describes
     .ccd .img     CloneCD's table of contents and the sectors it describes
+    .chd          MAME's compressed format, read through libchdr (lib/libchdr):
+                  the track list from its metadata, a hunk decompressed at a
+                  time
     .bin .img     raw sectors, sector size detected from the file length
     .iso          usually 2048-byte cooked sectors, also detected
     D: \\.\D:     a physical drive (data tracks only)
@@ -67,6 +70,10 @@ class Disc {
   void Close();
 
   bool loaded() const { return !sources_.empty(); }
+  // Why the last Open failed, when there is more to say than that it did -
+  // empty otherwise. Only a CHD sets it so far: "compressed with zstd" is
+  // worth a person knowing, where "not a disc image" is not.
+  const std::string& open_error() const { return open_error_; }
   const std::string& path() const { return path_; }
 
   // Only the path - everything else here (sources_, tracks_, the rest) is
@@ -119,6 +126,14 @@ class Disc {
     mutable std::vector<uint8_t> ahead;
     mutable long long ahead_offset = -1;   // where the block starts in the file
     mutable uint32_t ahead_size = 0;       // how much of it came back
+
+    // A CHD, when this is one (chd_file*): sectors come out of hunks of
+    // several frames each, decompressed whole, and the last one is kept -
+    // the CHD's own read-ahead, a hunk being eight sectors in a typical one.
+    void* chd = nullptr;
+    uint32_t chd_hunk_bytes = 0;
+    mutable std::vector<uint8_t> chd_hunk;
+    mutable uint32_t chd_hunk_number = 0xFFFFFFFFu;
   };
 
   // One sector out of an image file, through the read-ahead block above.
@@ -135,6 +150,23 @@ class Disc {
   std::vector<TrackSource> track_sources_;
   uint32_t total_sectors_;
   std::string path_;
+  std::string open_error_;
+
+  // Where a CHD keeps each stretch of the disc: `count` sectors from `lba`
+  // are frames from `frame` on. A track is one run, and a pregap the CHD
+  // stores is another; a pregap it leaves out has none and reads as silence.
+  // A CHD's audio is stored big-endian, and a cooked track keeps only its
+  // 2048 or 2336 bytes at the front of each frame.
+  struct ChdRun {
+    uint32_t lba;
+    uint32_t count;
+    uint32_t frame;
+    uint32_t data_size;     // 2352, 2336 or 2048
+    bool audio;
+  };
+  std::vector<ChdRun> chd_runs_;
+  bool OpenChd(const char* path);
+  bool ReadChdSector(uint32_t lba, uint8_t* out) const;
 
   bool OpenCue(const char* path);
   bool OpenMds(const char* path);
