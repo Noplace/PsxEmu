@@ -464,6 +464,23 @@ divergence later.
 place to keep checking it, and the twelve-disc table is what should be run
 against it next.
 
+### The twelve-disc table, run 2026-09-25
+
+It agrees. All twelve discs, 3,000 frames each with `--recompiler`, give the
+interpreter's checksum, non-black count and resolution at all 36 checkpoints,
+with no recompiler faults. That includes Wild Arms, whose checksum differed
+at 1,500 frames when the timing note above was written. The one visible
+difference is pacing: Area 51, Bomberman Party Edition and Captain Tsubasa J
+have read one CD sector more or fewer by a checkpoint.
+
+Compiled, each game runs 14-19% more instructions in the same frames, which is
+the coarser cycle accounting above: compiled code is charged less per
+instruction, so there is more of it per frame. With every picture the same,
+the extra presumably went into waiting for the next frame. So the timing is
+still not equivalent, and nothing in the table can see it. The runs were three
+at a time, so their speed readings (2.9-3.7x real time compiled against
+1.6-2.0x interpreted) are indicative, not measurements.
+
 ## Started, 2026-09-16: steps 1 to 6 are done, and block linking with them
 
 ### Step 7: block linking

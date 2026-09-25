@@ -60,11 +60,22 @@ const uint32_t kIrqAddress  = 0x1F801DA4;
 const uint32_t kTransferAdr = 0x1F801DA6;
 const uint32_t kTransferFifo= 0x1F801DA8;
 const uint32_t kControl     = 0x1F801DAA;
+const uint32_t kReverbVolL  = 0x1F801D84;
+const uint32_t kReverbVolR  = 0x1F801D86;
+const uint32_t kReverbOnLow = 0x1F801D98;
+const uint32_t kReverbBase  = 0x1F801DA2;
+const uint32_t kCdVolL      = 0x1F801DB0;
+const uint32_t kCdVolR      = 0x1F801DB2;
+const uint32_t kMainNowL    = 0x1F801DB8;   // where the main volume has got to
+const uint32_t kReverbRegs  = 0x1F801DC0;   // 32 of them, dAPF1 first
+const uint32_t kVoiceNow    = 0x1F801E00;   // each voice's current left/right volume
 
 // Control register bits.
 const uint16_t kControlEnable = 0x8000;
 const uint16_t kControlUnmute = 0x4000;
 const uint16_t kControlIrq    = 0x0040;
+const uint16_t kControlReverb = 0x0080;   // the reverb master enable
+const uint16_t kControlCd     = 0x0001;   // CD audio into the mix
 
 class Machine {
  public:
@@ -465,6 +476,303 @@ void TestEnvelope(Machine& m) {
   CheckEqual(PeakOf(untouched, 0), 0, "no output without a key-on");
 }
 
+// ---------------------------------------------------------------------------
+// Volume sweeps
+//
+// Bit 15 of a volume register makes it a sweep: the level moves every sample
+// by the same envelope ADSR uses. The expected values are worked from psx-spx's
+// rate encoding (bits 0-1 the step, 2-6 the shift) and the hardware behaviour
+// DuckStation measured, and the code matches DuckStation's sweep exactly over
+// every register value (Bugs-Found 101). Rate 28h is used throughout because it
+// steps every sample by an amount easy to follow: 7 or -8, shifted left once.
+
+int16_t MainNow(Machine& m) { return static_cast<int16_t>(m.Read(kMainNowL)); }
+
+void TestSweep(Machine& m) {
+  printf("volume sweeps\n");
+
+  BeginTest("a fixed volume is its register doubled, at once");
+  m.Reset();
+  m.Write(kMainVolL, 0x3FFF);
+  CheckEqual(MainNow(m), 0x7FFE, "3FFFh is 7FFEh");
+  m.Write(kMainVolL, 0x4000);
+  CheckEqual(MainNow(m), -0x8000, "bit 14 is the sign: 4000h is -8000h");
+
+  BeginTest("a linear increase steps every sample and stops at the top");
+  m.Reset();
+  m.Write(kMainVolL, 0x0000);
+  m.Write(kMainVolL, 0x8028);         // sweep, increase, rate 28h: +14 a sample
+  m.Run(10);
+  CheckEqual(MainNow(m), 140, "ten samples on, 10 x 14");
+  m.Run(3000);
+  CheckEqual(MainNow(m), 0x7FFF, "and it holds at 7FFFh");
+
+  BeginTest("a linear decrease stops at zero");
+  // It used to carry on past zero to full volume with the phase inverted, so
+  // a fade-out ended loud.
+  m.Reset();
+  m.Write(kMainVolL, 0x1000);         // 2000h
+  m.Write(kMainVolL, 0xA028);         // sweep, decrease, rate 28h: -16 a sample
+  m.Run(10);
+  CheckEqual(MainNow(m), 0x2000 - 160, "ten samples on, 10 x -16");
+  m.Run(1000);
+  CheckEqual(MainNow(m), 0, "and it rests at zero");
+
+  BeginTest("a slow rate steps less often, and a write starts it afresh");
+  m.Reset();
+  m.Write(kMainVolL, 0x0000);
+  m.Write(kMainVolL, 0x8030);         // rate 30h: +7 every second sample
+  m.Run(10);
+  CheckEqual(MainNow(m), 35, "five steps in ten samples");
+  m.Write(kMainVolL, 0x8030);
+  m.Run(1);
+  CheckEqual(MainNow(m), 35, "rewritten, the first sample is half way to a step");
+  m.Run(1);
+  CheckEqual(MainNow(m), 42, "and the second takes it");
+
+  BeginTest("an exponential decrease shrinks with the level and ends at zero");
+  m.Reset();
+  m.Write(kMainVolL, 0x3FFF);         // 7FFEh
+  m.Write(kMainVolL, 0xE028);         // sweep, exponential, decrease, rate 28h
+  m.Run(1);
+  CheckEqual(MainNow(m), 0x7FFE - 16, "-16 x 7FFEh / 8000h, rounded down");
+  m.Run(20000);
+  CheckEqual(MainNow(m), 0, "it reaches zero and stays");
+
+  BeginTest("an exponential increase slows above 6000h");
+  m.Reset();
+  m.Write(kMainVolL, 0x2FF8);         // 5FF0h
+  m.Write(kMainVolL, 0xC028);         // sweep, exponential, increase, rate 28h
+  m.Run(2);
+  CheckEqual(MainNow(m), 0x5FF0 + 28, "+14 a sample below 6000h");
+  m.Run(2);
+  CheckEqual(MainNow(m), 0x5FF0 + 28 + 7, "then +7 every other sample");
+  m.Run(2);
+  CheckEqual(MainNow(m), 0x5FF0 + 28 + 14, "and again");
+
+  BeginTest("the phase bit turns an increase toward -8000h");
+  m.Reset();
+  m.Write(kMainVolL, 0x0000);
+  m.Write(kMainVolL, 0x9028);         // sweep, increase, inverted phase
+  m.Run(10);
+  // Inverted, the step is the bitwise NOT of +7: -8, shifted to -16.
+  CheckEqual(MainNow(m), -160, "ten samples on, 10 x -16");
+  m.Run(3000);
+  CheckEqual(MainNow(m), -0x8000, "and it holds at -8000h");
+
+  BeginTest("the phase bit turns a decrease toward zero from below");
+  // It used to flip the step, which sent this one up past zero to 7FFFh.
+  m.Reset();
+  m.Write(kMainVolL, 0x7000);         // -2000h
+  m.Write(kMainVolL, 0xB028);         // sweep, decrease, inverted phase
+  m.Run(10);
+  CheckEqual(MainNow(m), -0x2000 + 140, "rising by 14 a sample");
+  m.Run(1000);
+  CheckEqual(MainNow(m), 0, "and resting at zero");
+
+  BeginTest("the phase bit does nothing to an exponential decrease");
+  m.Reset();
+  m.Write(kMainVolL, 0x3FFF);
+  m.Write(kMainVolL, 0xF028);         // as above, with the phase bit
+  m.Run(1);
+  CheckEqual(MainNow(m), 0x7FFE - 16, "the same first step");
+
+  BeginTest("rate 7Fh never moves");
+  m.Reset();
+  m.Write(kMainVolL, 0x1000);
+  m.Write(kMainVolL, 0x807F);
+  m.Run(500);
+  CheckEqual(MainNow(m), 0x2000, "still where it started");
+
+  BeginTest("each voice's current volume can be read back");
+  m.Reset();
+  m.WriteVoice(3, 0x0, 0x1234);
+  m.WriteVoice(3, 0x2, 0x7000);
+  CheckEqual(static_cast<int16_t>(m.Read(kVoiceNow + 3 * 4)), 0x2468, "voice 3 left");
+  CheckEqual(static_cast<int16_t>(m.Read(kVoiceNow + 3 * 4 + 2)), -0x2000, "voice 3 right");
+
+  BeginTest("a voice's sweep is what it is mixed at");
+  m.Reset();
+  m.Upload(0x1000, LoudBlock(0x07));   // loops on itself, so it keeps sounding
+  m.WriteVoice(0, 0x6, 0x1000 / 8);
+  m.WriteVoice(0, 0x4, 0x1000);
+  m.WriteVoice(0, 0x0, 0x0000);
+  m.WriteVoice(0, 0x0, 0x8030);        // left: up from silence, slowly
+  m.WriteVoice(0, 0x2, 0x0000);
+  m.WriteVoice(0, 0x8, 0x00FF);
+  m.WriteVoice(0, 0xA, 0x0000);
+  m.Write(kKeyOnLow, 0x0001);
+  const int16_t early = PeakOf(m.Run(64), 0);
+  m.Run(4000);
+  const int16_t late = PeakOf(m.Run(64), 0);
+  Check(early < 400, "quiet while the sweep is low");
+  Check(late > 4 * early + 1000, "louder as it rises");
+}
+
+// ---------------------------------------------------------------------------
+// Reverb
+//
+// A network plain enough to follow by hand: vIIR and vCOMB1 at full, vLIN and
+// vRIN at full, every all-pass and wall coefficient zero. The same-side
+// reflection then writes the input into mSAME, the first comb tap reads it
+// straight back, and each all-pass stage delays it by one reverb step - so a
+// steady input comes out of the reverb at the level it went in. Every stream
+// the network writes is 2,048 halfwords from the next, so none overwrites
+// another within the runs below. `scale` shrinks the addresses for a small
+// work area: the hardware wraps an address back into the area once, by adding
+// mBASE, so one larger than the area points outside it.
+
+const uint32_t kSameL = 0x100, kSameR = 0x300, kDiffL = 0x500, kDiffR = 0x700;
+const uint32_t kApf1L = 0x900, kApf1R = 0xB00, kApf2L = 0xD00, kApf2R = 0xF00;
+
+void PlainReverb(Machine& m, uint16_t base_units, uint32_t scale = 1) {
+  uint16_t regs[32] = {};
+  regs[0] = 1; regs[1] = 1;               // dAPF1, dAPF2: each all-pass stage reads what it wrote four steps ago
+  regs[2] = 0x7FFF;                       // vIIR
+  regs[3] = 0x7FFF;                       // vCOMB1
+  regs[10] = kSameL / scale; regs[11] = kSameR / scale;   // mLSAME, mRSAME
+  regs[12] = kSameL / scale; regs[13] = kSameR / scale;   // mLCOMB1, mRCOMB1: read it straight back
+  regs[18] = kDiffL / scale; regs[19] = kDiffR / scale;   // mLDIFF, mRDIFF
+  regs[26] = kApf1L / scale; regs[27] = kApf1R / scale;   // mLAPF1, mRAPF1
+  regs[28] = kApf2L / scale; regs[29] = kApf2R / scale;   // mLAPF2, mRAPF2
+  regs[30] = 0x7FFF; regs[31] = 0x7FFF;   // vLIN, vRIN
+  for (int i = 0; i < 32; ++i)
+    m.Write(kReverbRegs + i * 2, regs[i]);
+  m.Write(kReverbBase, base_units);
+}
+
+// Voice 0 as a steady tone at a quarter of full volume, optionally sent to
+// the reverb. The block carries the loop-start flag as well as end and repeat,
+// so it loops on itself rather than jumping to address 0 and going quiet.
+void SteadyVoice(Machine& m, bool to_reverb) {
+  m.Upload(0x1000, LoudBlock(0x07));
+  m.WriteVoice(0, 0x6, 0x1000 / 8);
+  m.WriteVoice(0, 0x4, 0x1000);
+  m.WriteVoice(0, 0x0, 0x1000);
+  m.WriteVoice(0, 0x2, 0x1000);
+  m.WriteVoice(0, 0x8, 0x00FF);
+  m.WriteVoice(0, 0xA, 0x0000);
+  m.Write(kReverbOnLow, to_reverb ? 0x0001 : 0x0000);
+  m.Write(kKeyOnLow, 0x0001);
+}
+
+int16_t RamHalf(Machine& m, uint32_t byte_address) {
+  const uint8_t* ram = m.spu().ram();
+  return static_cast<int16_t>(ram[byte_address] | (ram[byte_address + 1] << 8));
+}
+
+double AverageOf(const std::vector<int16_t>& frames, int channel) {
+  double sum = 0;
+  int n = 0;
+  for (size_t i = channel; i < frames.size(); i += 2, ++n)
+    sum += frames[i];
+  return n ? sum / n : 0.0;
+}
+
+void TestReverb(Machine& m) {
+  printf("reverb\n");
+  const uint16_t kBase = 0x7000;          // byte 38000h, well clear of the sample
+  const uint32_t base = kBase * 8u;
+
+  BeginTest("nothing in, nothing out");
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute | kControlReverb);
+  m.Write(kReverbVolL, 0x7FFF);
+  m.Write(kReverbVolR, 0x7FFF);
+  PlainReverb(m, kBase);
+  CheckEqual(PeakOf(m.Run(2000), 0), 0, "silence");
+
+  BeginTest("a voice sent to the reverb comes back at the level it went in");
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute | kControlReverb);
+  m.Write(kReverbVolL, 0x7FFF);
+  m.Write(kReverbVolR, 0x7FFF);
+  PlainReverb(m, kBase);
+  SteadyVoice(m, false);
+  m.Run(4000);
+  const double dry = AverageOf(m.Run(200), 0);
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute | kControlReverb);
+  m.Write(kReverbVolL, 0x7FFF);
+  m.Write(kReverbVolR, 0x7FFF);
+  PlainReverb(m, kBase);
+  SteadyVoice(m, true);
+  m.Run(4000);
+  const double wet = AverageOf(m.Run(200), 0);
+  Check(dry > 5000, "the dry tone is there");
+  Check(wet > dry * 1.98 && wet < dry * 2.02, "dry plus the same again from the reverb");
+
+  BeginTest("with the reverb volume at zero it is not heard");
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute | kControlReverb);
+  PlainReverb(m, kBase);
+  SteadyVoice(m, true);
+  m.Run(4000);
+  CheckEqual(static_cast<int64_t>(AverageOf(m.Run(200), 0)), static_cast<int64_t>(dry),
+             "exactly the dry tone");
+
+  BeginTest("it steps at 22,050 Hz, one halfword at a time");
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute | kControlReverb);
+  PlainReverb(m, kBase);
+  SteadyVoice(m, true);
+  m.Run(2000);
+  // Step k writes the same-side sample at mBASE + mLSAME*8 + 2k. 2,000
+  // samples are 1,000 steps: the last written is k = 999.
+  const uint32_t trail = base + kSameL * 8;
+  Check(RamHalf(m, trail + 2 * 999) != 0, "step 999 was written");
+  CheckEqual(RamHalf(m, trail + 2 * 1000), 0, "step 1000 was not");
+
+  BeginTest("it stays inside its work area");
+  m.Reset();
+  const uint16_t kTopBase = 0xFE00;       // byte 7F000h: 4 KB to the end of RAM
+  std::vector<uint8_t> marker(0x100, 0xA5);
+  m.Upload(kTopBase * 8u - 0x100, marker);
+  m.Write(kControl, kControlEnable | kControlUnmute | kControlReverb);
+  PlainReverb(m, kTopBase, 16);        // addresses 10h-F0h, inside a 200h-unit area
+  SteadyVoice(m, true);
+  m.Run(10000);                           // 5,000 steps round a 2,048-halfword area
+  bool intact = true;
+  for (uint32_t i = 0; i < 0x100; ++i)
+    intact = intact && m.spu().ram()[kTopBase * 8u - 0x100 + i] == 0xA5;
+  Check(intact, "the RAM just below mBASE is untouched");
+  bool voice_intact = m.spu().ram()[0x1000] == LoudBlock(0x07)[0] &&
+                      m.spu().ram()[0x1001] == LoudBlock(0x07)[1];
+  Check(voice_intact, "and so is the voice's sample");
+
+  BeginTest("with the master enable off nothing is written");
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute);
+  m.Write(kReverbVolL, 0x7FFF);
+  PlainReverb(m, kBase);
+  SteadyVoice(m, true);
+  m.Run(4000);
+  bool clean = true;
+  for (uint32_t a = base; a < Spu::kRamSize; a += 2)
+    clean = clean && RamHalf(m, a) == 0;
+  Check(clean, "the work area is still empty");
+
+  BeginTest("but what the work area already holds is still heard");
+  // The enable stops the echo being fed, not played: Mednafen's and
+  // DuckStation's reading of the hardware. The old reverb went silent.
+  m.Reset();
+  std::vector<uint8_t> held(Spu::kRamSize - base);
+  for (size_t i = 0; i < held.size(); i += 2) {
+    held[i] = 0x00;
+    held[i + 1] = 0x10;                   // 1000h in every halfword
+  }
+  m.Upload(base, held);
+  m.Write(kControl, kControlEnable | kControlUnmute);
+  m.Write(kReverbVolL, 0x7FFF);
+  m.Write(kReverbVolR, 0x7FFF);
+  PlainReverb(m, kBase);
+  const std::vector<int16_t> out = m.Run(2000);
+  std::vector<int16_t> tail(out.end() - 200, out.end());
+  const double heard = AverageOf(tail, 0);
+  Check(heard > 0x1000 * 0.98 && heard < 0x1000 * 1.02, "the buffer's 1000h comes out");
+  CheckEqual(RamHalf(m, base + kSameL * 8), 0x1000, "and the buffer is as it was");
+}
+
 void TestMixer(Machine& m) {
   printf("mixing\n");
 
@@ -513,6 +821,19 @@ void TestMixer(Machine& m) {
   const int16_t muted =
       Setup::Play(m, 0x3FFF, 0x3FFF, 0x3FFF, 0x3FFF, kControlEnable, 0);
   CheckEqual(muted, 0, "muted output is silent");
+
+  BeginTest("the mute bit leaves CD audio alone");
+  // psx-spx: bit 14 mutes the SPU, "don't care for CD audio". It used to
+  // silence everything, so XA or CD audio under muted voices played nothing.
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlCd);   // muted, CD audio on
+  m.Write(kCdVolL, 0x7FFF);
+  m.Write(kCdVolR, 0x7FFF);
+  {
+    std::vector<int16_t> cd(2 * 512, 0x2000);
+    m.spu().QueueCdSamples(&cd[0], 512, 44100);
+  }
+  Check(PeakOf(m.Run(256), 0) > 0x1000, "CD audio is heard with the voices muted");
 
   BeginTest("frames keep being produced while muted");
   // Muting must not stop the mixer: software unmutes mid-stream and expects
@@ -975,6 +1296,8 @@ const Group kGroups[] = {
   { "loopaddr",  TestLoopAddress },
   { "envelope",  TestEnvelope },
   { "mixer",     TestMixer },
+  { "sweep",     TestSweep },
+  { "reverb",    TestReverb },
   { "timing",    TestTiming },
   { "noiseirq",  TestNoiseAndIrq },
   { "cdvolume",  TestCdInputVolume },

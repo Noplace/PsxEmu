@@ -8,7 +8,8 @@ Last audited 2026-09-21, after bug 82 (the mouse's three motion modes), with
 the GP0 queue entry below, the harness counts and the speed-ceiling entry
 brought up to date after bugs 87 to 95 (the GPU's drawing cost, the interlaced
 field, the audio resample, phase 7's rasteriser thread, and the transfer and
-instruction-cache timing options). Every
+instruction-cache timing options), and the controllers entry after bugs 96 to
+100 (capability replies, ANALOG, multitap types and cards, GunCon). Every
 entry below was re-read against the code, not carried forward: each claim was
 checked at the line it describes, and what follows is what that reading found.
 
@@ -52,9 +53,9 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 297, gte 106, timer 70, sio 146, spu 108, gpu 63, mdec 85, media 271, mc 77, debug 174 - 1,397
-checks, no failures, and 1,979 across all seventeen harnesses (re-run
-2026-09-24, after bugs 78-95 - with the rasteriser threaded, now the default). The two that were failing when this document was last
+cpu 297, gte 106, timer 70, sio 203, spu 144, gpu 63, mdec 85, media 275, mc 77, debug 174 - 1,494
+checks, no failures, and 2,076 across all seventeen harnesses (re-run
+2026-09-25, after bugs 78-103 - with the rasteriser threaded, now the default). The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
 top-left rule's vertical test was inverted, which the half-open raster loops
 turned from a wrong owner into a gap).
@@ -89,13 +90,13 @@ turned out to be **bug 60** - the drawing area's last column and row discarded
 by a half-open loop clipping an inclusive bound. Four days in every frame of
 every game, invisible without a reference to compare against.
 
-### The September SPU work is still unrecorded and untested
+### The September SPU work - recorded and tested now
 
 `1419d78` replaced the reverb and added volume sweeps without a Bugs-Found
-entry and without a `spu_test` check, and that is still true: the only
-mentions of either word in `spu_test.cpp` are in comments about the CD input
-volume's format. The GPU half of this entry is settled - the September 12-14
-raster commits are what bugs 59 and 60 are about.
+entry or a test. Both have them now - bugs 101 and 102, and `spu_test`'s
+`sweep` and `reverb` groups - and testing them is what found the faults those
+entries fix. The GPU half of this entry was settled earlier: the September
+12-14 raster commits are what bugs 59 and 60 are about.
 
 ### Tests written with the feature they check, and never run against it
 
@@ -154,9 +155,10 @@ What is left here is the same question one level up: with the mix right, FF7
 peaks at 87% of full scale rather than the 22% this document used to cite as
 "a PlayStation is quiet by modern standards". That claim was the bug talking.
 
-### Reverb and volume sweeps - implemented, not verified
+### Reverb and volume sweeps - match DuckStation, never heard against a console
 
-Both used to be listed as missing. Commit `1419d78` implemented them:
+Both used to be listed as missing. Commit `1419d78` implemented them, and
+bugs 101 and 102 corrected them:
 
 - **Sweeps:** `Spu::StepSweep` ramps a voice or main volume with bit 15 set -
   linear or exponential, up or down, at the register's rate - and `VolumeOf`
@@ -166,10 +168,16 @@ Both used to be listed as missing. Commit `1419d78` implemented them:
   coefficients, the comb and all-pass stages - off the 32 reverb registers at
   22,050 Hz, where it used to be a two-tap delay using two of them.
 
-Neither has a `spu_test` check, and neither has been compared against
-hardware or another emulator's output. `boot_runner`'s `spu requests` and
-`spu modes` lines show whether a game uses them: Final Fantasy VII routes all
-24 voices through the reverb (`reverb FFFFFF`) and uses no sweeps.
+Both are now DuckStation's models, and a scratch comparison ran them against a
+transcription of DuckStation's code - every sweep register from eleven starting
+levels, and forty random reverb configurations of 20,000 samples - with no
+difference in any output, in sound RAM or in the reverb address. Both are in
+`spu_test`. What is still not done is hearing them against a console, or any
+measurement DuckStation did not already make. One difference is left on
+purpose: a voice's volume sweep keeps stepping while the voice is silent, where
+DuckStation's stops unless the SPU interrupt is enabled. `boot_runner`'s `spu requests` and `spu modes` lines show
+whether a game uses either: all twelve regression discs use the reverb, and
+none uses a sweep in its first 3,000 frames.
 
 ### CD audio is resampled linearly
 
@@ -479,7 +487,7 @@ unproven:
 
 `psxemu.ini` holds `audio_volume`, `audio_backend` (WASAPI or DirectSound),
 `graphics_backend` (D3D11 or D3D12), `video_filter`, controller type and input
-source per port, the multitap player sources, `frame_limiter`,
+source per port, the multitap player sources and types, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `gpu_thread`,
 `gpu_transfer_timing`, `icache_timing`, `bios_file`,
 `emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console`,
@@ -526,9 +534,8 @@ input each have a thread and the UI thread only answers the window, so a menu or
 a drag no longer stops the game and a long frame no longer stops the window -
 [Threading-Plan.md](Threading-Plan.md) has what that cost and bought. Whether
 the game keeps running under an open menu is a setting: Emulation > Pause While
-in Menus, off by default. What is left of that plan is its phase 7, a thread for
-the rasteriser, which is worth about 12% with the recompiler on and nothing like
-a priority.
+in Menus, off by default. Phase 7, the rasteriser's own thread, is done too
+(bug 91), so the plan is complete.
 
 ### The emulation speed ceiling is the scene, not the front end
 
@@ -612,11 +619,13 @@ shortfall is recognised: about 5,500 short frames once, then none.
 
 ### Never run against the reference
 
-- **The recompiler against the game table.** It is built and runs the BIOS
-  boot identically, but a game's checksum differs between the two CPUs -
-  interrupts land at block boundaries rather than instruction boundaries, and
-  compiled code charges one cycle an instruction flat. No run of the
-  twelve-disc table with `--recompiler` is recorded. See
+- **The recompiler against the game table - run now, and it agrees.** On
+  2026-09-25 all twelve discs gave the same picture compiled as interpreted at
+  every one of the 36 checkpoints, with no recompiler faults (Test-Suite.md).
+  The two CPUs are still not equivalent - interrupts land at block boundaries,
+  and compiled code charges its cycles more coarsely, so it runs 14-19% more
+  instructions in the same frames and three discs read a CD sector more or fewer
+  by a checkpoint - but no game in the table shows it. See
   [Recompiler-Plan.md](Recompiler-Plan.md).
 
 ## Not gaps

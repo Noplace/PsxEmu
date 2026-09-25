@@ -185,7 +185,7 @@ Unit tests for the sound unit. No BIOS, no window, no audio device. Sample
 data is written into sound RAM, voices are keyed on through their real
 registers, and the frames that come out are checked.
 
-**Current: 108 checks, 0 failures.**
+**Current: 144 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -194,7 +194,9 @@ registers, and the frames that come out are checked.
 | `adpcm` | block decode, the shift and filter, the end and repeat flags |
 | `loopaddr` | where a voice loops back to: a repeat address written before key-on surviving it, the loop-start flag setting it when software has not, software outranking the flag until the next key-on |
 | `envelope` | the attack ramping rather than starting at full, the level being readable, silence without a key-on |
-| `mixer` | per-voice and main volume, left and right kept separate |
+| `mixer` | per-voice and main volume, left and right kept separate, and the mute bit leaving CD audio alone (bug 103) |
+| `sweep` | volume sweeps (bug 101): a fixed level taking effect at once, linear increase and decrease by the rate's step and stopping at the top and at zero, a slow rate stepping every other sample and a write starting it afresh, an exponential decrease shrinking with the level to zero, an exponential increase slowing above 6000h, the phase bit turning an increase toward -8000h and a decrease up to zero but leaving an exponential decrease alone, rate 7Fh never moving, each voice's current volume reading back, and a voice mixed at its sweep's level |
+| `reverb` | the reverb (bug 102), through a network plain enough to follow by hand: silence in and out, a steady tone coming back at the level it went in, the reverb volume at zero giving exactly the dry sound, one halfword step every two samples, a small work area at the top of RAM wrapping without touching the RAM below it, and the master enable off writing nothing but still playing what the work area holds |
 | `timing` | one frame per 768 cycles, and the frame count over a known run |
 | `noiseirq` | the noise generator running, the IRQ address compare |
 | `cdvolume` | the CD input volume as a plain signed level, not a sweep register (bug 36) |
@@ -558,10 +560,10 @@ the most likely answer is the network share rather than the emulator.
 | `cpu_test` | 297 | | `gpu_test` | 63 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
 | `timer_test` | 70 | | `media_test` | 275 |
-| `sio_test` | 203 | | `spu_test` | 108 |
+| `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 77 | | `debug_test` | 174 |
 
-**1,458 checks, 0 failures**, all ten green. Each harness's own section above
+**1,494 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon: every setting in `EmuConfig`
@@ -753,8 +755,29 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 | Area 51 | `d7e8093204d0085b` | `5b1c23ab7d41b7d0` | `c20fec6d8f189e8d` | 51,855 | 256x240 | 100,080 | 5,490 |
 | Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `fb1d8340ba2617e0` | 75,943 | 320x240 | 0 | 668 |
 | Final Fantasy VIII | `aedac3154f8a0383` | `f3ee4d06bf3e0383` | `c184351a7e528d32` | 4,002 | 640x480 | 0 | 1,187 |
-| Ace Combat 3 | `2d039a3114a00858` | `cf810ebe207eec51` | `b7d1c35c356ae822` | 54,862 | 320x240 | 80,864 | 2,255 |
+| Ace Combat 3 | `2d039a3114a00858` | `8b98ad87bd86ef11` | `b7d1c35c356ae822` | 54,862 | 320x240 | 80,864 | 2,255 |
 | Captain Tsubasa J | `f0779890ee9b1bb0` | `add4d55f3196ad03` | `816d516f2ba1d3f8` | 76,800 | 320x240 | 59,100 | 3,759 |
+
+**Run with `--recompiler`, 2026-09-25: identical at all 36 checkpoints.** Every
+disc gives the same checksum, non-black count and resolution at frames 1000,
+2000 and 3000 compiled as interpreted, with no recompiler faults. That is the
+first run of this table against the recompiler. The only difference is in the
+CD sector counter: Area 51, Bomberman and Captain Tsubasa J read one sector
+more or fewer by one checkpoint, which is the compiled code's coarser cycle
+accounting showing up as pacing. The compiled runs executed 14-19% more
+instructions over the same 3,000 frames - compiled code charges fewer cycles
+per instruction - and with every picture the same, the extra presumably went
+into the games' waits for the next frame.
+
+Re-checked after bugs 101-103 (the SPU's sweeps, reverb and mute bit): all
+twelve identical to the instruction, sectors included. Those changes reach only
+what is heard.
+
+Ace Combat 3's frame 2000 re-recorded after bug 96 (the pad's capability
+replies): libpad now completes its DualShock setup, which shifts the title
+screen's pulsing marker to another point in its pulse. Ace Combat 3, Bomberman,
+FF8 and Legend of Mana run a different number of instructions for the same
+reason, with no other checkpoint moving.
 
 Re-recorded after bug 89 (the rasteriser skips the field it is displaying),
 which moved four frame-1000 checksums and nothing else: Wild Arms, Vandal
@@ -910,5 +933,3 @@ wrong way, and it stays anyway.
   `--auto-boot --exe`) reports no errors in any group, and its results screen
   is all OK or N/A - sampled by pixel, not by eye, TIMING column included. Bug
   68 fixed what it found; `cpu_test`'s `cpuedges` group holds each fix.
-- **Reverb and volume sweeps** in `spu_test` - implemented without a check
-  (Gaps.md).

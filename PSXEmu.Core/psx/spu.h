@@ -140,12 +140,16 @@ class Spu : public Component {
   // RAM itself (Bytes) and the CD-audio input buffer. Not saved:
   // buffer_/buffer_read_/write_/count_ (the drained-frame ring buffer -
   // host-side output, the same reasoning as the GPU's framebuffer), stats_,
-  // and the opt-in voice_events_ trace.
+  // and the opt-in voice_events_ trace, and the reverb's resampling history
+  // (see reverb_downsample_).
   void Serialise(StateIO& io);
 
  private:
   enum AdsrPhase { kAttack, kDecay, kSustain, kRelease, kOff };
 
+  // A volume register and the level it has reached. In a state as it is, so
+  // its layout is fixed: `counter` accumulates toward the envelope's next
+  // step (see StepSweep).
   struct VolumeSweep {
     uint16_t reg;
     int32_t level;
@@ -210,10 +214,17 @@ class Spu : public Component {
 
   // Reverb working state.
   uint32_t reverb_base_;         // byte address of the reverb work area
-  uint32_t reverb_cursor_;       // offset within it
-  bool reverb_left_phase_;
-  int32_t reverb_out_left_;
-  int32_t reverb_out_right_;
+  uint32_t reverb_cursor_;       // byte address the reverb registers are relative to
+  bool reverb_left_phase_;       // saved copy of the resampling position's low bit
+
+  // The reverb runs at 22,050 Hz, and hardware gets there and back through
+  // psx-spx's 39-tap filter. These are its history: the last 64 inputs and
+  // 32 outputs, each written twice so a window never has to wrap. Not in a
+  // state - it is 1.5 ms of sound, and keeping it would change the state
+  // format - so a loaded state starts the filter empty, at the right phase.
+  int16_t reverb_downsample_[2][128];
+  int16_t reverb_upsample_[2][64];
+  uint32_t reverb_resample_position_;  // 0-63, one step per 44.1 kHz sample
 
   uint32_t sample_counter_;      // CPU cycles toward the next frame
   bool irq_pending_;
@@ -261,11 +272,15 @@ class Spu : public Component {
   int16_t StepVoice(Voice& voice, int index, int16_t previous_output);
   void StepEnvelope(Voice& voice);
   void StepSweep(VolumeSweep& sweep);
+  void WriteSweep(VolumeSweep& sweep, uint16_t data);
   void KeyOn(int index);
   void KeyOff(int index);
   void StepNoise();
   void ProcessReverb(int32_t input_left, int32_t input_right,
                      int32_t* output_left, int32_t* output_right);
+  uint32_t ReverbAddress(uint32_t units, int32_t halfwords) const;
+  int32_t ReverbRead(uint32_t units, int32_t halfwords = 0) const;
+  void ReverbWrite(uint32_t units, int32_t value);
   void CheckIrq(uint32_t byte_address);
   void PushFrame(int16_t left, int16_t right);
 

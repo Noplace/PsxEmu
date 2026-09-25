@@ -6216,3 +6216,100 @@ Area 51, the only light-gun title there, is a Justifier game.
   1.1 reported PORT 1 as "Not supported", a device it does not know that does
   answer. With port 1 set to none it reported "Not connected". The frames came
   from a GUI save state loaded into `boot_runner`.
+
+## 101. Volume sweeps: fade-outs ended at full volume, inverted
+
+Gaps.md listed the September sweep work (`1419d78`) as implemented, unrecorded
+and untested. Testing it against DuckStation found four faults:
+
+- **A decrease did not stop at zero.** A linear fade-out carried on past zero
+  to -8000h: full volume with the phase inverted, so the sound faded out and
+  came straight back at full level. An exponential decrease happened to land on
+  zero by itself.
+- **The phase bit flipped the step** instead of turning the sweep round. A
+  decrease with the phase bit set rose past zero to full volume, where hardware
+  rises from below toward zero and stops. An exponential decrease with it went
+  up, where psx-spx says the bit does nothing. An inverted increase stepped by
+  -7 where the bitwise NOT of +7 is -8.
+- **An exponential increase above 6000h** waited four times as long for the
+  same step. Hardware takes a quarter of the step at fast rates, half the step
+  at half the rate in between, and only waits at slow ones. The average rate
+  agreed; the steps did not.
+- **A write did not start the sweep afresh.** The step counter carried on from
+  wherever it was. A fixed level took effect only on the next sample, so a game
+  that wrote a level and then a sweep started the sweep from the stale level.
+
+`StepSweep` is now DuckStation's envelope, which is psx-spx's rate encoding plus
+the hardware measurements psx-spx lacks. Each volume is applied before it steps
+rather than after, as DuckStation's mixer does. `VolumeSweep` keeps its three
+saved fields; `counter` now accumulates toward a step instead of counting
+samples. The state format did not change.
+
+The voices' current volumes, 1F801E00h-1F801E5Fh, now read back instead of 0.
+
+**Compared with DuckStation.** A scratch program (not in the repository, since
+DuckStation's licence forbids copying its code in) ran every sweep register
+value, 8000h to FFFFh, from eleven starting levels through both. That is 7.1
+billion steps with no difference. The same program, pointed at a copy with the
+old below-zero fade put back, reported 63,360 differences.
+
+## 102. The reverb: no resampling, too little saturation, silent when disabled
+
+The other half of `1419d78`. The network's arithmetic followed psx-spx term for
+term, but three things around it did not match the hardware:
+
+- **No resampling.** The reverb runs at 22,050 Hz. Hardware gets there and back
+  through a 39-tap filter, whose coefficients psx-spx gives. This one stepped on
+  every other input sample unfiltered and repeated each output sample twice.
+- **Saturation only on writes.** Hardware clamps every stage to 16 bits. Here
+  the comb sum and the all-pass outputs could run past that before the next
+  stage used them.
+- **The master enable (SPUCNT bit 7) silenced it.** In Mednafen's and
+  DuckStation's reading of the hardware, the enable stops the work area being
+  written. The network still reads it and plays what is there, and the address
+  still moves.
+
+Two smaller ones: the address started at 0 rather than at mBASE after a write
+to mBASE, and it wrapped modulo the work area. Hardware wraps once, by adding
+mBASE, so a register larger than the area points outside it, as it does on the
+console.
+
+`ProcessReverb` is now the network in Mednafen's and DuckStation's arrangement.
+Each sum is halved rather than each product scaled by 8000h, it saturates at
+every stage, and it sits between the two halves of psx-spx's filter.
+
+The filter's history (64 input and 32 output samples, about 1.5 ms) is not in a
+save state; keeping it would have changed the format. The 22,050 Hz phase is
+saved, in the field that already was, so a loaded state steps the reverb on the
+same samples it would have. Only that 1.5 ms of history starts empty.
+
+**Compared with DuckStation**, by the same scratch program: 40 runs of 20,000
+samples with random registers, random work-area contents, random mBASE and
+random input, a fifth of them with the enable off. Every output sample was
+identical, and so was the whole of sound RAM and the reverb address afterwards.
+With one filter tap off by one, it found 22 differences.
+
+## 103. Muting the SPU silenced CD audio too
+
+SPUCNT bit 14 clear muted the whole output. psx-spx says the bit does not
+affect CD audio, and DuckStation mutes only the voices and what they feed the
+reverb. So a game streaming XA or CD audio with its voices muted played
+nothing. Only the voices are muted now. CD audio still plays, and the reverb
+still plays out whatever it already holds.
+
+### Verified, 2026-09-25 (101-103)
+
+- **`spu_test` 144** (108 before): a `sweep` group of 24 checks, a `reverb`
+  group of 11, and one in `mixer` for CD audio under mute. Run against the SPU
+  from before these changes, 18 of the new checks fail.
+- **Every other harness green**, 2,076 checks in all.
+- **Twelve discs, before against after**: identical to the instruction, with
+  the same pictures and disc sector counts. None of them uses a sweep in its
+  first 3,000 frames. All of them use the reverb, which affects only what is
+  heard.
+- **What is heard, measured, not listened to**: the BIOS intro and FF7's first
+  50 seconds recorded with `--wav` on both builds. Second by second the levels
+  agree within a few percent, with no clipping in either, no DC shift and no
+  new silence. About half the difference between the two is the reverb's
+  content, which is the part that changed. Whether it now sounds more like a
+  console is for a person with the recordings: `Temp\audio_ab\`.
