@@ -222,6 +222,11 @@ namespace psxemu {
                     L"&Notifications");
         AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandOverlayControllersAlways),
                     L"Always Show &Controllers");
+        AppendMenuW(display, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandThemeClassic),
+                    L"Theme: C&lassic");
+        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandThemeGlass),
+                    L"Theme: &Glass");
         AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(display), L"On-Screen &Display");
 
         // Two ports, each with its own controller-type choice and its own input source - four small
@@ -743,10 +748,13 @@ namespace psxemu {
     }
 
     void TickOnScreenDisplay(HWND window, int stats_mode, bool notifications,
-                             bool controllers_always) {
+                             bool controllers_always, bool glass) {
         HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
+        CheckMenuRadioItem(bar, kCommandThemeClassic, kCommandThemeGlass,
+                           static_cast<UINT>(glass ? kCommandThemeGlass : kCommandThemeClassic),
+                           MF_BYCOMMAND);
         CheckMenuRadioItem(bar, kCommandStatsOff, kCommandStatsFull,
                            static_cast<UINT>(kCommandStatsOff + stats_mode), MF_BYCOMMAND);
         CheckMenuItem(bar, static_cast<UINT>(kCommandOverlayNotifications),

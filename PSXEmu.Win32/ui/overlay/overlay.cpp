@@ -18,6 +18,8 @@
 *****************************************************************************************************************/
 #include "ui/overlay/overlay.h"
 
+#include "tools/letterbox.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -133,6 +135,11 @@ namespace psxemu {
 
     void Overlay::SetStatsMode(StatsMode mode) {
         stats_mode_ = mode;
+        dirty_ = true;
+    }
+
+    void Overlay::SetTheme(OverlayTheme theme) {
+        theme_ = theme;
         dirty_ = true;
     }
 
@@ -256,6 +263,13 @@ namespace psxemu {
 
         const float w = static_cast<float>(width);
         const float h = static_cast<float>(height);
+        // Where every engine puts the picture (bug 47's fixed 4:3), which is what glass sees
+        // through to.
+        const LetterboxRect picture = ComputeLetterboxRect(width, height, 4.0f / 3.0f);
+        frame_x_ = picture.x;
+        frame_y_ = picture.y;
+        frame_w_ = picture.width > 0.0f ? picture.width : 1.0f;
+        frame_h_ = picture.height > 0.0f ? picture.height : 1.0f;
         if (stats_mode_ == StatsMode::kFull)
             DrawStats(w, h, frame_width, frame_height);
         else if (stats_mode_ == StatsMode::kCompact)
@@ -294,39 +308,153 @@ namespace psxemu {
         Quad(x, y, x + w, y + h, u, v, u, v, color);
     }
 
-    // A fan from the centre round the four corners' arcs.
-    void Overlay::RoundRect(float x, float y, float w, float h, float radius, uint32_t color) {
-        if ((color >> 24) == 0)
-            return;
+    void Overlay::RoundPath(float x, float y, float w, float h, float radius,
+                            std::vector<std::pair<float, float>>* points, int steps) const {
+        points->clear();
         radius = (std::min)(radius, (std::min)(w, h) * 0.5f);
-        if (radius < 1.0f) {
-            Rect(x, y, w, h, color);
-            return;
-        }
-        const float u = atlas_.white_u(), v = atlas_.white_v();
-        const uint32_t centre = static_cast<uint32_t>(vertices_.size());
-        vertices_.push_back({ x + w * 0.5f, y + h * 0.5f, u, v, color });
-        const int kSteps = 6;
+        // More steps for bigger corners, so the glass theme's stay round.
+        if (steps < 0)
+            steps = (std::max)(4, (std::min)(12, static_cast<int>(radius / 2.0f)));
         const float corners[4][3] = {
             { x + w - radius, y + radius, -90.0f },       // top right, from straight up
             { x + w - radius, y + h - radius, 0.0f },     // bottom right
             { x + radius, y + h - radius, 90.0f },        // bottom left
             { x + radius, y + radius, 180.0f },           // top left
         };
-        const uint32_t first = static_cast<uint32_t>(vertices_.size());
         for (const auto& corner : corners) {
-            for (int i = 0; i <= kSteps; ++i) {
-                const float angle = (corner[2] + 90.0f * i / kSteps) * 3.14159265f / 180.0f;
-                vertices_.push_back({ corner[0] + std::cos(angle) * radius,
-                                      corner[1] + std::sin(angle) * radius, u, v, color });
+            for (int i = 0; i <= steps; ++i) {
+                const float angle = (corner[2] + 90.0f * i / steps) * 3.14159265f / 180.0f;
+                points->emplace_back(corner[0] + std::cos(angle) * radius,
+                                     corner[1] + std::sin(angle) * radius);
             }
         }
-        const uint32_t count = static_cast<uint32_t>(vertices_.size()) - first;
+    }
+
+    // A fan from the centre round the four corners' arcs.
+    void Overlay::RoundRect(float x, float y, float w, float h, float radius, uint32_t color) {
+        if ((color >> 24) == 0)
+            return;
+        if ((std::min)(radius, (std::min)(w, h) * 0.5f) < 1.0f) {
+            Rect(x, y, w, h, color);
+            return;
+        }
+        std::vector<std::pair<float, float>> points;
+        RoundPath(x, y, w, h, radius, &points);
+        const float u = atlas_.white_u(), v = atlas_.white_v();
+        const uint32_t centre = static_cast<uint32_t>(vertices_.size());
+        vertices_.push_back({ x + w * 0.5f, y + h * 0.5f, u, v, color });
+        const uint32_t first = static_cast<uint32_t>(vertices_.size());
+        for (const auto& p : points)
+            vertices_.push_back({ p.first, p.second, u, v, color });
+        const uint32_t count = static_cast<uint32_t>(points.size());
         for (uint32_t i = 0; i < count; ++i) {
             indices_.push_back(centre);
             indices_.push_back(first + i);
             indices_.push_back(first + (i + 1) % count);
         }
+    }
+
+    void Overlay::GlassRoundRect(float x, float y, float w, float h, float radius,
+                                 uint32_t color) {
+        if ((color >> 24) == 0)
+            return;
+        std::vector<std::pair<float, float>> points;
+        RoundPath(x, y, w, h, radius, &points);
+        // Window pixels to the frame's own 0..1, plus 2 on u to say "the frame, blurred".
+        auto frame_uv = [this](float px, float py, float* u, float* v) {
+            *u = 2.0f + (px - frame_x_) / frame_w_;
+            *v = (py - frame_y_) / frame_h_;
+        };
+        float u = 0, v = 0;
+        const uint32_t centre = static_cast<uint32_t>(vertices_.size());
+        frame_uv(x + w * 0.5f, y + h * 0.5f, &u, &v);
+        vertices_.push_back({ x + w * 0.5f, y + h * 0.5f, u, v, color });
+        const uint32_t first = static_cast<uint32_t>(vertices_.size());
+        for (const auto& p : points) {
+            frame_uv(p.first, p.second, &u, &v);
+            vertices_.push_back({ p.first, p.second, u, v, color });
+        }
+        const uint32_t count = static_cast<uint32_t>(points.size());
+        for (uint32_t i = 0; i < count; ++i) {
+            indices_.push_back(centre);
+            indices_.push_back(first + i);
+            indices_.push_back(first + (i + 1) % count);
+        }
+    }
+
+    // Two rings of the same path, the inner one `thickness` in, joined by quads; the colour
+    // follows the height, so light seems to fall from above.
+    void Overlay::Rim(float x, float y, float w, float h, float radius, float thickness,
+                      uint32_t top, uint32_t bottom) {
+        std::vector<std::pair<float, float>> outer, inner;
+        const int steps = (std::max)(4, (std::min)(12, static_cast<int>(radius / 2.0f)));
+        RoundPath(x, y, w, h, radius, &outer, steps);
+        RoundPath(x + thickness, y + thickness, w - 2.0f * thickness, h - 2.0f * thickness,
+                  (std::max)(radius - thickness, 0.5f), &inner, steps);
+        if (outer.size() != inner.size() || outer.empty())
+            return;
+        auto blend = [top, bottom](float t) {
+            uint32_t out = 0;
+            for (int shift = 0; shift < 32; shift += 8) {
+                const float a = static_cast<float>((top >> shift) & 0xFF);
+                const float b = static_cast<float>((bottom >> shift) & 0xFF);
+                out |= static_cast<uint32_t>(a + (b - a) * t + 0.5f) << shift;
+            }
+            return out;
+        };
+        const float u = atlas_.white_u(), v = atlas_.white_v();
+        const uint32_t first = static_cast<uint32_t>(vertices_.size());
+        for (size_t i = 0; i < outer.size(); ++i) {
+            const float t = (std::min)((std::max)((outer[i].second - y) / h, 0.0f), 1.0f);
+            const uint32_t color = blend(t);
+            vertices_.push_back({ outer[i].first, outer[i].second, u, v, color });
+            vertices_.push_back({ inner[i].first, inner[i].second, u, v, color });
+        }
+        const uint32_t count = static_cast<uint32_t>(outer.size());
+        for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t a = first + 2 * i, b = first + 2 * ((i + 1) % count);
+            const uint32_t quad[6] = { a, b, b + 1, a, b + 1, a + 1 };
+            indices_.insert(indices_.end(), quad, quad + 6);
+        }
+    }
+
+    float Overlay::Radius(float radius) const {
+        return theme_ == OverlayTheme::kGlass ? radius * 1.7f : radius;
+    }
+
+    uint32_t Overlay::AccentOf(ToastKind kind) const {
+        if (theme_ == OverlayTheme::kClassic)
+            return Accent(kind);
+        // The system colours of Apple's dark appearance.
+        switch (kind) {
+            case ToastKind::kSuccess: return OverlayColor(48, 209, 88);
+            case ToastKind::kWarning: return OverlayColor(255, 159, 10);
+            case ToastKind::kError: return OverlayColor(255, 69, 58);
+            default: return OverlayColor(10, 132, 255);
+        }
+    }
+
+    void Overlay::Panel(float x, float y, float w, float h, float radius, float opacity) {
+        if (theme_ == OverlayTheme::kClassic) {
+            RoundRect(x, y, w, h, radius, OverlayFade(kPanel, opacity));
+            return;
+        }
+        const float r = Radius(radius);
+        auto alpha = [opacity](float a) { return static_cast<uint8_t>(a * opacity + 0.5f); };
+        // A soft shadow under it: a few widening layers, each faint.
+        for (int i = 3; i >= 1; --i) {
+            const float grow = static_cast<float>(i) * 3.0f * s_;
+            RoundRect(x - grow, y - grow + 4.0f * s_, w + 2.0f * grow, h + 2.0f * grow, r + grow,
+                      OverlayColor(0, 0, 0, alpha(16.0f)));
+        }
+        // The frosted picture behind, a little dimmed and cooled, then a dark veil so white
+        // text reads over anything, and a faint white one for the milkiness of glass.
+        GlassRoundRect(x, y, w, h, r, OverlayColor(215, 220, 232, alpha(255.0f)));
+        RoundRect(x, y, w, h, r, OverlayColor(12, 14, 20, alpha(96.0f)));
+        RoundRect(x, y, w, h, r, OverlayColor(255, 255, 255, alpha(14.0f)));
+        // The rim: bright along the top edge, where the light catches it, faint below.
+        Rim(x, y, w, h, r, (std::max)(1.0f, 1.2f * s_), OverlayColor(255, 255, 255, alpha(110.0f)),
+            OverlayColor(255, 255, 255, alpha(22.0f)));
     }
 
     void Overlay::Line(float x0, float y0, float x1, float y1, float thickness, uint32_t color) {
@@ -354,18 +482,30 @@ namespace psxemu {
     float Overlay::Text(OverlayFont font, float x, float y, const std::wstring& text,
                         uint32_t color) {
         const OverlayAtlas::Font& f = atlas_.font(font);
-        float pen = std::round(x);
+        const float left = std::round(x);
         const float top = std::round(y);
-        for (wchar_t c : text) {
-            const OverlayAtlas::Glyph& glyph = f.Get(c);
-            if (c != L' ' && glyph.width > 0.0f) {
-                const float gx = pen + glyph.offset_x;
-                Quad(gx, top, gx + glyph.width, top + glyph.height, glyph.u0, glyph.v0, glyph.u1,
-                     glyph.v1, color);
+        // Glass lets the picture through, so its text carries a soft shadow to stay readable
+        // over a bright scene.
+        const bool shadow = theme_ == OverlayTheme::kGlass;
+        for (int pass = shadow ? 0 : 1; pass < 2; ++pass) {
+            const float dy = pass == 0 ? (std::max)(1.0f, std::round(s_)) : 0.0f;
+            const uint32_t ink =
+                pass == 0 ? OverlayFade(OverlayColor(0, 0, 0, 150), static_cast<float>(color >> 24) / 255.0f)
+                          : color;
+            float pen = left;
+            for (wchar_t c : text) {
+                const OverlayAtlas::Glyph& glyph = f.Get(c);
+                if (c != L' ' && glyph.width > 0.0f) {
+                    const float gx = pen + glyph.offset_x;
+                    Quad(gx, top + dy, gx + glyph.width, top + dy + glyph.height, glyph.u0,
+                         glyph.v0, glyph.u1, glyph.v1, ink);
+                }
+                pen += glyph.advance;
             }
-            pen += glyph.advance;
+            if (pass == 1)
+                return pen - left;
         }
-        return pen - std::round(x);
+        return 0.0f;
     }
 
     std::wstring Overlay::Fit(OverlayFont font, const std::wstring& text, float width) const {
@@ -441,11 +581,22 @@ namespace psxemu {
 
             const float x = margin - (1.0f - slide) * (toast_w * 0.35f);
             const float y = toast.y;
-            const uint32_t accent = Accent(toast.kind);
-            RoundRect(x, y, toast_w, toast_h, 10.0f * s_, OverlayFade(kPanel, opacity));
-            RoundRect(x, y, 4.0f * s_, toast_h, 2.0f * s_, OverlayFade(accent, opacity));
-            Icon(toast.icon, x + pad + 2.0f * s_, y + (toast_h - icon) * 0.5f, icon,
-                 OverlayFade(accent, opacity));
+            const uint32_t accent = AccentOf(toast.kind);
+            Panel(x, y, toast_w, toast_h, 10.0f * s_, opacity);
+            if (theme_ == OverlayTheme::kClassic) {
+                RoundRect(x, y, 4.0f * s_, toast_h, 2.0f * s_, OverlayFade(accent, opacity));
+                Icon(toast.icon, x + pad + 2.0f * s_, y + (toast_h - icon) * 0.5f, icon,
+                     OverlayFade(accent, opacity));
+            } else {
+                // Glass puts the icon, white, on a disc of the accent colour.
+                const float disc = icon + 4.0f * s_;
+                const float dx = x + pad;
+                const float dy = y + (toast_h - disc) * 0.5f;
+                RoundRect(dx, dy, disc, disc, disc * 0.5f, OverlayFade(accent, opacity * 0.9f));
+                const float inset = disc * 0.2f;
+                Icon(toast.icon, dx + inset, dy + inset, disc - 2.0f * inset,
+                     OverlayFade(OverlayColor(255, 255, 255), opacity));
+            }
 
             const float text_x = x + pad + icon + 14.0f * s_;
             const float text_w = toast_w - (text_x - x) - pad;
@@ -478,7 +629,7 @@ namespace psxemu {
         }
 
         const float margin = 16.0f * s_;
-        const float card_w = 196.0f * s_;
+        const float card_w = 214.0f * s_;
         const float card_h = 58.0f * s_;
         const float tap_h = 30.0f * s_;   // the row of a multitap's four players
         const float gap = 8.0f * s_;
@@ -487,7 +638,22 @@ namespace psxemu {
         const OverlayAtlas::Font& bold = atlas_.font(OverlayFont::kBold);
         const OverlayAtlas::Font& small = atlas_.font(OverlayFont::kSmall);
 
-        // Port 2 at the far right, port 1 to its left - the order they sit on the console.
+        // Port 2 at the far right, port 1 to its left - the order they sit on the console. If
+        // the two side by side would run into the performance panel, they stack instead, port 1
+        // above port 2.
+        float heights[2] = { 0.0f, 0.0f };
+        for (const ControllerSlot& slot : slots_) {
+            if (slot.port < 0 || slot.port > 1)
+                continue;
+            if (heights[slot.port] == 0.0f)
+                heights[slot.port] = card_h;
+            if (slot.player >= 0)
+                heights[slot.port] = card_h + tap_h;
+        }
+        const float panel_right = stats_mode_ == StatsMode::kFull      ? margin + 392.0f * s_
+                                  : stats_mode_ == StatsMode::kCompact ? margin + 260.0f * s_
+                                                                       : 0.0f;
+        const bool stack = width - margin - 2.0f * card_w - gap < panel_right + gap;
         float right = width - margin;
         for (int port = 1; port >= 0; --port) {
             const ControllerSlot* main = nullptr;
@@ -504,11 +670,17 @@ namespace psxemu {
                 continue;
             const bool tap = !players.empty();
             const float h = card_h + (tap ? tap_h : 0.0f);
-            const float x = right - card_w;
-            const float y = margin;
-            right = x - gap;
+            float x = right - card_w;
+            float y = margin;
+            if (stack) {
+                x = width - margin - card_w;
+                if (port == 1 && heights[0] > 0.0f)
+                    y = margin + heights[0] + gap;
+            } else {
+                right = x - gap;
+            }
 
-            RoundRect(x, y, card_w, h, 10.0f * s_, OverlayFade(kPanel, opacity));
+            Panel(x, y, card_w, h, 10.0f * s_, opacity);
             const bool none = main->icon == OverlayIcon::kNone;
             const uint32_t tint = !main->connected ? kError : none ? kTextDim : kTextMain;
             Icon(main->icon, x + pad, y + (card_h - icon) * 0.5f, icon, OverlayFade(tint, opacity));
@@ -518,7 +690,7 @@ namespace psxemu {
             const float badge = 16.0f * s_;
             const float bx = x + pad + icon - badge * 0.6f;
             const float by = y + (card_h - icon) * 0.5f - badge * 0.25f;
-            RoundRect(bx, by, badge, badge, badge * 0.5f, OverlayFade(kInfo, opacity));
+            RoundRect(bx, by, badge, badge, badge * 0.5f, OverlayFade(AccentOf(ToastKind::kInfo), opacity));
             const float nw = atlas_.Measure(OverlayFont::kSmall, number);
             Text(OverlayFont::kSmall, bx + (badge - nw) * 0.5f,
                  by + (badge - small.line_height) * 0.5f, number, OverlayFade(kTextMain, opacity));
@@ -529,7 +701,7 @@ namespace psxemu {
             const float top = y + (card_h - block) * 0.5f;
             Text(OverlayFont::kBold, text_x, top, Fit(OverlayFont::kBold, main->type, text_w),
                  OverlayFade(none ? kTextDim : kTextMain, opacity));
-            const std::wstring line = main->connected ? main->source : main->source + L" - not connected";
+            const std::wstring line = main->connected ? main->source : main->source + L" \x00B7 unplugged";
             Text(OverlayFont::kSmall, text_x, top + bold.line_height,
                  Fit(OverlayFont::kSmall, line, text_w),
                  OverlayFade(main->connected ? kTextDim : kError, opacity));
@@ -565,7 +737,7 @@ namespace psxemu {
         const float text_w = (std::max)(atlas_.Measure(OverlayFont::kBold, label), 96.0f * s_);
         const float w = pad + text_w + pad + graph_w + pad;
         const float h = (std::max)(bold.line_height, graph_h) + 2.0f * pad;
-        RoundRect(x, y, w, h, 8.0f * s_, kPanel);
+        Panel(x, y, w, h, 8.0f * s_, 1.0f);
         Text(OverlayFont::kBold, x + pad, y + (h - bold.line_height) * 0.5f, label, kTextMain);
         std::vector<float> values;
         const size_t take = (std::min)(buckets_.size(), static_cast<size_t>(20));
@@ -613,8 +785,9 @@ namespace psxemu {
                         small.line_height + 10.0f * s_ +                           // legend
                         small.line_height + 3.0f * s_ + graph_audio + 10.0f * s_ +   // audio
                         regular.line_height + small.line_height + pad;             // footer
-        RoundRect(x, y0, w, h, 12.0f * s_, kPanel);
-        RoundRect(x, y0, w, 2.0f * s_, 1.0f * s_, kPanelEdge);
+        Panel(x, y0, w, h, 12.0f * s_, 1.0f);
+        if (theme_ == OverlayTheme::kClassic)
+            RoundRect(x, y0, w, 2.0f * s_, 1.0f * s_, kPanelEdge);
 
         // Averages over the last second or so of frames.
         const size_t window = (std::min)(recent_.size(), static_cast<size_t>(60));

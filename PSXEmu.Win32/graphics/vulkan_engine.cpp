@@ -1090,15 +1090,18 @@ namespace psxemu {
         if (vk_.CreateSampler(device_, &sampler, nullptr, &overlay_sampler_) != VK_SUCCESS)
             return false;
 
-        VkDescriptorSetLayoutBinding binding = {};
-        binding.binding = 0;
-        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        binding.descriptorCount = 1;
-        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // Binding 0 the atlas, binding 1 the game's frame - what the glass theme blurs.
+        VkDescriptorSetLayoutBinding bindings[2] = {};
+        for (uint32_t i = 0; i < 2; ++i) {
+            bindings[i].binding = i;
+            bindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            bindings[i].descriptorCount = 1;
+            bindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
         VkDescriptorSetLayoutCreateInfo set_info = {};
         set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-        set_info.bindingCount = 1;
-        set_info.pBindings = &binding;
+        set_info.bindingCount = 2;
+        set_info.pBindings = bindings;
         if (vk_.CreateDescriptorSetLayout(device_, &set_info, nullptr, &overlay_set_layout_) !=
             VK_SUCCESS)
             return false;
@@ -1110,7 +1113,7 @@ namespace psxemu {
             VK_SUCCESS)
             return false;
 
-        VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+        VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 };
         VkDescriptorPoolCreateInfo pool = {};
         pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pool.maxSets = 1;
@@ -1319,6 +1322,25 @@ namespace psxemu {
             write.pImageInfo = &image;
             vk_.UpdateDescriptorSets(device_, 1, &write, 0, nullptr);
             overlay_atlas_version_ = data->atlas_version;
+        }
+
+        // The frame, on binding 1, every frame: its image is remade whenever the resolution
+        // changes. The last frame's fence has been waited on, so the set is not in use.
+        if (frame_.view != nullptr) {
+            VkDescriptorImageInfo image = {};
+            image.sampler = overlay_sampler_;
+            image.imageView = frame_.view;
+            image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet write = {};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = overlay_set_;
+            write.dstBinding = 1;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &image;
+            vk_.UpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+        } else {
+            return false;
         }
 
         auto ensure = [this](VkBuffer* buffer, VkDeviceMemory* memory, void** mapped,

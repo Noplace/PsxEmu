@@ -585,6 +585,19 @@ BIOS console window beside what the BIOS itself printed (bug 80). What a
 program sends to the expansion port's DUART directly is still not shown: those
 registers trap.
 
+**An on-screen overlay** (bug 114, Settings > Video > On-Screen Display), drawn
+by all four renderers through one small pass each:
+- notifications at the lower left
+- the controllers in each port at the top right
+- a performance panel at the top left (F9: off, full, compact)
+  - FPS over the last minute, with min, average and 1% low
+  - frame time over the last 5 seconds, split into emulate, hand-off and idle
+  - the audio buffer, and CPU MIPS
+
+It has two looks: Classic, flat and dark, and Glass, whose panels frost the
+picture behind them. Not yet shown: a memory card write that fails
+(`MC::flush_failures()`, below).
+
 It *can* be driven from an agent session after all - launched, sent
 `WM_COMMAND`s, and read back through its title bar (Test-Suite.md's host_test
 section) - which is how the threading work was checked end to end. What still

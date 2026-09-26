@@ -7113,3 +7113,71 @@ across the restart.
 - **The harnesses** all pass.
 - **The defaults are untouched:** none of this state exists with the four
   settings off.
+
+## 114. An on-screen overlay: notifications, controllers, performance graphs, two themes
+
+`PSXEmu.Win32/ui/overlay/`, the four engines, `graphics/video_presenter.cpp`,
+`host/machine.cpp`, `host/video_output.cpp`, `app/app.cpp`
+
+Not a bug: a feature the user asked for, after GBAEmu's notifications, and
+recorded here because it touches every renderer and two threads.
+
+**What it shows.**
+- **Notifications, lower left.** They slide in, hold 3.5 s (6 s for warnings),
+  fade, and stack upward. They cover:
+  - a game loaded, with its serial and region from SYSTEM.CNF, read straight
+    from the image; the BIOS; a PS-X EXE; reset
+  - save and load state - failures as a notification, or the old dialog with
+    notifications off
+  - pads plugged and pulled, and which port they drive
+  - memory cards; speed, frame limiter, renderer, filter, recompiler and the
+    timing models; pause; full screen
+- **Controllers, top right.** Each port's type as an icon, its number, and what
+  drives it - red when that pad is unplugged - with a multitap's four players.
+  Shown for 5 s after any change, or always.
+- **Performance, top left, F9.**
+  - FPS over the last minute, with min, average and the 1% low
+  - frame time over the last 5 seconds, frame by frame, as emulate, hand-off and
+    idle against the frame's budget
+  - the audio buffer; CPU MIPS; present time; frames not shown
+  - the renderer, filter and picture size
+
+  F9 because F1-F8 already load and save states; it is reserved from pad bindings
+  like them.
+
+**How it is drawn.**
+- **One vertex list for every renderer.** The overlay builds triangles on the
+  video thread in window pixels, with a vertex laid out as Dear ImGui's is. The
+  texture is one atlas: fonts rasterised by GDI at the size they are shown, and
+  icons drawn with GDI+.
+- **One small pass per engine** (`IGraphicsEngine::SetOverlay`), after the
+  picture and any filter, alpha-blended. Each copies the vertices up converted
+  to clip space, so no engine needs constants. Vulkan's shaders are SPIR-V from
+  `shaders/overlay.vert` and `overlay.frag` (`build_spirv.bat`).
+- **Per-frame stats.** The machine thread's per-frame timings reach the video
+  thread through a lock-free ring (`Machine::Hooks::frame_done`), which drops
+  rather than waits.
+- **While paused.** The video thread redraws the last frame about 30 times a
+  second while something on top is moving (`Presenter::WantsRefresh`), and only
+  once a frame's time has passed with nothing new.
+
+**The Glass theme.** Its panels show the game behind them, frosted:
+- the overlay's shader samples the game's own frame - a second texture in every
+  engine - wherever a vertex's u is 2 or more
+- a 24-tap golden-angle blur about 22 screen pixels across, a little more
+  saturated
+- then a dark veil for legibility, a soft shadow, a rim bright at the top, rounder
+  corners, Apple's system colours, and shadowed text
+
+The frame is the unfiltered one, which under a blur that size is the same
+picture. Classic is unchanged. Both are under Settings > Video > On-Screen
+Display, and `overlay_theme` in `psxemu.ini`.
+
+**Verified.**
+- **All four renderers** were screenshotted from a scratch copy of the Release
+  build running the BIOS, with the panel, the pinned controllers - a multitap on
+  port 2 - and notifications. Glass on each, and Classic on Direct3D 12, look the
+  same across engines, and every run exited cleanly.
+- **Layout.** The first glass pass was too faint, the frame's text readable
+  through it, and led to the screen-sized blur. The controllers corner stacks
+  its cards when side by side would run into the panel.

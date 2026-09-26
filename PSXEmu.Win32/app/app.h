@@ -291,6 +291,7 @@ namespace psxemu {
         void SetStatsMode(StatsMode mode);
         void SetOverlayNotifications(bool on);
         void SetControllersAlwaysVisible(bool on);
+        void SetOverlayTheme(OverlayTheme theme);
         void LoadOverlaySettings();
         void SaveOverlaySettings();
         void UpdateOverlayMenu();
@@ -425,6 +426,7 @@ namespace psxemu {
         StatsMode stats_mode_ = StatsMode::kOff;
         bool overlay_notifications_ = true;
         bool controllers_always_ = false;
+        OverlayTheme overlay_theme_ = OverlayTheme::kClassic;
         // Which XInput pads are plugged in, as the input thread last said. The UI thread's.
         std::array<bool, 4> pad_connected_ = { false, false, false, false };
         // Where the machine leaves each frame's timings for the overlay's graphs. Written on the

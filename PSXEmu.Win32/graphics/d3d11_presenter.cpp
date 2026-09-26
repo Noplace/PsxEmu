@@ -335,9 +335,13 @@ namespace psxemu {
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context_->VSSetShader(overlay_vs_, nullptr, 0);
         context_->PSSetShader(overlay_ps_, nullptr, 0);
-        context_->PSSetShaderResources(0, 1, &overlay_atlas_view_);
+        // t0 the atlas, t1 the game's frame - what the glass theme blurs.
+        ID3D11ShaderResourceView* views[2] = { overlay_atlas_view_, frame_view_ };
+        context_->PSSetShaderResources(0, 2, views);
         context_->PSSetSamplers(0, 1, &overlay_sampler_);
         context_->DrawIndexed(static_cast<UINT>(data->index_count), 0, 0);
+        ID3D11ShaderResourceView* no_views[2] = { nullptr, nullptr };
+        context_->PSSetShaderResources(0, 2, no_views);
 
         context_->OMSetBlendState(nullptr, factor, 0xFFFFFFFFu);
         context_->RSSetState(nullptr);

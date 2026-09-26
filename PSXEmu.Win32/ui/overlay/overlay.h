@@ -34,14 +34,20 @@
 #include <chrono>
 #include <deque>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace psxemu {
 
     enum class ToastKind { kInfo, kSuccess, kWarning, kError };
 
-    // How much of the performance panel is shown - F3 steps through them.
+    // How much of the performance panel is shown - F9 steps through them.
     enum class StatsMode { kOff, kCompact, kFull };
+
+    // How the panels look. Classic is flat and dark. Glass is frosted: each panel shows the
+    // picture behind it blurred - the engines' shaders sample the game's frame for it - under a
+    // tint, with a soft shadow, a bright rim and rounder corners.
+    enum class OverlayTheme { kClassic, kGlass };
 
     // One controller socket as the top-right corner shows it: a port, or a player behind a
     // multitap on it.
@@ -70,6 +76,7 @@ namespace psxemu {
         void SetControllersAlwaysVisible(bool on);
         void SetStatsMode(StatsMode mode);
         StatsMode stats_mode() const { return stats_mode_; }
+        void SetTheme(OverlayTheme theme);
 
         // ---- what the performance panel reads -------------------------------------------------
         void AddSample(const emulation::host::FrameSample& sample);
@@ -106,6 +113,22 @@ namespace psxemu {
         // ---- building blocks ----------------------------------------------------------------
         void Rect(float x, float y, float w, float h, uint32_t color);
         void RoundRect(float x, float y, float w, float h, float radius, uint32_t color);
+        // The same shape filled with the picture behind it, blurred, times `color` - the
+        // glass theme's material. Its texture coordinates point into the game's frame rather
+        // than the atlas: u is 2 plus the frame's own u, which is how the shader tells them apart.
+        void GlassRoundRect(float x, float y, float w, float h, float radius, uint32_t color);
+        // A ring just inside the shape's edge, `top` colour at the top fading to `bottom`.
+        void Rim(float x, float y, float w, float h, float radius, float thickness, uint32_t top,
+                 uint32_t bottom);
+        // Points round a rounded rectangle, clockwise from the top right.
+        void RoundPath(float x, float y, float w, float h, float radius,
+                       std::vector<std::pair<float, float>>* points, int steps = -1) const;
+        // A panel's background in the current theme - `radius` is the classic one; glass rounds
+        // it further. `opacity` fades the whole of it.
+        void Panel(float x, float y, float w, float h, float radius, float opacity);
+        // The theme's colour for a notification kind, and its radius for a classic `radius`.
+        uint32_t AccentOf(ToastKind kind) const;
+        float Radius(float radius) const;
         void Line(float x0, float y0, float x1, float y1, float thickness, uint32_t color);
         void Icon(OverlayIcon icon, float x, float y, float size, uint32_t color);
         // Returns the width drawn. Snaps to whole pixels so glyphs stay crisp.
@@ -136,6 +159,11 @@ namespace psxemu {
 
         bool notifications_ = true;
         std::deque<Toast> toasts_;
+
+        OverlayTheme theme_ = OverlayTheme::kClassic;
+        // Where the picture sits in the window this frame (the 4:3 letterbox), for turning a
+        // window position into a place in the frame - see GlassRoundRect.
+        float frame_x_ = 0.0f, frame_y_ = 0.0f, frame_w_ = 1.0f, frame_h_ = 1.0f;
 
         std::vector<ControllerSlot> slots_;
         bool controllers_always_ = false;

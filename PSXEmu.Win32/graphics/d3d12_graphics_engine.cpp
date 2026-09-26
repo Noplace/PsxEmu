@@ -69,7 +69,7 @@ bool D3D12GraphicsEngine::CreateOverlayPipeline() {
     static_assert(sizeof(overlay_vertices_) / sizeof(overlay_vertices_[0]) == kFrameCount,
                   "one overlay buffer per frame in flight");
     CD3DX12_DESCRIPTOR_RANGE range;
-    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);   // t0 the atlas, t1 the frame
     CD3DX12_ROOT_PARAMETER parameter;
     parameter.InitAsDescriptorTable(1, &range, D3D12_SHADER_VISIBILITY_PIXEL);
     CD3DX12_STATIC_SAMPLER_DESC sampler;
@@ -128,7 +128,7 @@ bool D3D12GraphicsEngine::CreateOverlayPipeline() {
         return false;
 
     D3D12_DESCRIPTOR_HEAP_DESC heap = {};
-    heap.NumDescriptors = 1;
+    heap.NumDescriptors = 2 * kFrameCount;   // a pair per frame in flight
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     return SUCCEEDED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&overlay_srv_heap_)));
@@ -190,15 +190,29 @@ void D3D12GraphicsEngine::DrawOverlay() {
             overlay_atlas_.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         command_list_->ResourceBarrier(1, &ready);
+        overlay_atlas_version_ = data->atlas_version;
+    }
 
+    // This frame's pair of descriptors: t0 the atlas, t1 the game's frame for the glass theme.
+    // Written every frame - the frame's texture is remade whenever the resolution changes - into
+    // this frame's own pair, which the fence says the GPU has finished with.
+    const UINT descriptor_size =
+        device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu_slot = overlay_srv_heap_->GetCPUDescriptorHandleForHeapStart();
+    cpu_slot.ptr += static_cast<SIZE_T>(frame_index_) * 2 * descriptor_size;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu_slot = overlay_srv_heap_->GetGPUDescriptorHandleForHeapStart();
+    gpu_slot.ptr += static_cast<UINT64>(frame_index_) * 2 * descriptor_size;
+    {
         D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
         view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         view.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         view.Texture2D.MipLevels = 1;
-        device_->CreateShaderResourceView(overlay_atlas_.Get(), &view,
-                                          overlay_srv_heap_->GetCPUDescriptorHandleForHeapStart());
-        overlay_atlas_version_ = data->atlas_version;
+        device_->CreateShaderResourceView(overlay_atlas_.Get(), &view, cpu_slot);
+        D3D12_CPU_DESCRIPTOR_HANDLE frame_slot = cpu_slot;
+        frame_slot.ptr += descriptor_size;
+        view.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        device_->CreateShaderResourceView(fb_texture_.Get(), &view, frame_slot);
     }
 
     // This frame's buffers, grown to the largest overlay so far. The fence MoveToNextFrame
@@ -248,8 +262,7 @@ void D3D12GraphicsEngine::DrawOverlay() {
     command_list_->SetGraphicsRootSignature(overlay_root_.Get());
     ID3D12DescriptorHeap* heaps[] = { overlay_srv_heap_.Get() };
     command_list_->SetDescriptorHeaps(1, heaps);
-    command_list_->SetGraphicsRootDescriptorTable(
-        0, overlay_srv_heap_->GetGPUDescriptorHandleForHeapStart());
+    command_list_->SetGraphicsRootDescriptorTable(0, gpu_slot);
     command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     D3D12_VERTEX_BUFFER_VIEW vertex_view = {};
     vertex_view.BufferLocation = vertices->GetGPUVirtualAddress();

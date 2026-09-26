@@ -390,9 +390,10 @@ namespace psxemu {
         const StatsMode start_stats = stats_mode_;
         const bool start_notifications = overlay_notifications_;
         const bool start_controllers = controllers_always_;
+        const OverlayTheme start_theme = overlay_theme_;
         video_ = std::make_unique<VideoOutput>(
             [this, start_renderer, start_filter, start_stats, start_notifications,
-             start_controllers]() -> std::unique_ptr<Presenter> {
+             start_controllers, start_theme]() -> std::unique_ptr<Presenter> {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
                 auto presenter = std::make_unique<D3DPresenter>(
@@ -402,6 +403,7 @@ namespace psxemu {
                 presenter->overlay().SetStatsMode(start_stats);
                 presenter->overlay().SetNotificationsEnabled(start_notifications);
                 presenter->overlay().SetControllersAlwaysVisible(start_controllers);
+                presenter->overlay().SetTheme(start_theme);
                 if (!presenter->Open(start_renderer, start_filter)) {
                     PostToUi([this] {
                         ShowError(window_, L"Could not create a Direct3D device.");
@@ -1835,6 +1837,9 @@ namespace psxemu {
                                          : StatsMode::kOff;
         overlay_notifications_ = settings_.GetBool("overlay_notifications", true);
         controllers_always_ = settings_.GetBool("overlay_controllers_always", false);
+        overlay_theme_ = settings_.GetString("overlay_theme", "classic") == "glass"
+                             ? OverlayTheme::kGlass
+                             : OverlayTheme::kClassic;
         UpdateOverlayMenu();
     }
 
@@ -1847,6 +1852,7 @@ namespace psxemu {
                                                                                 : "off");
         updated.SetBool("overlay_notifications", overlay_notifications_);
         updated.SetBool("overlay_controllers_always", controllers_always_);
+        updated.SetString("overlay_theme", overlay_theme_ == OverlayTheme::kGlass ? "glass" : "classic");
         if (updated.Serialise() == settings_.Serialise())
             return;
         settings_ = updated;
@@ -1855,7 +1861,18 @@ namespace psxemu {
 
     void App::UpdateOverlayMenu() {
         TickOnScreenDisplay(window_, static_cast<int>(stats_mode_), overlay_notifications_,
-                            controllers_always_);
+                            controllers_always_, overlay_theme_ == OverlayTheme::kGlass);
+    }
+
+    void App::SetOverlayTheme(OverlayTheme theme) {
+        overlay_theme_ = theme;
+        UpdateOverlayMenu();
+        SaveOverlaySettings();
+        PostToOverlay([theme](Overlay& overlay) { overlay.SetTheme(theme); });
+        // Something to look at in it.
+        Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+               theme == OverlayTheme::kGlass ? L"Glass theme" : L"Classic theme");
+        UpdateOverlayControllers(true);
     }
 
     void App::SetStatsMode(StatsMode mode) {
@@ -2214,6 +2231,12 @@ namespace psxemu {
                 break;
             case kCommandOverlayControllersAlways:
                 SetControllersAlwaysVisible(!controllers_always_);
+                break;
+            case kCommandThemeClassic:
+                SetOverlayTheme(OverlayTheme::kClassic);
+                break;
+            case kCommandThemeGlass:
+                SetOverlayTheme(OverlayTheme::kGlass);
                 break;
 
             case kCommandFullscreen:

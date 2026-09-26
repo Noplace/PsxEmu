@@ -145,6 +145,9 @@ namespace psxemu {
         kCommandStatsFull,
         kCommandOverlayNotifications,
         kCommandOverlayControllersAlways,
+        // ...and its look: Classic, or Glass (frosted, over the picture).
+        kCommandThemeClassic,
+        kCommandThemeGlass,
     };
 
     // ---------------------------------------------------------------------------------------------

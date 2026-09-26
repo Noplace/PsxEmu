@@ -558,6 +558,7 @@ void main() {
             return false;
         gl_.UseProgram(overlay_program_);
         gl_.Uniform1i(gl_.GetUniformLocation(overlay_program_, "u_atlas"), 0);
+        gl_.Uniform1i(gl_.GetUniformLocation(overlay_program_, "u_frame"), 1);
         gl_.UseProgram(0);
 
         // Its own vertex array, so the picture's empty one is left exactly as it was.
@@ -644,9 +645,15 @@ void main() {
                        kGlStreamDraw);
         glBindTexture(GL_TEXTURE_2D, overlay_atlas_);
         gl_.BindSampler(0, overlay_sampler_);
+        // The game's frame on unit 1, for the glass theme to blur.
+        gl_.ActiveTexture(kGlTexture0 + 1);
+        glBindTexture(GL_TEXTURE_2D, frame_texture_);
+        gl_.BindSampler(1, overlay_sampler_);
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(data->index_count), GL_UNSIGNED_INT,
                        nullptr);
 
+        gl_.BindSampler(1, samplers_[1]);
+        gl_.ActiveTexture(kGlTexture0);
         gl_.BindSampler(0, samplers_[0]);
         gl_.BindVertexArray(vertex_array_);
         glDisable(GL_BLEND);
