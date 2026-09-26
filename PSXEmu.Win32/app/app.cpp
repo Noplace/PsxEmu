@@ -165,6 +165,11 @@ namespace psxemu {
             host.set_type = [this](int slot, const std::string& key) { SetSlotType(slot, key); };
             host.game = [this] { return CurrentGame(); };
             host.set_separate = [this](bool separate) { SetGameSettingsSeparate(separate); };
+            host.read_pad = [this](int pad) {
+                if (machine_ == nullptr || pad < 0 || pad >= emulation::host::HostInput::kPads)
+                    return emulation::host::PadReading();
+                return machine_->input().Peek().pads[pad];
+            };
             controller_bindings_.Create(instance, window_, std::move(host));
         }
         {
@@ -464,9 +469,12 @@ namespace psxemu {
                                              hooks);
         input_ = std::make_unique<InputThread>(&machine_->input(), window_);
         input_->SetKeysInUse(KeysInUse(bindings_));
-        input_->SetPadConnectionHandler([this](int pad, bool connected) {
-            PostToUi([this, pad, connected] { OnPadConnectionChanged(pad, connected); });
-        });
+        input_->SetPadConnectionHandler(
+            [this](int pad, bool connected, emulation::host::PadKind kind) {
+                PostToUi([this, pad, connected, kind] {
+                    OnPadConnectionChanged(pad, connected, kind);
+                });
+            });
 
         input_->Start();
         audio_->Start(config_.audio_backend);
@@ -1883,10 +1891,12 @@ namespace psxemu {
         PostToOverlay([slots, announce](Overlay& overlay) { overlay.SetControllers(slots, announce); });
     }
 
-    void App::OnPadConnectionChanged(int pad, bool connected) {
+    void App::OnPadConnectionChanged(int pad, bool connected, emulation::host::PadKind kind) {
         if (pad < 0 || pad >= 4)
             return;
         pad_connected_[pad] = connected;
+        pad_kind_[pad] = kind;
+        controller_bindings_.OnConfigChanged();   // its device list says what is connected
         // Which port, if any, it drives - so the notification can say what it is for.
         const std::string source = "gamepad" + std::to_string(pad + 1);
         std::wstring where;
@@ -1910,9 +1920,20 @@ namespace psxemu {
         }
         if (where.empty())
             where = L"Not assigned to a port";
+        const wchar_t* what = kind == emulation::host::PadKind::kDualSense    ? L"DualSense"
+                              : kind == emulation::host::PadKind::kDualShock4 ? L"DualShock 4"
+                                                                             : L"Gamepad";
+        // "Gamepad 2 connected" for an XInput pad; a PlayStation pad says what it is, and which
+        // Gamepad it has become underneath.
+        const bool xinput = kind == emulation::host::PadKind::kXInput;
+        std::wstring title = what;
+        if (xinput)
+            title += L" " + std::to_wstring(pad + 1);
+        title += connected ? L" connected" : L" disconnected";
+        if (!xinput)
+            where = L"Gamepad " + std::to_wstring(pad + 1) + L" \x00B7 " + where;
         Notify(OverlayIcon::kPadAnalog, connected ? ToastKind::kSuccess : ToastKind::kWarning,
-               L"Gamepad " + std::to_wstring(pad + 1) + (connected ? L" connected" : L" disconnected"),
-               where);
+               title, where);
         UpdateOverlayControllers(true);
     }
 

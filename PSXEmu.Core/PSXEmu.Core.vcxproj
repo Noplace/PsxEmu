@@ -219,6 +219,7 @@
     <ClInclude Include="platform\frame_limiter.h" />
     <ClInclude Include="platform\input_bindings.h" />
     <ClInclude Include="platform\mouse_scaling.h" />
+    <ClInclude Include="platform\sony_pad_reports.h" />
     <ClInclude Include="platform\speed_resampler.h" />
     <ClInclude Include="platform\types.h" />
     <ClInclude Include="platform\util.h" />

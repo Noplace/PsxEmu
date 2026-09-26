@@ -7294,3 +7294,82 @@ Combat from Recent Discs, with the Performance preset shared:
 - **Separate off:** the file was deleted and Performance came back.
 - **Wild Arms named on the command line,** after turning separate on again:
   its settings were in place at startup, and it ran at 59.3 fps.
+
+## 117. DualShock 4 and DualSense pads
+
+`PSXEmu.Win32/input/sony_pads.*`, `input/input_thread.cpp`,
+`PSXEmu.Core/platform/sony_pad_reports.h`, `host/input_exchange.h`,
+`ui/controller_bindings_window.cpp`, `app/app.cpp`
+
+Not a bug: a feature the user asked for. Only XInput pads were read, so a
+PlayStation 4 or 5 pad plugged in on its own was not seen at all - unless
+Steam or DS4Windows presented it as an Xbox pad.
+
+**What it does.**
+- **Reads them straight from HID,** over USB or Bluetooth, with no driver
+  and nothing to install:
+  - the DualShock 4 (both models, 05C4 and 09CC)
+  - the DualSense and DualSense Edge (0CE6, 0DF2)
+- **Reports the same controls an XInput pad does,** so every binding and
+  default means the same button on either kind:
+  - Cross is A, Circle B, Square X, Triangle Y
+  - L1/R1 are LB/RB, and L2/R2 are LT/RT, pressed past XInput's own threshold
+  - Share or Create is Back, and Options is Start
+  - L3/R3 are the stick presses; the sticks feed the analog axes and their
+    directions
+- **Drives the motors** from what the game asks for, as with an XInput pad.
+  The light bar, the player lights and the DualSense's triggers are left alone.
+- **Not read:** the PS button, the touchpad and the motion sensors.
+
+**Where they go.** A PlayStation pad takes the lowest of Gamepad 1-4 that no
+XInput pad is in:
+- An Xbox pad keeps the number it always had, and a PlayStation pad on its own
+  is Gamepad 1, which the default port 1 source already is.
+- The slot is kept while the pad stays connected. If an XInput pad arrives in
+  it, the PlayStation pad moves to the next free one.
+- New pads are found the moment Windows says a HID device arrived
+  (`RegisterDeviceNotification` on the input thread's window). A pad that goes
+  is noticed when its read fails.
+
+**What shows it.**
+- **The notification:** "DualSense connected", with which Gamepad it became and
+  which port it plays.
+- **The Controllers window:**
+  - its device list says "Gamepad 1 - DualSense"
+  - with that pad chosen, the boxes use its own names: Cross, L1, L2,
+    Options, and so on
+  - it now waits for a pad control through the input thread's reading
+    (`InputExchange::Peek`) rather than asking XInput itself, so capture works
+    for either kind
+
+**The reports** (`sony_pad_reports.h`, kept free of I/O so a harness can check
+it) follow the published layouts:
+- **Input:**
+  - DualShock 4: USB 0x01, Bluetooth 0x01 or 0x11
+  - DualSense: USB 0x01, Bluetooth 0x31, and over Bluetooth the DualShock 4's
+    short 0x01 until it is sent anything
+- **Output:** the motors only - DualShock 4 USB 0x05 and Bluetooth 0x11,
+  DualSense USB 0x02 and Bluetooth 0x31.
+- **Bluetooth output** ends in a CRC-32 over 0xA2 and the report, and each
+  report is written at the pad's longest output length, as Windows requires.
+
+**Verified,** without a PlayStation pad to hand (none is connected to this
+machine):
+- **`bindings_test`, 53 -> 117 checks:**
+  - every button over USB and Bluetooth, all nine hat positions, the triggers'
+    threshold, the sticks' deadzone and directions
+  - the DualSense's own layout, not reading its counter byte as buttons
+  - the short Bluetooth report, and the report ids and lengths it must ignore
+  - all four motor reports byte by byte
+  - both Bluetooth CRCs, against a second, table-driven CRC-32 and the
+    standard check value
+- **The scratch front end** with no PlayStation pad: 59.3 fps on the BIOS, the
+  Controllers window listing the four Gamepads as before, and a clean exit.
+- **All eighteen harnesses green, 2,355 checks.**
+
+**Not verified:** a real pad. The layouts are the published ones, but nothing
+here has read one yet.
+
+If DS4Windows runs without HidHide, a pad shows up twice: as the XInput pad
+DS4Windows makes, and as itself in another slot. Only the slot a port is set
+to plays it.

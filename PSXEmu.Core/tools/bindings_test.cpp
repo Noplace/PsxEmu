@@ -12,10 +12,13 @@
 // included for their inline code only.
 
 #include "platform/input_bindings.h"
+#include "platform/sony_pad_reports.h"
 #include "../../PSXEmu.Win32/input/controller_bindings.h"
 
 #include <cstdio>
+#include <initializer_list>
 #include <string>
+#include <vector>
 
 using namespace utilities;
 using emulation::psx::Sio;
@@ -261,6 +264,192 @@ void TestSettingsFile() {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// DualShock 4 and DualSense reports (platform/sony_pad_reports.h)
+// ---------------------------------------------------------------------------
+
+// A DualShock 4 USB report (or a short Bluetooth one): sticks, three button
+// bytes, the triggers. `hat` is 0-7 clockwise from up, 8 for none.
+std::vector<uint8_t> Ds4Report(uint8_t id, int hat, uint8_t face, uint8_t shoulders,
+                               uint8_t lx = 0x80, uint8_t ly = 0x80, uint8_t rx = 0x80,
+                               uint8_t ry = 0x80, uint8_t l2 = 0, uint8_t r2 = 0) {
+  std::vector<uint8_t> r(id == 0x11 ? 78 : 64, 0);
+  r[0] = id;
+  uint8_t* d = r.data() + (id == 0x11 ? 3 : 1);
+  d[0] = lx; d[1] = ly; d[2] = rx; d[3] = ry;
+  d[4] = static_cast<uint8_t>((face & 0xF0) | (hat & 0x0F));
+  d[5] = shoulders;
+  d[7] = l2; d[8] = r2;
+  return r;
+}
+
+// The DualSense's own layout, USB 0x01 or Bluetooth 0x31: sticks, triggers, a
+// counter, then the same three button bytes.
+std::vector<uint8_t> DualSenseReport(uint8_t id, int hat, uint8_t face, uint8_t shoulders,
+                                     uint8_t l2 = 0, uint8_t r2 = 0, uint8_t lx = 0x80) {
+  std::vector<uint8_t> r(id == 0x31 ? 78 : 64, 0);
+  r[0] = id;
+  uint8_t* d = r.data() + (id == 0x31 ? 2 : 1);
+  d[0] = lx; d[1] = 0x80; d[2] = 0x80; d[3] = 0x80;
+  d[4] = l2; d[5] = r2;
+  d[6] = 0x5A;   // the counter, which must not be read as anything
+  d[7] = static_cast<uint8_t>((face & 0xF0) | (hat & 0x0F));
+  d[8] = shoulders;
+  return r;
+}
+
+uint32_t Bits(std::initializer_list<int> codes) {
+  uint32_t bits = 0;
+  for (int code : codes)
+    bits |= PadInputBit(code);
+  return bits;
+}
+
+// A second CRC-32, table-driven, to check the bytewise one against.
+uint32_t TableCrc32(const std::vector<uint8_t>& bytes) {
+  uint32_t table[256];
+  for (uint32_t i = 0; i < 256; ++i) {
+    uint32_t c = i;
+    for (int k = 0; k < 8; ++k)
+      c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+    table[i] = c;
+  }
+  uint32_t crc = 0xFFFFFFFFu;
+  for (uint8_t b : bytes)
+    crc = table[(crc ^ b) & 0xFF] ^ (crc >> 8);
+  return ~crc;
+}
+
+void TestSonyPads() {
+  printf("DualShock 4 and DualSense\n");
+  SonyPadState s;
+
+  // A pad at rest reads as nothing held and both sticks centred.
+  auto rest = Ds4Report(0x01, 8, 0, 0);
+  Check(ParseSonyPadReport(false, false, rest.data(), rest.size(), &s), "DS4 USB report reads");
+  CheckEqual(s.inputs, 0, "DS4 at rest holds nothing");
+  CheckEqual(s.left_x, 0x80, "DS4 at rest: left stick centred");
+
+  // Each face button, shoulder and middle button, onto the XInput control in its place.
+  struct { uint8_t face, shoulders; int code; const char* what; } buttons[] = {
+      { 0x10, 0, kPadX, "Square is X" },        { 0x20, 0, kPadA, "Cross is A" },
+      { 0x40, 0, kPadB, "Circle is B" },        { 0x80, 0, kPadY, "Triangle is Y" },
+      { 0, 0x01, kPadLB, "L1 is LB" },          { 0, 0x02, kPadRB, "R1 is RB" },
+      { 0, 0x10, kPadBack, "Share is Back" },   { 0, 0x20, kPadStart, "Options is Start" },
+      { 0, 0x40, kPadLS, "L3 is LS" },          { 0, 0x80, kPadRS, "R3 is RS" },
+  };
+  for (const auto& b : buttons) {
+    auto r = Ds4Report(0x01, 8, b.face, b.shoulders);
+    ParseSonyPadReport(false, false, r.data(), r.size(), &s);
+    CheckEqual(s.inputs, PadInputBit(b.code), b.what);
+    // The same over Bluetooth, from where the long report puts it.
+    auto bt = Ds4Report(0x11, 8, b.face, b.shoulders);
+    SonyPadState t;
+    Check(ParseSonyPadReport(false, true, bt.data(), bt.size(), &t) &&
+              t.inputs == PadInputBit(b.code), b.what);
+  }
+  // L2 and R2's own digital bits are not what counts - how far the trigger is.
+  auto digital_only = Ds4Report(0x01, 8, 0, 0x0C);
+  ParseSonyPadReport(false, false, digital_only.data(), digital_only.size(), &s);
+  CheckEqual(s.inputs, 0, "L2/R2 bits alone press nothing");
+  auto triggers = Ds4Report(0x01, 8, 0, 0, 0x80, 0x80, 0x80, 0x80, 31, 30);
+  ParseSonyPadReport(false, false, triggers.data(), triggers.size(), &s);
+  CheckEqual(s.inputs, PadInputBit(kPadLT), "L2 past XInput's threshold, R2 on it");
+
+  // The hat, all nine positions.
+  const uint32_t hats[9] = {
+      Bits({ kPadDpadUp }),   Bits({ kPadDpadUp, kPadDpadRight }),
+      Bits({ kPadDpadRight }), Bits({ kPadDpadRight, kPadDpadDown }),
+      Bits({ kPadDpadDown }), Bits({ kPadDpadDown, kPadDpadLeft }),
+      Bits({ kPadDpadLeft }), Bits({ kPadDpadLeft, kPadDpadUp }), 0 };
+  for (int hat = 0; hat <= 8; ++hat) {
+    auto r = Ds4Report(0x01, hat, 0, 0);
+    ParseSonyPadReport(false, false, r.data(), r.size(), &s);
+    char what[48];
+    snprintf(what, sizeof(what), "hat %d", hat);
+    CheckEqual(s.inputs, hats[hat], what);
+  }
+
+  // Sticks: the PSX convention as they are, a small deadzone, and the four
+  // directions a button can be bound to.
+  auto sticks = Ds4Report(0x01, 8, 0, 0, 0x00, 0x8B, 0xFF, 0x75);
+  ParseSonyPadReport(false, false, sticks.data(), sticks.size(), &s);
+  CheckEqual(s.left_x, 0x00, "left stick hard left stays 0x00");
+  CheckEqual(s.left_y, 0x80, "left stick 11 below centre is inside the deadzone");
+  CheckEqual(s.right_x, 0xFF, "right stick hard right stays 0xFF");
+  CheckEqual(s.right_y, 0x80, "right stick 11 above centre is inside the deadzone");
+  CheckEqual(s.inputs, Bits({ kPadLStickLeft, kPadRStickRight }),
+             "sticks pushed all the way read as their directions");
+  auto up = Ds4Report(0x01, 8, 0, 0, 0x80, 0x00);
+  ParseSonyPadReport(false, false, up.data(), up.size(), &s);
+  CheckEqual(s.inputs, PadInputBit(kPadLStickUp), "0x00 on a y axis is up");
+
+  // The DualSense's own layout, over USB and Bluetooth.
+  auto ds = DualSenseReport(0x01, 4, 0x80, 0x02, 0, 200, 0x00);
+  Check(ParseSonyPadReport(true, false, ds.data(), ds.size(), &s), "DualSense USB report reads");
+  CheckEqual(s.inputs, Bits({ kPadY, kPadRB, kPadDpadDown, kPadRT, kPadLStickLeft }),
+             "DualSense USB: Triangle, R1, down, R2 and the stick, not the counter");
+  auto ds_bt = DualSenseReport(0x31, 6, 0x20, 0x10, 255, 0);
+  Check(ParseSonyPadReport(true, true, ds_bt.data(), ds_bt.size(), &s),
+        "DualSense Bluetooth 0x31 reads");
+  CheckEqual(s.inputs, Bits({ kPadA, kPadBack, kPadDpadLeft, kPadLT }),
+             "DualSense Bluetooth: Cross, Create, left and L2");
+  // Before it is sent anything over Bluetooth, a DualSense sends the DualShock 4's short report.
+  auto ds_short = Ds4Report(0x01, 0, 0x40, 0x20);
+  ds_short.resize(10);
+  Check(ParseSonyPadReport(true, true, ds_short.data(), ds_short.size(), &s),
+        "DualSense short Bluetooth report reads");
+  CheckEqual(s.inputs, Bits({ kPadB, kPadStart, kPadDpadUp }),
+             "DualSense short report: Circle, Options and up, in the DS4 layout");
+
+  // What is not a pad reading is left alone.
+  SonyPadState untouched;
+  untouched.inputs = 0x12345;
+  const uint8_t other[16] = { 0x05 };
+  Check(!ParseSonyPadReport(false, false, other, sizeof(other), &untouched) &&
+            untouched.inputs == 0x12345, "another report id is ignored");
+  Check(!ParseSonyPadReport(false, false, rest.data(), 9, &untouched), "a short report is ignored");
+
+  // CRC-32 against the standard check value, and against a table-driven one.
+  const uint8_t check[] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+  const uint32_t check_crc = ~Crc32Update(0xFFFFFFFFu, check, sizeof(check));
+  CheckEqual(check_crc, 0xCBF43926u, "CRC-32 of \"123456789\"");
+
+  // The motor reports.
+  uint8_t out[78];
+  Check(!BuildSonyRumbleReport(false, false, 0, 1, 2, out, 31), "too short a buffer is refused");
+  Check(BuildSonyRumbleReport(false, false, 0, 0xFF, 0x40, out, 32), "DS4 USB motor report");
+  Check(out[0] == 0x05 && out[1] == 0x01 && out[4] == 0xFF && out[5] == 0x40 && out[6] == 0,
+        "DS4 USB: report 5, motors only, small then large, light bar untouched");
+  Check(BuildSonyRumbleReport(true, false, 0, 0xFF, 0x40, out, 48), "DualSense USB motor report");
+  Check(out[0] == 0x02 && out[1] == 0x03 && out[2] == 0 && out[3] == 0xFF && out[4] == 0x40,
+        "DualSense USB: report 2, compatible rumble, small then large");
+
+  for (int dualsense = 0; dualsense < 2; ++dualsense) {
+    Check(BuildSonyRumbleReport(dualsense != 0, true, 0x13, 0xFF, 0x40, out, sizeof(out)),
+          "Bluetooth motor report");
+    std::vector<uint8_t> covered = { 0xA2 };
+    covered.insert(covered.end(), out, out + 74);
+    const uint32_t crc = TableCrc32(covered);
+    const uint32_t stored = out[74] | (out[75] << 8) | (out[76] << 16) |
+                            (static_cast<uint32_t>(out[77]) << 24);
+    CheckEqual(stored, crc, dualsense ? "DualSense Bluetooth CRC" : "DS4 Bluetooth CRC");
+  }
+  BuildSonyRumbleReport(false, true, 0, 0xFF, 0x40, out, sizeof(out));
+  Check(out[0] == 0x11 && out[1] == 0xC0 && out[3] == 0x01 && out[6] == 0xFF && out[7] == 0x40,
+        "DS4 Bluetooth: report 0x11, HID+CRC, motors only");
+  BuildSonyRumbleReport(true, true, 0x13, 0xFF, 0x40, out, sizeof(out));
+  Check(out[0] == 0x31 && out[1] == 0x30 && out[2] == 0x10 && out[3] == 0x03 && out[5] == 0xFF &&
+            out[6] == 0x40,
+        "DualSense Bluetooth: report 0x31, the sequence's low bits, tag 0x10, then as USB");
+
+  // The bindings window's names for a PlayStation pad's controls.
+  CheckString(PadInputLabel(kPadA, true), "Cross", "A is Cross on a PlayStation pad");
+  CheckString(PadInputLabel(kPadLT, true), "L2", "LT is L2");
+  CheckString(PadInputLabel(kPadBack, true), "Share / Create", "Back is Share or Create");
+  CheckString(PadInputLabel(kPadA), "A", "and still A on an XInput pad");
+}
+
 int main() {
   printf("bindings_test - keys and pad controls onto PSX buttons\n\n");
 
@@ -273,6 +462,7 @@ int main() {
   TestStickAsDpad();
   TestPerPort();
   TestSettingsFile();
+  TestSonyPads();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

@@ -303,7 +303,7 @@ namespace psxemu {
         // it for a few seconds even when it is not set to stay up.
         void UpdateOverlayControllers(bool announce);
         // The input thread saw pad `pad` (0-3) come or go. Posted here, to the UI thread.
-        void OnPadConnectionChanged(int pad, bool connected);
+        void OnPadConnectionChanged(int pad, bool connected, emulation::host::PadKind kind);
         // View settings: the performance panel (F9 steps through them), notifications, and whether
         // the controllers stay up. Kept in the settings file beside the core's keys.
         void SetStatsMode(StatsMode mode);
@@ -454,8 +454,10 @@ namespace psxemu {
         bool overlay_notifications_ = true;
         bool controllers_always_ = false;
         OverlayTheme overlay_theme_ = OverlayTheme::kClassic;
-        // Which XInput pads are plugged in, as the input thread last said. The UI thread's.
+        // Which pads are plugged in, and what kind each is, as the input thread last said. The UI
+        // thread's.
         std::array<bool, 4> pad_connected_ = { false, false, false, false };
+        std::array<emulation::host::PadKind, 4> pad_kind_{};   // XInput, DualShock 4 or DualSense
         // Where the machine leaves each frame's timings for the overlay's graphs. Written on the
         // machine's thread, read on the video thread; outlives both.
         FrameStatsRing frame_stats_;

@@ -22,7 +22,8 @@ namespace utilities {
 // A gamepad's controls
 // ---------------------------------------------------------------------------
 
-// Everything on an XInput pad that can be pressed or pushed, by position. A
+// Everything on a pad that can be pressed or pushed, by position - named as
+// on an XInput pad, with a DualShock 4's or DualSense's in the same places. A
 // code is the bit index plus one, so 0 stays "none". A stick pushed past
 // kStickPress counts as pressed in that direction, which is what lets a
 // button be bound to one. The order is load-bearing: it is the bit layout of
@@ -40,36 +41,37 @@ enum PadInput : int {
 inline constexpr int kPadInputCount = kPadInputEnd - 1;
 
 struct PadInputName {
-  const char* key;     // what psxemu.ini stores
-  const char* label;   // what the bindings window shows
+  const char* key;           // what psxemu.ini stores
+  const char* label;         // what the bindings window shows
+  const char* playstation;   // the same, for a DualShock 4 or DualSense
 };
 
 // clang-format off
 inline constexpr PadInputName kPadInputNames[kPadInputCount] = {
-    { "A",           "A" },
-    { "B",           "B" },
-    { "X",           "X" },
-    { "Y",           "Y" },
-    { "LB",          "LB" },
-    { "RB",          "RB" },
-    { "LT",          "LT" },
-    { "RT",          "RT" },
-    { "Back",        "Back" },
-    { "Start",       "Start" },
-    { "LS",          "Left Stick Press" },
-    { "RS",          "Right Stick Press" },
-    { "DpadUp",      "D-Pad Up" },
-    { "DpadDown",    "D-Pad Down" },
-    { "DpadLeft",    "D-Pad Left" },
-    { "DpadRight",   "D-Pad Right" },
-    { "LStickUp",    "Left Stick Up" },
-    { "LStickDown",  "Left Stick Down" },
-    { "LStickLeft",  "Left Stick Left" },
-    { "LStickRight", "Left Stick Right" },
-    { "RStickUp",    "Right Stick Up" },
-    { "RStickDown",  "Right Stick Down" },
-    { "RStickLeft",  "Right Stick Left" },
-    { "RStickRight", "Right Stick Right" },
+    { "A",           "A",                 "Cross" },
+    { "B",           "B",                 "Circle" },
+    { "X",           "X",                 "Square" },
+    { "Y",           "Y",                 "Triangle" },
+    { "LB",          "LB",                "L1" },
+    { "RB",          "RB",                "R1" },
+    { "LT",          "LT",                "L2" },
+    { "RT",          "RT",                "R2" },
+    { "Back",        "Back",              "Share / Create" },
+    { "Start",       "Start",             "Options" },
+    { "LS",          "Left Stick Press",  "L3" },
+    { "RS",          "Right Stick Press", "R3" },
+    { "DpadUp",      "D-Pad Up",          "D-Pad Up" },
+    { "DpadDown",    "D-Pad Down",        "D-Pad Down" },
+    { "DpadLeft",    "D-Pad Left",        "D-Pad Left" },
+    { "DpadRight",   "D-Pad Right",       "D-Pad Right" },
+    { "LStickUp",    "Left Stick Up",     "Left Stick Up" },
+    { "LStickDown",  "Left Stick Down",   "Left Stick Down" },
+    { "LStickLeft",  "Left Stick Left",   "Left Stick Left" },
+    { "LStickRight", "Left Stick Right",  "Left Stick Right" },
+    { "RStickUp",    "Right Stick Up",    "Right Stick Up" },
+    { "RStickDown",  "Right Stick Down",  "Right Stick Down" },
+    { "RStickLeft",  "Right Stick Left",  "Right Stick Left" },
+    { "RStickRight", "Right Stick Right", "Right Stick Right" },
 };
 // clang-format on
 
@@ -84,10 +86,13 @@ inline std::string PadInputKey(int code) {
   return kPadInputNames[code - 1].key;
 }
 
-inline std::string PadInputLabel(int code) {
+// `playstation` for a DualShock 4 or DualSense, whose face buttons are shapes
+// and whose shoulders are numbered: the same control, called what it says on
+// the pad in the person's hands.
+inline std::string PadInputLabel(int code, bool playstation = false) {
   if (code <= 0 || code > kPadInputCount)
     return std::string();
-  return kPadInputNames[code - 1].label;
+  return playstation ? kPadInputNames[code - 1].playstation : kPadInputNames[code - 1].label;
 }
 
 // The reverse, ignoring case. 0 for an empty or unknown key, so a hand-edited

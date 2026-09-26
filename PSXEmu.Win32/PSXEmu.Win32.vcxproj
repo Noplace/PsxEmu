@@ -95,6 +95,7 @@
     <ClCompile Include="graphics\vulkan_engine.cpp" />
     <ClCompile Include="app\engine_factory.cpp" />
     <ClCompile Include="input\input_thread.cpp" />
+    <ClCompile Include="input\sony_pads.cpp" />
     <ClCompile Include="app\main.cpp" />
     <ClCompile Include="graphics\video_presenter.cpp" />
     <ClCompile Include="app\menu.cpp" />
@@ -130,6 +131,7 @@
     <ClInclude Include="input\gamepad.h" />
     <ClInclude Include="graphics\igraphicsengine.h" />
     <ClInclude Include="input\input_thread.h" />
+    <ClInclude Include="input\sony_pads.h" />
     <ClInclude Include="input\keyboard.h" />
     <ClInclude Include="graphics\video_presenter.h" />
     <ClInclude Include="app\menu.h" />

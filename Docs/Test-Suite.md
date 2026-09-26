@@ -631,13 +631,17 @@ checks, the three ways a host mouse's movement becomes a PSX mouse's counts -
 the linear scale against a host resolution, the fraction that has to survive
 between polls or slow movement vanishes, and the reading of Windows' own
 acceleration curve out of the registry bytes this machine holds; bug 82),
-`bindings_test` (53 checks, which key or pad control presses which button, bug
+`bindings_test` (117 checks, which key or pad control presses which button, bug
 107 - a pad's controls and a stick pushed far enough as bits, a map as
 arithmetic and as a settings line, the defaults checked control by control
 against the layout `gamepad.h` used to hard-wire, the left stick doubling as
 the d-pad except where it is bound, two ports with different keys, and the
 settings file - including one from before bindings were per port, whose keys
-every keyboard slot inherits), `timing_test` (19 checks,
+every keyboard slot inherits - and, from bug 117, the DualShock 4's and
+DualSense's reports: every button over USB and Bluetooth, all nine hat
+positions, the triggers' threshold, the sticks' deadzone, the four motor
+reports byte by byte, and their Bluetooth CRC against a second, table-driven
+CRC-32), `timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is) and `host_test` (33 checks, the
 threads and the channels between them - its own section above).

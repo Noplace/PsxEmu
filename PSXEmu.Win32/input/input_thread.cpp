@@ -21,6 +21,9 @@
 #include "input/controller_bindings.h"
 #include "tools/letterbox.h"
 
+#include <dbt.h>
+#include <hidsdi.h>
+
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -100,6 +103,14 @@ namespace psxemu {
                 input->mouse_.OnRawInput(reinterpret_cast<HRAWINPUT>(lparam));
             // Let DefWindowProcW do raw input's own cleanup.
         }
+        if (message == WM_DEVICECHANGE && wparam == DBT_DEVICEARRIVAL) {
+            // A HID device arrived - perhaps a PlayStation pad, over USB or Bluetooth.
+            InputThread* input =
+                reinterpret_cast<InputThread*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+            if (input != nullptr)
+                input->sony_.Rescan();
+            return TRUE;
+        }
         return DefWindowProcW(window, message, wparam, lparam);
     }
 
@@ -119,6 +130,17 @@ namespace psxemu {
                                       nullptr, instance, this);
         if (window != nullptr)
             mouse_.Attach(window, /*background=*/true);
+        // Told when a HID device arrives, so a PlayStation pad is found the moment it is plugged
+        // in or pairs, without looking through every device over and over.
+        HDEVNOTIFY hid_notification = nullptr;
+        if (window != nullptr) {
+            DEV_BROADCAST_DEVICEINTERFACE_W filter = {};
+            filter.dbcc_size = sizeof(filter);
+            filter.dbcc_devicetype = DBT_DEVTYP_DEVICEINTERFACE;
+            HidD_GetHidGuid(&filter.dbcc_classguid);
+            hid_notification =
+                RegisterDeviceNotificationW(window, &filter, DEVICE_NOTIFY_WINDOW_HANDLE);
+        }
 
         HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr,
                                               CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
@@ -139,19 +161,31 @@ namespace psxemu {
                     (GetAsyncKeyState(key) & 0x8000) != 0)
                     utilities::SetKeyHeld(reading.keys, key);
             }
+            std::array<bool, emulation::host::HostInput::kPads> xinput = {};
             for (int i = 0; i < emulation::host::HostInput::kPads; ++i) {
                 const Gamepad::State state = gamepads_[i].Poll();
-                reading.pads[i].connected = gamepads_[i].connected();
-                if (reading.pads[i].connected != pads_connected_[i]) {
-                    pads_connected_[i] = reading.pads[i].connected;
-                    if (on_pad_connection_)
-                        on_pad_connection_(i, pads_connected_[i]);
-                }
+                xinput[i] = gamepads_[i].connected();
+                reading.pads[i].connected = xinput[i];
                 reading.pads[i].inputs = state.inputs;
                 reading.pads[i].left_x = state.left_x;
                 reading.pads[i].left_y = state.left_y;
                 reading.pads[i].right_x = state.right_x;
                 reading.pads[i].right_y = state.right_y;
+            }
+            // PlayStation pads, in whichever slots no XInput pad is in.
+            sony_.Poll(xinput, reading.pads);
+            for (int i = 0; i < emulation::host::HostInput::kPads; ++i) {
+                const bool connected = reading.pads[i].connected;
+                const emulation::host::PadKind kind = reading.pads[i].kind;
+                if (connected != pads_connected_[i] || (connected && kind != pad_kinds_[i])) {
+                    // One kind of pad taking over from another counts as that one leaving.
+                    if (pads_connected_[i] && connected && on_pad_connection_)
+                        on_pad_connection_(i, false, pad_kinds_[i]);
+                    pads_connected_[i] = connected;
+                    pad_kinds_[i] = kind;
+                    if (on_pad_connection_)
+                        on_pad_connection_(i, connected, kind);
+                }
             }
 
             // Polled either way, so the accumulated motion cannot pile up while the window is
@@ -177,7 +211,10 @@ namespace psxemu {
                 uint8_t small_motor = 0;
                 uint8_t large_motor = 0;
                 exchange_->GetRumble(i, &small_motor, &large_motor);
-                gamepads_[i].SetRumble(small_motor, large_motor);
+                if (gamepads_[i].connected())
+                    gamepads_[i].SetRumble(small_motor, large_motor);
+                else
+                    sony_.SetRumble(i, small_motor, large_motor);
             }
 
             if (timer != nullptr) {
@@ -193,6 +230,8 @@ namespace psxemu {
 
         // Raw input goes back before the window it was registered against does.
         mouse_.Detach();
+        if (hid_notification != nullptr)
+            UnregisterDeviceNotification(hid_notification);
         if (timer != nullptr)
             CloseHandle(timer);
         if (window != nullptr)

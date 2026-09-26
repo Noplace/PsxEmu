@@ -81,11 +81,13 @@ namespace psxemu {
         return device == kKeyboardDevice ? KeyFromName(name) : utilities::PadInputFromKey(name);
     }
 
-    // What the bindings window shows for a code.
-    inline std::wstring BindingCodeLabel(int device, int code) {
+    // What the bindings window shows for a code - a pad's controls by their PlayStation names
+    // when the pad in that slot is a DualShock 4 or DualSense.
+    inline std::wstring BindingCodeLabel(int device, int code, bool playstation = false) {
         if (code == 0)
             return L"(none)";
-        return Widen(device == kKeyboardDevice ? KeyName(code) : utilities::PadInputLabel(code));
+        return Widen(device == kKeyboardDevice ? KeyName(code)
+                                               : utilities::PadInputLabel(code, playstation));
     }
 
     inline std::string BindingSettingKey(int slot, int device) {

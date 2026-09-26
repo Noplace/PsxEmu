@@ -14,6 +14,7 @@ PsxEmu/
       speed_resampler.h        stretches the SPU's output to the emulation speed
       mouse_scaling.h          what a host mouse's movement is worth to a PSX mouse
       input_bindings.h         a gamepad's controls as bits, and a binding map as arithmetic and text
+      sony_pad_reports.h       a DualShock 4's and DualSense's input reports read, and their motor reports built
     host/                      the only thread-aware part of Core - Docs/Threading-Plan.md
       doorbell.h               one per thread; everything that gives it work rings it
       request_queue.h          the one door into something another thread owns
@@ -115,6 +116,7 @@ PsxEmu/
                                at run time, nothing is linked
     input/                     the host's devices, and what they press
       input_thread.h/.cpp      the input thread: pads, keyboard, raw mouse at 1 kHz
+      sony_pads.h/.cpp         DualShock 4 and DualSense pads over HID, in the Gamepad slots XInput leaves
       keyboard.h               key names for psxemu.ini, and the default keyboard and pad maps
       gamepad.h                one XInput slot: its controls, both sticks, both motors
       mouse.h                  the host mouse, raw or captured, as a PSX mouse's counts

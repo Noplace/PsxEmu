@@ -26,8 +26,13 @@ namespace host {
 // port it is playing, and one pad can play more than one - so the machine's
 // thread maps it, through the bindings for that port (the front end's
 // ApplyInput).
+// What kind of pad fills a slot - which only changes what its controls are
+// called, since every kind reports the same controls in the same bits.
+enum class PadKind : uint8_t { kXInput, kDualShock4, kDualSense };
+
 struct PadReading {
   bool connected = false;
+  PadKind kind = PadKind::kXInput;
   uint32_t inputs = 0;    // the controls held: bit n is utilities::PadInput n+1
   uint8_t left_x = 0x80;
   uint8_t left_y = 0x80;
@@ -36,7 +41,9 @@ struct PadReading {
 };
 
 struct HostInput {
-  static const int kPads = 4;   // XInput's slots, "Gamepad 1".."Gamepad 4"
+  // "Gamepad 1".."Gamepad 4": XInput's four slots, with any PlayStation pad
+  // in whichever of them no XInput pad holds (the front end's SonyPads).
+  static const int kPads = 4;
 
   // The keys held, one bit per virtual-key code (utilities::KeyHeld). Only
   // the keys some binding uses are read; the rest stay clear.
@@ -78,6 +85,13 @@ class InputExchange {
     latest_.mouse_dx = 0;
     latest_.mouse_dy = 0;
     return reading;
+  }
+
+  // Any thread: the latest reading, leaving it as it is - for the bindings
+  // window, which waits for a pad control to be pressed.
+  HostInput Peek() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return latest_;
   }
 
   // How many readings the input thread has published - for "is it running".

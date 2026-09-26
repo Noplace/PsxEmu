@@ -37,6 +37,7 @@
 #include "app/framework.h"
 #include "input/controller_bindings.h"
 #include "ui/game_scope.h"
+#include "host/input_exchange.h"
 
 #include <functional>
 #include <span>
@@ -59,6 +60,9 @@ namespace psxemu {
             // Whose settings the types are: everyone's, or the running game's alone.
             std::function<GameScope()> game;
             std::function<void(bool separate)> set_separate;
+            // The latest reading of Gamepad `pad + 1`, from the input thread - whether it is
+            // there, what kind it is, and the controls held.
+            std::function<emulation::host::PadReading(int pad)> read_pad;
         };
 
         ControllerBindingsWindow() = default;
@@ -89,6 +93,10 @@ namespace psxemu {
         // player's type; kMultitap for a port-level slot whose port holds a multitap.
         emulation::psx::Sio::ControllerType SlotType() const;
         int SlotSourceDevice(int slot) const;   // which device plays it now
+        // A device's latest reading; the keyboard is always connected.
+        emulation::host::PadReading ReadPad(int device) const;
+        // Whether a device's controls go by PlayStation names - a DualShock 4 or DualSense.
+        bool PlayStationNames(int device) const;
         bool ButtonShown(int button) const;
         bool PadShown() const;
 

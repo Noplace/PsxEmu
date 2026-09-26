@@ -19,7 +19,6 @@
 #include "ui/controller_bindings_window.h"
 #include "app/app_icon.h"
 
-#include "input/gamepad.h"
 #include "app/menu.h"   // ParseControllerType, ParseInputSource
 
 #include <commctrl.h>
@@ -165,12 +164,6 @@ namespace psxemu {
             return device == kKeyboardDevice ? std::wstring(L"the keyboard") : DeviceName(device);
         }
 
-        bool PadConnected(int device) {
-            if (device == kKeyboardDevice)
-                return true;
-            XINPUT_STATE state = {};
-            return XInputGetState(static_cast<DWORD>(device - 1), &state) == ERROR_SUCCESS;
-        }
 
         // A rounded rectangle as a path, for the body and the shoulder buttons.
         void AddRoundRect(Gdiplus::GraphicsPath* path, float x, float y, float w, float h,
@@ -349,6 +342,24 @@ namespace psxemu {
         return static_cast<int>(ParseInputSource(key));
     }
 
+    // Through the input thread rather than XInput directly, since that is what knows about the
+    // PlayStation pads too, and which Gamepad each of them is.
+    emulation::host::PadReading ControllerBindingsWindow::ReadPad(int device) const {
+        emulation::host::PadReading reading;
+        if (device == kKeyboardDevice)
+            reading.connected = true;
+        else if (host_.read_pad)
+            reading = host_.read_pad(device - 1);
+        return reading;
+    }
+
+    bool ControllerBindingsWindow::PlayStationNames(int device) const {
+        if (device == kKeyboardDevice)
+            return false;
+        const emulation::host::PadReading pad = ReadPad(device);
+        return pad.connected && pad.kind != emulation::host::PadKind::kXInput;
+    }
+
     bool ControllerBindingsWindow::PadShown() const {
         switch (SlotType()) {
             case Sio::kDigital:
@@ -450,9 +461,14 @@ namespace psxemu {
         const int in_use = SlotSourceDevice(slot_);
         for (int device = 0; device < kBindingDevices; ++device) {
             std::wstring label = DeviceName(device);
+            const emulation::host::PadReading pad = ReadPad(device);
+            if (device != kKeyboardDevice && pad.connected &&
+                pad.kind != emulation::host::PadKind::kXInput)
+                label += pad.kind == emulation::host::PadKind::kDualSense ? L" - DualSense"
+                                                                           : L" - DualShock 4";
             if (device == in_use)
                 label += L"  (plays this port)";
-            else if (!PadConnected(device))
+            else if (!pad.connected)
                 label += L"  (not connected)";
             SendMessageW(device_list_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
         }
@@ -532,12 +548,11 @@ namespace psxemu {
         if (device_ == kKeyboardDevice) {
             SetStatus(L"Press the key for " + name + L". Escape cancels.");
         } else {
-            XINPUT_STATE state = {};
-            const bool connected =
-                XInputGetState(static_cast<DWORD>(device_ - 1), &state) == ERROR_SUCCESS;
+            const emulation::host::PadReading pad = ReadPad(device_);
+            const bool connected = pad.connected;
             // Whatever is already held does not count - otherwise a button still down from the
             // click that got here, or a stick resting off centre, binds itself.
-            pad_baseline_ = connected ? Gamepad::Inputs(state.Gamepad) : 0;
+            pad_baseline_ = connected ? pad.inputs : 0;
             SetStatus(connected ? L"Press the " + DeviceName(device_) + L" control for " + name +
                                       L": a button, a trigger, or a stick pushed one way. Escape "
                                       L"cancels."
@@ -566,10 +581,10 @@ namespace psxemu {
     void ControllerBindingsWindow::PollCapturePad() {
         if (capturing_ < 0 || device_ == kKeyboardDevice)
             return;
-        XINPUT_STATE state = {};
-        if (XInputGetState(static_cast<DWORD>(device_ - 1), &state) != ERROR_SUCCESS)
+        const emulation::host::PadReading pad = ReadPad(device_);
+        if (!pad.connected)
             return;
-        const uint32_t inputs = Gamepad::Inputs(state.Gamepad);
+        const uint32_t inputs = pad.inputs;
         const uint32_t pressed = inputs & ~pad_baseline_;
         // Something let go stops being "already held", so it can be pressed again to bind it.
         pad_baseline_ &= inputs;
@@ -612,7 +627,7 @@ namespace psxemu {
             status = std::wstring(kKeyBindings[button].label) + L" is now unbound.";
         } else {
             status = std::wstring(kKeyBindings[button].label) + L" is now " +
-                     BindingCodeLabel(device_, code) + L".";
+                     BindingCodeLabel(device_, code, PlayStationNames(device_)) + L".";
             if (taken_from >= 0) {
                 status += L" That was " + std::wstring(kKeyBindings[taken_from].label) +
                           L"'s, which now has none.";
@@ -889,7 +904,7 @@ namespace psxemu {
             text = device_ == kKeyboardDevice ? L"Press a key..." : L"Press a control...";
             SetTextColor(dc, RGB(26, 115, 232));
         } else {
-            text = BindingCodeLabel(device_, code);
+            text = BindingCodeLabel(device_, code, PlayStationNames(device_));
             SetTextColor(dc, code == 0 ? RGB(150, 155, 163) : RGB(32, 35, 40));
         }
         SelectObject(dc, code == 0 && !capturing ? font_ : (bold_font_ != nullptr ? bold_font_ : font_));

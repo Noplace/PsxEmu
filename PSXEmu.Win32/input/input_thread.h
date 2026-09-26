@@ -33,6 +33,7 @@
 #include "app/framework.h"
 
 #include "input/gamepad.h"
+#include "input/sony_pads.h"
 #include "input/controller_bindings.h"
 #include "host/input_exchange.h"
 #include "input/mouse.h"
@@ -86,9 +87,11 @@ namespace psxemu {
         // can hide it while it is.
         bool capturing_mouse() const { return mouse_.capturing(); }
 
-        // Called on the input thread whenever an XInput pad is plugged in or pulled out - and
-        // for every pad already there, on the first look. Set before Start.
-        void SetPadConnectionHandler(std::function<void(int pad, bool connected)> handler) {
+        // Called on the input thread whenever a pad is plugged in or pulled out - XInput, or a
+        // DualShock 4 or DualSense (SonyPads) - and for every pad already there, on the first
+        // look. Set before Start.
+        void SetPadConnectionHandler(
+            std::function<void(int pad, bool connected, emulation::host::PadKind kind)> handler) {
             on_pad_connection_ = std::move(handler);
         }
 
@@ -103,13 +106,15 @@ namespace psxemu {
         // The input thread's own, from here down.
         Mouse mouse_;
         std::array<Gamepad, 4> gamepads_{ Gamepad(0), Gamepad(1), Gamepad(2), Gamepad(3) };
+        SonyPads sony_;
 
         std::thread thread_;
         std::atomic<bool> stop_{ false };
         std::atomic<uint64_t> polls_{ 0 };
         std::array<std::atomic<bool>, 256> keys_in_use_{};
-        std::function<void(int, bool)> on_pad_connection_;
+        std::function<void(int, bool, emulation::host::PadKind)> on_pad_connection_;
         std::array<bool, 4> pads_connected_ = { false, false, false, false };   // this thread's
+        std::array<emulation::host::PadKind, 4> pad_kinds_{};                    // likewise
     };
 
 }   // namespace psxemu

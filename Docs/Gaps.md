@@ -54,8 +54,8 @@ that watches STAT's request bits closely rather than using DMA would not.
 ### Every harness is green
 
 cpu 297, gte 106, timer 80, sio 203, spu 144, gpu 73, mdec 85, media 378, mc 97, debug 174 - 1,637
-checks, no failures, and 2,291 across all eighteen harnesses (re-run
-2026-09-26, after bugs 78-113 - with the rasteriser threaded, now the default).
+checks, no failures, and 2,355 across all eighteen harnesses (re-run
+2026-09-26, after bugs 78-117 - with the rasteriser threaded, now the default).
 `host_test`'s two real-speed checks fail now and then on a busy host, before a
 change as well as after it; see Test-Suite.md. The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
@@ -582,8 +582,8 @@ call log, a call stack, labels and device panes (see
 [Debugger-Plan.md](Debugger-Plan.md); PsyQ `.SYM` symbol files are not read yet) -
 and two settings windows (bug 115): Settings > Emulation, with the Accuracy and
 Performance presets, and Settings > Input > Controllers. Keys and pad controls are rebound per
-port and per device. Only XInput pads are read: a DualShock 4 or DualSense
-plugged in on its own, with nothing presenting it as an XInput pad, is not seen.
+port and per device. XInput pads are read, and so are DualShock 4 and DualSense
+pads over USB or Bluetooth, straight from HID (bug 117); other pads are not.
 Output a program sends to the serial port is
 shown when Emulation > Serial Port to Console is ticked, which puts it in the
 BIOS console window beside what the BIOS itself printed (bug 80). What a
