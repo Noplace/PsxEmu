@@ -82,6 +82,8 @@ namespace psxemu {
         void AddSample(const emulation::host::FrameSample& sample);
         void NotePresent(double milliseconds);   // this thread's own time, per picture shown
         void SetPaused(bool paused);
+        // Tab held: a badge at the top middle for as long as the machine runs unpaced.
+        void SetFastForward(bool on);
         void SetCounters(uint64_t frames_dropped, uint64_t audio_short, uint64_t audio_dropped);
         void SetRendererInfo(const std::string& renderer, const std::string& filter);
 
@@ -142,6 +144,7 @@ namespace psxemu {
         void DrawControllers(float width, Clock::time_point now);
         void DrawStats(float width, float height, int frame_width, int frame_height);
         void DrawCompactStats(float x, float y);
+        void DrawFastForward(float width);
         // A line graph of `values` over a box, `low`..`high` bottom to top, with an optional
         // dashed guide at `guide`.
         void Graph(float x, float y, float w, float h, const std::vector<float>& values,
@@ -171,6 +174,7 @@ namespace psxemu {
 
         StatsMode stats_mode_ = StatsMode::kOff;
         bool paused_ = false;
+        bool fast_forward_ = false;
         std::string renderer_, filter_;
         uint64_t frames_dropped_ = 0, audio_short_ = 0, audio_dropped_ = 0;
 

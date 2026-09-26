@@ -988,9 +988,10 @@ namespace psxemu {
                     // Waiting for the pad; the keyboard only cancels.
                 } else if (IsReservedKey(key)) {
                     self->SetStatus(BindingCodeLabel(kKeyboardDevice, key) +
-                                    L" is taken by the emulator itself (Space pauses, F1-F8 load "
-                                    L"and save states, F11 is full screen). Press another key, "
-                                    L"or Escape.");
+                                    L" is taken by the emulator itself (Space pauses, Tab "
+                                    L"fast-forwards, F1-F8 load and save states, F11 is full "
+                                    L"screen, F12 takes a screenshot). Press another key, or "
+                                    L"Escape.");
                 } else {
                     self->Bind(self->capturing_, key);
                 }

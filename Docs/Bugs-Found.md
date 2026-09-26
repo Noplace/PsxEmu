@@ -7373,3 +7373,86 @@ here has read one yet.
 If DS4Windows runs without HidHide, a pad shows up twice: as the XInput pad
 DS4Windows makes, and as itself in another slot. Only the slot a port is set
 to plays it.
+
+## 118. Fast forward, screenshots, a lost card save said, and multi-disc games' settings shared
+
+`PSXEmu.Win32/app/app.cpp`, `app/screenshot.*`, `app/disc_set.h`,
+`ui/overlay/overlay.*`, `input/keyboard.h`, `PSXEmu.Core/psx/mc.cpp`
+
+Not bugs, apart from the third: three small features the user asked for
+together.
+
+**Tab held fast-forwards.**
+- The frame limiter is off for as long as Tab is down, without touching the
+  setting: `SendConfigToMachine` sends `frame_limiter = 0` while
+  `fast_forward_` is set. The menu tick and `psxemu.ini` stay as they were.
+- It ends when Tab is let go, or when the window loses the focus - Tab's release
+  goes to whichever window has it by then.
+- A "Fast forward" badge sits at the top middle of the overlay, clear of the
+  performance panel and the controllers.
+- Sound is as it is with the limiter off: made faster than the device plays it,
+  so some is dropped.
+
+**F12 takes a screenshot** (also Emulation > Take Screenshot).
+- **What is saved:** the picture as the machine made it - no filter, no
+  overlay - copied on the video thread and written on the UI thread as a PNG
+  through GDI+.
+- **Its shape:** stretched to 4:3 at its own height, since a PlayStation's
+  display is 4:3 whatever its width in pixels. 320x240 stays 320x240, and
+  256x224 becomes 299x224.
+- **Where:** `Documents\My Games\PSXEmu\screenshots\<game> <date time>.png`,
+  numbered if two land in one second. One per press, not one per auto-repeat.
+
+Tab and F12 are reserved from key bindings now, like Space and F1-F11.
+
+**A memory card save that cannot be written is said.**
+- **Before:** `MC::Flush` counted the failure (`flush_failures`) and nobody was
+  told. It also retried on every frame from then on, since a failed flush left
+  its idle count past the threshold - 60 attempts a second at a read-only file
+  or a share that had gone.
+- **Now it retries once a second.** After every frame the App compares each of
+  the eight cards' counts: the first failure raises "Memory card 1 not saved",
+  or a dialog with notifications off. A retry that works raises "Memory card 1
+  saved". One warning per episode, not one per retry.
+
+**The discs of a multi-disc game share their settings** (bug 116's per-game
+files). Each disc has its own serial - Final Fantasy VII is SCUS-94163, -94164
+and -94165 - so nothing on the discs says they are one game. Their file names
+do:
+- **The marker:** `DiscSetTitle` finds "(Disc 2)", "Disc 2 of 3", "CD2",
+  "Disk_1" or this collection's ".cd2", and takes it off. "Discworld", "CD-ROM
+  Sampler" and "(CD1X)" are not markers.
+- **The key:** that title with the serial's prefix, which keeps one region's
+  set apart from another's - `gamesettings\Final Fantasy VII [SCUS].ini`.
+- **Which file wins:** a set's file over a disc's own. The check box reads
+  "Separate settings for Wild Arms 2 (every disc)".
+- **Titles too:** "Final Fantasy IX [SLUS-01295].cd2.iso" used to read
+  "Final Fantasy IX .cd2" in notifications, and now reads "Final Fantasy IX
+  (Disc 2)".
+
+Memory cards are still per image, so booting disc 2 directly gives it cards of
+its own. Sharing them across a set would move saves people already have, so it
+is left for them to decide.
+
+**Verified** from a scratch copy of the Release build:
+- **Fast forward** on a test disc: 59.3 fps, 100-104 fps (170-175%, the
+  interpreter) with Tab held, and 59.3 again when let go. The Frame Limiter
+  stayed ticked and `frame_limiter = 1` in the settings file, and the badge
+  showed.
+- **F12** held with auto-repeat: one PNG, 637x478 from the BIOS logo's 478
+  lines, and a notification.
+- **A card save that fails,** on a throwaway disc's card, made read-only:
+  - the editor's Format failed to write
+  - "Memory card 1 not saved" appeared, once
+  - with the file writable again, the retry wrote it and "Memory card 1 saved"
+    appeared
+- **Wild Arms 2, discs 1 and 2,** from the share:
+  - separate settings and Accuracy turned on on disc 1 went to
+    `Wild Arms 2 [SCUS].ini`
+  - disc 2 booted with them, the box ticked, and its notification reads "Wild
+    Arms 2 (Disc 2)" and "its own settings"
+  - unticking deleted the file
+- `DiscSetTitle` against 20 names, this collection's included (a scratch
+  check).
+- **`mc_test`, 97 -> 103 checks:** the retry timing and the save once the
+  file is writable. All eighteen harnesses green, 2,361 checks.

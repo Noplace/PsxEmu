@@ -21,6 +21,8 @@
 
 #include "input/keyboard.h"
 #include "app/menu.h"
+#include "app/disc_set.h"
+#include "app/screenshot.h"
 #include "app/win32_dialogs.h"
 #include "app/win32_paths.h"
 
@@ -329,6 +331,7 @@ namespace psxemu {
             return;
         memcards_root_ = data_root_ + "\\memcards";
         savestates_root_ = data_root_ + "\\savestates";
+        screenshots_root_ = data_root_ + "\\screenshots";   // made by the first screenshot
         // Created whether or not anything is in it: an empty folder is where to put a dump, which
         // is a better answer to "where do BIOS images go" than a folder that only appears once one
         // is already there.
@@ -458,7 +461,10 @@ namespace psxemu {
         hooks.frame_done = [this](const emulation::host::FrameSample& sample) {
             frame_stats_.Push(sample);
         };
-        hooks.after_frame = [this](Machine& machine) { CollectConsoleText(machine.system()); };
+        hooks.after_frame = [this](Machine& machine) {
+            CollectConsoleText(machine.system());
+            WatchMemoryCardWrites(machine.system());
+        };
         hooks.halted = [this](Machine& machine) {
             SendDebuggerSnapshot(machine, DebuggerWindow::kAtPc, true);
         };
@@ -562,7 +568,10 @@ namespace psxemu {
     }
 
     void App::SendConfigToMachine() {
-        const EmuConfig config = config_;
+        EmuConfig config = config_;
+        // Held Tab runs the machine unpaced, without touching the setting itself.
+        if (fast_forward_)
+            config.frame_limiter = false;
         PostToMachine([config](Machine& machine) { machine.ApplyConfig(config); });
     }
 
@@ -843,30 +852,59 @@ namespace psxemu {
     App::GameLookup App::LookUpGame(System& system, const std::string& path,
                                     const EmuConfig& global, const std::string& settings_dir) {
         GameLookup game;
-        const std::string serial = DiscSerial(system);
-        const std::wstring title = TitleFromPath(path);
-        game.name = serial.empty() ? title : title + L" (" + Wide(serial) + L")";
-        if (!serial.empty()) {
-            game.key = serial;
-        } else {
-            // A disc with no SYSTEM.CNF is known by its file name instead, made safe to be one.
-            const size_t slash = path.find_last_of("/\\");
-            std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
-            const size_t dot = name.find_last_of('.');
-            if (dot != std::string::npos && dot > 0)
-                name.erase(dot);
+        auto safe = [](std::string name) {
             for (char& c : name) {
                 if (static_cast<unsigned char>(c) < 32 || strchr("<>:\"/\\|?*", c) != nullptr)
                     c = '_';
             }
-            game.key = name;
+            return name;
+        };
+        const std::string serial = DiscSerial(system);
+        const std::wstring title = TitleFromPath(path);
+
+        // The disc's own key: its serial, or - a disc with no SYSTEM.CNF - its file name.
+        std::string own_key = serial;
+        if (own_key.empty()) {
+            const size_t slash = path.find_last_of("/\\");
+            own_key = slash == std::string::npos ? path : path.substr(slash + 1);
+            const size_t dot = own_key.find_last_of('.');
+            if (dot != std::string::npos && dot > 0)
+                own_key.erase(dot);
+            own_key = safe(own_key);
         }
+        // One disc of several: the key its set shares - "Final Fantasy VII [SCUS]", the
+        // title every disc's file name has once "(Disc 2)" is taken off, and the serial's
+        // prefix, which keeps one region's set apart from another's.
+        const std::string set = DiscSetTitle(path);
+        std::string set_key;
+        if (!set.empty())
+            set_key = safe(serial.size() >= 4 ? set + " [" + serial.substr(0, 4) + "]" : set);
+
         game.config = global;
-        if (!settings_dir.empty() && !game.key.empty() &&
-            game.file.Load(settings_dir + "\\" + game.key + ".ini")) {
+        auto load = [&](const std::string& key) {
+            return !settings_dir.empty() && !key.empty() &&
+                   game.file.Load(settings_dir + "\\" + key + ".ini");
+        };
+        // The set's settings win over a disc's own: once the set has some, every disc uses them.
+        // A disc of a set with neither makes the set's, when separate settings are turned on.
+        bool whole_set = false;
+        if (!set_key.empty() && load(set_key)) {
+            game.key = set_key;
+            game.separate = whole_set = true;
+        } else if (load(own_key)) {
+            game.key = own_key;
             game.separate = true;
-            emulation::psx::LoadConfig(game.file, game.config);
+        } else {
+            game.key = set_key.empty() ? own_key : set_key;
+            whole_set = !set_key.empty();
         }
+        if (game.separate)
+            emulation::psx::LoadConfig(game.file, game.config);
+        game.title = title;
+        if (whole_set)
+            game.name = Wide(set) + L" (every disc)";
+        else
+            game.name = serial.empty() ? title : title + L" (" + Wide(serial) + L")";
         return game;
     }
 
@@ -874,6 +912,7 @@ namespace psxemu {
         const EmuConfig before = config_;
         game_key_ = std::move(lookup.key);
         game_name_ = std::move(lookup.name);
+        game_title_ = std::move(lookup.title);
         game_settings_ = std::move(lookup.file);
         game_separate_ = lookup.separate;
         config_ = lookup.config;
@@ -886,6 +925,7 @@ namespace psxemu {
         const bool had_own = game_separate_;
         game_key_.clear();
         game_name_.clear();
+        game_title_.clear();
         game_settings_ = emulation::psx::SettingsFile();
         game_separate_ = false;
         const EmuConfig before = config_;
@@ -1393,6 +1433,62 @@ namespace psxemu {
         });
     }
 
+    // MC::Flush counts a save it could not write and tries again a second later. The first
+    // failure is said at once - a save that silently never reached the disk is the worst kind
+    // of lost - and a retry that works says so too, so the warning is not left standing.
+    void App::WatchMemoryCardWrites(System& system) {
+        for (int port = 0; port < 2; ++port) {
+            for (int slot = 0; slot < System::kCardSlotsPerPort; ++slot) {
+                emulation::psx::MC& mc = system.mc(port, slot);
+                const uint64_t failures = mc.flush_failures();
+                std::wstring title;
+                std::wstring detail;
+                bool failed = false;
+                if (card_failing_[port][slot] && card_failing_file_[port][slot] != mc.filename()) {
+                    // Another disc's card now: nothing to say about the old one.
+                    card_failing_[port][slot] = false;
+                }
+                // Only built when there is something to say, not every frame for every card.
+                auto name = [port, slot] {
+                    return L"Memory card " + std::to_wstring(port + 1) +
+                           (slot == 0 ? std::wstring()
+                                      : std::wstring(1, static_cast<wchar_t>(L'A' + slot)));
+                };
+                auto file = [&mc] {
+                    const size_t cut = mc.filename().find_last_of("\\/");
+                    return Wide(cut == std::string::npos ? mc.filename()
+                                                         : mc.filename().substr(cut + 1));
+                };
+                if (failures > card_failures_seen_[port][slot]) {
+                    card_failures_seen_[port][slot] = failures;
+                    if (!card_failing_[port][slot]) {
+                        card_failing_[port][slot] = true;
+                        card_failing_file_[port][slot] = mc.filename();
+                        failed = true;
+                        title = name() + L" not saved";
+                        detail = L"Could not write " + file() + L" - will retry";
+                    }
+                } else if (card_failing_[port][slot] && !mc.dirty()) {
+                    card_failing_[port][slot] = false;
+                    title = name() + L" saved";
+                    detail = L"A retry wrote " + file();
+                }
+                if (title.empty())
+                    continue;
+                PostToUi([this, failed, title, detail] {
+                    if (overlay_notifications_) {
+                        Notify(failed ? OverlayIcon::kWarning : OverlayIcon::kCard,
+                               failed ? ToastKind::kError : ToastKind::kSuccess, title, detail);
+                    } else if (failed) {
+                        // With notifications off, a lost save still has to be said somewhere.
+                        const std::wstring message = title + L".\n\n" + detail + L".";
+                        ShowError(window_, message.c_str());
+                    }
+                });
+            }
+        }
+    }
+
     void App::CollectConsoleText(System& system) {
         emulation::psx::Kernel& kernel = system.kernel();
         const uint32_t session = kernel.session();
@@ -1757,6 +1853,13 @@ namespace psxemu {
         // A disc's name as its file gives it, without the tags dumps carry: "Wild Arms
         // [SCUS-94608].cue" is Wild Arms.
         std::wstring TitleFromPath(const std::string& path) {
+            // One disc of several says which: "Final Fantasy IX (Disc 2)", for a
+            // "Final Fantasy IX [SLUS-01295].cd2.iso" that would otherwise read as
+            // "Final Fantasy IX .cd2".
+            int disc = 0;
+            const std::string set = DiscSetTitle(path, &disc);
+            if (!set.empty() && disc > 0)
+                return Wide(set) + L" (Disc " + std::to_wstring(disc) + L")";
             const size_t slash = path.find_last_of("/\\");
             std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
             const size_t dot = name.find_last_of('.');
@@ -2135,8 +2238,20 @@ namespace psxemu {
 
             case WM_KEYDOWN:
                 if (app != nullptr)
-                    app->OnKeyDown(wparam);
+                    app->OnKeyDown(wparam, (lparam & (1 << 30)) != 0);
                 return 0;
+
+            case WM_KEYUP:
+                if (app != nullptr)
+                    app->OnKeyUp(wparam);
+                return 0;
+
+            // Tab's release goes to whichever window has the focus by then, so a fast forward
+            // held while switching away would never end.
+            case WM_KILLFOCUS:
+                if (app != nullptr)
+                    app->SetFastForward(false);
+                break;
 
             // Alt+Enter: the full-screen key almost every PC game and emulator uses. It arrives
             // as a system key, since Alt is held; anything else with Alt keeps its usual meaning
@@ -2210,9 +2325,15 @@ namespace psxemu {
                    L"Alt+Enter, F11 or Esc to leave");
     }
 
-    void App::OnKeyDown(WPARAM key) {
+    void App::OnKeyDown(WPARAM key, bool repeat) {
         if (stopping_)
             return;
+        // Tab: fast forward for as long as it is held.
+        if (key == VK_TAB)
+            SetFastForward(true);
+        // F12: a screenshot - one per press, not one per auto-repeat.
+        if (key == VK_F12 && !repeat)
+            TakeScreenshot();
         if (key == VK_F11)
             SetFullscreen(!fullscreen_);
         if (key == VK_ESCAPE && fullscreen_)
@@ -2234,6 +2355,71 @@ namespace psxemu {
                          : stats_mode_ == StatsMode::kFull ? StatsMode::kCompact
                                                            : StatsMode::kOff);
         }
+    }
+
+    void App::OnKeyUp(WPARAM key) {
+        if (key == VK_TAB)
+            SetFastForward(false);
+    }
+
+    // The frame is copied on the video thread, which owns it, and written out on this one: a
+    // PNG takes a few milliseconds to encode, which would otherwise be a late present.
+    void App::TakeScreenshot() {
+        if (video_ == nullptr || screenshots_root_.empty() || stopping_)
+            return;
+        // "Wild Arms 2026-09-26 18-04-33.png", or PSXEmu's for no game.
+        std::wstring name = game_title_.empty() ? std::wstring(L"PSXEmu") : game_title_;
+        for (wchar_t& c : name) {
+            if (c < 32 || wcschr(L"<>:\"/\\|?*", c) != nullptr)
+                c = L'_';
+        }
+        SYSTEMTIME now;
+        GetLocalTime(&now);
+        wchar_t stamp[32];
+        swprintf(stamp, std::size(stamp), L" %04u-%02u-%02u %02u-%02u-%02u", now.wYear, now.wMonth,
+                 now.wDay, now.wHour, now.wMinute, now.wSecond);
+        const std::wstring folder = Widen(screenshots_root_);
+        std::wstring path = folder + L"\\" + name + stamp + L".png";
+        // Two in the same second get a number rather than one overwriting the other.
+        for (int n = 2; GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES; ++n)
+            path = folder + L"\\" + name + stamp + L" (" + std::to_wstring(n) + L").png";
+
+        video_->Post([this, path](VideoOutput& video) {
+            const emulation::host::VideoFrame* frame = video.frames().current();
+            if (frame == nullptr || frame->is_vram || frame->pixels.empty()) {
+                PostToUi([this, vram = frame != nullptr && frame->is_vram] {
+                    Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"No screenshot",
+                           vram ? L"Turn off View VRAM to capture the picture"
+                                : L"Nothing has been shown yet");
+                });
+                return;
+            }
+            std::vector<uint32_t> pixels = frame->pixels;
+            const int width = frame->width;
+            const int height = frame->height;
+            PostToUi([this, path, pixels = std::move(pixels), width, height] {
+                EnsureDirectory(screenshots_root_);
+                std::wstring error;
+                const size_t slash = path.find_last_of(L'\\');
+                const std::wstring file = path.substr(slash + 1);
+                if (SaveScreenshotPng(path, pixels, width, height, &error)) {
+                    Notify(OverlayIcon::kScreen, ToastKind::kSuccess, L"Screenshot saved", file);
+                } else if (overlay_notifications_) {
+                    Notify(OverlayIcon::kWarning, ToastKind::kError, L"Screenshot not saved",
+                           error);
+                } else {
+                    ShowError(window_, (L"The screenshot could not be saved.\n\n" + error).c_str());
+                }
+            });
+        });
+    }
+
+    void App::SetFastForward(bool on) {
+        if (on == fast_forward_ || stopping_)
+            return;
+        fast_forward_ = on;
+        SendConfigToMachine();
+        PostToOverlay([on](Overlay& overlay) { overlay.SetFastForward(on); });
     }
 
     void App::OnCommand(int command) {
@@ -2396,6 +2582,10 @@ namespace psxemu {
 
             case kCommandEmulationSettings:
                 emulation_settings_.Show();
+                break;
+
+            case kCommandScreenshot:
+                TakeScreenshot();
                 break;
 
             case kCommandShowTimings:

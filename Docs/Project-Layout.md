@@ -99,6 +99,8 @@ PsxEmu/
       app.h/.cpp               class App - the UI thread: window, menus, settings, full screen,
                                and the four threads everything else runs on
       menu.h/.cpp              builds the menu bar; ticks an item against a value
+      screenshot.h/.cpp        F12: the frame as a 4:3 PNG
+      disc_set.h               which disc images are one game's discs, from their names
       engine_factory.h/.cpp    brings up a graphics and an audio engine, each with a fallback
       win32_paths.h/.cpp       command line, BIOS, settings file, data root, disc-derived names
       win32_dialogs.h/.cpp     the file pickers and the message boxes

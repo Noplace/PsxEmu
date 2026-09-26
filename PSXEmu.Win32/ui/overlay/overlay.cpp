@@ -149,6 +149,31 @@ namespace psxemu {
         paused_ = paused;
     }
 
+    void Overlay::SetFastForward(bool on) {
+        if (on != fast_forward_)
+            dirty_ = true;
+        fast_forward_ = on;
+    }
+
+    // A pill at the top middle, clear of the performance panel at the left and the controllers
+    // at the right: the speed icon and "Fast forward".
+    void Overlay::DrawFastForward(float width) {
+        if (!fast_forward_)
+            return;
+        const OverlayAtlas::Font& bold = atlas_.font(OverlayFont::kBold);
+        const std::wstring label = L"Fast forward";
+        const float pad = 10.0f * s_;
+        const float icon = 20.0f * s_;
+        const float h = (std::max)(bold.line_height, icon) + 2.0f * 7.0f * s_;
+        const float w = pad + icon + 8.0f * s_ + atlas_.Measure(OverlayFont::kBold, label) + pad;
+        const float x = (width - w) * 0.5f;
+        const float y = 16.0f * s_;
+        Panel(x, y, w, h, h * 0.5f, 1.0f);
+        Icon(OverlayIcon::kSpeed, x + pad, y + (h - icon) * 0.5f, icon, AccentOf(ToastKind::kInfo));
+        Text(OverlayFont::kBold, x + pad + icon + 8.0f * s_, y + (h - bold.line_height) * 0.5f,
+             label, kTextMain);
+    }
+
     void Overlay::SetCounters(uint64_t frames_dropped, uint64_t audio_short, uint64_t audio_dropped) {
         frames_dropped_ = frames_dropped;
         audio_short_ = audio_short;
@@ -274,6 +299,7 @@ namespace psxemu {
             DrawStats(w, h, frame_width, frame_height);
         else if (stats_mode_ == StatsMode::kCompact)
             DrawCompactStats(16.0f * s_, 16.0f * s_);
+        DrawFastForward(w);
         DrawControllers(w, now);
         DrawToasts(w, h, now);
 

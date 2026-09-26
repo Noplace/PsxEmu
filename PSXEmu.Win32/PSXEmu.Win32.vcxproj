@@ -99,6 +99,7 @@
     <ClCompile Include="app\main.cpp" />
     <ClCompile Include="graphics\video_presenter.cpp" />
     <ClCompile Include="app\menu.cpp" />
+    <ClCompile Include="app\screenshot.cpp" />
     <ClCompile Include="app\win32_dialogs.cpp" />
     <ClCompile Include="app\win32_paths.cpp" />
   </ItemGroup>
@@ -135,6 +136,8 @@
     <ClInclude Include="input\keyboard.h" />
     <ClInclude Include="graphics\video_presenter.h" />
     <ClInclude Include="app\menu.h" />
+    <ClInclude Include="app\screenshot.h" />
+    <ClInclude Include="app\disc_set.h" />
     <ClInclude Include="input\mouse.h" />
     <ClInclude Include="shaders\glsl_filters.h" />
     <ClInclude Include="shaders\spirv_filters.h" />

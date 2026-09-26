@@ -132,6 +132,9 @@ bool MC::Flush() {
     return true;
   if (filename_.empty() || !WriteWholeFile(filename_, mcfile)) {
     ++flush_failures_;
+    // Still dirty, so it is tried again - in another second, not on every frame from now on,
+    // which would hammer a file that is read-only or on a share that has gone away.
+    idle_frames_ = 0;
     return false;
   }
   dirty_ = false;

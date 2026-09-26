@@ -127,6 +127,8 @@ namespace psxemu {
         // Emulation > Emulation Settings and Settings > Emulation: the window with the CPU, timing,
         // GPU and CD-ROM settings and the Accuracy and Performance presets.
         kCommandEmulationSettings,
+        // Emulation > Take Screenshot, and F12.
+        kCommandScreenshot,
     };
 
     // ---------------------------------------------------------------------------------------------

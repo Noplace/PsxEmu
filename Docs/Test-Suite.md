@@ -249,7 +249,7 @@ operations, and the card file underneath (`psx/mc.h`). No BIOS, no window. With
 a card's path it lists that card instead - saves, blocks, titles, icons - and
 never writes it.
 
-**Current: 97 checks, 0 failures.**
+**Current: 103 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -258,7 +258,7 @@ never writes it.
 | `export` | a save coming back out as a directory frame and its own blocks |
 | `delete and undelete` | A1h/A2h/A3h with the links kept; undelete giving back the card byte for byte; undelete refused once a block has been reused |
 | `export everything, format, import it back` | the same saves, names, sizes, titles and bytes after a round trip through a formatted card, with a deleted save's hole in the middle |
-| `the card file` | a new card written formatted; a game's write staying in memory until a second passes with none, then flushed atomically; eject saving an unflushed write; the wipe - out of the slot and back in from disk - keeping both; inserting over a card saving the old one; a file that is not 128 KB refused without disturbing the card that is in |
+| `the card file` | a new card written formatted; a game's write staying in memory until a second passes with none, then flushed atomically; eject saving an unflushed write; the wipe - out of the slot and back in from disk - keeping both; inserting over a card saving the old one; a file that is not 128 KB refused without disturbing the card that is in; a save that cannot be written (a read-only file) counted, retried a second later rather than every frame, and saved once the file can be written (bug 118) |
 | `other tools' cards and saves` | a DexDrive `.gme`, a VGS `.mem` and a `.psx` each unwrapping to the same card as the raw one, a short `.gme` padded, and a file of no known kind, a too-short one and an unformatted card refused; a card's saves imported past a duplicate, which the report names, and onto a full card refused with the card unchanged; a raw headerless save named after its file and cut to 20 characters, a `.mcs` passed through, and blocks that do not open with "SC" refused (bug 106) |
 
 Mutation-tested when written: a flush that wrote nothing failed six of these,
@@ -613,9 +613,9 @@ the most likely answer is the network share rather than the emulator.
 | `gte_test` | 106 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 378 |
 | `sio_test` | 203 | | `spu_test` | 144 |
-| `mc_test` | 97 | | `debug_test` | 174 |
+| `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,637 checks, 0 failures**, all ten green. Each harness's own section above
+**1,643 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon: every setting in `EmuConfig`

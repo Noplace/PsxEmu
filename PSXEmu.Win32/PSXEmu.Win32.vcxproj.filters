@@ -81,6 +81,9 @@
     <ClCompile Include="app\menu.cpp">
       <Filter>app</Filter>
     </ClCompile>
+    <ClCompile Include="app\screenshot.cpp">
+      <Filter>app</Filter>
+    </ClCompile>
     <ClCompile Include="app\win32_dialogs.cpp">
       <Filter>app</Filter>
     </ClCompile>
@@ -183,6 +186,12 @@
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="app\menu.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ClInclude Include="app\screenshot.h">
+      <Filter>app</Filter>
+    </ClInclude>
+    <ClInclude Include="app\disc_set.h">
       <Filter>app</Filter>
     </ClInclude>
     <ClInclude Include="input\mouse.h">

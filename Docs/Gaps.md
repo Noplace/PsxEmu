@@ -53,9 +53,9 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 297, gte 106, timer 80, sio 203, spu 144, gpu 73, mdec 85, media 378, mc 97, debug 174 - 1,637
-checks, no failures, and 2,355 across all eighteen harnesses (re-run
-2026-09-26, after bugs 78-117 - with the rasteriser threaded, now the default).
+cpu 297, gte 106, timer 80, sio 203, spu 144, gpu 73, mdec 85, media 378, mc 103, debug 174 - 1,643
+checks, no failures, and 2,361 across all eighteen harnesses (re-run
+2026-09-26, after bugs 78-118 - with the rasteriser threaded, now the default).
 `host_test`'s two real-speed checks fail now and then on a busy host, before a
 change as well as after it; see Test-Suite.md. The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
@@ -498,8 +498,8 @@ tool: raw, DexDrive `.gme`, VGS `.mem`/`.vgs` or `.psx` (bug 106). What is left:
 - **Card contents are not in save states.** Loading a state leaves the cards
   as they are, which is the usual choice, but a state saved before a game
   wrote its save and loaded after it does not undo the save.
-- **A card write that fails is counted, not shown.** `MC::flush_failures()`
-  records it; the front end does not tell anyone.
+- **A card write that fails is said once** (bug 118): a notification, or a
+  dialog with notifications off - and again when a retry a second later works.
 - **No per-slot Recent list**, which the plan suggested.
 
 ### Controllers
@@ -557,8 +557,8 @@ differs from the defaults (bug 107).
 
 A game can have settings of its own (bug 116): `gamesettings\<serial>.ini`
 beside `psxemu.ini`, holding the emulation switches and the controller types,
-laid over `psxemu.ini` when that game boots. Multi-disc games have a serial per
-disc, so each disc has its own file.
+laid over `psxemu.ini` when that game boots. The discs of a multi-disc game,
+known by their file names, share one file (bug 118).
 
 `bios_file` is a filename rather than a path: the images live in
 `Documents\My Games\PSXEmu\bios`, which Settings > BIOS lists (anything in it
@@ -600,8 +600,8 @@ by all four renderers through one small pass each:
   - the audio buffer, and CPU MIPS
 
 It has two looks: Classic, flat and dark, and Glass, whose panels frost the
-picture behind them. Not yet shown: a memory card write that fails
-(`MC::flush_failures()`, below).
+picture behind them. Tab held fast-forwards, with a badge at the top middle,
+and F12 saves the picture as a 4:3 PNG in `screenshots` (bug 118).
 
 It *can* be driven from an agent session after all - launched, sent
 `WM_COMMAND`s, and read back through its title bar (Test-Suite.md's host_test

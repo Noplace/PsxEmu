@@ -164,6 +164,17 @@ namespace psxemu {
         // On the machine's thread, after every frame: what the BIOS console gained, posted to the
         // window. Posting keeps it in order with everything else the machine tells the UI.
         void CollectConsoleText(emulation::psx::System& system);
+        // On the machine's thread, after every frame: a memory card whose save could not be
+        // written says so, once - and again when a retry gets it onto the disk after all.
+        void WatchMemoryCardWrites(emulation::psx::System& system);
+
+        // Tab held: the frame limiter is off for as long as it is, whatever the setting says -
+        // which is left as it was. Let go, or the window loses the focus, and it is back.
+        void SetFastForward(bool on);
+        void OnKeyUp(WPARAM key);
+        // F12, or Emulation > Take Screenshot: the picture as the machine made it, stretched to
+        // 4:3, as a PNG in Documents\My Games\PSXEmu\screenshots.
+        void TakeScreenshot();
 
         // The memory card editor's two ways into the machine: fresh copies of both cards, and a
         // change to one of them. Both run on the machine's thread and answer by posting the
@@ -211,6 +222,7 @@ namespace psxemu {
         struct GameLookup {
             std::string key;         // the serial, or the image's file name if it has none
             std::wstring name;       // "Wild Arms (SCUS-94608)"
+            std::wstring title;      // "Wild Arms" - for a screenshot's file name
             emulation::psx::SettingsFile file;   // the game's settings, empty if it has none
             bool separate = false;   // the file was there
             emulation::psx::EmuConfig config;    // what the game runs with
@@ -322,7 +334,8 @@ namespace psxemu {
         static App* From(HWND window);
 
         void OnCommand(int command);
-        void OnKeyDown(WPARAM key);
+        // `repeat` is Windows' auto-repeat of a key still held.
+        void OnKeyDown(WPARAM key, bool repeat);
 
         // ---------------------------------------------------------------------------------------
         // What it owns
@@ -357,6 +370,7 @@ namespace psxemu {
         // settings file, which game_separate_ says exists.
         std::string game_key_;
         std::wstring game_name_;
+        std::wstring game_title_;
         emulation::psx::SettingsFile game_settings_;
         bool game_separate_ = false;
         std::string game_settings_dir_;   // gamesettings\, beside psxemu.ini
@@ -383,12 +397,15 @@ namespace psxemu {
         // The folder the current disc's cards are in; empty until a disc boots. Machine thread.
         std::string card_dir_;
         std::string savestates_root_;
+        std::string screenshots_root_;
         std::string bios_root_;
         std::string settings_path_;
 
         // What the UI believes the machine's pause state is: its own, and how deep the menus are.
         // The machine has the last word on both, but the menu has to know what it is asking for.
         bool paused_by_user_ = true;
+        // Tab is held (SetFastForward). The UI thread's; SendConfigToMachine applies it.
+        bool fast_forward_ = false;
         int menu_depth_ = 0;
 
         // Set once WM_CLOSE has started shutting things down: menu commands stop being taken, so
@@ -421,6 +438,12 @@ namespace psxemu {
         // machine thread's, compared after each frame to notice a boot or a reset.
         ConsoleWindow console_;
         uint32_t console_session_ = 0;
+
+        // Per card - port, then slot A-D - the save failures already reported, whether the card
+        // is failing now, and which file it was failing to write. The machine thread's.
+        uint64_t card_failures_seen_[2][4] = {};
+        bool card_failing_[2][4] = {};
+        std::string card_failing_file_[2][4];
 
         // File > Memory Cards > Memory Card Editor. The UI thread's; it sees the cards only as
         // snapshots the machine thread sends it.

@@ -315,7 +315,29 @@ void TestTheFile() {
   CheckEqual(mc.LoadFile(other.c_str()), S_FALSE, "a file that is not 128 KB is refused");
   Check(mc.connected() && mc.filename() == other, "leaving the card that was in, in");
 
+  // A save that cannot be written - a read-only file, a share that has gone - is counted, and
+  // tried again a second later rather than on every frame after.
+  memset(sector, 0x5C, sizeof(sector));
+  mc.WriteSector(10, sector);
+  SetFileAttributesA(other.c_str(), FILE_ATTRIBUTE_READONLY);
+  for (int i = 0; i < MC::kFlushAfterIdleFrames; ++i)
+    mc.OnFrame();
+  CheckEqual(static_cast<long long>(mc.flush_failures()), 1, "a save that cannot be written counts");
+  Check(mc.dirty(), "and the card stays dirty");
+  for (int i = 0; i < MC::kFlushAfterIdleFrames - 1; ++i)
+    mc.OnFrame();
+  CheckEqual(static_cast<long long>(mc.flush_failures()), 1, "no second try inside a second");
+  mc.OnFrame();
+  CheckEqual(static_cast<long long>(mc.flush_failures()), 2, "the second try a second later");
+  SetFileAttributesA(other.c_str(), FILE_ATTRIBUTE_NORMAL);
+  for (int i = 0; i < MC::kFlushAfterIdleFrames; ++i)
+    mc.OnFrame();
+  Check(!mc.dirty() && ReadFileBytes(other)[10 * 128] == 0x5C,
+        "once the file can be written, the next try saves it");
+  CheckEqual(static_cast<long long>(mc.flush_failures()), 2, "without counting another failure");
+
   mc.Deinitialize();
+  DeleteFileA((other + ".tmp").c_str());
   DeleteFileA(path.c_str());
   DeleteFileA(other.c_str());
 }
