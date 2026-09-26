@@ -124,6 +124,8 @@ PsxEmu/
                                source, and the drawn pad to bind
       emulation_settings_window.h/.cpp  Settings > Emulation: CPU, timing, GPU and CD-ROM
                                switches, and the Accuracy and Performance presets
+      game_scope.h             whether those two windows are editing everyone's settings or
+                               the running game's own
       key_bindings_window.h/.cpp  the older keyboard-only list, kept but off the menu
       memcard_editor.h/.cpp    File > Memory Cards > Memory Card Editor, both slots side by side
       console_window.h/.cpp    Emulation > BIOS Console: the BIOS's putchar/puts/printf output

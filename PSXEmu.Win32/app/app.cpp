@@ -58,6 +58,7 @@ namespace psxemu {
         std::wstring Wide(const std::string& text);
         std::wstring TitleFromPath(const std::string& path);
         std::wstring SerialOfDisc(System& system);
+        std::string DiscSerial(System& system);
         std::wstring NameForRenderer(const std::string& key);
 
     }   // namespace
@@ -84,6 +85,11 @@ namespace psxemu {
         settings_path_ = Narrow(SettingsPathBesideExecutable());
         settings_.Load(settings_path_);
         emulation::psx::LoadConfig(settings_, config_);
+        {
+            const size_t slash = settings_path_.find_last_of("\\/");
+            if (slash != std::string::npos)
+                game_settings_dir_ = settings_path_.substr(0, slash) + "\\gamesettings";
+        }
 
         // Before the machine, because the machine is built around a BIOS: the folder has to exist
         // and be scanned to know whether the one the settings file names is still in it.
@@ -157,6 +163,8 @@ namespace psxemu {
             };
             host.set_source = [this](int slot, const std::string& key) { SetSlotSource(slot, key); };
             host.set_type = [this](int slot, const std::string& key) { SetSlotType(slot, key); };
+            host.game = [this] { return CurrentGame(); };
+            host.set_separate = [this](bool separate) { SetGameSettingsSeparate(separate); };
             controller_bindings_.Create(instance, window_, std::move(host));
         }
         {
@@ -168,11 +176,21 @@ namespace psxemu {
             host.apply_preset = [this](emulation::psx::EmulationPreset preset) {
                 SetEmulationPreset(preset);
             };
+            host.game = [this] { return CurrentGame(); };
+            host.set_separate = [this](bool separate) { SetGameSettingsSeparate(separate); };
             emulation_settings_.Create(instance, window_, std::move(host));
         }
 
         // Before the threads start, so this is still the only thread touching the machine.
         if (!command_line.disc.empty() && system_->LoadDisc(command_line.disc.c_str())) {
+            // The game's own settings, if it has any, before its memory cards - which follow
+            // the ports' types - and before anything runs.
+            GameLookup game =
+                LookUpGame(*system_, command_line.disc, GlobalConfig(), game_settings_dir_);
+            system_->config() = game.config;
+            plugged_type_[0] = game.config.controller_type[0];
+            plugged_type_[1] = game.config.controller_type[1];
+            EnterGame(std::move(game));
             SetWindowTitleForPath(command_line.disc);
             LoadOrCreateMemoryCardsForDisc(*system_, command_line.disc);
             NoteRecentDisc(command_line.disc);
@@ -771,15 +789,160 @@ namespace psxemu {
     // Settings
     // ---------------------------------------------------------------------------------------------
 
+    // psxemu.ini, and the running game's own file if it has one. Each key in the game's file is
+    // the game's: the game's file takes its value from config_, and psxemu.ini keeps the one it
+    // had, so changing it while the game runs changes it for that game alone.
     void App::SaveSettingsIfChanged() {
         if (settings_path_.empty())
             return;
         emulation::psx::SettingsFile updated = settings_;
         emulation::psx::StoreConfig(updated, config_);
+        if (game_separate_) {
+            emulation::psx::SettingsFile all;
+            emulation::psx::StoreConfig(all, config_);
+            emulation::psx::SettingsFile game = game_settings_;
+            for (const std::string& key : game_settings_.Keys()) {
+                if (!all.Has(key.c_str()))
+                    continue;   // not a setting - the file's "game" line
+                game.CopyKey(all, key.c_str());
+                updated.CopyKey(settings_, key.c_str());
+            }
+            if (game.Serialise() != game_settings_.Serialise()) {
+                game_settings_ = game;
+                game_settings_.Save(game_settings_dir_ + "\\" + game_key_ + ".ini");
+            }
+        }
         if (updated.Serialise() == settings_.Serialise())
             return;
         settings_ = updated;
         settings_.Save(settings_path_);
+    }
+
+    emulation::psx::EmuConfig App::GlobalConfig() const {
+        EmuConfig config;
+        emulation::psx::LoadConfig(settings_, config);
+        return config;
+    }
+
+    GameScope App::CurrentGame() const {
+        GameScope game;
+        game.running = !game_key_.empty();
+        game.separate = game_separate_;
+        game.name = game_name_;
+        return game;
+    }
+
+    App::GameLookup App::LookUpGame(System& system, const std::string& path,
+                                    const EmuConfig& global, const std::string& settings_dir) {
+        GameLookup game;
+        const std::string serial = DiscSerial(system);
+        const std::wstring title = TitleFromPath(path);
+        game.name = serial.empty() ? title : title + L" (" + Wide(serial) + L")";
+        if (!serial.empty()) {
+            game.key = serial;
+        } else {
+            // A disc with no SYSTEM.CNF is known by its file name instead, made safe to be one.
+            const size_t slash = path.find_last_of("/\\");
+            std::string name = slash == std::string::npos ? path : path.substr(slash + 1);
+            const size_t dot = name.find_last_of('.');
+            if (dot != std::string::npos && dot > 0)
+                name.erase(dot);
+            for (char& c : name) {
+                if (static_cast<unsigned char>(c) < 32 || strchr("<>:\"/\\|?*", c) != nullptr)
+                    c = '_';
+            }
+            game.key = name;
+        }
+        game.config = global;
+        if (!settings_dir.empty() && !game.key.empty() &&
+            game.file.Load(settings_dir + "\\" + game.key + ".ini")) {
+            game.separate = true;
+            emulation::psx::LoadConfig(game.file, game.config);
+        }
+        return game;
+    }
+
+    void App::EnterGame(GameLookup lookup) {
+        const EmuConfig before = config_;
+        game_key_ = std::move(lookup.key);
+        game_name_ = std::move(lookup.name);
+        game_settings_ = std::move(lookup.file);
+        game_separate_ = lookup.separate;
+        config_ = lookup.config;
+        ConfigReplaced(before);
+    }
+
+    void App::LeaveGame() {
+        if (game_key_.empty())
+            return;
+        const bool had_own = game_separate_;
+        game_key_.clear();
+        game_name_.clear();
+        game_settings_ = emulation::psx::SettingsFile();
+        game_separate_ = false;
+        const EmuConfig before = config_;
+        if (had_own)
+            config_ = GlobalConfig();
+        ConfigReplaced(before);
+    }
+
+    void App::SetGameSettingsSeparate(bool separate) {
+        if (game_key_.empty() || separate == game_separate_)
+            return;
+        const std::string path = game_settings_dir_ + "\\" + game_key_ + ".ini";
+        const EmuConfig before = config_;
+        if (separate) {
+            // What the game is running with now, so turning this on changes nothing by itself.
+            emulation::psx::SettingsFile all;
+            emulation::psx::StoreConfig(all, config_);
+            emulation::psx::SettingsFile game;
+            game.SetString("game", Narrow(game_name_));
+            for (const std::string& key : emulation::psx::GameSettingKeys())
+                game.CopyKey(all, key.c_str());
+            EnsureDirectory(game_settings_dir_);
+            if (!game.Save(path)) {
+                const std::wstring message =
+                    L"Could not save this game's settings to\n\n" + Widen(path);
+                ShowWarning(window_, message.c_str());
+                ConfigReplaced(before);   // untick the box again
+                return;
+            }
+            game_settings_ = game;
+            game_separate_ = true;
+            Notify(OverlayIcon::kInfo, ToastKind::kSuccess, L"Separate settings for this game",
+                   game_name_);
+        } else {
+            DeleteFileA(path.c_str());
+            game_settings_ = emulation::psx::SettingsFile();
+            game_separate_ = false;
+            config_ = GlobalConfig();
+            Notify(OverlayIcon::kInfo, ToastKind::kInfo, L"Shared settings",
+                   game_name_ + L" uses the settings every game shares");
+        }
+        ConfigReplaced(before);
+    }
+
+    // After config_ is swapped as a whole - a game booted or left, or its own settings turned off -
+    // rather than one setting changed through its setter.
+    void App::ConfigReplaced(const EmuConfig& before) {
+        SendConfigToMachine();
+        // A port that has just become a multitap gets the disc's cards B-D, as SetControllerType
+        // does for one chosen by hand.
+        if (config_.controller_type != before.controller_type)
+            PostToMachine([this](Machine& machine) { SyncMultitapCards(machine.system(), false); });
+        UpdateVolumeMenu();
+        UpdateMultitapCardsMenu();
+        UpdateFrameLimiterMenu();
+        UpdateSpeedMenu();
+        UpdateShowTimingsMenu();
+        UpdateSerialToConsoleMenu();
+        UpdateMouseMenu();
+        SendMouseSettingsToInput();
+        controller_bindings_.OnConfigChanged();
+        emulation_settings_.OnConfigChanged();
+        if (config_.controller_type != before.controller_type ||
+            config_.multitap_player_type != before.multitap_player_type)
+            UpdateOverlayControllers(true);
     }
 
     void App::UpdateVolumeMenu() { TickVolume(window_, config_.audio_volume); }
@@ -1283,8 +1446,12 @@ namespace psxemu {
     }
 
     void App::BootDiscFromFile(const std::string& path) {
+        // Whatever the last game had of its own goes, before the machine hears anything else.
+        LeaveGame();
         const std::string bios = bios_path_;
-        PostToMachine([this, bios, path](Machine& machine) {
+        const EmuConfig global = GlobalConfig();
+        const std::string settings_dir = game_settings_dir_;
+        PostToMachine([this, bios, path, global, settings_dir](Machine& machine) {
             System& system = machine.system();
             system.Deinitialize();
             if (system.Initialize(bios.c_str()) != 0) {
@@ -1305,6 +1472,12 @@ namespace psxemu {
                 });
                 return;
             }
+            // The game's own settings, now that the disc says which game it is - before the
+            // hand-off below reads skip_bios_intro, before the memory cards (a multitap port
+            // gets three more), and before a single instruction runs.
+            GameLookup game = LookUpGame(system, path, global, settings_dir);
+            machine.ApplyConfig(game.config);
+
             // Already mounted, so there is nothing left for the hand-off to load itself - just arm
             // it before the machine starts running.
             if (system.config().skip_bios_intro)
@@ -1318,20 +1491,25 @@ namespace psxemu {
             machine.ResetPacing();
             RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
-            const std::wstring serial = SerialOfDisc(system);
-            PostToUi([this, path, serial] {
+            std::wstring serial = SerialOfDisc(system);
+            if (serial.empty())
+                serial = L"Disc loaded";
+            if (game.separate)
+                serial += L" \x00B7 its own settings";
+            PostToUi([this, path, serial, game = std::move(game)]() mutable {
                 paused_by_user_ = false;
+                EnterGame(std::move(game));
                 SetWindowTitleForPath(path);
                 NoteRecentDisc(path);
                 SendMouseSettingsToInput();
-                Notify(OverlayIcon::kDisc, ToastKind::kSuccess, TitleFromPath(path),
-                       serial.empty() ? std::wstring(L"Disc loaded") : serial);
+                Notify(OverlayIcon::kDisc, ToastKind::kSuccess, TitleFromPath(path), serial);
                 UpdateOverlayControllers(true);
             });
         });
     }
 
     void App::BootBios() {
+        LeaveGame();
         const std::string bios = bios_path_;
         PostToMachine([this, bios](Machine& machine) {
             System& system = machine.system();
@@ -1367,6 +1545,7 @@ namespace psxemu {
                         L"executable.");
             return;
         }
+        LeaveGame();
         const std::string bios = bios_path_;
         PostToMachine([this, bios, path](Machine& machine) {
             System& system = machine.system();
@@ -1592,32 +1771,42 @@ namespace psxemu {
             return Wide(out.empty() ? name : out);
         }
 
-        // The serial and region from the disc's own SYSTEM.CNF - "SLUS-00152 - North America".
-        // Read straight from the image, which the emulated drive never notices. Empty if the
-        // disc has none (a few boot PSX.EXE instead) or it cannot be read.
-        std::wstring SerialOfDisc(System& system) {
+        // The serial from the disc's own SYSTEM.CNF - "SLUS-00152". Read straight from the image,
+        // which the emulated drive never notices. Empty if the disc has none (a few boot PSX.EXE
+        // instead) or it cannot be read.
+        std::string DiscSerial(System& system) {
             emulation::psx::Iso9660 iso;
             if (!iso.Open(&system.cdrom().disc()))
-                return std::wstring();
+                return std::string();
             emulation::psx::Iso9660::File file;
             std::vector<uint8_t> contents;
             std::string boot;
             if (!iso.Find("SYSTEM.CNF", &file) || !iso.Read(file, &contents) ||
                 !System::ParseSystemCnf(contents, &boot))
-                return std::wstring();
+                return std::string();
             // BOOT = cdrom:\SLUS_001.52;1 - the file name, less its version, is the serial.
             size_t start = boot.find_last_of(":\\/");
             std::string serial = boot.substr(start == std::string::npos ? 0 : start + 1);
             const size_t version = serial.find(';');
             if (version != std::string::npos)
                 serial.erase(version);
+            // Letters, digits and the dash only: it names the game's settings file too.
             std::string tidy;
             for (char c : serial) {
-                if (c == '_')
+                if (c == '_' || c == '-')
                     tidy += '-';
-                else if (c != '.')
+                else if (isalnum(static_cast<unsigned char>(c)))
                     tidy += static_cast<char>(toupper(static_cast<unsigned char>(c)));
             }
+            return tidy;
+        }
+
+        // The serial and region - "SLUS-00152 - North America" - for the notification a boot
+        // raises. Empty if the disc has no serial.
+        std::wstring SerialOfDisc(System& system) {
+            const std::string tidy = DiscSerial(system);
+            if (tidy.empty())
+                return std::wstring();
             std::wstring region;
             if (tidy.size() >= 4) {
                 const char r = tidy[2];

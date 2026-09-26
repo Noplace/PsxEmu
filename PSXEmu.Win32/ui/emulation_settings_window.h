@@ -28,6 +28,7 @@
 // the machine is actually running with.
 
 #include "app/framework.h"
+#include "ui/game_scope.h"
 
 #include <array>
 #include <functional>
@@ -42,6 +43,9 @@ namespace psxemu {
             std::function<void(bool emulation::psx::EmuConfig::*setting, bool on)> set;
             // A preset button.
             std::function<void(emulation::psx::EmulationPreset preset)> apply_preset;
+            // Whose settings these are, and the check box that changes it.
+            std::function<GameScope()> game;
+            std::function<void(bool separate)> set_separate;
         };
 
         EmulationSettingsWindow() = default;
@@ -72,6 +76,8 @@ namespace psxemu {
         std::array<HWND, kSwitchCount> switches_ = {};
         HWND preset_name_ = nullptr;
         HWND preset_text_ = nullptr;
+        HWND game_box_ = nullptr;
+        HWND note_ = nullptr;
         HFONT font_ = nullptr;
         HFONT bold_font_ = nullptr;
         HFONT small_font_ = nullptr;

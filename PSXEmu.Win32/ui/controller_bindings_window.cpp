@@ -55,6 +55,7 @@ namespace psxemu {
         const int kIdCopyAll = 105;
         const int kIdClose = 106;
         const int kIdType = 107;
+        const int kIdGame = 108;
         const int kIdBoxFirst = 200;   // one per button, in kKeyBindings order
         const int kIdMenuChange = 300;
         const int kIdMenuClear = 301;
@@ -277,6 +278,8 @@ namespace psxemu {
         make(window_, L"STATIC", L"Controller:", SS_LEFT, 0, kMargin, 48, 66, 20);
         type_list_ = make(window_, WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
                           kIdType, kMargin + 70, 44, 298, 300);
+        game_box_ = make(window_, L"BUTTON", L"Separate settings for this game",
+                         BS_AUTOCHECKBOX | WS_TABSTOP, kIdGame, 400, 46, 392, 22);
         info_ = make(window_, L"STATIC", L"", SS_LEFT, 0, kMargin, 78, kClientWidth - kMargin * 2,
                      52);
 
@@ -402,6 +405,14 @@ namespace psxemu {
         UpdateInfo();
         LayoutBoxes();
         InvalidateRect(canvas_, nullptr, TRUE);
+
+        // Whose the types are. The bindings and the devices are everyone's either way.
+        const GameScope game = host_.game ? host_.game() : GameScope();
+        SendMessageW(game_box_, BM_SETCHECK, game.separate ? BST_CHECKED : BST_UNCHECKED, 0);
+        EnableWindow(game_box_, game.running);
+        const std::wstring caption = game.running ? L"PSXEmu - Controllers - " + game.name
+                                                  : std::wstring(L"PSXEmu - Controllers");
+        SetWindowTextW(window_, caption.c_str());
     }
 
     // What can be plugged into the slot: a port takes anything, a multitap player only a pad.
@@ -1040,6 +1051,12 @@ namespace psxemu {
                                 self->Refresh();
                             }
                         }
+                        break;
+                    case kIdGame:
+                        // The App's setter calls OnConfigChanged, which refreshes the window.
+                        if (code == BN_CLICKED && self->host_.set_separate)
+                            self->host_.set_separate(
+                                SendMessageW(self->game_box_, BM_GETCHECK, 0, 0) == BST_CHECKED);
                         break;
                     case kIdType:
                         if (code == CBN_SELCHANGE) {

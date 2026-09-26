@@ -36,6 +36,7 @@
 
 #include "app/framework.h"
 #include "input/controller_bindings.h"
+#include "ui/game_scope.h"
 
 #include <functional>
 #include <span>
@@ -55,6 +56,9 @@ namespace psxemu {
             // The Controller list: what is plugged into `slot`, a kControllerTypeChoices key
             // for a port or a kMultitapPlayerTypeChoices key for a multitap player.
             std::function<void(int slot, const std::string& type)> set_type;
+            // Whose settings the types are: everyone's, or the running game's alone.
+            std::function<GameScope()> game;
+            std::function<void(bool separate)> set_separate;
         };
 
         ControllerBindingsWindow() = default;
@@ -112,6 +116,7 @@ namespace psxemu {
         HWND canvas_ = nullptr;
         HWND slot_list_ = nullptr;
         HWND type_list_ = nullptr;
+        HWND game_box_ = nullptr;
         HWND device_list_ = nullptr;
         HWND use_device_ = nullptr;
         HWND info_ = nullptr;

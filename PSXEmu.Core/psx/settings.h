@@ -27,18 +27,19 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <vector>
 
 namespace emulation {
 namespace psx {
 
 // A flat `key = value` settings file, following the same design as GBAEmu's.
 //
-// Deliberately plain text and hand-editable, because there is no settings UI
-// beyond a couple of menu items yet, so the file is how anything else gets
-// changed. Unknown keys are kept and written back out, so a file written by a
-// newer build is not quietly stripped by an older one, and every getter takes
-// the current value as its default, so a missing key leaves whatever was
-// already there.
+// Deliberately plain text and hand-editable, so anything the settings windows
+// do not offer can still be changed here. Unknown keys are kept and written
+// back out, so a file written by a newer build is not quietly stripped by an
+// older one, and every getter takes the current value as its default, so a
+// missing key leaves whatever was already there - which is also what lets a
+// game's own file hold only the keys it overrides.
 //
 // Backed by an ordered map, which keeps the file stable between saves rather
 // than reshuffling it on every write.
@@ -120,6 +121,25 @@ class SettingsFile {
   }
   void SetString(const char* key, const std::string& v) { values_[key] = v; }
   void Remove(const char* key) { values_.erase(key); }
+  bool Has(const char* key) const { return Find(key) != nullptr; }
+  bool Empty() const { return values_.empty(); }
+
+  // Every key, in the file's order.
+  std::vector<std::string> Keys() const {
+    std::vector<std::string> keys;
+    for (const auto& entry : values_)
+      keys.push_back(entry.first);
+    return keys;
+  }
+
+  // `key` as `from` has it - or gone, if `from` has no such key.
+  void CopyKey(const SettingsFile& from, const char* key) {
+    const std::string* v = from.Find(key);
+    if (v != nullptr)
+      values_[key] = *v;
+    else
+      values_.erase(key);
+  }
 
  private:
   const std::string* Find(const char* key) const {
@@ -301,6 +321,29 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
       nearest_dpi = candidate;
   }
   c.mouse_dpi = nearest_dpi;
+}
+
+// The keys a game can keep its own values for - Settings > Emulation's switches
+// that are about how a game runs, and what is plugged into each port - which is
+// what a game's settings file starts with when separate settings are turned on.
+// Not the front end's own preferences (pause_in_menus), nor which device plays
+// each port, which follows the person's hardware rather than the game.
+//
+// A key in a game's file is that game's, whether or not it is listed here, so a
+// hand-added `audio_volume` there works too; this is only what the window writes.
+inline std::vector<std::string> GameSettingKeys() {
+  std::vector<std::string> keys = {
+      "recompiler",         "icache_timing",       "exact_event_timing",
+      "dma_stops_cpu",      "measured_bus_timing", "write_queue_timing",
+      "gpu_thread",         "gpu_transfer_timing", "cdrom_mechanical_timing",
+      "skip_bios_intro",    "controller_type_port1", "controller_type_port2",
+  };
+  for (int port = 0; port < 2; ++port) {
+    for (int player = 0; player < 4; ++player)
+      keys.push_back("multitap_port" + std::to_string(port + 1) + "_player_" +
+                     std::string(1, char('a' + player)) + "_type");
+  }
+  return keys;
 }
 
 }

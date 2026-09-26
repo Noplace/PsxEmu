@@ -555,6 +555,11 @@ bindings - Port 1's keys as `key_up`, `key_cross` and so on (bug 70), and every
 other port and device as one `bind_<slot>_<device>` line, written only when it
 differs from the defaults (bug 107).
 
+A game can have settings of its own (bug 116): `gamesettings\<serial>.ini`
+beside `psxemu.ini`, holding the emulation switches and the controller types,
+laid over `psxemu.ini` when that game boots. Multi-disc games have a serial per
+disc, so each disc has its own file.
+
 `bios_file` is a filename rather than a path: the images live in
 `Documents\My Games\PSXEmu\bios`, which Settings > BIOS lists (anything in it
 of exactly 512 KB, which is what the core accepts) and the front end creates on
@@ -575,8 +580,8 @@ bindings (bug 107, which replaced bug 70's keyboard-only list), and a CPU
 debugger (Emulation > Debugger, bugs 71-75) with memory, watchpoints, a BIOS
 call log, a call stack, labels and device panes (see
 [Debugger-Plan.md](Debugger-Plan.md); PsyQ `.SYM` symbol files are not read yet) -
-and no settings dialog, deliberately:
-every setting is already in the menus. Keys and pad controls are rebound per
+and two settings windows (bug 115): Settings > Emulation, with the Accuracy and
+Performance presets, and Settings > Input > Controllers. Keys and pad controls are rebound per
 port and per device. Only XInput pads are read: a DualShock 4 or DualSense
 plugged in on its own, with nothing presenting it as an XInput pad, is not seen.
 Output a program sends to the serial port is

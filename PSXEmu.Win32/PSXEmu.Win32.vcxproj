@@ -111,6 +111,7 @@
     <ClInclude Include="input\controller_bindings.h" />
     <ClInclude Include="ui\controller_bindings_window.h" />
     <ClInclude Include="ui\emulation_settings_window.h" />
+    <ClInclude Include="ui\game_scope.h" />
     <ClInclude Include="ui\overlay\overlay.h" />
     <ClInclude Include="ui\overlay\overlay_atlas.h" />
     <ClInclude Include="ui\overlay\overlay_draw.h" />

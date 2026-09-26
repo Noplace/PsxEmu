@@ -113,6 +113,9 @@
     <ClInclude Include="ui\emulation_settings_window.h">
       <Filter>ui</Filter>
     </ClInclude>
+    <ClInclude Include="ui\game_scope.h">
+      <Filter>ui</Filter>
+    </ClInclude>
     <ClInclude Include="ui\overlay\overlay.h">
       <Filter>ui</Filter>
     </ClInclude>

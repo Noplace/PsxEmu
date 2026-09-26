@@ -203,6 +203,37 @@ namespace psxemu {
         // Its Controller list: a port's type, or a multitap player's.
         void SetSlotType(int slot, const std::string& key);
 
+        // Per-game settings. A game with settings of its own has them in
+        // gamesettings\<serial>.ini beside psxemu.ini, holding only the keys that are its own -
+        // emulation::psx::GameSettingKeys() when the check box made the file, anything else
+        // added by hand. config_ is always what the machine runs with: psxemu.ini's settings with
+        // the game's laid over them.
+        struct GameLookup {
+            std::string key;         // the serial, or the image's file name if it has none
+            std::wstring name;       // "Wild Arms (SCUS-94608)"
+            emulation::psx::SettingsFile file;   // the game's settings, empty if it has none
+            bool separate = false;   // the file was there
+            emulation::psx::EmuConfig config;    // what the game runs with
+        };
+        // On whichever thread has the disc just mounted: the game's settings, if it has any,
+        // over `global`.
+        static GameLookup LookUpGame(emulation::psx::System& system, const std::string& path,
+                                     const emulation::psx::EmuConfig& global,
+                                     const std::string& settings_dir);
+        // psxemu.ini's settings alone - what every game without settings of its own runs with.
+        emulation::psx::EmuConfig GlobalConfig() const;
+        GameScope CurrentGame() const;
+        // The check box in both settings windows. On, the game's file is made from the settings
+        // it is running with now, so nothing changes until something is changed; off, the file
+        // is deleted and the game goes back to everyone's settings.
+        void SetGameSettingsSeparate(bool separate);
+        // A game booted, with `lookup` already applied to the machine.
+        void EnterGame(GameLookup lookup);
+        // Something else booted - the BIOS, a PS-X EXE - so a game's own settings no longer apply.
+        void LeaveGame();
+        // config_ was replaced wholesale: everything that shows or uses it catches up.
+        void ConfigReplaced(const emulation::psx::EmuConfig& before);
+
         void RefreshBiosMenu();
         void SelectBios(int index);
 
@@ -321,6 +352,14 @@ namespace psxemu {
         // to; reading the machine's would be reading what another thread writes.
         emulation::psx::EmuConfig config_;
         emulation::psx::SettingsFile settings_;
+
+        // The game running, as far as per-game settings go - empty key for none - and its own
+        // settings file, which game_separate_ says exists.
+        std::string game_key_;
+        std::wstring game_name_;
+        emulation::psx::SettingsFile game_settings_;
+        bool game_separate_ = false;
+        std::string game_settings_dir_;   // gamesettings\, beside psxemu.ini
 
         // Whichever backends are actually open, as the threads that opened them reported. Not the
         // requested ones: opening can fall back.

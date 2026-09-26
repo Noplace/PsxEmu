@@ -7236,3 +7236,61 @@ commands:
   multitap
 - presets flipped six times under the running BIOS: 59.3 fps throughout, a
   notification each time, and a clean exit
+
+## 116. Per-game settings
+
+`PSXEmu.Win32/app/app.cpp` (`LookUpGame`, `EnterGame`, `LeaveGame`,
+`SetGameSettingsSeparate`, `SaveSettingsIfChanged`), `ui/emulation_settings_window.*`,
+`ui/controller_bindings_window.*`, `ui/game_scope.h`, `PSXEmu.Core/psx/settings.h`
+
+Not a bug: a feature the user asked for, so the Accuracy preset (bug 115) can
+be kept for the game that needs it.
+
+**How it is used.** With a game running, both Settings > Emulation and
+Settings > Input > Controllers have a check box, *Separate settings for Wild Arms
+(SCUS-94608)*, and name the game in their title bar.
+- **On:** the game gets a file of its own, made from what it is running with,
+  so nothing changes until something is changed. From then on the game's
+  switches and controller types are saved to that file, and `psxemu.ini` keeps
+  its own.
+- **Off:** the file is deleted and the game goes straight back to the shared
+  settings.
+
+Booting that game again applies its file, and the boot notification adds "its
+own settings". Booting another game, the BIOS or a PS-X EXE drops them.
+
+**What is stored.** `gamesettings\<serial>.ini` beside `psxemu.ini` - the
+serial from SYSTEM.CNF, or the image's file name for a disc without one - in
+`psxemu.ini`'s own format:
+- **Starts with** the ten switches that are about how a game runs - all of
+  Settings > Emulation except Pause While in Menus - plus each port's controller
+  type and each multitap player's (`GameSettingKeys`), and a `game` line naming
+  it.
+- **Not stored:** which device plays each port. That follows the person's
+  hardware, not the game; the same goes for the bindings.
+- **Hand-added keys work too.** Any key in the file is the game's: loading lays
+  the file over `psxemu.ini` with `LoadConfig`, which only touches the keys
+  present, and saving writes those keys to the game's file and leaves
+  `psxemu.ini`'s values alone.
+
+**When it applies.** Before the game runs a single instruction:
+- On a boot, the machine thread reads the serial as soon as the disc is
+  mounted, and applies the game's settings before three things: the
+  skip-the-intro hand-off reads its switch, the memory cards are loaded (a
+  multitap port gets its three extra), and the machine is unpaused.
+- A disc named on the command line gets the same, before the threads start.
+- Swap Disc keeps the running game's settings, since the game carries on.
+  Multi-disc games have a serial per disc, so each disc has its own file.
+
+**Verified** from a scratch copy of the Release build, booting Wild Arms and Air
+Combat from Recent Discs, with the Performance preset shared:
+- **Wild Arms, separate on:** its file held the Performance values. Accuracy
+  and a multitap on port 2 went to its file, and `psxemu.ini` kept Performance
+  and a DualShock.
+- **Air Combat, then the BIOS:** Performance, the box unticked for Air Combat
+  and greyed out for the BIOS.
+- **Wild Arms again:** Accuracy, the multitap back in the controllers corner,
+  and "its own settings" in the notification.
+- **Separate off:** the file was deleted and Performance came back.
+- **Wild Arms named on the command line,** after turning separate on again:
+  its settings were in place at startup, and it ran at 59.3 fps.

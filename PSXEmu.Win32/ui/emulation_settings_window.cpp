@@ -37,6 +37,7 @@ namespace psxemu {
         const int kIdPerformance = 201;
         const int kIdDefaults = 202;
         const int kIdClose = 203;
+        const int kIdGame = 204;
         const int kIdHintFirst = 300;     // the grey line under each switch
 
         // The layout, in pixels at 96 DPI: the presets across the top, then two columns of
@@ -44,7 +45,8 @@ namespace psxemu {
         const int kMargin = 12;
         const int kClientWidth = 760;
         const int kColumnWidth = (kClientWidth - kMargin * 3) / 2;
-        const int kGroupsTop = 96;
+        const int kPresetTop = 44;
+        const int kGroupsTop = 128;
         const int kGroupHeader = 22;      // from a group box's top to its first switch
         const int kGroupFooter = 8;
         const int kGroupGap = 10;
@@ -195,18 +197,23 @@ namespace psxemu {
             return control;
         };
 
+        // Whose settings these are: everyone's, or the running game's alone.
+        game_box_ = make(L"BUTTON", L"", BS_AUTOCHECKBOX | WS_TABSTOP, kIdGame, kMargin, 12,
+                         kClientWidth - kMargin * 2, 22, bold_font_);
+
         // The presets, and which one the settings are now.
-        make(L"STATIC", L"Preset:", SS_LEFT, 0, kMargin, 18, 50, 20, font_);
-        make(L"BUTTON", L"&Accuracy", BS_PUSHBUTTON | WS_TABSTOP, kIdAccuracy, kMargin + 52, 12,
-             110, 28, font_);
+        make(L"STATIC", L"Preset:", SS_LEFT, 0, kMargin, kPresetTop + 6, 50, 20, font_);
+        make(L"BUTTON", L"&Accuracy", BS_PUSHBUTTON | WS_TABSTOP, kIdAccuracy, kMargin + 52,
+             kPresetTop, 110, 28, font_);
         make(L"BUTTON", L"Per&formance", BS_PUSHBUTTON | WS_TABSTOP, kIdPerformance,
-             kMargin + 168, 12, 110, 28, font_);
-        make(L"BUTTON", L"Defa&ults", BS_PUSHBUTTON | WS_TABSTOP, kIdDefaults, kMargin + 284, 12,
-             110, 28, font_);
-        make(L"STATIC", L"Now:", SS_LEFT, 0, kMargin + 420, 18, 36, 20, font_);
-        preset_name_ = make(L"STATIC", L"", SS_LEFT, 0, kMargin + 458, 18, 200, 20, bold_font_);
-        preset_text_ = make(L"STATIC", L"", SS_LEFT, 0, kMargin, 50, kClientWidth - kMargin * 2,
-                            36, font_);
+             kMargin + 168, kPresetTop, 110, 28, font_);
+        make(L"BUTTON", L"Defa&ults", BS_PUSHBUTTON | WS_TABSTOP, kIdDefaults, kMargin + 284,
+             kPresetTop, 110, 28, font_);
+        make(L"STATIC", L"Now:", SS_LEFT, 0, kMargin + 420, kPresetTop + 6, 36, 20, font_);
+        preset_name_ = make(L"STATIC", L"", SS_LEFT, 0, kMargin + 458, kPresetTop + 6, 200, 20,
+                            bold_font_);
+        preset_text_ = make(L"STATIC", L"", SS_LEFT, 0, kMargin, kPresetTop + 38,
+                            kClientWidth - kMargin * 2, 36, font_);
 
         // The two columns of groups. Each group box is made before its switches, so the switches
         // sit above it and paint over its frame rather than under it.
@@ -245,8 +252,7 @@ namespace psxemu {
         }
 
         const int buttons_top = bottom + 4;
-        make(L"STATIC", L"Every change applies at once, to a game already running.", SS_LEFT, 0,
-             kMargin, buttons_top + 6, 460, 20, small_font_);
+        note_ = make(L"STATIC", L"", SS_LEFT, 0, kMargin, buttons_top + 6, 620, 20, small_font_);
         make(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, kIdClose,
              kClientWidth - kMargin - 100, buttons_top, 100, 28, font_);
         const int client_height = buttons_top + 28 + kMargin;
@@ -280,6 +286,24 @@ namespace psxemu {
         const EmulationPreset preset = emulation::psx::MatchingEmulationPreset(config);
         SetWindowTextW(preset_name_, PresetName(preset));
         SetWindowTextW(preset_text_, PresetText(preset));
+
+        const GameScope game = host_.game ? host_.game() : GameScope();
+        const std::wstring label = game.running
+                                       ? L"Separate settings for " + game.name
+                                       : std::wstring(L"Separate settings for a game (start one "
+                                                      L"first)");
+        SetWindowTextW(game_box_, label.c_str());
+        SendMessageW(game_box_, BM_SETCHECK, game.separate ? BST_CHECKED : BST_UNCHECKED, 0);
+        EnableWindow(game_box_, game.running);
+        SetWindowTextW(note_, game.separate
+                                  ? L"Changes apply at once and are kept for this game alone, except "
+                                    L"Pause while in menus."
+                                  : L"Every change applies at once, to a running game, and to every "
+                                    L"game.");
+        const std::wstring caption = game.running
+                                         ? L"PSXEmu - Emulation Settings - " + game.name
+                                         : std::wstring(L"PSXEmu - Emulation Settings");
+        SetWindowTextW(window_, caption.c_str());
     }
 
     LRESULT CALLBACK EmulationSettingsWindow::WindowProc(HWND window, UINT message, WPARAM wparam,
@@ -323,6 +347,12 @@ namespace psxemu {
                 if (code != BN_CLICKED)
                     return 0;
                 switch (id) {
+                    case kIdGame:
+                        // The App's setter calls OnConfigChanged, which refreshes the window.
+                        if (self->host_.set_separate)
+                            self->host_.set_separate(
+                                SendMessageW(self->game_box_, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                        break;
                     case kIdAccuracy:
                     case kIdPerformance:
                     case kIdDefaults:
