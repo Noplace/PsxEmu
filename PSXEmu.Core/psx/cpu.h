@@ -788,6 +788,50 @@ class Cpu : public Component {
   // What fetching the instruction at pc costs beyond the one cycle every
   // instruction does.
   uint32_t FetchStall(uint32_t pc);
+
+  // ---- the finer bus models (EmuConfig::measured_bus_timing, write_queue_timing) ----
+  // Latched with the instruction-cache flag, once a batch. What they keep lives on
+  // the heap, allocated the first time either is switched on, for the reason the
+  // tags do. None of it is saved: a loaded state starts with the queue empty and
+  // the bus idle, as it starts with a cold cache.
+  struct BusModel {
+    // When the external bus - the 8- and 16-bit regions - last finished an access.
+    uint64_t idle_since = 0;
+    // The write queue: when each queued store finishes, oldest first.
+    static const int kDepth = 4;
+    uint64_t done[kDepth] = {};
+    int head = 0;
+    int count = 0;
+    uint64_t last_done = 0;
+  };
+  std::unique_ptr<BusModel> bus_model_;
+  bool measured_bus_ = false;
+  bool write_queue_ = false;
+  // The bytes of the word an lwl or lwr actually reads: lane and count. Zero bytes
+  // means the whole access.
+  uint8_t partial_lane_ = 0;
+  uint8_t partial_bytes_ = 0;
+  // The stall a load of `width` from one of the narrow regions costs.
+  uint32_t NarrowLoadStall(int region, uint32_t width);
+  // The write queue: a store costing `occupancy` cycles of bus time joins it, and
+  // the CPU waits only if it is full. A load waits for it to empty.
+  void QueueStore(uint32_t occupancy);
+  void DrainWriteQueue();
+  // What a store to `physical` holds the bus for, in cycles.
+  uint32_t StoreOccupancy(uint32_t physical, MemorySize size);
+
+  // Cycles a DMA has held the bus for since the last instruction began, which the
+  // CPU waits out before the next one (EmuConfig::dma_stops_cpu).
+  uint32_t dma_stall_cycles_ = 0;
+
+ public:
+  void AddDmaStall(uint32_t cycles) { dma_stall_cycles_ += cycles; }
+  bool dma_stall_pending() const { return dma_stall_cycles_ != 0; }
+  uint32_t TakeDmaStall() {
+    const uint32_t cycles = dma_stall_cycles_;
+    dma_stall_cycles_ = 0;
+    return cycles;
+  }
 };
 
 }

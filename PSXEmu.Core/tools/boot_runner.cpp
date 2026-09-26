@@ -36,6 +36,11 @@
 //                        free (EmuConfig::cdrom_mechanical_timing). Every
 //                        disc-dependent baseline moves with this on, so it is
 //                        off by default here exactly as it is in the front end
+//     --exact-timing     devices run to each event rather than in 32-cycle batches
+//     --dma-stops-cpu    the CPU waits while a DMA holds the bus
+//     --measured-bus     8/16-bit bus costs fitted to a console, not psx-spx's formula
+//     --write-queue      stores go through a 4-deep write queue (interpreter only)
+//                        - the four EmuConfig timing models, each off by default
 //     --load-state <f>   resume from a save state instead of booting - skips
 //                        --disc/--boot-disc/--auto-boot/--exe entirely
 //     --save-state <f>   write a save state after the run finishes
@@ -196,6 +201,10 @@ struct Options {
   bool gpu_thread;
   bool gpu_transfer_timing;
   bool icache_timing;
+  bool exact_event_timing;
+  bool dma_stops_cpu;
+  bool measured_bus_timing;
+  bool write_queue_timing;
   int recompiler_toggle;
   bool recompiler_diff;
   // --break: execute breakpoints (psx/debugger.h). Each hit prints the registers and the code
@@ -560,6 +569,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->gpu_thread = false;
   options->gpu_transfer_timing = false;
   options->icache_timing = false;
+  options->exact_event_timing = false;
+  options->dma_stops_cpu = false;
+  options->measured_bus_timing = false;
+  options->write_queue_timing = false;
   options->recompiler_toggle = 0;
   options->recompiler_diff = false;
   options->track_calls = false;
@@ -647,6 +660,14 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->gpu_transfer_timing = true;
     } else if (strcmp(arg, "--icache-timing") == 0) {
       options->icache_timing = true;
+    } else if (strcmp(arg, "--exact-timing") == 0) {
+      options->exact_event_timing = true;
+    } else if (strcmp(arg, "--dma-stops-cpu") == 0) {
+      options->dma_stops_cpu = true;
+    } else if (strcmp(arg, "--measured-bus") == 0) {
+      options->measured_bus_timing = true;
+    } else if (strcmp(arg, "--write-queue") == 0) {
+      options->write_queue_timing = true;
     } else if (strcmp(arg, "--recompiler") == 0) {
       options->recompiler = true;
     } else if (strcmp(arg, "--recompiler-toggle") == 0 && i + 1 < argc) {
@@ -988,6 +1009,22 @@ int main(int argc, char** argv) {
   if (options.icache_timing) {
     system->config().icache_timing = true;
     printf("cpu            instruction-cache timing\n");
+  }
+  if (options.exact_event_timing) {
+    system->config().exact_event_timing = true;
+    printf("timing         exact event timing\n");
+  }
+  if (options.dma_stops_cpu) {
+    system->config().dma_stops_cpu = true;
+    printf("dma            stops the cpu\n");
+  }
+  if (options.measured_bus_timing) {
+    system->config().measured_bus_timing = true;
+    printf("bus            measured timing\n");
+  }
+  if (options.write_queue_timing) {
+    system->config().write_queue_timing = true;
+    printf("cpu            write queue timing\n");
   }
 
   if (options.gpu_thread) {

@@ -66,6 +66,9 @@ class Cdrom : public Component {
   int Initialize();
   int Deinitialize();
   void Tick(uint32_t cycles);
+  // Cycles until the next response is due or the next sector comes round, for exact
+  // event timing. 0xFFFFFFFF when neither is counting.
+  uint32_t CyclesToNextEvent() const;
 
   uint8_t Read(uint32_t address);
   void Write(uint32_t address, uint8_t data);

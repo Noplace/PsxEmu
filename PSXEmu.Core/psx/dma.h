@@ -52,6 +52,17 @@ class Dma : public Component {
   // real elapsed time rather than with how many times Write() happened to
   // be called.
   void Tick(uint32_t cycles);
+  // Cycles until a channel finishes or channel 0 feeds the MDEC its next block - for
+  // exact event timing. 0xFFFFFFFF when nothing is counting down.
+  uint32_t CyclesToNextEvent() const {
+    uint32_t soonest = 0xFFFFFFFFu;
+    for (const DmaChannel& channel : channels)
+      if (channel.busy_cycles > 0 && static_cast<uint32_t>(channel.busy_cycles) < soonest)
+        soonest = static_cast<uint32_t>(channel.busy_cycles);
+    if (mdec_in_wait_ > 0 && static_cast<uint32_t>(mdec_in_wait_) < soonest)
+      soonest = static_cast<uint32_t>(mdec_in_wait_);
+    return soonest;
+  }
   uint32_t Read(uint32_t address);
   void Write(uint32_t address,uint32_t data);
   DmaChannel& channel(int i) { return channels[i]; }
@@ -96,6 +107,9 @@ class Dma : public Component {
   static uint32_t RamCycles(uint32_t words) {
     return words + (words + 15) / 16;
   }
+  // What a request-mode block costs beyond its words - see Dma2. Charged only with
+  // EmuConfig::dma_stops_cpu.
+  static const uint32_t kBlockCycles = 10;
   // Accrued while a transfer runs, charged to the CPU once it finishes.
   uint32_t transfer_cycles_ = 0;
   void ChargeWords(uint32_t words) { transfer_cycles_ += RamCycles(words); }
@@ -105,6 +119,13 @@ class Dma : public Component {
   // completion. `acknowledge` is false only for the OTC channel, which this
   // has never raised an interrupt for; that is left exactly as it was.
   void RunChannel(int channel, bool acknowledge = true);
+  // Charges the CPU for bus time a transfer took: counted against its clock while it
+  // runs on (the default), or waited out before its next instruction when
+  // EmuConfig::dma_stops_cpu is on.
+  void HoldBus(uint32_t cycles);
+  // Whether a channel's device is asking for a transfer - what starts a burst-mode
+  // transfer written without its trigger. See ShouldStart in dma.cpp.
+  bool DeviceRequest(int channel);
   // Clears the busy bit and raises the interrupt, if this channel's
   // completion asked for one. The one place a pending transfer actually
   // finishes.

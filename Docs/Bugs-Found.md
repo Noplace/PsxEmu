@@ -6811,3 +6811,266 @@ Tested on all four renderers:
 
 One side effect: Enter is Start on the default keyboard layout, so Alt+Enter
 also presses Start for a moment while the game has focus.
+
+## 110. Tomb Raider went black after its menu: the drive did not know about pregaps
+
+`psx/disc.cpp`, `psx/cdrom.cpp`
+
+**Symptom.** Tomb Raider (SLUS-00152, a CloneCD `.ccd`/`.img`/`.sub` set)
+went to a black screen right after a game was chosen on its menu, and stayed
+there.
+
+**What it was doing.** Run from the user's save state:
+- **The CD read nothing in 300 frames.** The only command was GetlocP, "where
+  is the head", once a frame.
+- **The drive was set up to play music but was not playing:** mode 07 (CD
+  audio, autopause, reports), status motor-on only.
+- **The head sat at 29:17:00.** GetlocP called that track 1, index 1, 29:15:00
+  into the track.
+
+The `.ccd` puts track 2, the first music track, at 29:17:54 - so the head was
+54 sectors short of it. That is what a game gets by seeking to where GetTD
+says a track starts, since GetTD gives the minute and second only.
+
+The disc's own subchannel, which CloneCD keeps in the `.sub`, says something
+different about the same sector: **track 02, index 00, 00:00:54**, counting
+down. The data track ends two seconds before the music, and those 150 sectors
+are track 2's pregap. A drive reports a pregap as part of the track after it.
+Tomb Raider seeks there, then polls GetlocP until the track it asked for
+comes up before it presses Play. Told "track 1" for ever, it waited for ever.
+
+**Cause.** Tracks here only knew where index 1 was. Each ran until the next
+track's index 1, so a pregap was simply the end of the track before it:
+- a cue sheet's `INDEX 00` was read and thrown away
+- a `.ccd`'s `INDEX 0=` was never read
+- a CHD's `PREGAP` placed the track but was not remembered
+
+Tomb Raider's `.ccd` lists no `INDEX 0` at all; the pregap is in its `.sub`
+alone. The same disc as a `.cue` from a normal dump would have hung the same
+way, through the discarded `INDEX 00`.
+
+**Fix.**
+- **Tracks know their pregap** (`Disc::Track::pregap`), from `INDEX 00`,
+  `INDEX 0=` or a CHD's `PREGAP`.
+- **GetlocP works it out as a drive reports it:** inside a pregap it is that
+  track, index 0, with the time counting down to index 1.
+- **A `.ccd` with its `.sub` answers from the subchannel itself**
+  (`Disc::ReadSubchannelQ`): each sector's own Q, read 64 sectors at a time.
+  A Q that is not a position (ADR 2 or 3, the catalogue number and ISRC,
+  which turn up now and then) falls back to the worked-out answer. The
+  position reports sent while CD audio plays go through the same code, so
+  they follow.
+- **No guessing.** A disc that records no pregap anywhere gets none; a guess
+  would move the answer for the last two seconds of any data track.
+
+Nothing saved in a state changed: the pregaps are worked out again when the
+disc is opened.
+
+**Verified.**
+- **Tomb Raider from the user's save state.** The game now sees track 2,
+  sends Play, and 84 sectors of music play. It then goes on to Setloc, ReadN
+  and Pause, loading the level from the disc: 791 sectors by frame 900. With
+  no buttons pressed it ran into its attract demo, the Caves in 3D with Lara
+  and a wolf.
+- **The `.sub` checked against the `.ccd` on this disc:**
+  - Track 1's Q ends at LBA 131528.
+  - 131529-131678 are track 02 index 00, counting 00:02:00 down to 00:00:01.
+  - Track 2 index 1 is at 131679, where the `.ccd` says.
+  - The music tracks after it have no gaps between them.
+- **`media_test` 376 checks** (350 before), a new group of 24 plus two CHD
+  checks:
+  - `INDEX 00` in a cue sheet: GetlocP inside the pregap is track 2, index 0,
+    54 sectors to go, with the pregap's first sector at 00:02:00 and the one
+    before it still track 1
+  - `INDEX 0=` in a `.ccd`
+  - a `.ccd` without `INDEX 0` but with a `.sub`, answered from the
+    subchannel, with a non-position Q worked out instead
+  - a CHD's stored and unstored pregaps
+
+  With the old GetlocP put back, 4 of them fail, in both the cue and the
+  `.sub` cases.
+
+## 111. Four timing approximations, each now switchable to a finer model
+
+`psx/io_interface.cpp`, `psx/cpu.cpp`, `psx/dma.cpp`, `psx/gpu.cpp`, `psx/system.cpp`,
+`psx/emuconfig.h`, the Win32 menu
+
+Not a bug a game showed. Gaps.md listed four places where the timing is
+knowingly approximate, and the user asked for each to be done properly while
+keeping the existing behaviour, with a setting to switch each on and off. Each
+is an `EmuConfig` switch and an item under Emulation > Timing Accuracy. All
+four are off by default, so the machine every baseline was measured on is what
+anyone gets without asking. All four are picked up between instructions, so
+they can change under a running game.
+
+**1. Exact Event Timing (`exact_event_timing`).**
+- **The approximation:** devices run in 32-cycle batches, so an interrupt
+  could land up to 31 cycles late. Counter 1 counted an hblank at the end of
+  the line rather than as the beam enters hblank.
+- **What it does:** a batch ends at the next event any device has scheduled:
+  - a counter reaching its target or wrapping, when that interrupts
+  - either edge of hblank, and each scanline's end
+  - a DMA finishing, or the MDEC's next block
+  - a CD response or sector falling due
+  - an SIO transfer, an SPU sample
+  - the rasteriser running out of work
+
+  Each device answers "how soon" (`CyclesToNextEvent`), always erring early.
+  A multi-cycle tick (a load's stall, compiled code) is split at the event,
+  and a register write brings the devices up to date first. Batches never
+  cross a blank's edge, so the counters' gates are taken at the batch's
+  start. The GPU counts an hblank where the beam leaves the display window,
+  where DuckStation counts it too.
+- **Measured:** counter 2's target at cycle 100 is seen in I_STAT on cycle
+  100, where the default sees it at 128. JaCzekanski's `timers` test's
+  frame-delay rows lose their batch jitter: 112,423 / 112,449 alternating by
+  default, a steady 112,436 with this on.
+
+**2. DMA Stops the CPU (`dma_stops_cpu`).**
+- **The approximation:** a transfer's data moves at once, and its time was
+  only booked against the CPU's clock (`AccountCycles`). The CPU ran on
+  through a transfer a console stops it for.
+- **What it does:** `Dma::HoldBus` hands the time to the CPU instead, and
+  `System::StepInstruction` waits it out after the instruction that started
+  the transfer, with the rest of the machine running through it. A wait that
+  lets channel 2 pick up again (the GPU making room) waits that part out too.
+  The eager move becomes something the program cannot observe.
+- **Per-block cost:** a request-mode block on channel 2 also costs 10 cycles
+  for the channel giving up the bus and asking again. That is fitted to
+  JaCzekanski's `dma/chopping`, where every block size from 1 to 128 words
+  fits words x 1.1 + blocks x 10.
+
+  | Block size | Console | With the option | Default |
+  |---|---|---|---|
+  | 1 word | 22,819 | 22,689 | 2,201 |
+  | 4 words | 7,309 | 7,329 | 2,201 |
+  | 16 words | 3,607 | 3,489 | 2,201 |
+
+- **Measured:** a store starting channel 6 on 1,000 words, followed by a read
+  of counter 2, sees the whole transfer's 1,063 cycles go by. By default it
+  sees a handful.
+- **Not timing:** the same test's burst-mode rows start with the start bit and
+  no trigger, which a console runs and `ShouldStart` refused. That is bug 112.
+
+**3. Measured Bus Timing (`measured_bus_timing`).**
+- **The approximation:** psx-spx's formula puts the CD-ROM 1 cycle and the
+  SPU and expansion 2 by 3 or 4 off the console, and an `lwl` or `lwr` is
+  charged a whole word.
+- **What it does:** it uses the rule Test-Suite.md had already found fits the
+  console's table, built out:
+  - A unit on its own costs the read delay + 4.
+  - A unit straight after another costs the read delay + 2, plus COM0 with a
+    recovery period and COM2 with a floating release.
+  - A partial load reads only the halfwords or bytes it needs.
+  - An access within two idle cycles of the last pays the straight-after
+    cost. The test's `lwl`, `addiu`, `lwr` shows this on the console (18 +
+    21 = 39). The next `lwl`, four cycles on, pays the lone cost, and three
+    idle cycles is unmeasured.
+- **Measured:** 51 of 51 access-time cells within a quarter cycle of the
+  console, against 42 by the formula. It stays opt-in because it is fitted to
+  the table it matches.
+
+**4. Write Queue Timing (`write_queue_timing`).**
+- **The approximation:** stores were unmeasured and free.
+- **What it does:** it models psx-spx's description of a four-deep write
+  queue. A store is free until the queue is full and then waits for room,
+  and a load that needs the bus waits for the queue to empty. Each entry
+  holds the bus for what the same access would take to read: RAM 5, the
+  on-die registers 3, the narrow regions from their write delay.
+- **An estimate:** nobody has measured those drain times, so it is labelled
+  as one in the menu. It is interpreter-only, like the instruction cache:
+  compiled code charges its cycles after a block, so every store in one would
+  see the same clock.
+- **Measured:** eight stores to RAM followed by a counter read take 43 cycles
+  with it (four free, four waiting on the bus, and the read waiting for the
+  last), against 11 without.
+
+**Save states.** Nothing saved changed. The batch threshold, the queue and
+the bus's idle time are timing, not machine state. They are rebuilt after a
+load: the queue empty, the bus idle, and a batch on the very next cycle.
+
+**Verified.**
+- **The defaults:** with all four off, the twelve-disc table matches every
+  baseline checksum and sector count. `host_test` passes 33 of 33.
+- **The harnesses**, 2,284 checks, no failures:
+  - `timer_test` gained a group (70 to 79 checks) measuring each model, off
+    and on, with a root counter the way a program would.
+  - `timing_test` runs twice (19 to 38), its second pass with the measured
+    bus against a baseline of its own.
+  - `media_test`'s settings round-trip covers the four keys (376 to 378).
+- **The front end:** a scratch copy of the Release build ran the BIOS with
+  all four switched on mid-run, still at 59.3 fps, emulation 9.3 to 10.2 ms a
+  frame. It saved all four to its `psxemu.ini`.
+- **The twelve discs with each option on, and with all four.** Every game boots,
+  loads and draws a full picture by frame 3000. The frames looked at from the
+  all-four run are right: Ace Combat 3's menu, Ridge Racer's attract race,
+  Vandal Hearts' title.
+  - **Exact event timing** leaves 35 of the 36 checkpoints as they were. Ridge
+    Racer's frame 3000 moves, and Captain Tsubasa reads one more sector.
+  - **The measured bus** leaves every frame as it was. Sector counts move by
+    one or two.
+  - **DMA stopping the CPU** moves frames in most games, as expected, since
+    the CPU now loses the transfers' time.
+  - **The write queue** is the one that shows. Games run slower, the time the
+    CPU now spends on stores, and read fewer sectors by frame 3000: Ace Combat
+    3 2,120 against 2,255, Wild Arms 3,636 against 3,715. Area 51 and Legend
+    of Mana are in a black transition at frame 1000 rather than past it.
+- **Speed**, Wild Arms alone for 3,000 frames, three interleaved runs each:
+  - default 1.19-1.34x
+  - exact event timing 1.22-1.25x, about 5% slower
+  - the other three within the noise
+  - all four 1.27-1.30x (the CPU does less when it waits)
+
+## 112. A burst DMA written without its trigger never started, even with the device asking
+
+`psx/dma.cpp`, `psx/spu.h`
+
+**Symptom.** JaCzekanski's `dma/chopping` times 8 KB sent to the GPU on
+channel 2. Its burst-mode rows reported 33 cycles each, where the console's
+`psx.log` has 2,196 for the unchopped one. Nothing was being sent at all:
+the test's 65 burst uploads never reached VRAM.
+
+**Cause.** The test starts them with CHCR `01000001h`, and with chopping
+`01xx0101h`: start bit, burst mode, from RAM, and no trigger (bit 28).
+`ShouldStart` has required the trigger in burst mode since bug 20. That was
+a reading of psx-spx, and bug 20 itself says it was not what caused the
+corruption it was found beside. A console runs these transfers because the
+GPU is asking for data: GP1(04h) set its DMA direction to CPU-to-GP0, and
+GPUSTAT bit 25 follows that. DuckStation starts a manual-mode channel on its
+device's request too; only the OTC channel needs the trigger.
+
+**Fix.** In burst mode a channel starts on its trigger, as before, or on its
+device's request (`Dma::DeviceRequest`):
+- **Channel 2:** GPUSTAT bit 25, whose meaning GP1(04h) chooses: off, FIFO
+  state, CPU-to-GP0 with room, or GPUREAD ready.
+- **Channel 3:** the CD-ROM's data FIFO holding a sector, which the request
+  register's bit 7 loads.
+- **Channel 4:** the SPU's transfer mode (SPUCNT bits 4-5) set to DMA in the
+  channel's direction - new accessor `Spu::dma_request`.
+- **The MDEC's channels** keep to the trigger. Nothing measured says
+  otherwise, and games use them in request mode.
+
+So a device that is not asking still leaves a trigger-less write idle: a CD
+read with no sector loaded writes nothing, which is the case the trigger rule
+was meant to protect.
+
+**Verified.**
+- **dma/chopping:** the unchopped burst reads 2,201 cycles against the
+  console's 2,196. The test's GP0 traffic doubles, from 132,511 words to
+  265,631, as each burst's 2,048 arrive, and its picture fills in: 305,883
+  lit pixels against 166,621.
+- **`gpu_test`** gained a group (67 to 73 checks):
+  - with GP1(04h)'s direction off, a trigger-less burst sends nothing and
+    leaves the channel idle
+  - set to CPU-to-GP0, the same write's pixels land in VRAM
+  - channel 3 with nothing loaded leaves RAM alone
+
+  With the old rule put back, the two "the pixels arrive" checks fail.
+- **The twelve-disc table:** unchanged, every checksum and sector count. None
+  of those games starts a burst without the trigger.
+- **The harnesses:** all eighteen pass, 2,290 checks.
+
+**Not modelled.** Chopping itself: bit 8 with its DMA and CPU windows, which
+lets the CPU in between slices of a burst. Every chopped row reads the
+unchopped 2,201 here, where the console takes 16,693 and up. No game on the
+table uses it.

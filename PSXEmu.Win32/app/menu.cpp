@@ -147,6 +147,20 @@ namespace psxemu {
                     L"Charge GPU Time for VRAM &Transfers");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandICacheTiming),
                     L"&Instruction Cache Timing (interpreter)");
+        // Four more, each replacing one of Docs/Gaps.md's timing approximations and each
+        // off by default, so the timing every baseline was measured with is what anyone
+        // who never opens this gets. All four are picked up between instructions.
+        HMENU accuracy = CreatePopupMenu();
+        AppendMenuW(accuracy, MF_STRING, static_cast<UINT_PTR>(kCommandExactEventTiming),
+                    L"&Exact Event Timing (interrupts on the cycle, slower)");
+        AppendMenuW(accuracy, MF_STRING, static_cast<UINT_PTR>(kCommandDmaStopsCpu),
+                    L"&DMA Stops the CPU");
+        AppendMenuW(accuracy, MF_STRING, static_cast<UINT_PTR>(kCommandMeasuredBusTiming),
+                    L"&Measured Bus Timing (8/16-bit devices)");
+        AppendMenuW(accuracy, MF_STRING, static_cast<UINT_PTR>(kCommandWriteQueueTiming),
+                    L"&Write Queue Timing (interpreter, estimated)");
+        AppendMenuW(emulation, MF_POPUP, reinterpret_cast<UINT_PTR>(accuracy),
+                    L"Timing &Accuracy");
         AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandPauseInMenus),
                     L"Pause &While in Menus");
@@ -632,6 +646,22 @@ namespace psxemu {
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandICacheTiming),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickTimingAccuracy(HWND window, bool exact_events, bool dma_stops_cpu,
+                            bool measured_bus, bool write_queue) {
+        HMENU bar = MenuBar(window);
+        if (bar == nullptr)
+            return;
+        const struct { MenuCommand command; bool on; } items[] = {
+            { kCommandExactEventTiming, exact_events },
+            { kCommandDmaStopsCpu, dma_stops_cpu },
+            { kCommandMeasuredBusTiming, measured_bus },
+            { kCommandWriteQueueTiming, write_queue },
+        };
+        for (const auto& item : items)
+            CheckMenuItem(bar, static_cast<UINT>(item.command),
+                          MF_BYCOMMAND | (item.on ? MF_CHECKED : MF_UNCHECKED));
     }
 
     void TickPauseInMenus(HWND window, bool on) {

@@ -123,6 +123,9 @@ namespace psxemu {
     void TickGpuThread(HWND window, bool on);
     void TickGpuTransferTiming(HWND window, bool on);
     void TickICacheTiming(HWND window, bool on);
+    // Emulation > Timing Accuracy's four switches.
+    void TickTimingAccuracy(HWND window, bool exact_events, bool dma_stops_cpu,
+                            bool measured_bus, bool write_queue);
 
     // EmuConfig::pause_in_menus and EmuConfig::show_timings.
     void TickPauseInMenus(HWND window, bool on);

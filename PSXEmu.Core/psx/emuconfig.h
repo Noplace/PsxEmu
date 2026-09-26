@@ -215,6 +215,36 @@ struct EmuConfig {
   // from the cache. See Docs/Bugs-Found.md 94.
   bool icache_timing = false;
 
+  // Four finer timing models, each replacing an approximation Docs/Gaps.md lists, and each
+  // off by default so that nothing a game does changes unless it is asked for. Safe to
+  // change while a game runs: the machine picks each up between instructions.
+  //
+  // Devices are brought up to date at the next event rather than in fixed 32-cycle
+  // batches: a counter's target, a DMA finishing, a CD response, the edges of hblank and
+  // the end of each scanline. So an interrupt is raised on the cycle it happens, not up
+  // to 31 later, and counter 1 counts an hblank as the beam enters it rather than at the
+  // end of the line. Costs speed in proportion to how often those events come.
+  bool exact_event_timing = false;
+
+  // The CPU waits while a DMA holds the bus, as it does on a console, instead of running
+  // on through the transfer's time. The busy bit and the interrupt already waited for
+  // that time either way (bug 38); what this adds is that the program cannot use it.
+  bool dma_stops_cpu = false;
+
+  // The 8- and 16-bit buses (the BIOS ROM, the expansion regions, the CD-ROM and the
+  // SPU) timed by a rule fitted to JaCzekanski's access-time table from a real console
+  // rather than by psx-spx's formula, which is 1 to 4 cycles out for the regions with a
+  // recovery or pre-strobe period. An access right behind another pays the recovery
+  // period, and an lwl or lwr reads only the part of the word it needs.
+  bool measured_bus_timing = false;
+
+  // Stores go through the CPU's write queue: free until it is full, and a load waits
+  // for it to empty. Four entries, each draining in the time the same access would take
+  // to read. psx-spx describes the queue but gives no numbers, and nobody here has
+  // measured one, so this is a model rather than a measurement. The interpreter only,
+  // like icache_timing.
+  bool write_queue_timing = false;
+
   // --- BIOS ---------------------------------------------------------------
   // Which image in the front end's BIOS folder to boot, by filename alone -
   // "SCPH1001.BIN", not a path. The folder is the front end's to know

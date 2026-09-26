@@ -132,6 +132,12 @@ namespace psxemu {
         // monitor the window is on.
         kCommandFullscreen,
         kCommandExit,
+        // Emulation > Timing Accuracy: the four finer timing models, each an EmuConfig
+        // switch. After kCommandExit so that no existing id moves.
+        kCommandExactEventTiming,
+        kCommandDmaStopsCpu,
+        kCommandMeasuredBusTiming,
+        kCommandWriteQueueTiming,
     };
 
     // ---------------------------------------------------------------------------------------------

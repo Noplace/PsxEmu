@@ -181,6 +181,10 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("gpu_thread", c.gpu_thread);
   f.SetBool("gpu_transfer_timing", c.gpu_transfer_timing);
   f.SetBool("icache_timing", c.icache_timing);
+  f.SetBool("exact_event_timing", c.exact_event_timing);
+  f.SetBool("dma_stops_cpu", c.dma_stops_cpu);
+  f.SetBool("measured_bus_timing", c.measured_bus_timing);
+  f.SetBool("write_queue_timing", c.write_queue_timing);
   f.SetBool("cdrom_mechanical_timing", c.cdrom_mechanical_timing);
   f.SetBool("skip_bios_intro", c.skip_bios_intro);
   f.SetBool("recompiler", c.recompiler);
@@ -256,6 +260,10 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   c.gpu_thread = f.GetBool("gpu_thread", c.gpu_thread);
   c.gpu_transfer_timing = f.GetBool("gpu_transfer_timing", c.gpu_transfer_timing);
   c.icache_timing = f.GetBool("icache_timing", c.icache_timing);
+  c.exact_event_timing = f.GetBool("exact_event_timing", c.exact_event_timing);
+  c.dma_stops_cpu = f.GetBool("dma_stops_cpu", c.dma_stops_cpu);
+  c.measured_bus_timing = f.GetBool("measured_bus_timing", c.measured_bus_timing);
+  c.write_queue_timing = f.GetBool("write_queue_timing", c.write_queue_timing);
   c.cdrom_mechanical_timing =
       f.GetBool("cdrom_mechanical_timing", c.cdrom_mechanical_timing);
   c.skip_bios_intro = f.GetBool("skip_bios_intro", c.skip_bios_intro);

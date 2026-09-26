@@ -92,7 +92,7 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 67 checks, 0 failures.**
+**Current: 73 checks, 0 failures.**
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
@@ -131,6 +131,13 @@ exactly one of them; two semi-transparent quads side by side blend their shared
 column once; and of two opaque quads side by side, the right-hand one owns the
 shared column.
 
+And DMA channel 2 in burst mode written without its trigger (bug 112), as
+JaCzekanski's `dma/chopping` does it: with GP1(04h)'s direction off nothing is
+sent and the channel is not left busy; set to CPU-to-GP0, the same write sends
+an upload and its pixels land in VRAM. Channel 3 written the same way with no
+sector in the CD-ROM's data FIFO leaves RAM alone. With the old
+trigger-only rule put back, the two "the pixels arrive" checks fail.
+
 ## media_test
 
     media_test [work-directory]
@@ -139,7 +146,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 350 checks, 0 failures.**
+**Current: 378 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -174,6 +181,14 @@ Covers, in the order it runs:
   bytes with no status byte in front (bug 51); Getparam reads back the mode
   and the Setfilter file and channel, with the always-zero byte between them
   (bug 64)
+- **Where the head is inside a pregap** (bug 110): GetlocP 54 sectors before a
+  track's index 1 answers that track, index 0, with the time counting down -
+  00:02:00 on the pregap's first sector, the sector before it still the track
+  before - from a cue sheet's `INDEX 00`, a `.ccd`'s `INDEX 0=`, and a `.ccd`
+  with neither but a `.sub` beside it, answered from the subchannel's own Q;
+  a Q that is not a position (ADR 2) falls back to the worked-out answer. The
+  CHD group checks its stored pregaps are remembered too. Four of these fail
+  with the old GetlocP put back
 - **An ISO9660 filesystem** the test builds itself: the volume descriptor, the
   root directory, and finding a file by every form software writes - bare
   name, either slash, a `cdrom:` prefix, a `;1` suffix, the wrong case - plus
@@ -335,7 +350,11 @@ Two questions, kept apart:
   bus timing fails it until the baseline is updated alongside. That is
   deliberate: the change should be one somebody meant.
 
-**Current: 19 checks, 0 failures; 42 of 51 cells match the console.**
+It runs the test twice: as the machine is by default, and with
+`measured_bus_timing` on (bug 111), each against a baseline of its own.
+
+**Current: 38 checks, 0 failures; 42 of 51 cells match the console by
+default, and 51 of 51 with the measured bus rule.**
 
 `timing_test --icache-timing` runs the same test with the instruction-cache model
 on (bug 94). The baseline checks are for the default machine and fail with it,
@@ -361,23 +380,33 @@ programs, by psx-spx's formula (bug 77). What is left, and why it is left:
 
 - **The formula's own error.** It is exact for the three regions that use no
   recovery or pre-strobe period. For the three that do, it is off by 1 to 4
-  cycles, and this core keeps it rather than fitting it. A simpler rule does
+  cycles, and the default keeps it rather than fitting it. A simpler rule does
   fit all eighteen cells: first access = read delay + 4, then read delay + 2 +
   COM0 + COM2 for each further one. But it comes from one register setting per
-  region and these same measurements, and nothing independent could check it.
+  region and these same measurements, and nothing independent could check it -
+  so it is Emulation > Timing Accuracy > Measured Bus Timing, off by default
+  (bug 111), rather than the default.
 - **The SPU's 32-bit cell** is not a 32-bit load. 1F801DAA is not
-  word-aligned, so the test's read compiles to an `lwl`/`lwr` pair. Each is
-  charged a whole word of the 16-bit bus here: 2 x 41. The console takes 39
-  for the pair, which looks like one halfword access each, as if a partial
-  load reads only the half it needs. It is one data point, so it isn't
-  modelled.
+  word-aligned, so the test's read compiles to `lwl`, `addiu`, `lwr`. By
+  default each is charged a whole word of the 16-bit bus: 2 x 41. The console
+  takes 39 for the pair: one halfword alone (18) and one at the
+  straight-after cost (21), the recovery period the first left still
+  running two cycles later. The measured rule models both - a partial load
+  reads only what it needs, and an access within two idle cycles of the last
+  pays the straight-after cost - and gets 39.00. The next `lwl`, four idle
+  cycles after the `lwr`, pays the lone cost on the console, which is where
+  the "within two" comes from; three idle cycles is unmeasured.
+
+With `measured_bus_timing` the three that differed read: expansion 2 11.00 /
+26.00 / 56.00, the CD-ROM 8.00 / 14.00 / 26.00, the SPU 18.00 / 18.00 / 39.00.
 
 The harness was mutation-tested when written: a one-cycle scratchpad stall
 added to `Cpu::Load` moved that row up by exactly one cycle, and the baseline
 check failed. So a stall change shows one-for-one in the table.
 
 What it does not measure:
-- **Stores.** It times only loads.
+- **Stores.** It times only loads. The write queue model (bug 111) has
+  nothing to be checked against.
 - **Load overlap.** It doesn't measure how a slow load overlaps the
   instructions after it.
 - **Which console.** Its log doesn't say which model it came from, and the ROM
@@ -580,13 +609,13 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 297 | | `gpu_test` | 67 |
+| `cpu_test` | 297 | | `gpu_test` | 73 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
-| `timer_test` | 70 | | `media_test` | 350 |
+| `timer_test` | 79 | | `media_test` | 378 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 97 | | `debug_test` | 174 |
 
-**1,593 checks, 0 failures**, all ten green. Each harness's own section above
+**1,636 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon: every setting in `EmuConfig`

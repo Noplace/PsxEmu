@@ -17,6 +17,10 @@
 //     is the point: a change to bus timing should be deliberate, with the baseline updated
 //     beside it and the match count read again.
 //
+// It runs twice: once as the machine is by default, with psx-spx's formula for the 8- and
+// 16-bit regions, and once with EmuConfig::measured_bus_timing, the rule fitted to this
+// same table - each against a baseline of its own.
+//
 // Each cell is the cost of one load beyond a nop, averaged over 100 of them - the test subtracts a
 // loop of nops from a loop of nops and loads. kTolerance is a quarter of a cycle because that is
 // the console's own scatter: the on-die registers share one decoder and one cost and read 2.92 to
@@ -75,6 +79,31 @@ const Row kBaseline[] = {
   { "CACHECTRL",  0xfffe0130, { 1.01, 1.01, 1.01 } },
 };
 
+// The same with EmuConfig::measured_bus_timing on (io_interface.cpp, MeasuredAccessCycles):
+// recorded 2026-09-26, and every cell within kTolerance of the console. Expansion 2, the
+// CD-ROM and the SPU are what moved; the SPU's word is an lwl and an lwr reading a
+// halfword each, the second paying the recovery period the first left running.
+const Row kMeasuredBaseline[] = {
+  { "RAM",        0x80000000, { 5.01, 5.01, 5.01 } },
+  { "BIOS",       0xbfc00000, { 7.01, 13.01, 25.01 } },
+  { "SCRATCHPAD", 0x1f800000, { 0.99, 0.99, 0.99 } },
+  { "EXPANSION1", 0x1f000000, { 7.01, 13.01, 25.01 } },
+  { "EXPANSION2", 0x1f802000, { 11.00, 26.00, 56.00 } },
+  { "EXPANSION3", 0x1fa00000, { 6.01, 6.01, 10.01 } },
+  { "DMAC_CTRL",  0x1f8010f0, { 3.00, 3.00, 3.00 } },
+  { "JOY_STAT",   0x1f801044, { 3.00, 3.00, 3.00 } },
+  { "SIO_STAT",   0x1f801054, { 3.00, 3.00, 3.00 } },
+  { "RAM_SIZE",   0x1f801060, { 3.00, 3.00, 3.00 } },
+  { "I_STAT",     0x1f801070, { 3.00, 3.00, 3.00 } },
+  { "TIMER0_VAL", 0x1f801100, { 3.00, 3.00, 3.00 } },
+  { "CDROM_STAT", 0x1f801800, { 8.00, 14.00, 26.00 } },
+  { "GPUSTAT",    0x1f801814, { 3.00, 3.00, 3.00 } },
+  { "MDECSTAT",   0x1f801824, { 3.00, 3.00, 3.00 } },
+  { "SPUCNT",     0x1f801daa, { 18.00, 18.00, 39.00 } },
+  { "CACHECTRL",  0xfffe0130, { 1.01, 1.01, 1.01 } },
+};
+static_assert(std::size(kMeasuredBaseline) == std::size(kBaseline), "one row per region");
+
 // One cell. The test prints `cycles / 100` and `cycles % 100` either side of a dot, with no
 // leading zero on the remainder - so "5.3" is 503 cycles over 100 reads, 5.03, not 5.30, and
 // "12.94" is 12.94. Read as a decimal, every one-digit remainder comes out ten times too big.
@@ -130,13 +159,15 @@ bool ReadFile(const char* path, std::string* text) {
 // default machine and are expected to fail with it.
 bool g_icache_timing = false;
 
-bool RunTest(const std::string& bios, std::string* console, int* frames) {
+// `measured` runs it with EmuConfig::measured_bus_timing on.
+bool RunTest(const std::string& bios, bool measured, std::string* console, int* frames) {
   // On the heap: a System is far too big for a thread's stack.
   std::unique_ptr<System> system = std::make_unique<System>();
   if (system->Initialize(bios.c_str()) != 0)
     return false;
   system->set_auto_boot_exe(true, kExe);
   system->config().icache_timing = g_icache_timing;
+  system->config().measured_bus_timing = measured;
   const auto& kernel = system->kernel().stats();
   while (static_cast<int>(system->gpu().frame_count()) < kFrameLimit) {
     system->StepInstructionUnarmed();
@@ -156,30 +187,16 @@ bool RunTest(const std::string& bios, std::string* console, int* frames) {
   return true;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-  std::string bios = "bios/SCPH1001.BIN";
-  for (int i = 1; i < argc; ++i) {
-    if (std::string(argv[i]) == "--icache-timing")
-      g_icache_timing = true;
-    else
-      bios = argv[i];
-  }
-  printf("timing_test - bus timing against a real console (cpu/access-time)\n\n");
-
-  std::string reference_text;
-  if (!ReadFile(kLog, &reference_text)) {
-    printf("no %s - run from the repository root\n", kLog);
-    return 1;
-  }
-  const std::vector<Row> console = ParseTable(reference_text);
-
+// One run of the test, printed beside the console's table and checked cell for cell
+// against `baseline`. Returns how many cells are within kTolerance of the console, or -1
+// if the run did not produce a table to compare.
+int CheckRun(const std::string& bios, const std::vector<Row>& console, bool measured_bus,
+             const Row* baseline) {
   std::string output;
   int frames = 0;
-  if (!RunTest(bios, &output, &frames)) {
+  if (!RunTest(bios, measured_bus, &output, &frames)) {
     printf("could not boot %s\n", bios.c_str());
-    return 1;
+    return -1;
   }
   const std::vector<Row> measured = ParseTable(output);
   ++g_checks;
@@ -192,8 +209,7 @@ int main(int argc, char** argv) {
     ++g_failures;
     printf("  FAIL  expected %zu rows, got %zu from the emulator and %zu from psx.log\n",
            std::size(kBaseline), measured.size(), console.size());
-    printf("\n%d checks, %d failures\n", g_checks, g_failures);
-    return 1;
+    return -1;
   }
 
   printf("finished at frame %d. Cycles per read, 8/16/32-bit; * is within %.2f of the console\n\n",
@@ -216,7 +232,7 @@ int main(int argc, char** argv) {
     printf("  %-11s (%08X)  %-22s  %-22s\n", ours.name.c_str(), ours.address, real, mine);
 
     // Against the recorded baseline: the same region, and the same numbers exactly.
-    const Row& base = kBaseline[r];
+    const Row& base = baseline[r];
     ++g_checks;
     bool same = ours.name == base.name && ours.address == base.address;
     for (int w = 0; w < 3; ++w)
@@ -228,6 +244,39 @@ int main(int argc, char** argv) {
     }
   }
   printf("\n%d of %d cells within %.2f cycles of the console\n", matches, cells, kTolerance);
+  return matches;
+}
+
+}  // namespace
+
+int main(int argc, char** argv) {
+  std::string bios = "bios/SCPH1001.BIN";
+  for (int i = 1; i < argc; ++i) {
+    if (std::string(argv[i]) == "--icache-timing")
+      g_icache_timing = true;
+    else
+      bios = argv[i];
+  }
+  printf("timing_test - bus timing against a real console (cpu/access-time)\n\n");
+
+  std::string reference_text;
+  if (!ReadFile(kLog, &reference_text)) {
+    printf("no %s - run from the repository root\n", kLog);
+    return 1;
+  }
+  const std::vector<Row> console = ParseTable(reference_text);
+
+  printf("== psx-spx's formula, the default ==\n\n");
+  const int formula = CheckRun(bios, console, false, kBaseline);
+  printf("\n== measured_bus_timing ==\n\n");
+  const int fitted = CheckRun(bios, console, true, kMeasuredBaseline);
+  if (formula < 0 || fitted < 0) {
+    printf("\n%d checks, %d failures\n", g_checks, g_failures);
+    return 1;
+  }
+  const int cells = static_cast<int>(std::size(kBaseline)) * 3;
+  printf("\nwithin %.2f cycles of the console: %d of %d cells by the formula, %d by the measured "
+         "rule\n", kTolerance, formula, cells, fitted);
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;
 }

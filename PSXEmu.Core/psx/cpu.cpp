@@ -170,9 +170,111 @@ void Cpu::InvalidateICacheTags() {
 // rather than left to see only the odd interpreted step - a GTE command, an
 // interrupt entry - with tags that describe nothing.
 void Cpu::SyncICacheSetting() {
-  const bool on = system_->config().icache_timing && !system_->recompiler_enabled();
+  const EmuConfig& config = system_->config();
+  const bool on = config.icache_timing && !system_->recompiler_enabled();
   if (on != icache_timing_)
     set_icache_timing(on);
+
+  // The two bus models, latched here for the same reason. The write queue is the
+  // interpreter's alone: compiled code charges its cycles after a block, so every
+  // store in one would see the same clock and the queue would never drain.
+  const bool measured = config.measured_bus_timing;
+  const bool queue = config.write_queue_timing && !system_->recompiler_enabled();
+  if (measured != measured_bus_ || queue != write_queue_) {
+    if ((measured || queue) && !bus_model_)
+      bus_model_ = std::make_unique<BusModel>();
+    if (!queue && bus_model_)
+      bus_model_->count = 0;
+    measured_bus_ = measured;
+    write_queue_ = queue;
+  }
+}
+
+// A load from an 8- or 16-bit region: psx-spx's formula by default, and with
+// measured_bus_timing the rule fitted to a console (IOInterface::
+// MeasuredAccessCycles), which also knows whether the bus was just busy and reads
+// only the halfwords or bytes an lwl or lwr needs.
+uint32_t Cpu::NarrowLoadStall(int region, uint32_t width) {
+  const IOInterface& io = system_->io();
+  const auto bus_region = static_cast<IOInterface::BusRegion>(region);
+  if (!measured_bus_)
+    return io.bus_stall(bus_region, width);
+
+  const IOInterface::BusCost& cost = io.bus_read_[region];
+  uint32_t units;
+  if (partial_bytes_ != 0)
+    units = IOInterface::BusUnits(cost, partial_lane_, partial_bytes_);
+  else
+    units = IOInterface::BusUnits(cost, 0, 1u << width);
+  const uint64_t now = context_->cycles;
+  const uint64_t gap = now > bus_model_->idle_since ? now - bus_model_->idle_since : 0;
+  const uint32_t total = IOInterface::MeasuredAccessCycles(cost, units, gap);
+  const uint32_t stall = total > 1 ? total - 1 : 0;
+  bus_model_->idle_since = now + stall;
+  return stall;
+}
+
+// Where a queued store's drain time comes from: the same access read would take.
+// RAM 5 and the on-die registers 3, as loads measure; the narrow regions from their
+// write delay, by whichever bus rule is in force. Nothing measured says any of this
+// for writes - see EmuConfig::write_queue_timing.
+uint32_t Cpu::StoreOccupancy(uint32_t physical, MemorySize size) {
+  const IOInterface& io = system_->io();
+  int region = -1;
+  if (physical <= 0x007FFFFF)                                    return 5;
+  else if (physical >= 0x1F801800 && physical <= 0x1F80180F)     region = IOInterface::kBusCdrom;
+  else if (physical >= 0x1F801C00 && physical <= 0x1F801FFF)     region = IOInterface::kBusSpu;
+  else if (physical >= 0x1F802000 && physical <= 0x1F802FFF)     region = IOInterface::kBusExp2;
+  else if (physical >= 0x1F801000 && physical <= 0x1F801FFF)     return 3;
+  else if (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF)     region = IOInterface::kBusBios;
+  else if (physical >= 0x1F000000 && physical <= 0x1F7FFFFF)     region = IOInterface::kBusExp1;
+  else if (physical >= 0x1FA00000 && physical <= 0x1FBFFFFF)     region = IOInterface::kBusExp3;
+  else                                                           return 7;
+  const IOInterface::BusCost& cost =
+      measured_bus_ ? io.bus_write_[region] : io.bus_write_formula_[region];
+  const uint32_t units = IOInterface::BusUnits(cost, 0, static_cast<uint32_t>(size));
+  return cost.first + (units - 1) * cost.seq;
+}
+
+// psx-spx: "Store operations are passed to the write-queue, so they can execute
+// within a single clock cycle (unless the write-queue was full, in which case the CPU
+// gets halted until there's room in the queue)." The R3000A's queue is four deep.
+// Each entry holds the bus for its occupancy, one after another.
+void Cpu::QueueStore(uint32_t occupancy) {
+  BusModel& bus = *bus_model_;
+  uint64_t now = context_->cycles;
+  while (bus.count > 0 && bus.done[bus.head] <= now) {
+    bus.head = (bus.head + 1) % BusModel::kDepth;
+    --bus.count;
+  }
+  if (bus.count == BusModel::kDepth) {
+    const uint64_t wait = bus.done[bus.head] - now;
+    for (uint64_t i = 0; i < wait; ++i)
+      Tick();
+    now = context_->cycles;
+    bus.head = (bus.head + 1) % BusModel::kDepth;
+    --bus.count;
+  }
+  const uint64_t start = bus.last_done > now ? bus.last_done : now;
+  bus.last_done = start + occupancy;
+  bus.done[(bus.head + bus.count) % BusModel::kDepth] = bus.last_done;
+  ++bus.count;
+}
+
+// A load needs the bus, and the queued stores have it first: the load waits until
+// the last of them is done.
+void Cpu::DrainWriteQueue() {
+  BusModel& bus = *bus_model_;
+  if (bus.count == 0)
+    return;
+  const uint64_t now = context_->cycles;
+  if (bus.last_done > now) {
+    const uint64_t wait = bus.last_done - now;
+    for (uint64_t i = 0; i < wait; ++i)
+      Tick();
+  }
+  bus.count = 0;
+  bus.head = 0;
 }
 
 void Cpu::set_icache_timing(bool on) {
@@ -251,8 +353,14 @@ int Cpu::Deinitialize() {
 }
 
 void Cpu::Serialise(StateIO& io) {
-  if (!io.saving())
+  if (!io.saving()) {
     InvalidateICacheTags();
+    // Timing state, not machine state: a loaded state starts with the write queue
+    // empty and the bus idle, and a DMA stall cannot be pending between steps.
+    if (bus_model_)
+      *bus_model_ = BusModel();
+    dma_stall_cycles_ = 0;
+  }
   io.Bytes(icache.buffer.u8, 0x1000 * 4);
   io.Plain(icache.addresses);
   io.Plain(pending_load_);
@@ -772,31 +880,39 @@ uint32_t Cpu::Load(MemorySize size, uint32_t address) {
   //     or 16-bit buses whose delays the BIOS programs into 1F801008h-
   //     1F801020h; their costs come from those registers and the width of the
   //     read (IOInterface::UpdateBusTiming). A word from the 8-bit ROM is four
-  //     bus accesses: 25 cycles, where a byte is 7.
+  //     bus accesses: 25 cycles, where a byte is 7. With measured_bus_timing on,
+  //     NarrowLoadStall uses the rule fitted to the console instead.
   //
   // SWL and SWR read the word they merge into, but that is this emulator's
   // way of doing a partial store, not a bus read: it costs nothing, and the
   // store costs what a store does.
   if (current_stage != 1 && !merging_store_) {
-    const IOInterface& io = system_->io();
     const uint32_t width = (size == kM8) ? 0 : (size == kM16) ? 1 : 2;
     uint32_t stall = 0;
+    // With the write queue modelled, a load that needs the bus waits for the
+    // stores ahead of it. The scratchpad and cache control are on the chip.
+    if (write_queue_) [[unlikely]] {
+      const bool on_chip = address >= 0xFFFE0000 ||
+                           (physical >= 0x1F800000 && physical <= 0x1F8003FF);
+      if (!on_chip)
+        DrainWriteQueue();
+    }
     if (address >= 0xFFFE0000)                                    stall = 0;   // cache control
     else if (physical <= 0x007FFFFF)                              stall = 4;   // RAM
     else if (physical >= 0x1F800000 && physical <= 0x1F8003FF)    stall = 0;   // scratchpad
     else if (physical >= 0x1F801800 && physical <= 0x1F80180F)
-      stall = io.bus_stall(IOInterface::kBusCdrom, width);
+      stall = NarrowLoadStall(IOInterface::kBusCdrom, width);
     else if (physical >= 0x1F801C00 && physical <= 0x1F801FFF)
-      stall = io.bus_stall(IOInterface::kBusSpu, width);
+      stall = NarrowLoadStall(IOInterface::kBusSpu, width);
     else if (physical >= 0x1F802000 && physical <= 0x1F802FFF)
-      stall = io.bus_stall(IOInterface::kBusExp2, width);
+      stall = NarrowLoadStall(IOInterface::kBusExp2, width);
     else if (physical >= 0x1F801000 && physical <= 0x1F801FFF)    stall = 2;   // on-die registers
     else if (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF)
-      stall = io.bus_stall(IOInterface::kBusBios, width);
+      stall = NarrowLoadStall(IOInterface::kBusBios, width);
     else if (physical >= 0x1F000000 && physical <= 0x1F7FFFFF)
-      stall = io.bus_stall(IOInterface::kBusExp1, width);
+      stall = NarrowLoadStall(IOInterface::kBusExp1, width);
     else if (physical >= 0x1FA00000 && physical <= 0x1FBFFFFF)
-      stall = io.bus_stall(IOInterface::kBusExp3, width);
+      stall = NarrowLoadStall(IOInterface::kBusExp3, width);
     else                                                          stall = 6;   // nothing there
     for (uint32_t i = 0; i < stall; ++i)
       Tick();
@@ -927,6 +1043,15 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
 
   // Same physical-address decode as Load; see the comment there.
   const uint32_t physical = AddressTranslation(address);
+
+  // The write queue (EmuConfig::write_queue_timing). Everything but the scratchpad
+  // and cache control goes out over the bus.
+  if (write_queue_) [[unlikely]] {
+    const bool on_chip = address >= 0xFFFE0000 ||
+                         (physical >= 0x1F800000 && physical <= 0x1F8003FF);
+    if (!on_chip)
+      QueueStore(StoreOccupancy(physical, size));
+  }
 
   Buffer* buffer = nullptr;
   uint32_t offset = 0;
@@ -1336,7 +1461,12 @@ void Cpu::LH() {
 void Cpu::LWL() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
+  // From the bottom of the word to the addressed byte is all it reads - which only
+  // the measured bus rule charges by (NarrowLoadStall).
+  partial_lane_ = 0;
+  partial_bytes_ = static_cast<uint8_t>((virtual_address & 3) + 1);
   uint32_t mem = Load(kM32,virtual_address & ~0x03);
+  partial_bytes_ = 0;
   Tick();
   switch (virtual_address & 0x3) {
     case 0:
@@ -1394,7 +1524,12 @@ void Cpu::LHU() {
 void Cpu::LWR() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
+  // From the addressed byte to the top of the word is all it reads - which only
+  // the measured bus rule charges by (NarrowLoadStall).
+  partial_lane_ = static_cast<uint8_t>(virtual_address & 3);
+  partial_bytes_ = static_cast<uint8_t>(4 - (virtual_address & 3));
   uint32_t mem = Load(kM32,virtual_address & ~0x03);
+  partial_bytes_ = 0;
   Tick();
   switch (virtual_address & 0x3) {
     case 0:

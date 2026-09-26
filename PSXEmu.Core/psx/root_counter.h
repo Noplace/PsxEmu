@@ -147,6 +147,18 @@ class RootCounter {
 
   bool counting_enabled() const { return counting_enabled_; }
 
+  // Counts until the counter next reaches its target or wraps, whichever is sooner.
+  // A target of zero matches on every count. Never more than the real distance, which
+  // is all exact event timing needs of it (IOInterface::NextEventCycles).
+  uint32_t CountsToNextEvent() const {
+    if (target == 0)
+      return 1;
+    uint32_t counts = kOverflow - counter;
+    if (counter < target && target - counter < counts)
+      counts = target - counter;
+    return counts > 0 ? counts : 1;
+  }
+
   void Serialise(StateIO& io) {
     io.Plain(counter);
     io.Plain(target);

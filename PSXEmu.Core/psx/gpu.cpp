@@ -1752,7 +1752,44 @@ namespace emulation {
             }
         }
 
+        // Where the beam leaves the display window, in GPU clocks into the line - where
+        // hblank begins. A window that never ends within the line ends with it.
+        static uint32_t HblankStart(uint32_t display_end, uint32_t line) {
+            return (display_end == 0 || display_end > line) ? line : display_end;
+        }
+
+        uint32_t Gpu::CyclesToNextEvent() const {
+            // In units of a seventh of a GPU clock, as dot_accumulator_ is; a CPU cycle
+            // is eleven of them.
+            const uint64_t position = dot_accumulator_;
+            uint64_t soonest = static_cast<uint64_t>(kDotsPerScanline) * kGpuClockDenominator;
+            const uint32_t edges[2] = { horizontal_display_start_,
+                                        HblankStart(horizontal_display_end_, kDotsPerScanline) };
+            for (uint32_t edge : edges) {
+                const uint64_t at = static_cast<uint64_t>(edge) * kGpuClockDenominator;
+                if (at > position && at < soonest)
+                    soonest = at;
+            }
+            uint64_t cycles = (soonest - position + kGpuClockNumerator - 1) / kGpuClockNumerator;
+
+            // The rasteriser finishing: GPUSTAT's ready bits, and a DMA waiting on them.
+            const uint64_t owed = static_cast<uint64_t>(prepaid_ticks_) +
+                                  (pending_draw_ticks_ > 0 ? pending_draw_ticks_ : 0);
+            if (pending_draw_ticks_ > 0) {
+                const uint64_t draw = (owed * kGpuClockDenominator + kGpuClockNumerator - 1) /
+                                      kGpuClockNumerator;
+                if (draw < cycles)
+                    cycles = draw;
+            }
+            if (cycles < 1)
+                cycles = 1;
+            return cycles > 0xFFFFFFFFu ? 0xFFFFFFFFu : static_cast<uint32_t>(cycles);
+        }
+
         bool Gpu::Tick(uint32_t cycles) {
+            // Where the beam was, in GPU clocks into the line, for counting hblanks as
+            // it enters them (exact_hblank_).
+            const uint32_t line_start_position = dot_accumulator_ / kGpuClockDenominator;
             dot_accumulator_ += cycles * kGpuClockNumerator;
             const uint32_t dots = dot_accumulator_ / kGpuClockDenominator;
             dot_accumulator_ -= dots * kGpuClockDenominator;
@@ -1778,6 +1815,16 @@ namespace emulation {
             const uint32_t total_lines =
                 status_.video_mode ? kScanlinesPal : kScanlinesNtsc;
 
+            // Exact event timing counts each time the beam crosses into hblank: from
+            // where it was to where it is now, `dots` GPU clocks into the line it was on.
+            if (exact_hblank_) {
+                const uint32_t edge = HblankStart(horizontal_display_end_, kDotsPerScanline);
+                const uint32_t crossed_before = (line_start_position >= edge) ? 1 : 0;
+                const uint32_t crossed_by_now =
+                    (dots >= edge) ? (dots - edge) / kDotsPerScanline + 1 : 0;
+                pending_hblanks_ += crossed_by_now - crossed_before;
+            }
+
             bool frame_completed = false;
             uint32_t remaining = dots;
             while (remaining >= kDotsPerScanline) {
@@ -1786,8 +1833,10 @@ namespace emulation {
                 // Exactly one hblank per scanline. Counting them off completed lines
                 // rather than off the gate below means the count is exact even when a
                 // batch spans several lines; only the instant within the line they are
-                // attributed to is approximate, and no counter can observe that.
-                ++pending_hblanks_;
+                // attributed to is approximate - which exact event timing, above,
+                // replaces with the instant the beam enters hblank.
+                if (!exact_hblank_)
+                    ++pending_hblanks_;
 
                 if (scanline_ >= total_lines) {
                     scanline_ = 0;

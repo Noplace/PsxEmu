@@ -120,6 +120,19 @@ void Dma::UpdateMasterFlag() {
 // window has to be crossed by the machine's *ordinary* per-instruction
 // ticking, the same way a game waiting on it would cross it, or nothing
 // checking in between ever sees it as busy either.
+//
+// With EmuConfig::dma_stops_cpu the CPU is stopped for that time instead, as it is on
+// a console: HoldBus hands the cycles to the CPU, and System::StepInstruction waits
+// them out after the instruction that started the transfer - the rest of the machine
+// running through them, the program not. The busy window above then closes as the
+// wait ends, so software never sees a transfer it could not have seen on hardware.
+void Dma::HoldBus(uint32_t cycles) {
+  if (system_->config().dma_stops_cpu)
+    system_->cpu().AddDmaStall(cycles);
+  else
+    system_->cpu().AccountCycles(cycles);
+}
+
 void Dma::RunChannel(int channel, bool acknowledge) {
   transfer_cycles_ = 0;
   switch (channel) {
@@ -132,7 +145,7 @@ void Dma::RunChannel(int channel, bool acknowledge) {
     default: return;
   }
   if (transfer_cycles_ > 0)
-    system_->cpu().AccountCycles(transfer_cycles_);
+    HoldBus(transfer_cycles_);
   channels[channel].busy_acknowledge = acknowledge;
   // A transfer still waiting on its device has not finished moving its data,
   // and is armed when the device hands over the rest - not on a timer.
@@ -171,7 +184,7 @@ void Dma::Tick(uint32_t cycles) {
     channels[2].busy_cycles = 0;
     Dma2();
     if (transfer_cycles_ > 0)
-      system_->cpu().AccountCycles(transfer_cycles_);
+      HoldBus(transfer_cycles_);
     if (channels[2].busy_cycles != DmaChannel::kAwaitingRequest) {
       channels[2].busy_cycles =
           transfer_cycles_ > 0 ? static_cast<int32_t>(transfer_cycles_) : 1;
@@ -228,22 +241,49 @@ uint32_t Dma::Read(uint32_t address) {
 
 // Whether a channel written with this CHCR should actually start.
 //
-// Two conditions, and channels 2, 3 and 4 used to check neither. The channel
-// has to be enabled in DPCR - software sets a channel up while it is switched
-// off and expects nothing to happen until it is switched on - and in burst
-// mode the transfer only begins once the trigger in bit 28 is set as well as
-// the enable in bit 24. Starting on the enable alone runs a transfer with
-// whatever MADR and BCR happened to be there, which is how a CD read ended up
-// writing a sector over a structure elsewhere in RAM.
-bool ShouldStart(uint32_t chcr, bool channel_enabled) {
+// The channel has to be enabled in DPCR - software sets a channel up while it
+// is switched off and expects nothing to happen until it is switched on - and
+// have its start bit (24) set. In burst mode it then begins on either of two
+// things: the trigger in bit 28, or the device asking for data
+// (`device_request`, Dma::DeviceRequest).
+//
+// Only the trigger used to count (bug 20), which was a guess: that entry says
+// itself it was not what corrupted the structure it was found beside.
+// JaCzekanski's dma/chopping starts GPU transfers with 01000001h - start, burst,
+// no trigger - and a console runs them, 8 KB in 2196 cycles, because the GPU is
+// asking. Here they never started (bug 112). A device that is not asking still
+// leaves such a write idle, so a CD read with no sector loaded or an SPU not in
+// a DMA transfer mode moves nothing, as before.
+bool ShouldStart(uint32_t chcr, bool channel_enabled, bool device_request) {
   if (!channel_enabled)
     return false;
   if ((chcr & 0x01000000) == 0)
     return false;
   const uint32_t sync = (chcr >> 9) & 3;
   if (sync == 0)
-    return (chcr & 0x10000000) != 0;
+    return (chcr & 0x10000000) != 0 || device_request;
   return true;
+}
+
+// A device's DMA request line, for a burst-mode start without the trigger
+// (ShouldStart). Channel 2's is GPUSTAT bit 25, which GP1(04) points at the
+// direction software chose; channel 3's is the CD-ROM's data FIFO holding a
+// sector (the request register's bit 7 loaded it); channel 4's is the SPU's
+// transfer mode set to DMA in the direction the channel is going. The MDEC's
+// channels keep to the trigger: nothing measured says otherwise, and games use
+// them in request mode.
+bool Dma::DeviceRequest(int channel) {
+  const uint32_t chcr = channels[channel].chcr;
+  switch (channel) {
+    case 2:
+      return (system_->gpu_core()->ReadStatus() & 0x02000000) != 0;
+    case 3:
+      return system_->io().cdrom.data_available();
+    case 4:
+      return system_->spu().dma_request((chcr & 1) != 0);
+    default:
+      return false;
+  }
 }
 
 
@@ -262,7 +302,7 @@ void Dma::Write(uint32_t address,uint32_t data) {
         channels[0].busy_cycles = 0;
         mdec_in_wait_ = 0;
       }
-      if (ShouldStart(channels[0].chcr, channels[0].enable)) {
+      if (ShouldStart(channels[0].chcr, channels[0].enable, false)) {
         RunChannel(0);
       }
       break;
@@ -276,7 +316,7 @@ void Dma::Write(uint32_t address,uint32_t data) {
       if ((data & 0x01000000) == 0 &&
           channels[1].busy_cycles == DmaChannel::kAwaitingRequest)
         channels[1].busy_cycles = 0;
-      if (ShouldStart(channels[1].chcr, channels[1].enable)) {
+      if (ShouldStart(channels[1].chcr, channels[1].enable, false)) {
         RunChannel(1);
       }
       break;
@@ -286,7 +326,7 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f8010a8:
       if (!(channels[2].chcr&0x01000000)) {
         channels[2].chcr=data;
-        if (ShouldStart(channels[2].chcr, channels[2].enable)) {
+        if (ShouldStart(channels[2].chcr, channels[2].enable, DeviceRequest(2))) {
             #if defined(DMA_DEBUG) && defined(_DEBUG)
             char str[255];
             sprintf(str,",,dma 2,chcr,0x%08x,bcr,0x%08x,madr,0x%08x\n",channels[2].chcr,channels[2].bcr,channels[2].madr);
@@ -306,7 +346,7 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f8010b4:   channels[3].bcr=data;  break;
      case 0x1f8010b8:
       channels[3].chcr = data;
-      if (ShouldStart(channels[3].chcr, channels[3].enable)) {
+      if (ShouldStart(channels[3].chcr, channels[3].enable, DeviceRequest(3))) {
         RunChannel(3);
       }
       break;
@@ -315,7 +355,7 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f8010c4:   channels[4].bcr=data;  break;
      case 0x1f8010c8:
       channels[4].chcr = data;
-      if (ShouldStart(channels[4].chcr, channels[4].enable)) {
+      if (ShouldStart(channels[4].chcr, channels[4].enable, DeviceRequest(4))) {
         RunChannel(4);
       }
       break;
@@ -507,7 +547,7 @@ void Dma::FeedMdecIn() {
   ch.bcr = (ch.bcr & 0xFFFF) | ((blocks & 0xFFFF) << 16);
 
   const uint32_t bus_cycles = RamCycles(block_words);
-  system_->cpu().AccountCycles(bus_cycles);
+  HoldBus(bus_cycles);
   const uint64_t decoded = mdec.stats().macroblocks - macroblocks_before;
   const int32_t cycles = static_cast<int32_t>(
       bus_cycles + decoded * static_cast<uint64_t>(kMdecCyclesPerMacroblock));
@@ -615,7 +655,7 @@ void Dma::MdecOutputReady() {
   // inside channel 0's transfer, which is accruing its own.
   const uint32_t cycles = RamCycles(moved);
   if (cycles > 0)
-    system_->cpu().AccountCycles(cycles);
+    HoldBus(cycles);
   if (finished)
     ch.busy_cycles = cycles > 0 ? static_cast<int32_t>(cycles) : 1;
 }
@@ -729,6 +769,14 @@ void Dma::Dma2() {
   }
 
   ChargeWords(moved);
+  // Each block of a request-mode transfer costs about ten cycles on top of its words,
+  // for the channel letting go of the bus and asking for it again. JaCzekanski's
+  // dma/chopping moves 8 KB to the GPU in blocks of 1 to 128 words on a console, and
+  // every size fits words x 1.1 + blocks x 10: 22819 cycles for 2048 one-word blocks,
+  // 3607 for 128 of 16, 2471 for 16 of 128. Measured on this channel only, and charged
+  // only with dma_stops_cpu, so the default keeps the timing its baselines have.
+  if (sync == 1 && block > 0 && system_->config().dma_stops_cpu)
+    ChargeCycles((moved / block) * kBlockCycles);
   if (!from_ram)   // only the GPU-to-RAM direction writes anything
     NoteRamWritten(channels[2].madr & 0x1FFFFC, moved, step);
   channels[2].madr = address;

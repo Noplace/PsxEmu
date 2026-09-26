@@ -57,8 +57,15 @@ class Disc {
   struct Track {
     int number;
     TrackType type;
-    uint32_t start_lba;    // absolute, including the lead-in
-    uint32_t length;       // in sectors
+    uint32_t start_lba;    // absolute, including the lead-in - where index 1 is
+    uint32_t length;       // in sectors, from index 1 to the next track's
+    // Index 0: how many sectors just before start_lba belong to this track,
+    // its pregap, which the subchannel counts down towards index 1 - the two
+    // seconds before the first music track on a disc with data first, for one.
+    // Zero where the descriptor names none. The same sectors are the tail of
+    // the previous track's `length`: where they are is the image's business,
+    // which track they belong to is this.
+    uint32_t pregap = 0;
   };
 
   Disc();
@@ -92,6 +99,15 @@ class Disc {
 
   int track_count() const { return static_cast<int>(tracks_.size()); }
   const Track& track(int index) const { return tracks_[index]; }
+
+  // The Q subchannel a real drive would read at `lba`: twelve bytes - control
+  // and ADR, track, index, the time within the track, a zero, the time on the
+  // disc, and a CRC - exactly as the image's subchannel file has them. Only a
+  // CloneCD image with its .sub beside it has one; false for anything else,
+  // and for a sector the file does not cover. `lba` is absolute, as for
+  // ReadSector.
+  bool ReadSubchannelQ(uint32_t lba, uint8_t* q) const;
+  bool has_subchannel() const { return sub_file_ != nullptr; }
 
   // Total length including the lead-in, which is what the controller reports
   // as the end of the disc.
@@ -151,6 +167,14 @@ class Disc {
   uint32_t total_sectors_;
   std::string path_;
   std::string open_error_;
+
+  // A CloneCD .sub: 96 bytes a sector, the eight subchannels one after
+  // another (P, then Q, then R to W), 12 bytes each. Read a block at a time
+  // for the same reason the image is - it is usually on a network share.
+  FILE* sub_file_ = nullptr;
+  uint32_t sub_sectors_ = 0;
+  mutable std::vector<uint8_t> sub_block_;
+  mutable long long sub_block_first_ = -1;   // the first sector the block holds
 
   // Where a CHD keeps each stretch of the disc: `count` sectors from `lba`
   // are frames from `frame` on. A track is one run, and a pregap the CHD

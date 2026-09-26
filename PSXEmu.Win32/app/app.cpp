@@ -277,6 +277,7 @@ namespace psxemu {
         UpdateGpuThreadMenu();
         UpdateGpuTransferTimingMenu();
         UpdateICacheTimingMenu();
+        UpdateTimingAccuracyMenu();
         UpdatePauseInMenusMenu();
         UpdateShowTimingsMenu();
         UpdateBiosConsoleMenu();
@@ -974,6 +975,20 @@ namespace psxemu {
     void App::SetICacheTiming(bool on) {
         config_.icache_timing = on;
         UpdateICacheTimingMenu();
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+    }
+
+    void App::UpdateTimingAccuracyMenu() {
+        TickTimingAccuracy(window_, config_.exact_event_timing, config_.dma_stops_cpu,
+                           config_.measured_bus_timing, config_.write_queue_timing);
+    }
+
+    // The four timing models behind Emulation > Timing Accuracy. The machine picks each
+    // up between instructions, so they can change under a running game.
+    void App::ToggleTimingAccuracy(bool emulation::psx::EmuConfig::*setting) {
+        config_.*setting = !(config_.*setting);
+        UpdateTimingAccuracyMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
     }
@@ -1864,6 +1879,19 @@ namespace psxemu {
 
             case kCommandICacheTiming:
                 SetICacheTiming(!config_.icache_timing);
+                break;
+
+            case kCommandExactEventTiming:
+                ToggleTimingAccuracy(&emulation::psx::EmuConfig::exact_event_timing);
+                break;
+            case kCommandDmaStopsCpu:
+                ToggleTimingAccuracy(&emulation::psx::EmuConfig::dma_stops_cpu);
+                break;
+            case kCommandMeasuredBusTiming:
+                ToggleTimingAccuracy(&emulation::psx::EmuConfig::measured_bus_timing);
+                break;
+            case kCommandWriteQueueTiming:
+                ToggleTimingAccuracy(&emulation::psx::EmuConfig::write_queue_timing);
                 break;
 
             case kCommandPauseInMenus:

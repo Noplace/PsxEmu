@@ -20,8 +20,10 @@
 
 #include <winioctl.h>   // DISK_GEOMETRY, for a physical drive; WIN32_LEAN_AND_MEAN excludes it
 
+#include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <map>
 
 #include <libchdr/cdrom.h>
 #include <libchdr/chd.h>
@@ -249,6 +251,36 @@ void Disc::Close() {
   chd_runs_.clear();
   total_sectors_ = 0;
   path_.clear();
+  if (sub_file_ != nullptr)
+    fclose(sub_file_);
+  sub_file_ = nullptr;
+  sub_sectors_ = 0;
+  sub_block_.clear();
+  sub_block_first_ = -1;
+}
+
+bool Disc::ReadSubchannelQ(uint32_t lba, uint8_t* q) const {
+  if (sub_file_ == nullptr || lba < kLeadInSectors)
+    return false;
+  const uint32_t sector = lba - kLeadInSectors;
+  if (sector >= sub_sectors_)
+    return false;
+  const uint32_t kBlockSectors = 64;
+  const uint32_t kBytes = 96;
+  if (sub_block_first_ < 0 || sector < sub_block_first_ ||
+      sector >= sub_block_first_ + sub_block_.size() / kBytes) {
+    const uint32_t count = std::min(kBlockSectors, sub_sectors_ - sector);
+    sub_block_.resize(static_cast<size_t>(count) * kBytes);
+    if (_fseeki64(sub_file_, static_cast<long long>(sector) * kBytes, SEEK_SET) != 0 ||
+        fread(sub_block_.data(), 1, sub_block_.size(), sub_file_) != sub_block_.size()) {
+      sub_block_first_ = -1;
+      return false;
+    }
+    sub_block_first_ = sector;
+  }
+  // Q is the second of the eight 12-byte channels.
+  memcpy(q, &sub_block_[static_cast<size_t>(sector - sub_block_first_) * kBytes + 12], 12);
+  return true;
 }
 
 // A bare image carries no track layout, and there is nowhere in the file it
@@ -702,6 +734,10 @@ bool Disc::OpenCcd(const char* path, bool* scrambled_out) {
   std::vector<Entry> entries;
   bool in_entry = false;
   bool scrambled = false;
+  // [TRACK n]'s INDEX 0 and INDEX 1, image-relative like PLBA: where one is
+  // given, the difference is the track's pregap. Not every dump writes INDEX 0.
+  int in_track = 0;
+  std::map<int, int64_t> index0, index1;
 
   char line[1024];
   while (fgets(line, sizeof(line), fp) != nullptr) {
@@ -710,9 +746,11 @@ bool Disc::OpenCcd(const char* path, bool* scrambled_out) {
       continue;
 
     if (trimmed[0] == '[') {
-      // Only [Entry n] carries a TOC point. [TRACK n] restates the track's
-      // mode, which Control already says, and [Session n] nothing needed here.
-      in_entry = ToLower(trimmed).compare(0, 6, "[entry") == 0;
+      // [Entry n] carries a TOC point, [TRACK n] the track's indexes (its mode
+      // Control already says), and [Session n] nothing needed here.
+      const std::string header = ToLower(trimmed);
+      in_entry = header.compare(0, 6, "[entry") == 0;
+      in_track = header.compare(0, 6, "[track") == 0 ? atoi(header.c_str() + 6) : 0;
       if (in_entry)
         entries.push_back(Entry());
       continue;
@@ -723,6 +761,14 @@ bool Disc::OpenCcd(const char* path, bool* scrambled_out) {
       continue;
     const std::string key = ToLower(Trim(trimmed.substr(0, equals)));
     const std::string value = Trim(trimmed.substr(equals + 1));
+
+    if (in_track > 0) {
+      if (key == "index 0")
+        index0[in_track] = strtoll(value.c_str(), nullptr, 0);
+      else if (key == "index 1")
+        index1[in_track] = strtoll(value.c_str(), nullptr, 0);
+      continue;
+    }
 
     if (!in_entry) {
       if (key == "datatracksscrambled")
@@ -801,7 +847,32 @@ bool Disc::OpenCcd(const char* path, bool* scrambled_out) {
     }
   }
 
+  for (Track& track : tracks_) {
+    const auto zero = index0.find(track.number);
+    const auto one = index1.find(track.number);
+    if (zero != index0.end() && one != index1.end() && one->second > zero->second)
+      track.pregap = static_cast<uint32_t>(one->second - zero->second);
+  }
+
   FinishTrackLayout();
+
+  // The subchannel, when the dump kept it. It is the one place a pregap is
+  // recorded when the .ccd itself does not list INDEX 0 - which some do not -
+  // and it is what the drive reads its position from, so where it exists the
+  // controller answers from it (Cdrom::GetPosition). Optional: without it the
+  // image mounts as before.
+  const std::string sub = FindSibling(path, "sub");
+  if (!sub.empty()) {
+    sub_file_ = fopen(sub.c_str(), "rb");
+    if (sub_file_ != nullptr) {
+      _fseeki64(sub_file_, 0, SEEK_END);
+      sub_sectors_ = static_cast<uint32_t>(_ftelli64(sub_file_) / 96);
+      if (sub_sectors_ == 0) {
+        fclose(sub_file_);
+        sub_file_ = nullptr;
+      }
+    }
+  }
   return true;
 }
 
@@ -941,6 +1012,8 @@ bool Disc::OpenChd(const char* path) {
     track.type = audio ? kTrackAudio : kTrackData;
     track.start_lba = start;
     track.length = data_frames;
+    // Stored or not, the pregap is disc time that belongs to this track.
+    track.pregap = pregap > 0 ? std::min(static_cast<uint32_t>(pregap), start) : 0;
     tracks_.push_back(track);
     track_sources_.push_back({ 0, frame });
 
@@ -1031,6 +1104,10 @@ bool Disc::OpenCue(const char* path) {
   int pending_track_number = 0;
   TrackType pending_track_type = kTrackData;
   bool have_pending_track = false;
+  // The pending track's INDEX 00, if it had one, in the same file as its
+  // INDEX 01 is about to be: the distance between them is its pregap.
+  int64_t pending_index0 = -1;
+  int pending_index0_source = -1;
 
   char line[1024];
   while (fgets(line, sizeof(line), fp) != nullptr) {
@@ -1068,6 +1145,7 @@ bool Disc::OpenCue(const char* path) {
       pending_track_type = (type.compare(0, 5, "audio") == 0) ? kTrackAudio
                                                              : kTrackData;
       have_pending_track = true;
+      pending_index0 = -1;
       continue;
     }
 
@@ -1077,7 +1155,7 @@ bool Disc::OpenCue(const char* path) {
         continue;
       const int index_number = atoi(arguments.substr(0, index_space).c_str());
       // INDEX 00 is the pregap; the track proper starts at INDEX 01.
-      if (index_number != 1)
+      if (index_number != 0 && index_number != 1)
         continue;
 
       const std::string stamp = Trim(arguments.substr(index_space + 1));
@@ -1085,12 +1163,20 @@ bool Disc::OpenCue(const char* path) {
       if (sscanf(stamp.c_str(), "%u:%u:%u", &minute, &second, &frame) != 3)
         continue;
       const uint32_t file_lba = (minute * 60u + second) * 75u + frame;
+      if (index_number == 0) {
+        pending_index0 = file_lba;
+        pending_index0_source = current_source;
+        continue;
+      }
 
       Track track;
       track.number = pending_track_number;
       track.type = pending_track_type;
       track.start_lba = kLeadInSectors + file_lba;
       track.length = 0;                 // filled in once the next track is known
+      if (pending_index0 >= 0 && pending_index0_source == current_source &&
+          pending_index0 < file_lba)
+        track.pregap = static_cast<uint32_t>(file_lba - pending_index0);
       tracks_.push_back(track);
 
       TrackSource track_source;

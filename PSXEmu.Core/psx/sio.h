@@ -117,6 +117,19 @@ class Sio : public Component {
   int Initialize();
   int Deinitialize();
   void Tick(uint32_t cycles);
+  // Cycles until the acknowledge pulse ends or the transfer's interrupt is due, for
+  // exact event timing. 0xFFFFFFFF when neither is pending.
+  uint32_t CyclesToNextEvent() const {
+    uint32_t soonest = 0xFFFFFFFFu;
+    if (ack_pulse_timer_ > 0)
+      soonest = static_cast<uint32_t>(ack_pulse_timer_);
+    if (interrupt_pending_) {
+      const uint32_t due = interrupt_timer_ > 0 ? static_cast<uint32_t>(interrupt_timer_) : 1;
+      if (due < soonest)
+        soonest = due;
+    }
+    return soonest;
+  }
 
   uint8_t Read08(uint32_t address);
   uint16_t Read16(uint32_t address);

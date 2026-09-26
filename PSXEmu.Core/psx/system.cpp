@@ -249,6 +249,15 @@ bool System::StepImpl() {
     cpu_.ExecuteInstruction();
   }
 
+  // A DMA that held the bus (EmuConfig::dma_stops_cpu): the CPU waits it out here,
+  // between instructions, with the rest of the machine running through it. Waiting
+  // can start more of a transfer - channel 2 picking up as the GPU makes room - and
+  // that waits too, until the channel lets go of the bus.
+  if (cpu_.dma_stall_pending()) [[unlikely]] {
+    while (const uint32_t held = cpu_.TakeDmaStall())
+      cpu_.TickCycles(held);
+  }
+
   if (gte_command_first) {
     cpu_.RaiseException(gte_command_pc, kOtherException, kExceptionCodeInt);
   }

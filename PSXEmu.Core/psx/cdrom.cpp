@@ -517,6 +517,20 @@ void Cdrom::Tick(uint32_t cycles) {
   DeliverPending();
 }
 
+uint32_t Cdrom::CyclesToNextEvent() const {
+  uint32_t soonest = 0xFFFFFFFFu;
+  if (!pending_.empty() && interrupt_flag_ == 0) {
+    const int32_t delay = pending_.front().delay;
+    soonest = delay > 0 ? static_cast<uint32_t>(delay) : 1;
+  }
+  if (reading_ || playing_) {
+    const uint32_t sector = read_timer_ > 0 ? static_cast<uint32_t>(read_timer_) : 1;
+    if (sector < soonest)
+      soonest = sector;
+  }
+  return soonest;
+}
+
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
@@ -530,30 +544,63 @@ void Cdrom::Tick(uint32_t cycles) {
 // the status as the track number, the track number as the index, and a time
 // that is one byte out of step - which is why the BIOS CD player could list
 // the tracks off a disc and then sit at 00:00 for ever when told to play one.
+//
+// A pregap belongs to the track after it: two seconds before the first music
+// track of a disc that starts with data, the drive already says track 2, index
+// 0, with the time counting down to index 1 - not track 1, which is what this
+// said while tracks only knew where index 1 was. Tomb Raider seeks to the
+// minute and second GetTD gave it for its music (a track's start to the
+// second, so up to 74 sectors early), then polls this until it reads the track
+// it asked for; told track 1 for ever, it sat on a black screen.
+//
+// A CloneCD image with its .sub is answered from the subchannel itself, which
+// is where the drive gets all of this: every sector's own track, index and
+// times, as the disc was read.
 void Cdrom::GetPosition(uint8_t* data) {
+  uint8_t q[12];
+  if (disc_.ReadSubchannelQ(read_lba_, q) && (q[0] & 0x0F) == 1) {
+    // ADR 1 is a position. The other kinds (the catalogue number, an ISRC)
+    // turn up now and then instead; for those the position is worked out, as
+    // for an image without a subchannel.
+    data[0] = q[1];   // track
+    data[1] = q[2];   // index
+    data[2] = q[3];   // time within the track
+    data[3] = q[4];
+    data[4] = q[5];
+    data[5] = q[7];   // time on the disc; q[6] is always zero
+    data[6] = q[8];
+    data[7] = q[9];
+    return;
+  }
+
   uint8_t absolute_minute, absolute_second, absolute_frame;
   Disc::LbaToMsf(read_lba_, &absolute_minute, &absolute_second,
                  &absolute_frame);
 
+  // The last track whose pregap has begun. Tracks are in order, so looking
+  // from the end finds it first.
   uint8_t current_track = 1;
   uint8_t index = 1;
   uint32_t track_start = Disc::kLeadInSectors;
-
-  for (int i = 0; i < disc_.track_count(); ++i) {
+  for (int i = disc_.track_count() - 1; i >= 0; --i) {
     const Disc::Track& t = disc_.track(i);
-    if (read_lba_ >= t.start_lba && read_lba_ < t.start_lba + t.length) {
+    if (read_lba_ + t.pregap >= t.start_lba) {
       current_track = static_cast<uint8_t>(t.number);
       track_start = t.start_lba;
       break;
     }
   }
 
+  // In a pregap the time counts down to index 1: two seconds before it reads
+  // 00:02:00, the sector before it 00:00:01.
   uint8_t relative_minute, relative_second, relative_frame;
   if (read_lba_ >= track_start) {
     Disc::LbaToMsf(read_lba_ - track_start, &relative_minute,
                    &relative_second, &relative_frame);
   } else {
-    relative_minute = relative_second = relative_frame = 0;
+    index = 0;
+    Disc::LbaToMsf(track_start - read_lba_, &relative_minute,
+                   &relative_second, &relative_frame);
   }
 
   data[0] = Disc::ToBcd(current_track);

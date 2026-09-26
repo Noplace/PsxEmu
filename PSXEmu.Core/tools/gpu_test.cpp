@@ -783,6 +783,63 @@ void TestVisibleWidthFollowsTheDisplayWindow(System* system) {
 
 }  // namespace
 
+// A burst-mode transfer written with its start bit but not its trigger (bug 112):
+// it runs when the device is asking for data and not otherwise. JaCzekanski's
+// dma/chopping starts its GPU uploads with 01000001h, and a console runs them.
+void TestBurstDmaStartsOnTheDevicesRequest(System* system) {
+  printf("a burst DMA without its trigger waits for the device to ask\n");
+  auto& io = system->io();
+  auto& ram = io.ram_buffer;
+  system->gpu().WriteStatus(0x00000000);
+  RunGpu(system);
+
+  // GP0(A0h): four pixels at (512,256) - the command, where, how big, then two
+  // words of pixels - sent down channel 2 in one burst.
+  const uint32_t packet[] = { 0xA0000000, (256u << 16) | 512u, (1u << 16) | 4u,
+                              0x7C1F03E0, 0x001F7FFF };
+  for (int i = 0; i < 5; ++i)
+    ram.u32[(0x3000 >> 2) + i] = packet[i];
+  io.Write32(0x1F8010F0, 0x00000800);        // DPCR: channel 2 on
+  const size_t at = 256 * 1024 + 512;
+
+  // Direction off: the GPU is not asking, so nothing moves.
+  system->gpu().WriteStatus(0x04000000);
+  io.Write32(0x1F8010A0, 0x3000);
+  io.Write32(0x1F8010A4, 5);
+  io.Write32(0x1F8010A8, 0x01000001);        // start, burst, from RAM - no trigger
+  for (int i = 0; i < 64; ++i)
+    io.Tick(32);
+  RunGpu(system);
+  VramView vram{system};
+  CheckEqual(vram[at], 0, "with the GPU's DMA direction off, nothing is sent");
+  CheckEqual(io.Read32(0x1F8010A8) & 0x01000000, 0, "and the channel is not left busy");
+
+  // CPU to GP0: the GPU asks, and the same write sends the packet.
+  system->gpu().WriteStatus(0x04000002);
+  io.Write32(0x1F8010A0, 0x3000);
+  io.Write32(0x1F8010A4, 5);
+  io.Write32(0x1F8010A8, 0x01000001);
+  for (int i = 0; i < 64; ++i)
+    io.Tick(32);
+  RunGpu(system);
+  CheckEqual(vram[at], 0x03E0, "with it set to CPU-to-GP0, the pixels arrive");
+  CheckEqual(vram[at + 3], 0x001F, "all four of them");
+  CheckEqual(io.Read32(0x1F8010A8) & 0x01000000, 0, "and the channel finishes");
+
+  // Channel 3 the same way, with no sector in the CD-ROM's data FIFO: the drive is
+  // not asking, so nothing is written - the case the trigger rule was added for.
+  ram.u32[0x4000 >> 2] = 0xDEADBEEF;
+  io.Write32(0x1F8010F0, 0x00008000);        // DPCR: channel 3 on
+  io.Write32(0x1F8010B0, 0x4000);
+  io.Write32(0x1F8010B4, 1);
+  io.Write32(0x1F8010B8, 0x01000000);        // start, burst, to RAM - no trigger
+  for (int i = 0; i < 64; ++i)
+    io.Tick(32);
+  CheckEqual(ram.u32[0x4000 >> 2], 0xDEADBEEF,
+             "a CD-ROM with nothing loaded leaves RAM alone");
+  io.Write32(0x1F8010F0, 0x00000000);
+}
+
 int main() {
   System* system = new System();
   system->InitializeWithoutBios();
@@ -803,6 +860,7 @@ int main() {
   TestOpaqueSharedDiagonalIgnoresDrawOrder(system);
   TestSemiTransparentSharedEdgeBlendsOnce(system);
   TestVisibleWidthFollowsTheDisplayWindow(system);
+  TestBurstDmaStartsOnTheDevicesRequest(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

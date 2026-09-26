@@ -814,6 +814,153 @@ void TestCdAudioControl(emulation::psx::System* system,
   remove(cue.c_str());
   remove(bin.c_str());
 }
+// Where GetlocP says the head is when it is in a pregap - the two seconds
+// before the first music track on a disc that starts with data. The drive says
+// that track, index 0, with the time counting down to index 1; this said track
+// 1, and Tomb Raider, which seeks there (GetTD gives a track's start only to
+// the second) and waits to read the track it asked for, sat on a black screen.
+//
+// The pregap comes from INDEX 00 in a cue sheet, INDEX 0 in a .ccd, or - where
+// a CloneCD dump left INDEX 0 out, as Tomb Raider's did - the .sub, which the
+// drive's answer is then read from sector by sector.
+void TestPregapPosition(emulation::psx::System* system, const std::string& directory) {
+  printf("cd position inside a pregap\n");
+
+  // 400 sectors of data, then music. The last 150 of the data's sectors are
+  // the music track's pregap: file sectors 250-399, index 1 at 400.
+  const std::string bin = directory + "media_pregap.bin";
+  const std::string cue = directory + "media_pregap.cue";
+  if (!WriteMixedImage(bin, 400, 300) ||
+      !WriteText(cue,
+                 "FILE \"media_pregap.bin\" BINARY\r\n"
+                 "  TRACK 01 MODE2/2352\r\n"
+                 "    INDEX 01 00:00:00\r\n"
+                 "  TRACK 02 AUDIO\r\n"
+                 "    INDEX 00 00:03:25\r\n"
+                 "    INDEX 01 00:05:25\r\n")) {
+    printf("  FAIL  could not write the pair\n");
+    ++g_failures;
+    return;
+  }
+
+  ControllerHarness cd(system);
+  uint8_t response[16];
+  int length = 0;
+  // Setloc to a file sector (the lead-in added), SeekP, GetlocP.
+  auto position_at = [&](uint32_t file_sector, uint8_t* out) {
+    uint8_t minute, second, frame;
+    Disc::LbaToMsf(Disc::kLeadInSectors + file_sector, &minute, &second, &frame);
+    const uint8_t msf[3] = { minute, second, frame };
+    cd.Command(0x02, msf, 3);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.Command(0x16, nullptr, 0);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.Command(0x11, nullptr, 0);
+    cd.WaitForInterrupt(out, &length, 16);
+    return length == 8;
+  };
+
+  BeginTest("INDEX 00 in a cue sheet");
+  {
+    Disc disc;
+    Check(disc.Open(cue.c_str()), "open");
+    CheckEqual(disc.track(1).pregap, 150, "track 2's pregap is the distance from INDEX 00");
+    CheckEqual(disc.track(1).start_lba, Disc::kLeadInSectors + 400, "and it starts at INDEX 01");
+    CheckEqual(disc.track(0).pregap, 0, "track 1 has none named");
+  }
+  system->EjectDisc();
+  Check(system->LoadDisc(cue.c_str()), "mount it");
+  uint8_t at[16];
+  // 54 sectors before index 1 - where Tomb Raider's seek lands, 00:00:54 on
+  // the subchannel of the real disc.
+  Check(position_at(346, at), "GetlocP answered inside the pregap");
+  Check(at[0] == 0x02 && at[1] == 0x00, "inside the pregap it is track 2, index 0");
+  Check(at[2] == 0x00 && at[3] == 0x00 && at[4] == 0x54,
+        "with the time counting down: 54 sectors to go");
+  Check(at[5] == 0x00 && at[6] == 0x06 && at[7] == 0x46, "and the time on the disc as ever");
+  Check(position_at(250, at) && at[0] == 0x02 && at[1] == 0x00 && at[3] == 0x02 && at[4] == 0x00,
+        "the pregap's first sector is 00:02:00 before index 1");
+  Check(position_at(249, at) && at[0] == 0x01 && at[1] == 0x01,
+        "the sector before it is still track 1");
+  Check(position_at(400, at) && at[0] == 0x02 && at[1] == 0x01 && at[4] == 0x00,
+        "and index 1 is track 2 at 00:00:00");
+  system->EjectDisc();
+
+  // The same disc as CloneCD writes it.
+  const std::string img = directory + "media_pregap.img";
+  const std::string ccd = directory + "media_pregap.ccd";
+  const std::string sub = directory + "media_pregap.sub";
+  std::string ccd_text = MakeCcd(400, 300, false);
+  const size_t index1 = ccd_text.find("INDEX 1=400");
+  if (!WriteMixedImage(img, 400, 300) || index1 == std::string::npos) {
+    Check(false, "could not write the CloneCD set");
+  } else {
+    BeginTest("INDEX 0 in a .ccd");
+    std::string with_index0 = ccd_text;
+    with_index0.insert(index1, "INDEX 0=250\r\n");
+    WriteText(ccd, with_index0.c_str());
+    {
+      Disc disc;
+      Check(disc.Open(ccd.c_str()), "open");
+      CheckEqual(disc.track(1).pregap, 150, "track 2's pregap from INDEX 0");
+      Check(!disc.has_subchannel(), "with no .sub there is no subchannel");
+    }
+
+    BeginTest("a .sub beside a .ccd without INDEX 0");
+    // Tomb Raider's dump: the .ccd names only INDEX 1, and the pregap is on
+    // the subchannel alone. Each sector's Q as a disc has it.
+    WriteText(ccd, ccd_text.c_str());
+    std::vector<uint8_t> channels(700 * 96, 0);
+    for (uint32_t s = 0; s < 700; ++s) {
+      uint8_t* q = &channels[s * 96 + 12];
+      const bool data = s < 250;
+      const uint32_t relative = data ? s : (s < 400 ? 400 - s : s - 400);
+      uint8_t am, as, af, rm, rs, rf;
+      Disc::LbaToMsf(Disc::kLeadInSectors + s, &am, &as, &af);
+      Disc::LbaToMsf(relative, &rm, &rs, &rf);
+      q[0] = data ? 0x41 : 0x01;
+      q[1] = data ? 0x01 : 0x02;
+      q[2] = (data || s >= 400) ? 0x01 : 0x00;
+      q[3] = rm; q[4] = rs; q[5] = rf;
+      q[7] = am; q[8] = as; q[9] = af;
+    }
+    // One sector whose Q is not a position (ADR 2, the catalogue number): the
+    // answer there has to be worked out instead.
+    channels[300 * 96 + 12] = 0x02;
+    FILE* fp = fopen(sub.c_str(), "wb");
+    if (fp != nullptr) {
+      fwrite(channels.data(), 1, channels.size(), fp);
+      fclose(fp);
+    }
+    {
+      Disc disc;
+      Check(disc.Open(ccd.c_str()), "open");
+      CheckEqual(disc.track(1).pregap, 0, "the .ccd names no pregap");
+      Check(disc.has_subchannel(), "but the .sub is found beside it");
+      uint8_t q[12];
+      Check(disc.ReadSubchannelQ(Disc::kLeadInSectors + 346, q) && q[1] == 0x02 && q[2] == 0x00,
+            "and holds the sector's own Q");
+      Check(!disc.ReadSubchannelQ(Disc::kLeadInSectors + 700, q),
+            "and nothing past its end");
+    }
+    Check(system->LoadDisc(ccd.c_str()), "mount the CloneCD set");
+    Check(position_at(346, at) && at[0] == 0x02 && at[1] == 0x00 && at[4] == 0x54,
+          "GetlocP answers from the subchannel: track 2, index 0, 54 to go");
+    Check(position_at(300, at) && at[0] == 0x01 && at[1] == 0x01,
+          "a Q that is not a position is worked out from the layout instead");
+    Check(position_at(420, at) && at[0] == 0x02 && at[1] == 0x01 && at[4] == 0x20,
+          "and inside the track it is the track's own time");
+    system->EjectDisc();
+  }
+
+  remove(cue.c_str());
+  remove(bin.c_str());
+  remove(ccd.c_str());
+  remove(sub.c_str());
+  RemoveImage(img);
+}
+
 // A DMA channel's busy bit and completion interrupt, driven directly through
 // the registers a game reaches them through - 0x1F80108x for channel 0
 // (MDEC-in, used here only because it needs no device to be in any
@@ -1625,6 +1772,34 @@ void TestSettingsFile(const std::string& directory) {
           "an unknown multitap player type is ignored");
   }
 
+  // The four timing models behind Emulation > Timing Accuracy: all off by default,
+  // so the machine every baseline was measured on is what a settings file without
+  // them gets, and each kept on its own.
+  {
+    EmuConfig config;
+    Check(!config.exact_event_timing && !config.dma_stops_cpu &&
+              !config.measured_bus_timing && !config.write_queue_timing,
+          "every finer timing model is off by default");
+    bool EmuConfig::*const models[] = {
+        &EmuConfig::exact_event_timing, &EmuConfig::dma_stops_cpu,
+        &EmuConfig::measured_bus_timing, &EmuConfig::write_queue_timing,
+    };
+    bool each_alone = true;
+    for (bool EmuConfig::*model : models) {
+      EmuConfig one;
+      one.*model = true;
+      SettingsFile out;
+      emulation::psx::StoreConfig(out, one);
+      EmuConfig loaded;
+      emulation::psx::LoadConfig(out, loaded);
+      int on = 0;
+      for (bool EmuConfig::*other : models)
+        on += (loaded.*other) ? 1 : 0;
+      each_alone = each_alone && (loaded.*model) && on == 1;
+    }
+    Check(each_alone, "each timing model survives the round trip, and only its own");
+  }
+
   // The BIOS console window: closed by default, and remembered open.
   {
     EmuConfig config;
@@ -2005,6 +2180,8 @@ void TestChd(const std::string& directory) {
       CheckEqual(disc.track(0).length, 250, "track 1 runs up to track 2, its pregap included");
       CheckEqual(disc.track(1).length, 125, "and track 2 up to track 3");
       CheckEqual(disc.total_sectors(), 565, "the disc ends after track 3");
+      CheckEqual(disc.track(1).pregap, 150, "track 2 knows its stored pregap is its own");
+      CheckEqual(disc.track(2).pregap, 75, "and track 3 its unstored one");
     }
     uint8_t got[Disc::kRawSectorSize], want[Disc::kRawSectorSize];
     MakeAudioSector(1000, want);
@@ -2104,6 +2281,7 @@ int main(int argc, char** argv) {
   TestControllerWithoutDisc(system);
   TestControllerWithDisc(system, directory);
   TestCdAudioControl(system, directory);
+  TestPregapPosition(system, directory);
   TestCdExtraCommands(system, directory);
   TestDmaBusyBit(system);
   TestDmaChannel2RefusesWhileBusy(system);

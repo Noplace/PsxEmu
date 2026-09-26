@@ -53,9 +53,9 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 297, gte 106, timer 70, sio 203, spu 144, gpu 67, mdec 85, media 350, mc 97, debug 174 - 1,593
-checks, no failures, and 2,228 across all eighteen harnesses (re-run
-2026-09-25, after bugs 78-107 - with the rasteriser threaded, now the default).
+cpu 297, gte 106, timer 79, sio 203, spu 144, gpu 73, mdec 85, media 378, mc 97, debug 174 - 1,636
+checks, no failures, and 2,290 across all eighteen harnesses (re-run
+2026-09-26, after bugs 78-112 - with the rasteriser threaded, now the default).
 `host_test`'s two real-speed checks fail now and then on a busy host, before a
 change as well as after it; see Test-Suite.md. The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
@@ -231,13 +231,22 @@ console, and 42 of 51 cells match.
   control register.
 - **From the memory-control registers:** the BIOS ROM and the expansion,
   CD-ROM and SPU buses, by psx-spx's formula and the width of the read.
-- **Still off:**
+- **Still off by default:**
   - the CD-ROM by one cycle, the SPU and expansion 2 by 3 or 4: that is the
     formula's own error, not fitted over;
   - a partial `lwl`/`lwr` from a narrow bus, charged a whole word where the
-    console seems to read only what it needs.
+    console reads only what it needs.
+
+  Emulation > Timing Accuracy > Measured Bus Timing (bug 111) fixes both, and
+  all 51 cells match with it on. It is off by default because the rule is
+  fitted to the same table it matches - one register setting per region - and
+  nothing independent checks it.
 - **Not modelled:** a slow load overlapping the instructions after it.
-- **Unmeasured:** stores.
+- **Unmeasured:** stores. Write Queue Timing (bug 111) models psx-spx's
+  four-deep write queue: a store is free until the queue is full, and a load
+  waits for it to empty. But each entry's drain time is a guess (a read's
+  cost), nothing here can measure it, and it is interpreter-only. So it is an
+  estimate, off by default.
 
 ### DMA data moves eagerly; only the completion is paced
 
@@ -249,10 +258,24 @@ data itself still moves all at once when the transfer starts - except channel
 whose readiness depends on partial progress mid-transfer is otherwise not
 modelled; channel 0's version of this is the crash path at the top.
 
+By default the CPU also runs on through the transfer's time, where a console
+stops it. Emulation > Timing Accuracy > DMA Stops the CPU (bug 111) makes it wait
+the transfer out before its next instruction, the rest of the machine running
+through it. That leaves the eager data movement unobservable by the program,
+since it cannot run until the transfer is over. Other devices can still see it:
+the SPU gets a whole upload at once rather than word by word. Off by default,
+because it slows every game that moves a lot of data, as a console is slowed.
+
+Chopping - CHCR bit 8, which gives the CPU windows between slices of a burst -
+is not modelled: a chopped transfer takes what an unchopped one does, where
+JaCzekanski's `dma/chopping` measures 16,693 cycles and up on a console. No game
+on the regression table uses it. (A burst started without its trigger used to
+never run at all; it now runs when its device is asking, bug 112.)
+
 ### Root counters - correct, with coarse edges
 
 The three counters count their real clock sources, honour their sync modes and
-match targets as the hardware does (`timer_test`, 70 checks; bugs 27-31).
+match targets as the hardware does (`timer_test`, 79 checks; bugs 27-31).
 Approximate rather than wrong:
 
 - **Interrupts can be up to 32 CPU cycles late.** `IOInterface::Tick` batches
@@ -270,6 +293,21 @@ Approximate rather than wrong:
   had already made untrue.)
 - **Everything above still moves in 32-cycle steps**, which is the real floor:
   `IOInterface::Tick` batches, and a counter read runs the batch early.
+
+Emulation > Timing Accuracy > Exact Event Timing (bug 111) removes the first
+and last of these. A batch ends at the next event any device has scheduled
+instead of every 32 cycles:
+- a counter's target or wrap
+- either edge of hblank and the end of each scanline
+- a DMA or a CD response falling due
+- an SIO transfer, an SPU sample
+- the rasteriser running dry
+
+So an interrupt lands on its cycle, and counter 1 counts an hblank as the beam
+enters it. `timer_test` checks both, off and on. Off by default, because every
+game's timing moves with it and it costs speed in proportion to how often events
+come. Vblank landing on a scanline boundary is not an approximation: that is
+where it starts.
 
 ### The GP0 queue and drawing time - built, with four simplifications left
 
@@ -380,11 +418,15 @@ tens of thousands of commands with none unrecognised. The MVMVA garbage matrix
   Nothing here has read a CHD that chdman made - there is no chdman on this
   machine, so the ones tested were written by `tools/chd_writer.h` to its
   format.
-- **A CloneCD `.sub` is ignored.** `.ccd` is read now - the table of contents,
-  and the `.img` beside it - but the 96 bytes of subchannel per sector that
-  the third file holds are not. Nothing asks for them yet: GetQ synthesises
-  its answer from the track table (see CD-ROM above), and that is where a real
-  subchannel would go if anything ever needed one.
+- **A CloneCD `.sub` answers the drive's position, and nothing else yet** (bug
+  110). Where it sits beside a `.ccd`, GetlocP and the position reports sent
+  while CD audio plays come from each sector's own Q subchannel, which is how
+  Tomb Raider's pregap - listed nowhere else in its dump - came to be seen.
+  Reading data sectors, GetQ (which
+  synthesises its answer from the track table, see CD-ROM above) and
+  copy-protection checks that read the subchannel some other way still do not
+  use it. There is no `.sbi` support either, the patch files that carry a
+  LibCrypt disc's altered subchannel beside a `.cue`.
 - **A scrambled `.ccd` is refused rather than descrambled.**
   `DataTracksScrambled=1` means the image holds the raw channel, not sectors.
   Both the descriptor and its image are refused, deliberately - mounting one
@@ -502,9 +544,10 @@ unproven:
 `graphics_backend` (D3D11, D3D12, OpenGL or Vulkan), `video_filter`, controller type and input
 source per port, the multitap player sources and types, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `gpu_thread`,
-`gpu_transfer_timing`, `icache_timing`, `bios_file`,
+`gpu_transfer_timing`, `icache_timing`, `exact_event_timing`, `dma_stops_cpu`,
+`measured_bus_timing`, `write_queue_timing`, `bios_file`,
 `emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console`,
-`sio1_to_console`, `mouse_motion` and `mouse_dpi` - twenty keys, which is
+`sio1_to_console`, `mouse_motion` and `mouse_dpi` - twenty-four keys, which is
 every field `StoreConfig` writes.
 Beside those, the front end keeps its own keys in the same file: the eight
 most recent discs (`recent_disc_1`..`8`, File > Recent Discs) and the controller

@@ -66,6 +66,11 @@ class GpuCore : public Component {
   virtual void AdvanceDrawing(uint32_t cpu_cycles) = 0;
   virtual bool in_hblank() const = 0;
   virtual bool in_vblank() const = 0;
+  // EmuConfig::exact_event_timing: CPU cycles until the beam next reaches either edge of
+  // hblank or the end of its scanline, or the rasteriser runs out of work - and whether
+  // an hblank is counted as the beam enters it rather than when the line ends.
+  virtual uint32_t CyclesToNextEvent() const = 0;
+  virtual void set_exact_hblank(bool on) = 0;
   // The visible area, resolved out of VRAM into 32-bit XRGB. Size comes back
   // through the out parameters; the pointer stays valid until the next Tick.
   virtual const uint32_t* framebuffer(int& width, int& height) const = 0;

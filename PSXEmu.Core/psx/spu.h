@@ -50,6 +50,20 @@ class Spu : public Component {
 
   // Advances by a number of CPU cycles, generating frames as they fall due.
   void Tick(uint32_t cycles);
+  // Cycles until the next sample is made - which is when a voice can reach the IRQ
+  // address - or 1 when an interrupt is already waiting to be raised. For exact event
+  // timing.
+  // SPUCNT's transfer mode, bits 4-5, set to DMA in this direction: 2 for DMA writes
+  // into sound RAM, 3 for DMA reads out of it. That is the SPU's request line to DMA
+  // channel 4 (Dma::DeviceRequest).
+  bool dma_request(bool to_spu) const {
+    return ((control_ >> 4) & 3) == (to_spu ? 2u : 3u);
+  }
+  uint32_t CyclesToNextEvent() const {
+    if (irq_pending_)
+      return 1;
+    return kCyclesPerSample - sample_counter_;
+  }
 
   uint16_t Read(uint32_t address);
   void Write(uint32_t address, uint16_t data);

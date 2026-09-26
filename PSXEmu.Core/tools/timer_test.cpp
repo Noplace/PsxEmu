@@ -359,6 +359,157 @@ void TestThroughTheRegisters(System* system) {
     printf("        (got %u, expected about %u)\n", dots, expect);
 }
 
+// ---------------------------------------------------------------------------
+// The finer timing models behind Emulation > Timing Accuracy, each measured with a
+// root counter the way a program would see it - and each checked off as well as
+// on, so the default keeps the timing every baseline was recorded with.
+
+// Puts a program at 80010000h and runs `steps` instructions of it.
+void RunProgram(System* system, const uint32_t* words, int count, int steps) {
+  for (int i = 0; i < count; ++i)
+    system->io().ram_buffer.u32[(0x10000 >> 2) + i] = words[i];
+  system->cpu().context()->pc = 0x80010000;
+  for (int i = 0; i < steps; ++i)
+    system->StepInstructionUnarmed();
+}
+
+// Cycles until counter 2's target interrupt is seen in I_STAT, reading I_STAT the
+// way an interrupt reaches the CPU - without the flush a counter read makes.
+uint32_t CyclesToCounterInterrupt(System* system, uint32_t target) {
+  TimerHarness t(system);
+  auto& io = system->io();
+  io.Write32(0x1F801070, 0);                          // acknowledge everything
+  t.WriteTarget(2, target);
+  t.WriteMode(2, kIrqAtTarget | kIrqRepeat);         // system clock, from zero
+  for (uint32_t cycle = 1; cycle <= target + 64; ++cycle) {
+    io.Tick(1);
+    if (io.io.interrupt_stat & 0x40)
+      return cycle;
+  }
+  return 0;
+}
+
+// Where the beam is when counter 1, counting hblanks, next counts one: GPU clocks
+// into the scanline.
+uint32_t BeamAtHblankCount(System* system) {
+  TimerHarness t(system);
+  t.WriteMode(1, 1 << 8);                            // clock source: hblank
+  const uint32_t before = t.ReadCounter(1);
+  for (int cycle = 0; cycle < 5000; ++cycle) {
+    system->io().Tick(1);
+    if (t.ReadCounter(1) != before)                  // a read brings it up to date
+      return system->gpu().dot_in_scanline();
+  }
+  return 0xFFFFFFFF;
+}
+
+void TestTimingModels() {
+  Group("the finer timing models, off and on");
+
+  // Exact event timing: an interrupt on the cycle it is due, not at the end of the
+  // batch it falls in.
+  {
+    System* system = new System();
+    system->InitializeWithoutBios();
+    CheckEqual(CyclesToCounterInterrupt(system, 100), 128,
+               "batched, a target at cycle 100 is seen at the end of its batch");
+    system->config().exact_event_timing = true;
+    system->io().Tick(1);           // a batch with something in it picks the setting up
+    system->io().RunPending();
+    CheckEqual(CyclesToCounterInterrupt(system, 100), 100,
+               "with exact event timing, on cycle 100 itself");
+    CheckEqual(CyclesToCounterInterrupt(system, 7), 7, "and on cycle 7");
+
+    // Counter 1's hblanks: counted as the beam enters hblank, not as the line ends.
+    const uint32_t edge = system->gpu().horizontal_display_end();
+    const uint32_t exact_at = BeamAtHblankCount(system);
+    Check(exact_at >= edge && exact_at < edge + 4,
+          "with exact event timing an hblank counts as the beam leaves the display");
+    if (!(exact_at >= edge && exact_at < edge + 4))
+      printf("        (beam at %u, display ends at %u)\n", exact_at, edge);
+    system->config().exact_event_timing = false;
+    system->io().Tick(1);
+    system->io().RunPending();
+    const uint32_t batched_at = BeamAtHblankCount(system);
+    Check(batched_at < 4, "batched, it counts as the line ends");
+    if (batched_at >= 4)
+      printf("        (beam at %u)\n", batched_at);
+    delete system;
+  }
+
+  // The CPU and a DMA: a store starts channel 6 clearing 1000 words, and the next
+  // instruction reads counter 2. On a console the CPU waits while the channel has the
+  // bus, so the read comes after the whole transfer; by default here it does not.
+  const uint32_t kDmaProgram[] = {
+      0x3C081F80,   // lui  t0, 1F80h
+      0x3C091100,   // lui  t1, 1100h
+      0x35290002,   // ori  t1, t1, 2          ; start + trigger
+      0x8D0B1120,   // lw   t3, 1120h(t0)      ; counter 2, before
+      0xAD0910E8,   // sw   t1, 10E8h(t0)      ; channel 6 CHCR
+      0x8D0A1120,   // lw   t2, 1120h(t0)      ; counter 2, after
+      0x00000000,
+      0x00000000,
+  };
+  auto dma_cycles = [&](bool stops) {
+    System* system = new System();
+    system->InitializeWithoutBios();
+    system->config().dma_stops_cpu = stops;
+    auto& io = system->io();
+    io.Write32(0x1F8010F0, 0x08000000);               // channel 6 on
+    io.Write32(0x1F8010E0, 0x00001000 + 999 * 4);     // MADR: the top of the table
+    io.Write32(0x1F8010E4, 1000);                     // BCR: 1000 words
+    TimerHarness(system).WriteMode(2, 0);
+    RunProgram(system, kDmaProgram, 8, 8);
+    const auto& regs = system->cpu().context()->gp.reg;
+    const uint32_t elapsed = (regs[10] - regs[11]) & 0xFFFF;
+    const bool cleared = io.ram_buffer.u32[0x1000 >> 2] == 0x00FFFFFF;
+    delete system;
+    return cleared ? elapsed : 0;
+  };
+  const uint32_t runs_on = dma_cycles(false);
+  const uint32_t waits = dma_cycles(true);
+  const uint32_t bus_time = 1000 + (1000 + 15) / 16;   // Dma::RamCycles
+  Check(runs_on > 0 && runs_on < 20, "by default the CPU runs on through a DMA");
+  Check(waits >= bus_time && waits < bus_time + 20,
+        "with DMA stopping the CPU, the next instruction waits the transfer out");
+  if (!(waits >= bus_time && waits < bus_time + 20))
+    printf("        (%u cycles, the transfer takes %u; %u by default)\n", waits, bus_time,
+           runs_on);
+
+  // The write queue: eight stores to RAM back to back, then a read of the counter.
+  // Four go in free; the rest wait for room, and the read waits for the queue to
+  // empty - each store holding the bus as long as a RAM read, 5 cycles.
+  const uint32_t kStoreProgram[] = {
+      0x3C081F80,   // lui  t0, 1F80h
+      0x3C098002,   // lui  t1, 8002h
+      0x8D0B1120,   // lw   t3, 1120h(t0)
+      0xAD200000, 0xAD200004, 0xAD200008, 0xAD20000C,   // sw zero, 0..12(t1)
+      0xAD200010, 0xAD200014, 0xAD200018, 0xAD20001C,   // sw zero, 16..28(t1)
+      0x8D0A1120,   // lw   t2, 1120h(t0)
+      0x00000000,
+      0x00000000,
+  };
+  auto store_cycles = [&](bool queue) {
+    System* system = new System();
+    system->InitializeWithoutBios();
+    system->config().write_queue_timing = queue;
+    TimerHarness(system).WriteMode(2, 0);
+    system->io().RunPending();
+    RunProgram(system, kStoreProgram, 14, 14);
+    const auto& regs = system->cpu().context()->gp.reg;
+    const uint32_t elapsed = (regs[10] - regs[11]) & 0xFFFF;
+    delete system;
+    return elapsed;
+  };
+  const uint32_t free_stores = store_cycles(false);
+  const uint32_t queued = store_cycles(true);
+  Check(free_stores >= 8 && free_stores < 16, "by default a store costs its one cycle");
+  Check(queued >= 40 && queued < 50,
+        "with the write queue, stores are paced by the bus and a load waits for them");
+  if (!(queued >= 40 && queued < 50))
+    printf("        (%u cycles; %u without the queue)\n", queued, free_stores);
+}
+
 }  // namespace
 
 int main() {
@@ -376,6 +527,8 @@ int main() {
   system->InitializeWithoutBios();
   TestThroughTheRegisters(system);
   delete system;
+
+  TestTimingModels();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

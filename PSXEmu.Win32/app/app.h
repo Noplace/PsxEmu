@@ -153,6 +153,8 @@ namespace psxemu {
         void PressAnalogButton(int port);
         void SetGpuTransferTiming(bool on);
         void SetICacheTiming(bool on);
+        // Emulation > Timing Accuracy: flips one of the four EmuConfig timing models.
+        void ToggleTimingAccuracy(bool emulation::psx::EmuConfig::*setting);
         void SetAudioBackend(const std::string& key);
         void SetPauseInMenus(bool on);
         void SetShowTimings(bool on);
@@ -222,6 +224,7 @@ namespace psxemu {
         void UpdateGpuThreadMenu();
         void UpdateGpuTransferTimingMenu();
         void UpdateICacheTimingMenu();
+        void UpdateTimingAccuracyMenu();
         void UpdateAudioBackendMenu();
         void UpdatePauseInMenusMenu();
         void UpdateShowTimingsMenu();

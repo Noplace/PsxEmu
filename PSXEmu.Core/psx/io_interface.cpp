@@ -141,7 +141,81 @@ void IOInterface::UpdateBusTiming() {
     };
     for (int width = 0; width < 3; ++width)
       bus_stall_[region][width] = static_cast<uint32_t>(totals[width] > 1 ? totals[width] - 1 : 0);
+
+    // The measured rule (EmuConfig::measured_bus_timing), for reads and for writes: the
+    // same shape with the write delay in bits 0-3 in place of the read delay.
+    const int write_delay = static_cast<int>(delay & 0xF);
+    const int penalty = ((delay & 0x100) ? com0 : 0) + ((delay & 0x400) ? com2 : 0);
+    const int floor_first = (delay & 0x800) ? com3 + 6 : 6;
+    const int floor_seq = (delay & 0x800) ? com3 + 2 : 2;
+    const int delays_rw[2] = { read_delay, write_delay };
+    for (int kind = 0; kind < 2; ++kind) {
+      BusCost& cost = kind == 0 ? bus_read_[region] : bus_write_[region];
+      cost.first = static_cast<uint16_t>((std::max)(delays_rw[kind] + 4, floor_first));
+      cost.seq = static_cast<uint16_t>((std::max)(delays_rw[kind] + 2 + penalty, floor_seq));
+      cost.bus16 = bus16;
+    }
+
+    // What the write queue charges a store under the formula: the formula's own
+    // access time with the write delay.
+    {
+      int wfirst = 0, wseq = 0;
+      if (delay & 0x100) { wfirst += com0 - 1; wseq += com0 - 1; }
+      if (delay & 0x400) { wfirst += com2; wseq += com2; }
+      if (wfirst < 6) wfirst += 1;
+      wfirst += write_delay + 2;
+      wseq += write_delay + 2;
+      const int minimum = (delay & 0x800) ? com3 : 0;
+      if (wfirst < minimum + 6) wfirst = minimum + 6;
+      if (wseq < minimum + 2) wseq = minimum + 2;
+      bus_write_formula_[region].first = static_cast<uint16_t>(wfirst);
+      bus_write_formula_[region].seq = static_cast<uint16_t>(wseq);
+      bus_write_formula_[region].bus16 = bus16;
+    }
   }
+}
+
+// The measured rule, fitted to JaCzekanski's cpu/access-time on a real console with the
+// registers the BIOS leaves (timing_test prints both). Five regions with four different
+// register settings come out to two rules:
+//
+//   - A unit on its own - the bus idle for a few cycles first - costs the delay plus 4,
+//     whatever the recovery and floating-release periods are: the BIOS ROM and expansion
+//     1 read 7 (delay 3), expansion 3 reads 6 (2), the CD-ROM 8 (4), the SPU 18 (14) and
+//     expansion 2 11 (7).
+//   - A unit straight after another costs the delay plus 2, plus COM0 if the region has a
+//     recovery period and COM2 if it has a floating release: the ROM's second byte 6,
+//     expansion 3's second halfword 4, the CD-ROM's 6, expansion 2's 15 - the one region
+//     whose later bytes cost more than its first.
+//
+// Separate accesses close together are the third case. The SPU's unaligned word is an
+// lwl, an addiu and an lwr, each load needing one halfword, and reads 38.94: a halfword
+// alone (18) and one after it at the full straight-after cost (21), though the bus was
+// idle for two cycles in between. But the next lwl, four idle cycles after that lwr, pays
+// the lone cost - the cell would read 40 otherwise - and so do the byte loops, five
+// apart. So an access within two idle cycles of the last pays the straight-after cost,
+// and one four or more cycles after it the lone cost. Three is not measured; it is
+// taken as lone.
+//
+// Only that premium is taken from this. Whether a separate access soon after another
+// is ever *cheaper* than a lone one, on a region with no recovery period, nothing here
+// measures, so it is not.
+//
+// `units` is how many bus cycles the access needs, and `gap` how many CPU cycles the bus
+// has been idle before it.
+uint32_t IOInterface::MeasuredAccessCycles(const BusCost& cost, uint32_t units, uint64_t gap) {
+  const uint32_t head = (gap <= 2 && cost.seq > cost.first) ? cost.seq : cost.first;
+  return head + (units > 0 ? units - 1 : 0) * cost.seq;
+}
+
+// How many bus cycles an access of `bytes` bytes starting at byte `lane` of a word needs.
+uint32_t IOInterface::BusUnits(const BusCost& cost, uint32_t lane, uint32_t bytes) {
+  if (bytes == 0)
+    return 1;
+  if (!cost.bus16)
+    return bytes;
+  const uint32_t last = lane + bytes - 1;
+  return (last / 2) - (lane / 2) + 1;
 }
 
 void IOInterface::Serialise(StateIO& state) {
@@ -160,6 +234,9 @@ void IOInterface::Serialise(StateIO& state) {
   state.Plain(sysclk8_accum_);
   // Derived from the registers just restored, like the GPU's framebuffer - not saved.
   UpdateBusTiming();
+  // Likewise: with exact timing the very next cycle runs a batch, which works it out
+  // again from the devices just restored.
+  batch_threshold_ = exact_timing_ ? 1 : kBatchCycles;
 }
 
 void IOInterface::SetInterrupt(InterruptCodes interrupt) {
@@ -176,11 +253,29 @@ void IOInterface::ClearInterrupt(InterruptCodes interrupt) {
 // cost more than the work itself. Batching quantises when things happen, but
 // not what software can see: RunPending() below runs the batch early
 // whenever software reads a counter, so a read is always of a current value.
+//
+// With exact event timing the batch ends where the next event is instead
+// (NextEventCycles), and a tick of several cycles - a load's stall, a DMA's, compiled
+// code's - is split there too, so nothing lands later than the cycle it is due on.
 void IOInterface::Tick(uint32_t cycles) {
   pending_cycles_ += cycles;
-  if (pending_cycles_ < 32)
+  if (pending_cycles_ < batch_threshold_)
     return;
+  if (!exact_timing_) {
+    RunPending();
+    return;
+  }
+  uint32_t excess = pending_cycles_ - batch_threshold_;
+  pending_cycles_ = batch_threshold_;
   RunPending();
+  while (excess > 0) {
+    const uint32_t step = excess < batch_threshold_ ? excess : batch_threshold_;
+    pending_cycles_ = step;
+    excess -= step;
+    if (step < batch_threshold_)
+      break;
+    RunPending();
+  }
 }
 
 // Runs whatever has accumulated, however little that is.
@@ -195,6 +290,20 @@ void IOInterface::RunPending() {
   system_->cpu().SyncICacheSetting();
 
   GpuCore* gpu = system_->gpu_core();
+  const bool exact = system_->config().exact_event_timing;
+  if (exact != exact_timing_) {
+    exact_timing_ = exact;
+    gpu->set_exact_hblank(exact);
+  }
+
+  // With exact timing a batch never crosses the edge of a blank, so the gates are
+  // whatever they were when it began. Batched, a batch can cross one, and the gate at
+  // its end is applied to all of it, below.
+  if (exact_timing_) {
+    rootcounter_[0].SetGate(gpu->in_hblank());
+    rootcounter_[1].SetGate(gpu->in_vblank());
+  }
+
   gpu->Tick(batch);
 
   // The display drives two of the three counters, so ask it rather than
@@ -207,8 +316,10 @@ void IOInterface::RunPending() {
   // Counter 0 pauses on hblank, counter 1 on vblank. The gates have to be set
   // before ticking, or a counter told to pause during the blank it is
   // currently in would count through it anyway.
-  rootcounter_[0].SetGate(gpu->in_hblank());
-  rootcounter_[1].SetGate(gpu->in_vblank());
+  if (!exact_timing_) {
+    rootcounter_[0].SetGate(gpu->in_hblank());
+    rootcounter_[1].SetGate(gpu->in_vblank());
+  }
 
   sysclk8_accum_ += batch;
   const uint32_t sysclk8 = sysclk8_accum_ / 8;
@@ -238,6 +349,52 @@ void IOInterface::RunPending() {
   system_->spu().Tick(batch);
 
   dma.Tick(batch);
+
+  batch_threshold_ = exact_timing_ ? NextEventCycles() : kBatchCycles;
+}
+
+// The soonest any device will do something software can see - raise an interrupt,
+// change a gate, finish a transfer - in CPU cycles from now, capped at a normal batch.
+// Too early only costs a batch that finds nothing to do; too late is the error this
+// exists to remove, so every estimate below errs early.
+uint32_t IOInterface::NextEventCycles() {
+  uint64_t next = kBatchCycles;
+  auto consider = [&next](uint64_t cycles) {
+    if (cycles < next)
+      next = cycles;
+  };
+
+  // The beam: each scanline's end (vblank, the field, counter 1's gate) and both edges
+  // of hblank (counter 0's gate, and counter 1's count), and the rasteriser finishing.
+  consider(system_->gpu_core()->CyclesToNextEvent());
+
+  // A counter reaching its target or wrapping - only when that raises an interrupt,
+  // since reading a counter or its mode brings everything up to date anyway.
+  for (int i = 0; i < 3; ++i) {
+    const RootCounter& counter = rootcounter_[i];
+    if (!counter.counting_enabled() || !(counter.mode.irq_target || counter.mode.irq_0xffff))
+      continue;
+    const uint64_t counts = counter.CountsToNextEvent();
+    const uint32_t source = counter.mode.clcsrc;
+    if (i == 0 && (source & 1)) {
+      // Dot clocks: at least 4 GPU clocks each, so at least 2.5 CPU cycles.
+      consider(counts > 1 ? (counts - 1) * 2 : 1);
+    } else if (i == 1 && (source & 1)) {
+      // Hblanks arrive with the beam, which is already considered above.
+    } else if (i == 2 && source >= 2) {
+      const uint64_t cycles = counts * 8;
+      consider(cycles > sysclk8_accum_ ? cycles - sysclk8_accum_ : 1);
+    } else {
+      consider(counts);
+    }
+  }
+
+  consider(dma.CyclesToNextEvent());
+  consider(cdrom.CyclesToNextEvent());
+  consider(sio.CyclesToNextEvent());
+  consider(system_->spu().CyclesToNextEvent());
+
+  return next < 1 ? 1 : static_cast<uint32_t>(next);
 }
 
 // A byte or halfword out of a 32-bit register.
@@ -491,6 +648,7 @@ uint32_t IOInterface::Read32(uint32_t address) {
 *******************************************************************************/
 void IOInterface::Write08(uint32_t address,uint8_t data) {
   ++access_log.writes[(address - 0x1F801000) & 0x1FFF];
+  SettleBeforeWrite();
   if (IsDmaRegister(address)) {
     WriteSubWord(address, data, 1);
     return;
@@ -560,6 +718,7 @@ void IOInterface::Write08(uint32_t address,uint8_t data) {
 *******************************************************************************/
 void IOInterface::Write16(uint32_t address,uint16_t data) {
   ++access_log.writes[(address - 0x1F801000) & 0x1FFF];
+  SettleBeforeWrite();
   if (IsDmaRegister(address)) {
     WriteSubWord(address, data, 2);
     return;
@@ -621,6 +780,7 @@ void IOInterface::Write16(uint32_t address,uint16_t data) {
 *******************************************************************************/
 void IOInterface::Write32(uint32_t address,uint32_t data) {
   ++access_log.writes[(address - 0x1F801000) & 0x1FFF];
+  SettleBeforeWrite();
   #if defined(_DEBUG) && defined(IODEBUG)
     if (system_->csvlog.fp)
       fprintf(system_->csvlog.fp,"0x%08X,0x%08X,IO Write 32,0x%08X,Data,0x%08X\n",system().cpu().index,system().cpu().context()->prev_pc,address,data);

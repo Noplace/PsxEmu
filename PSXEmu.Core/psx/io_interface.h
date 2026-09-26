@@ -110,6 +110,40 @@ class IOInterface : public Component {
   void UpdateBusTiming();
   uint32_t bus_stall_[kBusRegions][3] = {};
 
+  // One region's cost per bus cycle: a unit on its own, and a unit straight after another.
+  // Totals in CPU cycles, the load's own cycle included. See MeasuredAccessCycles.
+  struct BusCost {
+    uint16_t first = 6;
+    uint16_t seq = 2;
+    bool bus16 = false;
+  };
+  // Reads and writes under EmuConfig::measured_bus_timing, and writes under the formula
+  // (the write queue's drain time). Derived from the registers, like bus_stall_.
+  BusCost bus_read_[kBusRegions];
+  BusCost bus_write_[kBusRegions];
+  BusCost bus_write_formula_[kBusRegions];
+  static uint32_t MeasuredAccessCycles(const BusCost& cost, uint32_t units, uint64_t gap);
+  static uint32_t BusUnits(const BusCost& cost, uint32_t lane, uint32_t bytes);
+
+  // ---- batching (EmuConfig::exact_event_timing) --------------------------------
+  // The batch runs once this many cycles have piled up: 32 normally, and with exact
+  // event timing the cycles to the next thing any device will do, whichever is sooner.
+  // Derived, not saved - recomputed after every batch and after a state is loaded.
+  static const uint32_t kBatchCycles = 32;
+  uint32_t batch_threshold_ = kBatchCycles;
+  bool exact_timing_ = false;
+  // Cycles until the soonest event any device has scheduled, capped at kBatchCycles.
+  uint32_t NextEventCycles();
+  // With exact timing, a register write can schedule something sooner than the batch
+  // was going to end - a DMA, a CD command, a counter's new target - so the devices are
+  // brought up to date first and the next cycle works the batch out again.
+  void SettleBeforeWrite() {
+    if (exact_timing_) [[unlikely]] {
+      RunPending();
+      batch_threshold_ = 1;
+    }
+  }
+
   // bios_buffer is deliberately not here - the BIOS is a user-supplied dump,
   // not machine state; a state file carries a hash of it instead and refuses
   // to load against a different one. access_log is diagnostics.

@@ -148,6 +148,8 @@ class Gpu : public GpuCore {
   // root counters need these to stay in step with the display.
   uint32_t scanline() const { return scanline_; }
   bool in_vblank() const { return scanline_ >= vertical_display_end_; }
+  uint32_t CyclesToNextEvent() const;
+  void set_exact_hblank(bool on) { exact_hblank_ = on; }
   // Where in VRAM the display window sits, and whether it is switched on at
   // all. A game that draws into VRAM and shows black is usually one of these.
   uint32_t display_vram_x() const { return display_vram_x_; }
@@ -333,6 +335,10 @@ class Gpu : public GpuCore {
   uint32_t dot_clock_accum_;
   uint32_t pending_dot_clocks_;
   uint32_t pending_hblanks_;
+  // EmuConfig::exact_event_timing: an hblank is counted as the beam leaves the display
+  // window, where counter 1 sees it on a console, rather than at the end of the line.
+  // Set by IOInterface; not saved, since the setting is not part of a state.
+  bool exact_hblank_ = false;
   uint32_t scanline_;
   bool was_in_vblank_;
   uint64_t frame_count_;
