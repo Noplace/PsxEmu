@@ -18,9 +18,11 @@
 *****************************************************************************************************************/
 #include "graphics/d3d11_presenter.h"
 
+#include "shaders/overlay_shaders.h"
 #include "tools/letterbox.h"
 
 #include <d3dcompiler.h>
+#include <algorithm>
 #include <cstring>
 
 #pragma comment(lib, "d3d11.lib")
@@ -179,7 +181,169 @@ namespace psxemu {
         sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         device_->CreateSamplerState(&sampler, &sampler_);
 
+        // The overlay is an extra: if it cannot be made, the picture still is.
+        if (!CreateOverlayPipeline())
+            ReleaseOverlay();
+
         return vertex_shader_ != nullptr && pixel_shader_ != nullptr;
+    }
+
+    bool D3D11Presenter::CreateOverlayPipeline() {
+        ID3DBlob* vertex_blob = nullptr;
+        ID3DBlob* pixel_blob = nullptr;
+        if (FAILED(D3DCompile(kOverlayHlsl, sizeof(kOverlayHlsl) - 1, nullptr, nullptr, nullptr,
+                              "VsMain", "vs_4_0", 0, 0, &vertex_blob, nullptr)))
+            return false;
+        if (FAILED(D3DCompile(kOverlayHlsl, sizeof(kOverlayHlsl) - 1, nullptr, nullptr, nullptr,
+                              "PsMain", "ps_4_0", 0, 0, &pixel_blob, nullptr))) {
+            Release(&vertex_blob);
+            return false;
+        }
+        const D3D11_INPUT_ELEMENT_DESC layout[] = {
+            { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        };
+        bool ok = SUCCEEDED(device_->CreateVertexShader(vertex_blob->GetBufferPointer(),
+                                                        vertex_blob->GetBufferSize(), nullptr,
+                                                        &overlay_vs_)) &&
+                  SUCCEEDED(device_->CreatePixelShader(pixel_blob->GetBufferPointer(),
+                                                       pixel_blob->GetBufferSize(), nullptr,
+                                                       &overlay_ps_)) &&
+                  SUCCEEDED(device_->CreateInputLayout(layout, 3, vertex_blob->GetBufferPointer(),
+                                                       vertex_blob->GetBufferSize(),
+                                                       &overlay_layout_));
+        Release(&vertex_blob);
+        Release(&pixel_blob);
+        if (!ok)
+            return false;
+
+        D3D11_SAMPLER_DESC sampler = {};
+        sampler.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+        sampler.MaxLOD = D3D11_FLOAT32_MAX;
+        D3D11_BLEND_DESC blend = {};
+        blend.RenderTarget[0].BlendEnable = TRUE;
+        blend.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+        blend.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        blend.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+        blend.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+        blend.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+        blend.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        D3D11_RASTERIZER_DESC raster = {};
+        raster.FillMode = D3D11_FILL_SOLID;
+        raster.CullMode = D3D11_CULL_NONE;
+        raster.DepthClipEnable = TRUE;
+        return SUCCEEDED(device_->CreateSamplerState(&sampler, &overlay_sampler_)) &&
+               SUCCEEDED(device_->CreateBlendState(&blend, &overlay_blend_)) &&
+               SUCCEEDED(device_->CreateRasterizerState(&raster, &overlay_raster_));
+    }
+
+    void D3D11Presenter::ReleaseOverlay() {
+        Release(&overlay_raster_);
+        Release(&overlay_blend_);
+        Release(&overlay_sampler_);
+        Release(&overlay_atlas_view_);
+        Release(&overlay_atlas_);
+        Release(&overlay_ib_);
+        Release(&overlay_vb_);
+        Release(&overlay_layout_);
+        Release(&overlay_ps_);
+        Release(&overlay_vs_);
+        overlay_vb_capacity_ = overlay_ib_capacity_ = 0;
+        overlay_atlas_version_ = 0;
+    }
+
+    // Over everything else, across the whole window. The state it changes that the picture's
+    // own draw relies on being unset - blending, the rasteriser - goes back afterwards.
+    void D3D11Presenter::DrawOverlay() {
+        const OverlayDrawData* data = overlay_;
+        overlay_ = nullptr;
+        if (data == nullptr || data->empty() || overlay_vs_ == nullptr || render_target_ == nullptr)
+            return;
+
+        if (overlay_atlas_ == nullptr || overlay_atlas_version_ != data->atlas_version) {
+            Release(&overlay_atlas_view_);
+            Release(&overlay_atlas_);
+            D3D11_TEXTURE2D_DESC description = {};
+            description.Width = static_cast<UINT>(data->atlas_width);
+            description.Height = static_cast<UINT>(data->atlas_height);
+            description.MipLevels = 1;
+            description.ArraySize = 1;
+            description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            description.SampleDesc.Count = 1;
+            description.Usage = D3D11_USAGE_IMMUTABLE;
+            description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SUBRESOURCE_DATA initial = {};
+            initial.pSysMem = data->atlas;
+            initial.SysMemPitch = static_cast<UINT>(data->atlas_width) * 4;
+            if (FAILED(device_->CreateTexture2D(&description, &initial, &overlay_atlas_)) ||
+                FAILED(device_->CreateShaderResourceView(overlay_atlas_, nullptr,
+                                                         &overlay_atlas_view_)))
+                return;
+            overlay_atlas_version_ = data->atlas_version;
+        }
+
+        // Dynamic buffers, grown to the largest overlay so far.
+        auto ensure = [this](ID3D11Buffer** buffer, size_t* capacity, size_t count, size_t stride,
+                             UINT bind) {
+            if (*buffer != nullptr && *capacity >= count)
+                return true;
+            Release(buffer);
+            size_t grown = (std::max)(count, *capacity * 2);
+            grown = (std::max)(grown, static_cast<size_t>(1024));
+            D3D11_BUFFER_DESC description = {};
+            description.ByteWidth = static_cast<UINT>(grown * stride);
+            description.Usage = D3D11_USAGE_DYNAMIC;
+            description.BindFlags = bind;
+            description.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+            if (FAILED(device_->CreateBuffer(&description, nullptr, buffer)))
+                return false;
+            *capacity = grown;
+            return true;
+        };
+        if (!ensure(&overlay_vb_, &overlay_vb_capacity_, data->vertex_count, sizeof(OverlayVertex),
+                    D3D11_BIND_VERTEX_BUFFER) ||
+            !ensure(&overlay_ib_, &overlay_ib_capacity_, data->index_count, sizeof(uint32_t),
+                    D3D11_BIND_INDEX_BUFFER))
+            return;
+
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (FAILED(context_->Map(overlay_vb_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+            return;
+        WriteOverlayVertices(*data, back_buffer_width_, back_buffer_height_, false,
+                             static_cast<OverlayVertex*>(mapped.pData));
+        context_->Unmap(overlay_vb_, 0);
+        if (FAILED(context_->Map(overlay_ib_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+            return;
+        memcpy(mapped.pData, data->indices, data->index_count * sizeof(uint32_t));
+        context_->Unmap(overlay_ib_, 0);
+
+        D3D11_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>(back_buffer_width_),
+                                    static_cast<float>(back_buffer_height_), 0.0f, 1.0f };
+        context_->RSSetViewports(1, &viewport);
+        context_->RSSetState(overlay_raster_);
+        const float factor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        context_->OMSetBlendState(overlay_blend_, factor, 0xFFFFFFFFu);
+        context_->OMSetRenderTargets(1, &render_target_, nullptr);
+        context_->IASetInputLayout(overlay_layout_);
+        const UINT stride = sizeof(OverlayVertex);
+        const UINT offset = 0;
+        context_->IASetVertexBuffers(0, 1, &overlay_vb_, &stride, &offset);
+        context_->IASetIndexBuffer(overlay_ib_, DXGI_FORMAT_R32_UINT, 0);
+        context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context_->VSSetShader(overlay_vs_, nullptr, 0);
+        context_->PSSetShader(overlay_ps_, nullptr, 0);
+        context_->PSSetShaderResources(0, 1, &overlay_atlas_view_);
+        context_->PSSetSamplers(0, 1, &overlay_sampler_);
+        context_->DrawIndexed(static_cast<UINT>(data->index_count), 0, 0);
+
+        context_->OMSetBlendState(nullptr, factor, 0xFFFFFFFFu);
+        context_->RSSetState(nullptr);
+        ID3D11Buffer* none = nullptr;
+        context_->IASetVertexBuffers(0, 1, &none, &stride, &offset);
+        context_->IASetIndexBuffer(nullptr, DXGI_FORMAT_R32_UINT, 0);
     }
 
     bool D3D11Presenter::CreateRenderTarget() {
@@ -198,6 +362,7 @@ namespace psxemu {
     }
 
     void D3D11Presenter::Shutdown() {
+        ReleaseOverlay();
         Release(&sampler_);
         Release(&pixel_shader_);
         Release(&vertex_shader_);
@@ -322,6 +487,7 @@ namespace psxemu {
     void D3D11Presenter::EndFrame() {
         if (swap_chain_ == nullptr)
             return;
+        DrawOverlay();
         swap_chain_->Present(vsync_ ? 1 : 0, 0);
     }
 

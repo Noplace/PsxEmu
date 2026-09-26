@@ -138,6 +138,10 @@ namespace psxemu {
     // shown in that same console.
     void TickSerialToConsole(HWND window, bool on);
     void TickFullscreen(HWND window, bool on);
+    // Settings > Video > On-Screen Display: which performance panel (0 off, 1 compact, 2 full)
+    // and the two switches.
+    void TickOnScreenDisplay(HWND window, int stats_mode, bool notifications,
+                             bool controllers_always);
 
     // EmuConfig::mouse_motion and EmuConfig::mouse_dpi - how a host mouse's movement becomes a
     // PSX mouse's counts, and what the host mouse's own resolution is.

@@ -16,6 +16,7 @@
 #include "host/request_queue.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -34,6 +35,13 @@ class Presenter {
 
   // The window's client area changed.
   virtual void Resize(int width, int height) = 0;
+
+  // Whether something the presenter draws on top of the picture is moving, and has to be
+  // drawn again even though no new frame has come - a notification fading while the game is
+  // paused, say. While it is, Refresh is called about thirty times a second in the gaps
+  // between frames, with the last frame shown (null before the first).
+  virtual bool WantsRefresh() { return false; }
+  virtual void Refresh(const VideoFrame* last) { (void)last; }
 };
 
 class VideoOutput {
@@ -92,6 +100,8 @@ class VideoOutput {
   std::atomic<bool> stop_{false};
   std::atomic<uint64_t> presents_{0};
   std::atomic<uint64_t> present_ns_{0};
+  // When a frame was last put on screen - the video thread's, for Presenter::Refresh.
+  std::chrono::steady_clock::time_point last_shown_;
 };
 
 }  // namespace host

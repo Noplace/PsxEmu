@@ -27,8 +27,9 @@ namespace psxemu {
     using emulation::host::VideoFrame;
 
     D3DPresenter::D3DPresenter(const RenderWindows& windows,
-                               std::function<void(std::function<void()>)> to_ui)
-        : window_(windows.main), windows_(windows), to_ui_(std::move(to_ui)) {
+                               std::function<void(std::function<void()>)> to_ui,
+                               FrameStatsRing* stats)
+        : window_(windows.main), windows_(windows), to_ui_(std::move(to_ui)), stats_(stats) {
         RECT client = {};
         GetClientRect(window_, &client);
         width_ = client.right - client.left;
@@ -70,6 +71,7 @@ namespace psxemu {
             HWND window = window_;
             to_ui_([window, warning] { ShowWarning(window, warning.c_str()); });
         }
+        overlay_.SetRendererInfo(renderer_, filter_);
         return true;
     }
 
@@ -98,9 +100,39 @@ namespace psxemu {
         if (pixels == nullptr || width <= 0 || height <= 0)
             return;
 
+        Draw(pixels, width, height);
+    }
+
+    void D3DPresenter::Draw(const uint32_t* pixels, int width, int height) {
+        const auto start = Overlay::Clock::now();
+        if (stats_ != nullptr)
+            stats_->Drain([this](const emulation::host::FrameSample& s) { overlay_.AddSample(s); });
+        const OverlayDrawData& overlay = overlay_.Build(width_, height_, width, height, start);
+        engine_->SetOverlay(&overlay);
         engine_->BeginFrame();
         engine_->RenderFramebuffer(pixels, width, height);
         engine_->EndFrame();
+        engine_->SetOverlay(nullptr);
+        overlay_.NotePresent(
+            std::chrono::duration<double, std::milli>(Overlay::Clock::now() - start).count());
+    }
+
+    bool D3DPresenter::WantsRefresh() {
+        return engine_ != nullptr && overlay_.NeedsRedraw(Overlay::Clock::now());
+    }
+
+    // The last frame again, for the overlay moving over it - or, before there has been one, a
+    // black picture to put it over.
+    void D3DPresenter::Refresh(const VideoFrame* last) {
+        if (engine_ == nullptr)
+            return;
+        if (last != nullptr) {
+            Present(*last);
+            return;
+        }
+        const int kWidth = 320, kHeight = 240;
+        blank_.assign(static_cast<size_t>(kWidth) * kHeight, 0xFF000000u);
+        Draw(blank_.data(), kWidth, kHeight);
     }
 
     void D3DPresenter::Resize(int width, int height) {
@@ -135,6 +167,7 @@ namespace psxemu {
             return;
         engine_->SetPixelShader(key);
         filter_ = key;
+        overlay_.SetRendererInfo(renderer_, filter_);
     }
 
 }   // namespace psxemu

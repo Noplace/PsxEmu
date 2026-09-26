@@ -50,6 +50,9 @@ namespace psxemu {
     inline constexpr GLenum kGlFramebuffer = 0x8D40;
     inline constexpr GLenum kGlColorAttachment0 = 0x8CE0;
     inline constexpr GLenum kGlFramebufferComplete = 0x8CD5;
+    inline constexpr GLenum kGlArrayBuffer = 0x8892;
+    inline constexpr GLenum kGlElementArrayBuffer = 0x8893;
+    inline constexpr GLenum kGlStreamDraw = 0x88E0;
 
     // WGL_ARB_create_context and _profile.
     inline constexpr int kWglContextMajorVersion = 0x2091;
@@ -94,7 +97,14 @@ namespace psxemu {
     X(void, BindFramebuffer, (GLenum target, GLuint framebuffer))                                  \
     X(void, FramebufferTexture2D, (GLenum target, GLenum attachment, GLenum textarget,             \
                                    GLuint texture, GLint level))                                   \
-    X(GLenum, CheckFramebufferStatus, (GLenum target))
+    X(GLenum, CheckFramebufferStatus, (GLenum target))                                             \
+    X(void, GenBuffers, (GLsizei n, GLuint* buffers))                                              \
+    X(void, DeleteBuffers, (GLsizei n, const GLuint* buffers))                                     \
+    X(void, BindBuffer, (GLenum target, GLuint buffer))                                            \
+    X(void, BufferData, (GLenum target, ptrdiff_t size, const void* data, GLenum usage))           \
+    X(void, VertexAttribPointer, (GLuint index, GLint size, GLenum type, GLboolean normalized,     \
+                                  GLsizei stride, const void* pointer))                            \
+    X(void, EnableVertexAttribArray, (GLuint index))
 
     struct GlFunctions {
 #define PSXEMU_GL_DECLARE(ret, name, params)                                                       \

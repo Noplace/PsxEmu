@@ -18,8 +18,10 @@
 *****************************************************************************************************************/
 #include "graphics/d3d12_graphics_engine.h"
 
+#include "shaders/overlay_shaders.h"
 #include "tools/letterbox.h"
 
+#include <algorithm>
 #include <cstring>
 
 D3D12GraphicsEngine::D3D12GraphicsEngine() {}
@@ -54,8 +56,212 @@ bool D3D12GraphicsEngine::Initialize(HWND window_handle, int width, int height) 
     // the PSX has no single fixed resolution to seed it with instead.
     if (!CreateFramebufferResources(320, 240))
         return false;
+    // The overlay is an extra: if it cannot be made, the picture still is.
+    if (!CreateOverlayPipeline()) {
+        overlay_pipeline_.Reset();
+        overlay_root_.Reset();
+    }
 
     return true;
+}
+
+bool D3D12GraphicsEngine::CreateOverlayPipeline() {
+    static_assert(sizeof(overlay_vertices_) / sizeof(overlay_vertices_[0]) == kFrameCount,
+                  "one overlay buffer per frame in flight");
+    CD3DX12_DESCRIPTOR_RANGE range;
+    range.Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+    CD3DX12_ROOT_PARAMETER parameter;
+    parameter.InitAsDescriptorTable(1, &range, D3D12_SHADER_VISIBILITY_PIXEL);
+    CD3DX12_STATIC_SAMPLER_DESC sampler;
+    sampler.Init(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+                 D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+    CD3DX12_ROOT_SIGNATURE_DESC description;
+    description.Init(1, &parameter, 1, &sampler,
+                     D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+    ComPtr<ID3DBlob> serialized, errors;
+    if (FAILED(D3D12SerializeRootSignature(&description, D3D_ROOT_SIGNATURE_VERSION_1,
+                                           &serialized, &errors)) ||
+        FAILED(device_->CreateRootSignature(0, serialized->GetBufferPointer(),
+                                            serialized->GetBufferSize(),
+                                            IID_PPV_ARGS(&overlay_root_))))
+        return false;
+
+    ComPtr<ID3DBlob> vs, ps;
+    if (FAILED(D3DCompile(psxemu::kOverlayHlsl, sizeof(psxemu::kOverlayHlsl) - 1, nullptr, nullptr,
+                          nullptr, "VsMain", "vs_5_0", 0, 0, &vs, nullptr)) ||
+        FAILED(D3DCompile(psxemu::kOverlayHlsl, sizeof(psxemu::kOverlayHlsl) - 1, nullptr, nullptr,
+                          nullptr, "PsMain", "ps_5_0", 0, 0, &ps, nullptr)))
+        return false;
+
+    const D3D12_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 0,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 8,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "COLOR", 0, DXGI_FORMAT_R8G8B8A8_UNORM, 0, 16,
+          D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+    };
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+    pso.pRootSignature = overlay_root_.Get();
+    pso.VS = { vs->GetBufferPointer(), vs->GetBufferSize() };
+    pso.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    pso.InputLayout = { layout, 3 };
+    pso.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    D3D12_RENDER_TARGET_BLEND_DESC& blend = pso.BlendState.RenderTarget[0];
+    blend.BlendEnable = TRUE;
+    blend.SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    blend.BlendOp = D3D12_BLEND_OP_ADD;
+    blend.SrcBlendAlpha = D3D12_BLEND_ONE;
+    blend.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    pso.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    pso.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    pso.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.SampleMask = UINT_MAX;
+    pso.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM;
+    pso.SampleDesc.Count = 1;
+    if (FAILED(device_->CreateGraphicsPipelineState(&pso, IID_PPV_ARGS(&overlay_pipeline_))))
+        return false;
+
+    D3D12_DESCRIPTOR_HEAP_DESC heap = {};
+    heap.NumDescriptors = 1;
+    heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+    return SUCCEEDED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&overlay_srv_heap_)));
+}
+
+// Over everything else, into the back buffer, in the command list EndFrame is about to close.
+void D3D12GraphicsEngine::DrawOverlay() {
+    const psxemu::OverlayDrawData* data = overlay_;
+    overlay_ = nullptr;
+    if (data == nullptr || data->empty() || !overlay_pipeline_ || !render_targets_[frame_index_])
+        return;
+
+    if (!overlay_atlas_ || overlay_atlas_version_ != data->atlas_version) {
+        // The old atlas and its upload may still be in a frame the GPU has not finished.
+        FlushGPU();
+        overlay_atlas_.Reset();
+        overlay_atlas_upload_.Reset();
+        D3D12_RESOURCE_DESC texture = {};
+        texture.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        texture.Width = static_cast<UINT64>(data->atlas_width);
+        texture.Height = static_cast<UINT>(data->atlas_height);
+        texture.DepthOrArraySize = 1;
+        texture.MipLevels = 1;
+        texture.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        texture.SampleDesc.Count = 1;
+        const CD3DX12_HEAP_PROPERTIES default_heap(D3D12_HEAP_TYPE_DEFAULT);
+        if (FAILED(device_->CreateCommittedResource(&default_heap, D3D12_HEAP_FLAG_NONE, &texture,
+                                                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                    IID_PPV_ARGS(&overlay_atlas_))))
+            return;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+        UINT rows = 0;
+        UINT64 row_bytes = 0, total = 0;
+        device_->GetCopyableFootprints(&texture, 0, 1, 0, &footprint, &rows, &row_bytes, &total);
+        const CD3DX12_HEAP_PROPERTIES upload_heap(D3D12_HEAP_TYPE_UPLOAD);
+        const CD3DX12_RESOURCE_DESC upload = CD3DX12_RESOURCE_DESC::Buffer(total);
+        if (FAILED(device_->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &upload,
+                                                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                    IID_PPV_ARGS(&overlay_atlas_upload_)))) {
+            overlay_atlas_.Reset();
+            return;
+        }
+        void* mapped = nullptr;
+        const D3D12_RANGE nothing = { 0, 0 };
+        if (FAILED(overlay_atlas_upload_->Map(0, &nothing, &mapped))) {
+            overlay_atlas_.Reset();
+            return;
+        }
+        for (UINT y = 0; y < rows; ++y) {
+            memcpy(static_cast<uint8_t*>(mapped) + footprint.Offset + y * footprint.Footprint.RowPitch,
+                   data->atlas + static_cast<size_t>(y) * data->atlas_width * 4,
+                   static_cast<size_t>(data->atlas_width) * 4);
+        }
+        overlay_atlas_upload_->Unmap(0, nullptr);
+        CD3DX12_TEXTURE_COPY_LOCATION to(overlay_atlas_.Get(), 0);
+        CD3DX12_TEXTURE_COPY_LOCATION from(overlay_atlas_upload_.Get(), footprint);
+        command_list_->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+        const CD3DX12_RESOURCE_BARRIER ready = CD3DX12_RESOURCE_BARRIER::Transition(
+            overlay_atlas_.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        command_list_->ResourceBarrier(1, &ready);
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
+        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        view.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        view.Texture2D.MipLevels = 1;
+        device_->CreateShaderResourceView(overlay_atlas_.Get(), &view,
+                                          overlay_srv_heap_->GetCPUDescriptorHandleForHeapStart());
+        overlay_atlas_version_ = data->atlas_version;
+    }
+
+    // This frame's buffers, grown to the largest overlay so far. The fence MoveToNextFrame
+    // waited on means the GPU is done with them from the last time this slot came round.
+    auto ensure = [this](ComPtr<ID3D12Resource>& buffer, size_t& capacity, size_t bytes) {
+        if (buffer && capacity >= bytes)
+            return true;
+        buffer.Reset();
+        const size_t grown = (std::max)((std::max)(bytes, capacity * 2), static_cast<size_t>(65536));
+        const CD3DX12_HEAP_PROPERTIES upload_heap(D3D12_HEAP_TYPE_UPLOAD);
+        const CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(grown);
+        if (FAILED(device_->CreateCommittedResource(&upload_heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                    IID_PPV_ARGS(&buffer))))
+            return false;
+        capacity = grown;
+        return true;
+    };
+    const size_t vertex_bytes = data->vertex_count * sizeof(psxemu::OverlayVertex);
+    const size_t index_bytes = data->index_count * sizeof(uint32_t);
+    ComPtr<ID3D12Resource>& vertices = overlay_vertices_[frame_index_];
+    ComPtr<ID3D12Resource>& indices = overlay_indices_[frame_index_];
+    if (!ensure(vertices, overlay_vertex_capacity_[frame_index_], vertex_bytes) ||
+        !ensure(indices, overlay_index_capacity_[frame_index_], index_bytes))
+        return;
+    void* mapped = nullptr;
+    const D3D12_RANGE nothing = { 0, 0 };
+    if (FAILED(vertices->Map(0, &nothing, &mapped)))
+        return;
+    psxemu::WriteOverlayVertices(*data, width_, height_, false,
+                                 static_cast<psxemu::OverlayVertex*>(mapped));
+    vertices->Unmap(0, nullptr);
+    if (FAILED(indices->Map(0, &nothing, &mapped)))
+        return;
+    memcpy(mapped, data->indices, index_bytes);
+    indices->Unmap(0, nullptr);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv(rtv_heap_->GetCPUDescriptorHandleForHeapStart());
+    rtv.ptr += static_cast<SIZE_T>(frame_index_) * rtv_descriptor_size_;
+    command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>(width_),
+                                      static_cast<float>(height_), 0.0f, 1.0f };
+    const D3D12_RECT scissor = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
+    command_list_->RSSetViewports(1, &viewport);
+    command_list_->RSSetScissorRects(1, &scissor);
+    command_list_->SetPipelineState(overlay_pipeline_.Get());
+    command_list_->SetGraphicsRootSignature(overlay_root_.Get());
+    ID3D12DescriptorHeap* heaps[] = { overlay_srv_heap_.Get() };
+    command_list_->SetDescriptorHeaps(1, heaps);
+    command_list_->SetGraphicsRootDescriptorTable(
+        0, overlay_srv_heap_->GetGPUDescriptorHandleForHeapStart());
+    command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    D3D12_VERTEX_BUFFER_VIEW vertex_view = {};
+    vertex_view.BufferLocation = vertices->GetGPUVirtualAddress();
+    vertex_view.SizeInBytes = static_cast<UINT>(vertex_bytes);
+    vertex_view.StrideInBytes = sizeof(psxemu::OverlayVertex);
+    D3D12_INDEX_BUFFER_VIEW index_view = {};
+    index_view.BufferLocation = indices->GetGPUVirtualAddress();
+    index_view.SizeInBytes = static_cast<UINT>(index_bytes);
+    index_view.Format = DXGI_FORMAT_R32_UINT;
+    command_list_->IASetVertexBuffers(0, 1, &vertex_view);
+    command_list_->IASetIndexBuffer(&index_view);
+    command_list_->DrawIndexedInstanced(static_cast<UINT>(data->index_count), 1, 0, 0, 0);
 }
 
 void D3D12GraphicsEngine::SetVsync(bool enabled) {
@@ -338,9 +544,11 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
 
 void D3D12GraphicsEngine::EndFrame() {
     if (!render_targets_[frame_index_]) {
+        overlay_ = nullptr;
         command_list_->Close();
         return;
     }
+    DrawOverlay();
 
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

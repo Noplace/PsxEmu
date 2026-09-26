@@ -53,6 +53,13 @@ namespace psxemu {
                           L".ccd (with its .img), .bin, .img, .iso.";
         }
 
+        // What the overlay's notifications say about a game - defined with the overlay's other
+        // helpers, below.
+        std::wstring Wide(const std::string& text);
+        std::wstring TitleFromPath(const std::string& path);
+        std::wstring SerialOfDisc(System& system);
+        std::wstring NameForRenderer(const std::string& key);
+
     }   // namespace
 
     App::~App() {
@@ -140,6 +147,7 @@ namespace psxemu {
         RefreshBiosMenu();
         LoadRecentDiscs();
         LoadControllerBindings();
+        LoadOverlaySettings();
         key_bindings_.Create(instance, window_, [this](const KeyMap& map) { SetKeyBindings(map); });
         {
             ControllerBindingsWindow::Host host;
@@ -161,6 +169,9 @@ namespace psxemu {
         StartThreads();
         // After the input thread exists, since that is what holds the mouse.
         SendMouseSettingsToInput();
+        // What is plugged in, shown for a few seconds at start - the pads already connected
+        // announce themselves as the input thread first sees them.
+        UpdateOverlayControllers(true);
 
         ShowWindow(window_, show_command);
         UpdateWindow(window_);
@@ -376,13 +387,21 @@ namespace psxemu {
         // thread, and a menu command could be changing it while the factory runs.
         const std::string start_renderer = config_.graphics_backend;
         const std::string start_filter = config_.video_filter;
+        const StatsMode start_stats = stats_mode_;
+        const bool start_notifications = overlay_notifications_;
+        const bool start_controllers = controllers_always_;
         video_ = std::make_unique<VideoOutput>(
-            [this, start_renderer, start_filter]() -> std::unique_ptr<Presenter> {
+            [this, start_renderer, start_filter, start_stats, start_notifications,
+             start_controllers]() -> std::unique_ptr<Presenter> {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
                 auto presenter = std::make_unique<D3DPresenter>(
                     RenderWindows{ window_, gl_surface_, vk_surface_ },
-                    [this](std::function<void()> work) { PostToUi(std::move(work)); });
+                    [this](std::function<void()> work) { PostToUi(std::move(work)); },
+                    &frame_stats_);
+                presenter->overlay().SetStatsMode(start_stats);
+                presenter->overlay().SetNotificationsEnabled(start_notifications);
+                presenter->overlay().SetControllersAlwaysVisible(start_controllers);
                 if (!presenter->Open(start_renderer, start_filter)) {
                     PostToUi([this] {
                         ShowError(window_, L"Could not create a Direct3D device.");
@@ -410,6 +429,9 @@ namespace psxemu {
             ApplyInput(system, input);
         };
         hooks.report = [this](const MachineReport& report) { OnMachineReport(report); };
+        hooks.frame_done = [this](const emulation::host::FrameSample& sample) {
+            frame_stats_.Push(sample);
+        };
         hooks.after_frame = [this](Machine& machine) { CollectConsoleText(machine.system()); };
         hooks.halted = [this](Machine& machine) {
             SendDebuggerSnapshot(machine, DebuggerWindow::kAtPc, true);
@@ -421,6 +443,9 @@ namespace psxemu {
                                              hooks);
         input_ = std::make_unique<InputThread>(&machine_->input(), window_);
         input_->SetKeysInUse(KeysInUse(bindings_));
+        input_->SetPadConnectionHandler([this](int pad, bool connected) {
+            PostToUi([this, pad, connected] { OnPadConnectionChanged(pad, connected); });
+        });
 
         input_->Start();
         audio_->Start(config_.audio_backend);
@@ -515,6 +540,11 @@ namespace psxemu {
     // On the machine's thread. Nothing here may touch the window or the menus, so the whole report
     // goes to the UI thread and is shown there.
     void App::OnMachineReport(const MachineReport& report) {
+        PostToOverlay([report](Overlay& overlay) {
+            overlay.SetPaused(report.paused);
+            overlay.SetCounters(report.frames_dropped, report.audio_short_frames,
+                                report.audio_dropped_frames);
+        });
         PostToUi([this, report] {
             report_ = report;
             have_report_ = true;
@@ -796,6 +826,15 @@ namespace psxemu {
         }
         UpdateFilterMenu();
         SaveSettingsIfChanged();
+        for (const FilterChoice& choice : kFilterChoices) {
+            if (key == choice.key) {
+                std::wstring label;
+                for (const wchar_t* c = choice.label; *c != 0; ++c)
+                    if (*c != L'&')
+                        label += *c;
+                Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"Filter: " + label);
+            }
+        }
     }
 
     // Live renderer switch, done on the video thread - it owns the device. What actually opened
@@ -820,6 +859,9 @@ namespace psxemu {
                 UpdateRendererMenu();
                 UpdateFilterMenu();
                 SaveSettingsIfChanged();
+                if (!renderer.empty())
+                    Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+                           L"Renderer: " + NameForRenderer(renderer));
             });
         });
     }
@@ -842,6 +884,7 @@ namespace psxemu {
         // Whether any port is a mouse decides whether the cursor may be captured.
         SendMouseSettingsToInput();
         controller_bindings_.OnConfigChanged();
+        UpdateOverlayControllers(true);
     }
 
     void App::UpdateInputSourceMenu() {
@@ -854,6 +897,7 @@ namespace psxemu {
         SaveSettingsIfChanged();
         SendConfigToMachine();
         controller_bindings_.OnConfigChanged();
+        UpdateOverlayControllers(true);
     }
 
     void App::UpdateMultitapTypeMenu() {
@@ -868,6 +912,7 @@ namespace psxemu {
         SaveSettingsIfChanged();
         SendConfigToMachine();
         controller_bindings_.OnConfigChanged();
+        UpdateOverlayControllers(true);
     }
 
     void App::UpdateMultitapSourceMenu() {
@@ -883,6 +928,7 @@ namespace psxemu {
         SaveSettingsIfChanged();
         SendConfigToMachine();
         controller_bindings_.OnConfigChanged();
+        UpdateOverlayControllers(true);
     }
 
     void App::UpdateFrameLimiterMenu() { TickFrameLimiter(window_, config_.frame_limiter); }
@@ -902,6 +948,8 @@ namespace psxemu {
         // The machine restarts its pacing when it sees either of these change - the deadline it
         // was keeping and the resampler's position both belong to the old rate.
         SendConfigToMachine();
+        Notify(OverlayIcon::kSpeed, ToastKind::kInfo,
+               L"Speed " + std::to_wstring(static_cast<int>(speed * 100.0f + 0.5f)) + L"%");
     }
 
     void App::SetFrameLimiter(bool on) {
@@ -909,6 +957,9 @@ namespace psxemu {
         UpdateFrameLimiterMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
+        Notify(OverlayIcon::kSpeed, ToastKind::kInfo,
+               on ? L"Frame limiter on" : L"Frame limiter off",
+               on ? L"" : L"Running as fast as the machine allows");
     }
 
     void App::UpdateCdTimingMenu() { TickCdTiming(window_, config_.cdrom_mechanical_timing); }
@@ -939,6 +990,8 @@ namespace psxemu {
         UpdateRecompilerMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
+        Notify(OverlayIcon::kInfo, ToastKind::kInfo, on ? L"Recompiler on" : L"Interpreter",
+               on ? L"Faster, experimental" : L"");
     }
 
     void App::UpdateGpuThreadMenu() { TickGpuThread(window_, config_.gpu_thread); }
@@ -991,6 +1044,13 @@ namespace psxemu {
         UpdateTimingAccuracyMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
+        const bool on = config_.*setting;
+        const wchar_t* name = setting == &EmuConfig::exact_event_timing ? L"Exact event timing"
+                              : setting == &EmuConfig::dma_stops_cpu    ? L"DMA stops the CPU"
+                              : setting == &EmuConfig::measured_bus_timing
+                                  ? L"Measured bus timing"
+                                  : L"Write queue timing";
+        Notify(OverlayIcon::kInfo, ToastKind::kInfo, std::wstring(name) + (on ? L" on" : L" off"));
     }
 
     // The ANALOG button from the menu, for a pad the keyboard is not driving - an XInput pad has
@@ -1156,7 +1216,14 @@ namespace psxemu {
         PostToMachine([this, card, path](Machine& machine) {
             // Inserting ejects - and so saves - whatever card was in the slot first.
             const bool ok = machine.system().mc(card / 4, card % 4).LoadFile(path.c_str()) == S_OK;
-            PostToUi([this, ok, path] {
+            PostToUi([this, ok, path, card] {
+                if (ok) {
+                    Notify(OverlayIcon::kCard, ToastKind::kSuccess,
+                           L"Memory card in port " + std::to_wstring(card / 4 + 1) +
+                               (card % 4 == 0 ? L"" : std::wstring(L" slot ") +
+                                                          static_cast<wchar_t>(L'A' + card % 4)),
+                           TitleFromPath(path));
+                }
                 if (!ok) {
                     const bool exists = GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES;
                     // A card another tool wrapped - a DexDrive .gme, say - cannot go in as it
@@ -1203,9 +1270,13 @@ namespace psxemu {
             return;
         PostToMachine([this, card, path](Machine& machine) {
             const bool ok = machine.system().mc(card / 4, card % 4).CreateFile(path.c_str()) == S_OK;
-            PostToUi([this, ok] {
+            PostToUi([this, ok, path, card] {
                 if (!ok)
                     ShowWarning(window_, L"Could not create that memory card file.");
+                else
+                    Notify(OverlayIcon::kCard, ToastKind::kSuccess,
+                           L"New memory card in port " + std::to_wstring(card / 4 + 1),
+                           TitleFromPath(path));
                 if (card_editor_.visible())
                     RefreshMemoryCardEditor();
             });
@@ -1215,7 +1286,9 @@ namespace psxemu {
     void App::EjectMemoryCard(int card) {
         PostToMachine([this, card](Machine& machine) {
             machine.system().mc(card / 4, card % 4).Eject();
-            PostToUi([this] {
+            PostToUi([this, card] {
+                Notify(OverlayIcon::kCard, ToastKind::kInfo,
+                       L"Memory card ejected from port " + std::to_wstring(card / 4 + 1));
                 if (card_editor_.visible())
                     RefreshMemoryCardEditor();
             });
@@ -1278,6 +1351,7 @@ namespace psxemu {
             system.set_auto_boot(false);
             machine.ResetPacing();
             RefreshDebuggerIfOpen(machine);
+            PostToUi([this] { Notify(OverlayIcon::kInfo, ToastKind::kInfo, L"Reset"); });
         });
     }
 
@@ -1317,11 +1391,15 @@ namespace psxemu {
             machine.ResetPacing();
             RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
-            PostToUi([this, path] {
+            const std::wstring serial = SerialOfDisc(system);
+            PostToUi([this, path, serial] {
                 paused_by_user_ = false;
                 SetWindowTitleForPath(path);
                 NoteRecentDisc(path);
                 SendMouseSettingsToInput();
+                Notify(OverlayIcon::kDisc, ToastKind::kSuccess, TitleFromPath(path),
+                       serial.empty() ? std::wstring(L"Disc loaded") : serial);
+                UpdateOverlayControllers(true);
             });
         });
     }
@@ -1342,10 +1420,13 @@ namespace psxemu {
             machine.ResetPacing();
             RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
-            PostToUi([this] {
+            PostToUi([this, bios] {
                 paused_by_user_ = false;
                 SetWindowTitleForPath(std::string());
                 SendMouseSettingsToInput();
+                const size_t slash = bios.find_last_of("/\\");
+                Notify(OverlayIcon::kInfo, ToastKind::kInfo, L"BIOS started",
+                       Wide(slash == std::string::npos ? bios : bios.substr(slash + 1)));
             });
         });
     }
@@ -1381,6 +1462,7 @@ namespace psxemu {
                 paused_by_user_ = false;
                 SetWindowTitleForPath(path);
                 SendMouseSettingsToInput();
+                Notify(OverlayIcon::kInfo, ToastKind::kSuccess, TitleFromPath(path), L"PS-X EXE");
             });
         });
     }
@@ -1458,6 +1540,8 @@ namespace psxemu {
         });
         // A paused machine gives the pointer back - see SendMouseSettingsToInput.
         SendMouseSettingsToInput();
+        Notify(OverlayIcon::kInfo, ToastKind::kInfo, paused ? L"Paused" : L"Resumed",
+               paused ? L"Space to carry on" : L"");
     }
 
     void App::EnterMenuPause() {
@@ -1499,6 +1583,303 @@ namespace psxemu {
                 std::wstring(kWindowTitle) + L" - " + std::wstring(name.begin(), name.end());
         }
         UpdateTitle();
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // The on-screen overlay
+    // ---------------------------------------------------------------------------------------------
+
+    namespace {
+
+        std::wstring Wide(const std::string& text) { return std::wstring(text.begin(), text.end()); }
+
+        OverlayIcon IconForType(const std::string& type) {
+            if (type == "digital")
+                return OverlayIcon::kPadDigital;
+            if (type == "dual_analog" || type == "dualshock")
+                return OverlayIcon::kPadAnalog;
+            if (type == "mouse")
+                return OverlayIcon::kMouse;
+            if (type == "guncon")
+                return OverlayIcon::kGunCon;
+            if (type == "multitap")
+                return OverlayIcon::kMultitap;
+            return OverlayIcon::kNone;
+        }
+
+        std::wstring NameForType(const std::string& type) {
+            if (type == "digital") return L"Digital Pad";
+            if (type == "dual_analog") return L"Dual Analog";
+            if (type == "dualshock") return L"DualShock";
+            if (type == "mouse") return L"Mouse";
+            if (type == "guncon") return L"GunCon";
+            if (type == "multitap") return L"Multitap";
+            return L"Nothing plugged in";
+        }
+
+        // "gamepad2" is XInput pad 1; -1 for anything that is not a pad.
+        int PadOfSource(const std::string& source) {
+            if (source.size() == 8 && source.compare(0, 7, "gamepad") == 0 && source[7] >= '1' &&
+                source[7] <= '4')
+                return source[7] - '1';
+            return -1;
+        }
+
+        std::wstring NameForSource(const std::string& source) {
+            const int pad = PadOfSource(source);
+            if (pad >= 0)
+                return L"Gamepad " + std::to_wstring(pad + 1);
+            return L"Keyboard";
+        }
+
+        std::wstring NameForRenderer(const std::string& key) {
+            if (key == "d3d11") return L"Direct3D 11";
+            if (key == "d3d12") return L"Direct3D 12";
+            if (key == "opengl") return L"OpenGL";
+            if (key == "vulkan") return L"Vulkan";
+            return Wide(key);
+        }
+
+        // A disc's name as its file gives it, without the tags dumps carry: "Wild Arms
+        // [SCUS-94608].cue" is Wild Arms.
+        std::wstring TitleFromPath(const std::string& path) {
+            const size_t slash = path.find_last_of("/\\");
+            std::string name = (slash == std::string::npos) ? path : path.substr(slash + 1);
+            const size_t dot = name.find_last_of('.');
+            if (dot != std::string::npos && dot > 0)
+                name.erase(dot);
+            std::string out;
+            int depth = 0;
+            for (char c : name) {
+                if (c == '[' || c == '(')
+                    ++depth;
+                else if ((c == ']' || c == ')') && depth > 0)
+                    --depth;
+                else if (depth == 0)
+                    out += (c == '_') ? ' ' : c;
+            }
+            while (!out.empty() && (out.back() == ' ' || out.back() == '.'))
+                out.pop_back();
+            while (!out.empty() && out.front() == ' ')
+                out.erase(out.begin());
+            return Wide(out.empty() ? name : out);
+        }
+
+        // The serial and region from the disc's own SYSTEM.CNF - "SLUS-00152 - North America".
+        // Read straight from the image, which the emulated drive never notices. Empty if the
+        // disc has none (a few boot PSX.EXE instead) or it cannot be read.
+        std::wstring SerialOfDisc(System& system) {
+            emulation::psx::Iso9660 iso;
+            if (!iso.Open(&system.cdrom().disc()))
+                return std::wstring();
+            emulation::psx::Iso9660::File file;
+            std::vector<uint8_t> contents;
+            std::string boot;
+            if (!iso.Find("SYSTEM.CNF", &file) || !iso.Read(file, &contents) ||
+                !System::ParseSystemCnf(contents, &boot))
+                return std::wstring();
+            // BOOT = cdrom:\SLUS_001.52;1 - the file name, less its version, is the serial.
+            size_t start = boot.find_last_of(":\\/");
+            std::string serial = boot.substr(start == std::string::npos ? 0 : start + 1);
+            const size_t version = serial.find(';');
+            if (version != std::string::npos)
+                serial.erase(version);
+            std::string tidy;
+            for (char c : serial) {
+                if (c == '_')
+                    tidy += '-';
+                else if (c != '.')
+                    tidy += static_cast<char>(toupper(static_cast<unsigned char>(c)));
+            }
+            std::wstring region;
+            if (tidy.size() >= 4) {
+                const char r = tidy[2];
+                if (r == 'U')
+                    region = L"North America";
+                else if (r == 'E')
+                    region = L"Europe";
+                else if (r == 'P' || r == 'M' || r == 'J')
+                    region = L"Japan";
+            }
+            std::wstring out = Wide(tidy);
+            if (!region.empty())
+                out += L" \x00B7 " + region;
+            return out;
+        }
+
+    }   // namespace
+
+    void App::PostToOverlay(std::function<void(Overlay&)> work) {
+        if (video_ == nullptr)
+            return;
+        video_->Post([work = std::move(work)](VideoOutput& video) {
+            if (video.presenter() != nullptr)
+                work(static_cast<D3DPresenter*>(video.presenter())->overlay());
+        });
+    }
+
+    void App::Notify(OverlayIcon icon, ToastKind kind, const std::wstring& title,
+                     const std::wstring& detail) {
+        PostToOverlay([icon, kind, title, detail](Overlay& overlay) {
+            overlay.Notify(icon, kind, title, detail);
+        });
+    }
+
+    void App::UpdateOverlayControllers(bool announce) {
+        std::vector<ControllerSlot> slots;
+        auto connected = [this](const std::string& source) {
+            const int pad = PadOfSource(source);
+            return pad < 0 || pad_connected_[pad];
+        };
+        for (int port = 0; port < 2; ++port) {
+            const std::string& type = config_.controller_type[port];
+            ControllerSlot main;
+            main.port = port;
+            main.icon = IconForType(type);
+            main.type = NameForType(type);
+            if (type == "multitap") {
+                main.source = L"Four players";
+                slots.push_back(main);
+                for (int player = 0; player < 4; ++player) {
+                    ControllerSlot p;
+                    p.port = port;
+                    p.player = player;
+                    const std::string& player_type = config_.multitap_player_type[port][player];
+                    const std::string& source = config_.multitap_player_source[port][player];
+                    p.icon = IconForType(player_type == "none" ? "none" : player_type);
+                    p.type = NameForType(player_type);
+                    p.source = NameForSource(source);
+                    p.connected = player_type == "none" || connected(source);
+                    slots.push_back(p);
+                }
+                continue;
+            }
+            if (type == "mouse" || type == "guncon")
+                main.source = L"Mouse";
+            else if (type == "none")
+                main.source = L"";
+            else {
+                main.source = NameForSource(config_.input_source[port]);
+                main.connected = connected(config_.input_source[port]);
+            }
+            slots.push_back(main);
+        }
+        PostToOverlay([slots, announce](Overlay& overlay) { overlay.SetControllers(slots, announce); });
+    }
+
+    void App::OnPadConnectionChanged(int pad, bool connected) {
+        if (pad < 0 || pad >= 4)
+            return;
+        pad_connected_[pad] = connected;
+        // Which port, if any, it drives - so the notification can say what it is for.
+        const std::string source = "gamepad" + std::to_string(pad + 1);
+        std::wstring where;
+        for (int port = 0; port < 2 && where.empty(); ++port) {
+            if (config_.controller_type[port] == "multitap") {
+                for (int player = 0; player < 4; ++player) {
+                    if (config_.multitap_player_source[port][player] == source &&
+                        config_.multitap_player_type[port][player] != "none") {
+                        where = L"Port " + std::to_wstring(port + 1) + L" player " +
+                                std::wstring(1, static_cast<wchar_t>(L'A' + player)) + L" \x00B7 " +
+                                NameForType(config_.multitap_player_type[port][player]);
+                        break;
+                    }
+                }
+            } else if (config_.input_source[port] == source && config_.controller_type[port] != "none" &&
+                       config_.controller_type[port] != "mouse" &&
+                       config_.controller_type[port] != "guncon") {
+                where = L"Port " + std::to_wstring(port + 1) + L" \x00B7 " +
+                        NameForType(config_.controller_type[port]);
+            }
+        }
+        if (where.empty())
+            where = L"Not assigned to a port";
+        Notify(OverlayIcon::kPadAnalog, connected ? ToastKind::kSuccess : ToastKind::kWarning,
+               L"Gamepad " + std::to_wstring(pad + 1) + (connected ? L" connected" : L" disconnected"),
+               where);
+        UpdateOverlayControllers(true);
+    }
+
+    void App::SaveOrLoadState(int slot, bool save) {
+        PostToMachine([this, slot, save](Machine& machine) {
+            const std::string path = SaveStateSlotPath(machine.system(), slot);
+            const std::string error = save ? machine.system().SaveState(path)
+                                           : machine.system().LoadState(path);
+            if (!save) {
+                machine.ResetPacing();
+                RefreshDebuggerIfOpen(machine);
+            }
+            const std::wstring message(error.begin(), error.end());
+            PostToUi([this, slot, save, message] {
+                const std::wstring what = save ? L"Saved to slot " + std::to_wstring(slot)
+                                               : L"Loaded slot " + std::to_wstring(slot);
+                if (message.empty()) {
+                    Notify(save ? OverlayIcon::kSave : OverlayIcon::kLoad, ToastKind::kSuccess, what);
+                } else if (overlay_notifications_) {
+                    Notify(OverlayIcon::kWarning, ToastKind::kError,
+                           save ? L"Could not save to slot " + std::to_wstring(slot)
+                                : L"Could not load slot " + std::to_wstring(slot),
+                           message);
+                } else {
+                    // With notifications off, a failure still has to be said somewhere.
+                    ShowError(window_, message.c_str());
+                }
+            });
+        });
+    }
+
+    void App::LoadOverlaySettings() {
+        const std::string stats = settings_.GetString("overlay_stats", "off");
+        stats_mode_ = stats == "full" ? StatsMode::kFull
+                    : stats == "compact" ? StatsMode::kCompact
+                                         : StatsMode::kOff;
+        overlay_notifications_ = settings_.GetBool("overlay_notifications", true);
+        controllers_always_ = settings_.GetBool("overlay_controllers_always", false);
+        UpdateOverlayMenu();
+    }
+
+    void App::SaveOverlaySettings() {
+        if (settings_path_.empty())
+            return;
+        emulation::psx::SettingsFile updated = settings_;
+        updated.SetString("overlay_stats", stats_mode_ == StatsMode::kFull      ? "full"
+                                           : stats_mode_ == StatsMode::kCompact ? "compact"
+                                                                                : "off");
+        updated.SetBool("overlay_notifications", overlay_notifications_);
+        updated.SetBool("overlay_controllers_always", controllers_always_);
+        if (updated.Serialise() == settings_.Serialise())
+            return;
+        settings_ = updated;
+        settings_.Save(settings_path_);
+    }
+
+    void App::UpdateOverlayMenu() {
+        TickOnScreenDisplay(window_, static_cast<int>(stats_mode_), overlay_notifications_,
+                            controllers_always_);
+    }
+
+    void App::SetStatsMode(StatsMode mode) {
+        stats_mode_ = mode;
+        UpdateOverlayMenu();
+        SaveOverlaySettings();
+        PostToOverlay([mode](Overlay& overlay) { overlay.SetStatsMode(mode); });
+    }
+
+    void App::SetOverlayNotifications(bool on) {
+        overlay_notifications_ = on;
+        UpdateOverlayMenu();
+        SaveOverlaySettings();
+        PostToOverlay([on](Overlay& overlay) { overlay.SetNotificationsEnabled(on); });
+        if (on)
+            Notify(OverlayIcon::kInfo, ToastKind::kInfo, L"Notifications on");
+    }
+
+    void App::SetControllersAlwaysVisible(bool on) {
+        controllers_always_ = on;
+        UpdateOverlayMenu();
+        SaveOverlaySettings();
+        PostToOverlay([on](Overlay& overlay) { overlay.SetControllersAlwaysVisible(on); });
+        UpdateOverlayControllers(true);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1672,6 +2053,9 @@ namespace psxemu {
         }
         fullscreen_ = on;
         TickFullscreen(window_, on);
+        if (on)
+            Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"Full screen",
+                   L"Alt+Enter, F11 or Esc to leave");
     }
 
     void App::OnKeyDown(WPARAM key) {
@@ -1690,19 +2074,13 @@ namespace psxemu {
             const int slot = static_cast<int>(key - VK_F1) + 1;
             last_slot_ = slot;
             const bool save = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-            PostToMachine([this, slot, save](Machine& machine) {
-                const std::string path = SaveStateSlotPath(machine.system(), slot);
-                const std::string error = save ? machine.system().SaveState(path)
-                                               : machine.system().LoadState(path);
-                if (!save) {
-                    machine.ResetPacing();
-                    RefreshDebuggerIfOpen(machine);
-                }
-                if (!error.empty()) {
-                    const std::wstring message(error.begin(), error.end());
-                    PostToUi([this, message] { ShowError(window_, message.c_str()); });
-                }
-            });
+            SaveOrLoadState(slot, save);
+        }
+        // F9: the performance panel - off, full, compact, off.
+        if (key == VK_F9) {
+            SetStatsMode(stats_mode_ == StatsMode::kOff    ? StatsMode::kFull
+                         : stats_mode_ == StatsMode::kFull ? StatsMode::kCompact
+                                                           : StatsMode::kOff);
         }
     }
 
@@ -1818,24 +2196,25 @@ namespace psxemu {
                 break;
 
             case kCommandSaveState:
-            case kCommandLoadState: {
-                const int slot = last_slot_;
-                const bool save = (command == kCommandSaveState);
-                PostToMachine([this, slot, save](Machine& machine) {
-                    const std::string path = SaveStateSlotPath(machine.system(), slot);
-                    const std::string error = save ? machine.system().SaveState(path)
-                                                   : machine.system().LoadState(path);
-                    if (!save) {
-                        machine.ResetPacing();
-                        RefreshDebuggerIfOpen(machine);
-                    }
-                    if (!error.empty()) {
-                        const std::wstring message(error.begin(), error.end());
-                        PostToUi([this, message] { ShowError(window_, message.c_str()); });
-                    }
-                });
+            case kCommandLoadState:
+                SaveOrLoadState(last_slot_, command == kCommandSaveState);
                 break;
-            }
+
+            case kCommandStatsOff:
+                SetStatsMode(StatsMode::kOff);
+                break;
+            case kCommandStatsCompact:
+                SetStatsMode(StatsMode::kCompact);
+                break;
+            case kCommandStatsFull:
+                SetStatsMode(StatsMode::kFull);
+                break;
+            case kCommandOverlayNotifications:
+                SetOverlayNotifications(!overlay_notifications_);
+                break;
+            case kCommandOverlayControllersAlways:
+                SetControllersAlwaysVisible(!controllers_always_);
+                break;
 
             case kCommandFullscreen:
                 SetFullscreen(!fullscreen_);

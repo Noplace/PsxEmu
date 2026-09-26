@@ -268,7 +268,32 @@ namespace psxemu {
         };
 
         std::string SaveStateSlotPath(emulation::psx::System& system, int slot) const;
+        // F1-F8 and the menu's Save State / Load State: the machine does it, the overlay says so.
+        void SaveOrLoadState(int slot, bool save);
         void SetWindowTitleForPath(const std::string& path);
+
+        // ---------------------------------------------------------------------------------------
+        // The on-screen overlay (ui/overlay), which lives on the video thread
+        // ---------------------------------------------------------------------------------------
+
+        // Any thread: runs `work` on the overlay, on the video thread.
+        void PostToOverlay(std::function<void(Overlay&)> work);
+        // Any thread: a notification at the lower left.
+        void Notify(OverlayIcon icon, ToastKind kind, const std::wstring& title,
+                    const std::wstring& detail = std::wstring());
+        // The top-right corner from the settings and which pads are plugged in. `announce` shows
+        // it for a few seconds even when it is not set to stay up.
+        void UpdateOverlayControllers(bool announce);
+        // The input thread saw pad `pad` (0-3) come or go. Posted here, to the UI thread.
+        void OnPadConnectionChanged(int pad, bool connected);
+        // View settings: the performance panel (F9 steps through them), notifications, and whether
+        // the controllers stay up. Kept in the settings file beside the core's keys.
+        void SetStatsMode(StatsMode mode);
+        void SetOverlayNotifications(bool on);
+        void SetControllersAlwaysVisible(bool on);
+        void LoadOverlaySettings();
+        void SaveOverlaySettings();
+        void UpdateOverlayMenu();
 
         // ---------------------------------------------------------------------------------------
         // Messages
@@ -394,6 +419,17 @@ namespace psxemu {
             std::make_shared<const ControllerBindings>();
         ControllerBindingsWindow controller_bindings_;
         KeyBindingsWindow key_bindings_;
+
+        // The overlay's settings, as the View menu has them. The UI thread's; the overlay itself
+        // gets a copy on the video thread.
+        StatsMode stats_mode_ = StatsMode::kOff;
+        bool overlay_notifications_ = true;
+        bool controllers_always_ = false;
+        // Which XInput pads are plugged in, as the input thread last said. The UI thread's.
+        std::array<bool, 4> pad_connected_ = { false, false, false, false };
+        // Where the machine leaves each frame's timings for the overlay's graphs. Written on the
+        // machine's thread, read on the video thread; outlives both.
+        FrameStatsRing frame_stats_;
     };
 
 }   // namespace psxemu

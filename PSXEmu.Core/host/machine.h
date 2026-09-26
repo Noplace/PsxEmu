@@ -59,6 +59,18 @@ struct MachineReport {
   uint64_t instructions = 0;           // stepped since the thread started
 };
 
+// One frame's worth of timing, as the machine thread measured it - what the front end's
+// performance graphs are drawn from. Everything in wall-clock milliseconds.
+struct FrameSample {
+  float frame_ms = 0.0f;      // start of this frame to start of the next: 1000 / this is its fps
+  float emulate_ms = 0.0f;    // running it
+  float handoff_ms = 0.0f;    // input in, picture and sound out
+  float idle_ms = 0.0f;       // the frame limiter's sleep - the headroom
+  float refresh_hz = 0.0f;    // what a frame is meant to take: 1000 / this
+  uint32_t audio_queued_frames = 0;   // the sample ring's level after this frame
+  uint32_t instructions = 0;          // stepped during this frame
+};
+
 class Machine {
  public:
   struct Hooks {
@@ -72,6 +84,9 @@ class Machine {
 
     // About once a second while running, and once on pausing.
     std::function<void(const MachineReport&)> report;
+    // Every frame, on the machine's thread: what it took. Kept cheap by whoever takes it -
+    // the front end copies it into a ring its video thread reads (ui/overlay).
+    std::function<void(const FrameSample&)> frame_done;
     // The debugger halted the machine - mid-frame, before the instruction at its pc. The machine
     // is paused for kPausedByDebugger and keeps answering requests; the half-run frame is not
     // published. To go on, a request steps or resumes the debugger and clears that reason.
@@ -178,6 +193,7 @@ class Machine {
   std::vector<int16_t> resampled_;   // the same, stretched for the speed
   uint64_t frame_number_ = 0;        // frames published
   uint64_t instructions_ = 0;
+  uint64_t frame_start_instructions_ = 0;   // instructions_ as the last FrameSample left it
   // Instructions into the frame being run. Kept across a debugger halt, which returns from
   // RunOneFrame mid-frame: restarting it would reset the per-frame guard on every step.
   uint64_t frame_instructions_ = 0;

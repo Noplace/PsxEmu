@@ -72,8 +72,25 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
                                size_t size) override;
     bool LoadPixelShaderFromString(const std::string& name, const char* hlsl) override;
     bool LoadShaderChain(const std::string& name, const std::vector<ShaderPass>& passes) override;
+    void SetOverlay(const psxemu::OverlayDrawData* overlay) override { overlay_ = overlay; }
 
  private:
+    // ---- the overlay (ui/overlay), drawn last in EndFrame ----------------------------------
+    bool CreateOverlayPipeline();
+    void DrawOverlay();
+    const psxemu::OverlayDrawData* overlay_ = nullptr;
+    ComPtr<ID3D12RootSignature> overlay_root_;
+    ComPtr<ID3D12PipelineState> overlay_pipeline_;
+    ComPtr<ID3D12DescriptorHeap> overlay_srv_heap_;
+    ComPtr<ID3D12Resource> overlay_atlas_;
+    ComPtr<ID3D12Resource> overlay_atlas_upload_;   // kept until the next atlas, after a flush
+    uint64_t overlay_atlas_version_ = 0;
+    // Vertices and indices, one pair per frame in flight - the same reason as fb_upload_heap_.
+    ComPtr<ID3D12Resource> overlay_vertices_[2];
+    ComPtr<ID3D12Resource> overlay_indices_[2];
+    size_t overlay_vertex_capacity_[2] = {};
+    size_t overlay_index_capacity_[2] = {};
+
     bool CreateDevice();
     bool CreateCommandQueue();
     bool CreateSwapChain(HWND window_handle);

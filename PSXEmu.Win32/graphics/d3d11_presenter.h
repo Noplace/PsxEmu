@@ -71,7 +71,28 @@ namespace psxemu {
 
         bool ready() const { return device_ != nullptr; }
 
+        void SetOverlay(const OverlayDrawData* overlay) override { overlay_ = overlay; }
+
      private:
+        // ---- the overlay (ui/overlay), drawn last in EndFrame ------------------------------
+        bool CreateOverlayPipeline();
+        void DrawOverlay();
+        void ReleaseOverlay();
+        const OverlayDrawData* overlay_ = nullptr;
+        ID3D11VertexShader* overlay_vs_ = nullptr;
+        ID3D11PixelShader* overlay_ps_ = nullptr;
+        ID3D11InputLayout* overlay_layout_ = nullptr;
+        ID3D11Buffer* overlay_vb_ = nullptr;
+        ID3D11Buffer* overlay_ib_ = nullptr;
+        size_t overlay_vb_capacity_ = 0;   // vertices
+        size_t overlay_ib_capacity_ = 0;   // indices
+        ID3D11Texture2D* overlay_atlas_ = nullptr;
+        ID3D11ShaderResourceView* overlay_atlas_view_ = nullptr;
+        uint64_t overlay_atlas_version_ = 0;
+        ID3D11SamplerState* overlay_sampler_ = nullptr;
+        ID3D11BlendState* overlay_blend_ = nullptr;
+        ID3D11RasterizerState* overlay_raster_ = nullptr;
+
         HWND window_;
         int back_buffer_width_;
         int back_buffer_height_;

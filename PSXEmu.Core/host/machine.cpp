@@ -172,6 +172,19 @@ void Machine::Run() {
 
     report_handoff_ms_ += Ms(input_taken - start) + Ms(handed_over - emulated);
     report_idle_ms_ += Ms(paced - handed_over);
+    if (hooks_.frame_done) {
+      FrameSample sample;
+      sample.frame_ms = static_cast<float>(Ms(paced - start));
+      sample.emulate_ms = static_cast<float>(Ms(emulated - input_taken));
+      sample.handoff_ms =
+          static_cast<float>(Ms(input_taken - start) + Ms(handed_over - emulated));
+      sample.idle_ms = static_cast<float>(Ms(paced - handed_over));
+      sample.refresh_hz = static_cast<float>(refresh);
+      sample.audio_queued_frames = static_cast<uint32_t>(audio_->Available());
+      sample.instructions = static_cast<uint32_t>(instructions_ - frame_start_instructions_);
+      hooks_.frame_done(sample);
+    }
+    frame_start_instructions_ = instructions_;
     ++report_frames_;
     if (paced - report_since_ >= std::chrono::seconds(1))
       Report(false);

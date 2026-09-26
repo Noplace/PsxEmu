@@ -23,6 +23,8 @@
 #include <string>
 #include <vector>
 
+#include "ui/overlay/overlay_draw.h"
+
 // One stage of a multi-pass filter chain (see IGraphicsEngine::LoadShaderChain).
 struct ShaderPass {
     // Key of a pixel shader already given to LoadCustomPixelShader or LoadPixelShaderFromString.
@@ -36,8 +38,9 @@ struct ShaderPass {
 // What a presenter has to be able to do, so the front end can hold one of
 // these instead of a concrete D3D11 or D3D12 type and switch between them at
 // run time. Adapted from GBAEmu's own interface of the same name - this is
-// the ImGui-free half of it: PSXEmu.Win32 uses native Win32 menus, not an
-// immediate-mode overlay, so there is no GUI backend lifecycle here.
+// the ImGui-free half of it: PSXEmu.Win32 uses native Win32 menus, and its
+// on-screen overlay (ui/overlay) is triangles each engine draws with one small
+// pass of its own (SetOverlay), so there is no GUI backend lifecycle here.
 class IGraphicsEngine {
  public:
     virtual ~IGraphicsEngine() = default;
@@ -58,6 +61,12 @@ class IGraphicsEngine {
 
     // The window was resized; follow the back buffer to the new client area.
     virtual void Resize(int width, int height) = 0;
+
+    // What to draw over the picture this frame (ui/overlay): set before RenderFramebuffer, used
+    // by the end of the frame, and pointing at nothing an engine may keep. Null or empty draws
+    // nothing. Every engine draws it the same way - over the whole window, alpha-blended, after
+    // the picture and any filter.
+    virtual void SetOverlay(const psxemu::OverlayDrawData* overlay) = 0;
 
     virtual void SetVsync(bool enabled) = 0;
 

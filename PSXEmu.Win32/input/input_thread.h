@@ -39,6 +39,7 @@
 
 #include <array>
 #include <atomic>
+#include <functional>
 #include <thread>
 
 namespace psxemu {
@@ -85,6 +86,12 @@ namespace psxemu {
         // can hide it while it is.
         bool capturing_mouse() const { return mouse_.capturing(); }
 
+        // Called on the input thread whenever an XInput pad is plugged in or pulled out - and
+        // for every pad already there, on the first look. Set before Start.
+        void SetPadConnectionHandler(std::function<void(int pad, bool connected)> handler) {
+            on_pad_connection_ = std::move(handler);
+        }
+
      private:
         void Run();
         static LRESULT CALLBACK RawInputWindowProc(HWND window, UINT message, WPARAM wparam,
@@ -101,6 +108,8 @@ namespace psxemu {
         std::atomic<bool> stop_{ false };
         std::atomic<uint64_t> polls_{ 0 };
         std::array<std::atomic<bool>, 256> keys_in_use_{};
+        std::function<void(int, bool)> on_pad_connection_;
+        std::array<bool, 4> pads_connected_ = { false, false, false, false };   // this thread's
     };
 
 }   // namespace psxemu

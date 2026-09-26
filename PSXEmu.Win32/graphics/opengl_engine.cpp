@@ -19,6 +19,7 @@
 #include "graphics/opengl_engine.h"
 
 #include "shaders/glsl_filters.h"
+#include "shaders/overlay_shaders.h"
 #include "tools/letterbox.h"
 
 #include <algorithm>
@@ -139,6 +140,10 @@ void main() {
             return false;
         }
         current_ = &default_;
+        // The overlay is an extra: if it cannot be made, the picture still is.
+        if (!CreateOverlayPipeline())
+            ReleaseOverlay();
+        gl_.BindVertexArray(vertex_array_);
         SetVsync(vsync_);
         // The surface is the UI thread's window, hidden while a Direct3D engine draws. Posted
         // rather than sent: this thread must never wait on that one (Docs/Threading-Plan.md).
@@ -148,6 +153,7 @@ void main() {
 
     void OpenGLGraphicsEngine::Shutdown() {
         if (context_ != nullptr && wglMakeCurrent(dc_, context_)) {
+            ReleaseOverlay();
             ReleaseChainTargets();
             for (auto& shader : shaders_)
                 DeleteProgram(&shader.second);
@@ -510,7 +516,140 @@ void main() {
     void OpenGLGraphicsEngine::EndFrame() {
         if (context_ == nullptr)
             return;
+        DrawOverlay();
         SwapBuffers(dc_);
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // The overlay
+    // -------------------------------------------------------------------------------------------
+
+    bool OpenGLGraphicsEngine::CreateOverlayPipeline() {
+        auto compile = [this](GLenum type, const char* source) -> GLuint {
+            const GLuint shader = gl_.CreateShader(type);
+            gl_.ShaderSource(shader, 1, &source, nullptr);
+            gl_.CompileShader(shader);
+            GLint ok = 0;
+            gl_.GetShaderiv(shader, kGlCompileStatus, &ok);
+            if (!ok) {
+                gl_.DeleteShader(shader);
+                return 0;
+            }
+            return shader;
+        };
+        const GLuint vertex = compile(kGlVertexShader, kOverlayGlslVertex);
+        const GLuint fragment = compile(kGlFragmentShader, kOverlayGlslFragment);
+        if (vertex == 0 || fragment == 0) {
+            if (vertex != 0)
+                gl_.DeleteShader(vertex);
+            if (fragment != 0)
+                gl_.DeleteShader(fragment);
+            return false;
+        }
+        overlay_program_ = gl_.CreateProgram();
+        gl_.AttachShader(overlay_program_, vertex);
+        gl_.AttachShader(overlay_program_, fragment);
+        gl_.LinkProgram(overlay_program_);
+        gl_.DeleteShader(vertex);
+        gl_.DeleteShader(fragment);
+        GLint linked = 0;
+        gl_.GetProgramiv(overlay_program_, kGlLinkStatus, &linked);
+        if (!linked)
+            return false;
+        gl_.UseProgram(overlay_program_);
+        gl_.Uniform1i(gl_.GetUniformLocation(overlay_program_, "u_atlas"), 0);
+        gl_.UseProgram(0);
+
+        // Its own vertex array, so the picture's empty one is left exactly as it was.
+        gl_.GenVertexArrays(1, &overlay_vertex_array_);
+        gl_.BindVertexArray(overlay_vertex_array_);
+        gl_.GenBuffers(1, &overlay_vertices_);
+        gl_.GenBuffers(1, &overlay_indices_);
+        gl_.BindBuffer(kGlArrayBuffer, overlay_vertices_);
+        gl_.BindBuffer(kGlElementArrayBuffer, overlay_indices_);
+        const GLsizei stride = sizeof(OverlayVertex);
+        gl_.EnableVertexAttribArray(0);
+        gl_.VertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(0));
+        gl_.EnableVertexAttribArray(1);
+        gl_.VertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(8));
+        gl_.EnableVertexAttribArray(2);
+        gl_.VertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, stride,
+                                reinterpret_cast<void*>(16));
+        gl_.BindVertexArray(vertex_array_);
+
+        gl_.GenSamplers(1, &overlay_sampler_);
+        gl_.SamplerParameteri(overlay_sampler_, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        gl_.SamplerParameteri(overlay_sampler_, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        gl_.SamplerParameteri(overlay_sampler_, GL_TEXTURE_WRAP_S, static_cast<GLint>(kGlClampToEdge));
+        gl_.SamplerParameteri(overlay_sampler_, GL_TEXTURE_WRAP_T, static_cast<GLint>(kGlClampToEdge));
+        return true;
+    }
+
+    void OpenGLGraphicsEngine::ReleaseOverlay() {
+        if (context_ != nullptr) {
+            if (overlay_atlas_ != 0)
+                glDeleteTextures(1, &overlay_atlas_);
+            if (overlay_sampler_ != 0)
+                gl_.DeleteSamplers(1, &overlay_sampler_);
+            if (overlay_vertices_ != 0)
+                gl_.DeleteBuffers(1, &overlay_vertices_);
+            if (overlay_indices_ != 0)
+                gl_.DeleteBuffers(1, &overlay_indices_);
+            if (overlay_vertex_array_ != 0)
+                gl_.DeleteVertexArrays(1, &overlay_vertex_array_);
+            if (overlay_program_ != 0)
+                gl_.DeleteProgram(overlay_program_);
+        }
+        overlay_atlas_ = overlay_sampler_ = overlay_vertices_ = overlay_indices_ = 0;
+        overlay_vertex_array_ = overlay_program_ = 0;
+        overlay_atlas_version_ = 0;
+    }
+
+    // Over everything else, into the window. What it changes that the picture's draw assumes -
+    // blending off, the empty vertex array, unit 0's sampler - goes back afterwards.
+    void OpenGLGraphicsEngine::DrawOverlay() {
+        const OverlayDrawData* data = overlay_;
+        overlay_ = nullptr;
+        if (data == nullptr || data->empty() || overlay_program_ == 0)
+            return;
+
+        gl_.ActiveTexture(kGlTexture0);
+        if (overlay_atlas_ == 0 || overlay_atlas_version_ != data->atlas_version) {
+            if (overlay_atlas_ == 0)
+                glGenTextures(1, &overlay_atlas_);
+            glBindTexture(GL_TEXTURE_2D, overlay_atlas_);
+            glTexParameteri(GL_TEXTURE_2D, kGlTextureMaxLevel, 0);
+            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, data->atlas_width, data->atlas_height, 0,
+                         GL_RGBA, GL_UNSIGNED_BYTE, data->atlas);
+            overlay_atlas_version_ = data->atlas_version;
+        }
+
+        overlay_scratch_.resize(data->vertex_count);
+        WriteOverlayVertices(*data, width_, height_, false, overlay_scratch_.data());
+
+        gl_.BindFramebuffer(kGlFramebuffer, 0);
+        glViewport(0, 0, width_, height_);
+        glDisable(GL_SCISSOR_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        gl_.UseProgram(overlay_program_);
+        gl_.BindVertexArray(overlay_vertex_array_);
+        gl_.BindBuffer(kGlArrayBuffer, overlay_vertices_);
+        gl_.BufferData(kGlArrayBuffer,
+                       static_cast<ptrdiff_t>(overlay_scratch_.size() * sizeof(OverlayVertex)),
+                       overlay_scratch_.data(), kGlStreamDraw);
+        gl_.BufferData(kGlElementArrayBuffer,
+                       static_cast<ptrdiff_t>(data->index_count * sizeof(uint32_t)), data->indices,
+                       kGlStreamDraw);
+        glBindTexture(GL_TEXTURE_2D, overlay_atlas_);
+        gl_.BindSampler(0, overlay_sampler_);
+        glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(data->index_count), GL_UNSIGNED_INT,
+                       nullptr);
+
+        gl_.BindSampler(0, samplers_[0]);
+        gl_.BindVertexArray(vertex_array_);
+        glDisable(GL_BLEND);
     }
 
     void OpenGLGraphicsEngine::Resize(int width, int height) {

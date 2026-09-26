@@ -85,6 +85,8 @@
     <ClCompile Include="ui\memcard_editor.cpp" />
     <ClCompile Include="ui\key_bindings_window.cpp" />
     <ClCompile Include="ui\controller_bindings_window.cpp" />
+    <ClCompile Include="ui\overlay\overlay.cpp" />
+    <ClCompile Include="ui\overlay\overlay_atlas.cpp" />
     <ClCompile Include="ui\debugger_window.cpp" />
     <ClCompile Include="graphics\d3d11_presenter.cpp" />
     <ClCompile Include="graphics\d3d12_graphics_engine.cpp" />
@@ -107,6 +109,10 @@
     <ClInclude Include="ui\key_bindings_window.h" />
     <ClInclude Include="input\controller_bindings.h" />
     <ClInclude Include="ui\controller_bindings_window.h" />
+    <ClInclude Include="ui\overlay\overlay.h" />
+    <ClInclude Include="ui\overlay\overlay_atlas.h" />
+    <ClInclude Include="ui\overlay\overlay_draw.h" />
+    <ClInclude Include="ui\overlay\frame_stats_ring.h" />
     <ClInclude Include="ui\debugger_window.h" />
     <ClInclude Include="app\const.h" />
     <ClInclude Include="graphics\d3d11_presenter.h" />
@@ -127,6 +133,10 @@
     <ClInclude Include="input\mouse.h" />
     <ClInclude Include="shaders\glsl_filters.h" />
     <ClInclude Include="shaders\spirv_filters.h" />
+    <ClInclude Include="shaders\overlay_shaders.h" />
+    <ClInclude Include="shaders\spirv_overlay.h" />
+    <ClInclude Include="shaders\spirv_overlay_vert.h" />
+    <ClInclude Include="shaders\spirv_overlay_frag.h" />
     <ClInclude Include="shaders\legacy_shaders.h" />
     <ClInclude Include="shaders\ps_scanline_filter.h" />
     <ClInclude Include="shaders\ps_xbrz_filter.h" />

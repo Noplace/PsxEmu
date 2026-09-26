@@ -70,8 +70,42 @@ namespace psxemu {
         // GLSL would need a compiler at run time; the shaders arrive compiled instead.
         bool LoadPixelShaderFromString(const std::string&, const char*) override { return false; }
         bool LoadShaderChain(const std::string& name, const std::vector<ShaderPass>& passes) override;
+        void SetOverlay(const OverlayDrawData* overlay) override { overlay_ = overlay; }
 
      private:
+        // ---- the overlay (ui/overlay) ------------------------------------------------------
+        // Its atlas goes up before the window's pass begins and it is drawn at the end of it,
+        // both inside RenderFramebuffer, which records the whole frame.
+        bool CreateOverlayPipeline();
+        void ReleaseOverlay();
+        bool CreateHostBuffer(VkDeviceSize size, VkFlags usage, VkBuffer* buffer,
+                              VkDeviceMemory* memory, void** mapped);
+        // Uploads what this frame's overlay needs; false if there is nothing to draw.
+        bool PrepareOverlay(VkCommandBuffer commands);
+        void DrawOverlay(VkCommandBuffer commands);
+        const OverlayDrawData* overlay_ = nullptr;
+        size_t overlay_index_count_ = 0;
+        VkShaderModule overlay_vertex_module_ = nullptr;
+        VkShaderModule overlay_fragment_module_ = nullptr;
+        VkDescriptorSetLayout overlay_set_layout_ = nullptr;
+        VkPipelineLayout overlay_pipeline_layout_ = nullptr;
+        VkPipeline overlay_pipeline_ = nullptr;
+        VkSampler overlay_sampler_ = nullptr;
+        VkDescriptorPool overlay_pool_ = nullptr;
+        VkDescriptorSet overlay_set_ = nullptr;
+        uint64_t overlay_atlas_version_ = 0;   // of overlay_atlas_, below Image
+        VkBuffer overlay_staging_ = nullptr;
+        VkDeviceMemory overlay_staging_memory_ = nullptr;
+        void* overlay_staging_mapped_ = nullptr;
+        VkBuffer overlay_vertices_ = nullptr;
+        VkDeviceMemory overlay_vertices_memory_ = nullptr;
+        void* overlay_vertices_mapped_ = nullptr;
+        size_t overlay_vertex_capacity_ = 0;
+        VkBuffer overlay_indices_ = nullptr;
+        VkDeviceMemory overlay_indices_memory_ = nullptr;
+        void* overlay_indices_mapped_ = nullptr;
+        size_t overlay_index_capacity_ = 0;
+
         struct Shader {
             VkShaderModule module = nullptr;
             VkPipeline pipeline = nullptr;
@@ -169,6 +203,9 @@ namespace psxemu {
         const Chain* targets_for_ = nullptr;
         int targets_width_ = 0;
         int targets_height_ = 0;
+
+        // The overlay's atlas (see the overlay's members above).
+        Image overlay_atlas_;
     };
 
 }   // namespace psxemu

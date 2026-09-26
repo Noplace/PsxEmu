@@ -19,8 +19,10 @@
 #include "graphics/vulkan_engine.h"
 
 #include "shaders/spirv_filters.h"
+#include "shaders/spirv_overlay.h"
 #include "tools/letterbox.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace psxemu {
@@ -72,6 +74,9 @@ namespace psxemu {
             return false;
         }
         current_ = &default_;
+        // The overlay is an extra: if it cannot be made, the picture still is.
+        if (!CreateOverlayPipeline())
+            ReleaseOverlay();
         // The surface is the UI thread's window, hidden while another engine draws. Posted rather
         // than sent: this thread must never wait on that one (Docs/Threading-Plan.md).
         ShowWindowAsync(window_, SW_SHOWNA);
@@ -925,6 +930,9 @@ namespace psxemu {
                                &barrier);
         frame_layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
+        // The overlay's uploads, outside any render pass as copies must be.
+        const bool draw_overlay = PrepareOverlay(commands_);
+
         // A fixed 4:3, as the other engines draw it (bug 47), placed exactly as D3D12 places it:
         // the letterbox as a fractional viewport, cut to whole pixels by the same scissor.
         const LetterboxRect rect =
@@ -988,6 +996,8 @@ namespace psxemu {
         // outW/outH are the letterbox's size, not the window's - Sharp Bilinear works out its
         // texel scale from them.
         Draw(commands_, *last, last_reads, rect.width, rect.height, in_width, in_height);
+        if (draw_overlay)
+            DrawOverlay(commands_);
         vk_.CmdEndRenderPass(commands_);
         vk_.EndCommandBuffer(commands_);
 
@@ -1027,12 +1037,351 @@ namespace psxemu {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // The overlay
+    // ---------------------------------------------------------------------------------------------
+
+    bool VulkanGraphicsEngine::CreateHostBuffer(VkDeviceSize size, VkFlags usage, VkBuffer* buffer,
+                                                VkDeviceMemory* memory, void** mapped) {
+        VkBufferCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        info.size = size;
+        info.usage = usage;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vk_.CreateBuffer(device_, &info, nullptr, buffer) != VK_SUCCESS)
+            return false;
+        VkMemoryRequirements needs = {};
+        vk_.GetBufferMemoryRequirements(device_, *buffer, &needs);
+        const int type = FindMemory(needs.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                                              VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        VkMemoryAllocateInfo allocate = {};
+        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate.allocationSize = needs.size;
+        allocate.memoryTypeIndex = static_cast<uint32_t>(type);
+        return type >= 0 &&
+               vk_.AllocateMemory(device_, &allocate, nullptr, memory) == VK_SUCCESS &&
+               vk_.BindBufferMemory(device_, *buffer, *memory, 0) == VK_SUCCESS &&
+               vk_.MapMemory(device_, *memory, 0, size, 0, mapped) == VK_SUCCESS;
+    }
+
+    bool VulkanGraphicsEngine::CreateOverlayPipeline() {
+        VkShaderModuleCreateInfo module_info = {};
+        module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        module_info.codeSize = sizeof(kSpirvOverlayVertex);
+        module_info.pCode = kSpirvOverlayVertex;
+        if (vk_.CreateShaderModule(device_, &module_info, nullptr, &overlay_vertex_module_) !=
+            VK_SUCCESS)
+            return false;
+        module_info.codeSize = sizeof(kSpirvOverlayFragment);
+        module_info.pCode = kSpirvOverlayFragment;
+        if (vk_.CreateShaderModule(device_, &module_info, nullptr, &overlay_fragment_module_) !=
+            VK_SUCCESS)
+            return false;
+
+        VkSamplerCreateInfo sampler = {};
+        sampler.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler.magFilter = VK_FILTER_LINEAR;
+        sampler.minFilter = VK_FILTER_LINEAR;
+        sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler.addressModeU = sampler.addressModeV = sampler.addressModeW =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sampler.maxAnisotropy = 1.0f;
+        sampler.compareOp = VK_COMPARE_OP_NEVER;
+        sampler.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+        if (vk_.CreateSampler(device_, &sampler, nullptr, &overlay_sampler_) != VK_SUCCESS)
+            return false;
+
+        VkDescriptorSetLayoutBinding binding = {};
+        binding.binding = 0;
+        binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        binding.descriptorCount = 1;
+        binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo set_info = {};
+        set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        set_info.bindingCount = 1;
+        set_info.pBindings = &binding;
+        if (vk_.CreateDescriptorSetLayout(device_, &set_info, nullptr, &overlay_set_layout_) !=
+            VK_SUCCESS)
+            return false;
+        VkPipelineLayoutCreateInfo layout_info = {};
+        layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layout_info.setLayoutCount = 1;
+        layout_info.pSetLayouts = &overlay_set_layout_;
+        if (vk_.CreatePipelineLayout(device_, &layout_info, nullptr, &overlay_pipeline_layout_) !=
+            VK_SUCCESS)
+            return false;
+
+        VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+        VkDescriptorPoolCreateInfo pool = {};
+        pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool.maxSets = 1;
+        pool.poolSizeCount = 1;
+        pool.pPoolSizes = &size;
+        if (vk_.CreateDescriptorPool(device_, &pool, nullptr, &overlay_pool_) != VK_SUCCESS)
+            return false;
+        VkDescriptorSetAllocateInfo allocate = {};
+        allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        allocate.descriptorPool = overlay_pool_;
+        allocate.descriptorSetCount = 1;
+        allocate.pSetLayouts = &overlay_set_layout_;
+        if (vk_.AllocateDescriptorSets(device_, &allocate, &overlay_set_) != VK_SUCCESS)
+            return false;
+
+        VkPipelineShaderStageCreateInfo stages[2] = {};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        stages[0].module = overlay_vertex_module_;
+        stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        stages[1].module = overlay_fragment_module_;
+        stages[1].pName = "main";
+
+        const VkVertexInputBindingDescription vertex_binding = { 0, sizeof(OverlayVertex),
+                                                                 VK_VERTEX_INPUT_RATE_VERTEX };
+        const VkVertexInputAttributeDescription attributes[3] = {
+            { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 },
+            { 1, 0, VK_FORMAT_R32G32_SFLOAT, 8 },
+            { 2, 0, VK_FORMAT_R8G8B8A8_UNORM, 16 },
+        };
+        VkPipelineVertexInputStateCreateInfo vertex_input = {};
+        vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertex_input.vertexBindingDescriptionCount = 1;
+        vertex_input.pVertexBindingDescriptions = &vertex_binding;
+        vertex_input.vertexAttributeDescriptionCount = 3;
+        vertex_input.pVertexAttributeDescriptions = attributes;
+        VkPipelineInputAssemblyStateCreateInfo assembly = {};
+        assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo viewport = {};
+        viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewport.viewportCount = 1;
+        viewport.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo raster = {};
+        raster.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        raster.polygonMode = VK_POLYGON_MODE_FILL;
+        raster.cullMode = VK_CULL_MODE_NONE;
+        raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        raster.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo multisample = {};
+        multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineColorBlendAttachmentState blend_attachment = {};
+        blend_attachment.blendEnable = kVkTrue;
+        blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_RGBA_BITS;
+        VkPipelineColorBlendStateCreateInfo blend = {};
+        blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        blend.logicOp = VK_LOGIC_OP_COPY;
+        blend.attachmentCount = 1;
+        blend.pAttachments = &blend_attachment;
+        const VkDynamicState dynamic_states[2] = { VK_DYNAMIC_STATE_VIEWPORT,
+                                                   VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo dynamic = {};
+        dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamic.dynamicStateCount = 2;
+        dynamic.pDynamicStates = dynamic_states;
+
+        VkGraphicsPipelineCreateInfo pipeline = {};
+        pipeline.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipeline.stageCount = 2;
+        pipeline.pStages = stages;
+        pipeline.pVertexInputState = &vertex_input;
+        pipeline.pInputAssemblyState = &assembly;
+        pipeline.pViewportState = &viewport;
+        pipeline.pRasterizationState = &raster;
+        pipeline.pMultisampleState = &multisample;
+        pipeline.pColorBlendState = &blend;
+        pipeline.pDynamicState = &dynamic;
+        pipeline.layout = overlay_pipeline_layout_;
+        pipeline.renderPass = window_pass_;
+        pipeline.basePipelineIndex = -1;
+        return vk_.CreateGraphicsPipelines(device_, nullptr, 1, &pipeline, nullptr,
+                                           &overlay_pipeline_) == VK_SUCCESS;
+    }
+
+    void VulkanGraphicsEngine::ReleaseOverlay() {
+        if (device_ != nullptr) {
+            auto buffer = [this](VkBuffer* b, VkDeviceMemory* m, void** mapped) {
+                if (*mapped != nullptr)
+                    vk_.UnmapMemory(device_, *m);
+                if (*b != nullptr)
+                    vk_.DestroyBuffer(device_, *b, nullptr);
+                if (*m != nullptr)
+                    vk_.FreeMemory(device_, *m, nullptr);
+                *b = nullptr;
+                *m = nullptr;
+                *mapped = nullptr;
+            };
+            buffer(&overlay_vertices_, &overlay_vertices_memory_, &overlay_vertices_mapped_);
+            buffer(&overlay_indices_, &overlay_indices_memory_, &overlay_indices_mapped_);
+            buffer(&overlay_staging_, &overlay_staging_memory_, &overlay_staging_mapped_);
+            DestroyImage(&overlay_atlas_);
+            if (overlay_pipeline_ != nullptr)
+                vk_.DestroyPipeline(device_, overlay_pipeline_, nullptr);
+            if (overlay_pool_ != nullptr)
+                vk_.DestroyDescriptorPool(device_, overlay_pool_, nullptr);
+            if (overlay_pipeline_layout_ != nullptr)
+                vk_.DestroyPipelineLayout(device_, overlay_pipeline_layout_, nullptr);
+            if (overlay_set_layout_ != nullptr)
+                vk_.DestroyDescriptorSetLayout(device_, overlay_set_layout_, nullptr);
+            if (overlay_sampler_ != nullptr)
+                vk_.DestroySampler(device_, overlay_sampler_, nullptr);
+            if (overlay_fragment_module_ != nullptr)
+                vk_.DestroyShaderModule(device_, overlay_fragment_module_, nullptr);
+            if (overlay_vertex_module_ != nullptr)
+                vk_.DestroyShaderModule(device_, overlay_vertex_module_, nullptr);
+        }
+        overlay_pipeline_ = nullptr;
+        overlay_pool_ = nullptr;
+        overlay_set_ = nullptr;
+        overlay_pipeline_layout_ = nullptr;
+        overlay_set_layout_ = nullptr;
+        overlay_sampler_ = nullptr;
+        overlay_fragment_module_ = overlay_vertex_module_ = nullptr;
+        overlay_vertex_capacity_ = overlay_index_capacity_ = 0;
+        overlay_atlas_version_ = 0;
+        overlay_index_count_ = 0;
+    }
+
+    // Called with the last frame finished (RenderFramebuffer waited on its fence), so every
+    // buffer here is free to rewrite or replace.
+    bool VulkanGraphicsEngine::PrepareOverlay(VkCommandBuffer commands) {
+        const OverlayDrawData* data = overlay_;
+        overlay_ = nullptr;
+        overlay_index_count_ = 0;
+        if (data == nullptr || data->empty() || overlay_pipeline_ == nullptr)
+            return false;
+
+        if (overlay_atlas_.image == nullptr || overlay_atlas_version_ != data->atlas_version) {
+            DestroyImage(&overlay_atlas_);
+            if (overlay_staging_ != nullptr) {
+                vk_.UnmapMemory(device_, overlay_staging_memory_);
+                vk_.DestroyBuffer(device_, overlay_staging_, nullptr);
+                vk_.FreeMemory(device_, overlay_staging_memory_, nullptr);
+                overlay_staging_ = nullptr;
+                overlay_staging_memory_ = nullptr;
+                overlay_staging_mapped_ = nullptr;
+            }
+            const VkDeviceSize bytes =
+                static_cast<VkDeviceSize>(data->atlas_width) * data->atlas_height * 4;
+            if (!CreateImage(data->atlas_width, data->atlas_height, VK_FORMAT_R8G8B8A8_UNORM,
+                             VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                             &overlay_atlas_) ||
+                !CreateHostBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &overlay_staging_,
+                                  &overlay_staging_memory_, &overlay_staging_mapped_)) {
+                DestroyImage(&overlay_atlas_);
+                return false;
+            }
+            memcpy(overlay_staging_mapped_, data->atlas, static_cast<size_t>(bytes));
+
+            VkImageMemoryBarrier barrier = {};
+            barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            barrier.srcQueueFamilyIndex = kVkQueueFamilyIgnored;
+            barrier.dstQueueFamilyIndex = kVkQueueFamilyIgnored;
+            barrier.image = overlay_atlas_.image;
+            barrier.subresourceRange = ColorRange();
+            barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            vk_.CmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
+                                   &barrier);
+            VkBufferImageCopy copy = {};
+            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageExtent = { static_cast<uint32_t>(data->atlas_width),
+                                 static_cast<uint32_t>(data->atlas_height), 1 };
+            vk_.CmdCopyBufferToImage(commands, overlay_staging_, overlay_atlas_.image,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vk_.CmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                                   nullptr, 1, &barrier);
+
+            VkDescriptorImageInfo image = {};
+            image.sampler = overlay_sampler_;
+            image.imageView = overlay_atlas_.view;
+            image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet write = {};
+            write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            write.dstSet = overlay_set_;
+            write.dstBinding = 0;
+            write.descriptorCount = 1;
+            write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            write.pImageInfo = &image;
+            vk_.UpdateDescriptorSets(device_, 1, &write, 0, nullptr);
+            overlay_atlas_version_ = data->atlas_version;
+        }
+
+        auto ensure = [this](VkBuffer* buffer, VkDeviceMemory* memory, void** mapped,
+                             size_t* capacity, size_t bytes, VkFlags usage) {
+            if (*buffer != nullptr && *capacity >= bytes)
+                return true;
+            if (*buffer != nullptr) {
+                vk_.UnmapMemory(device_, *memory);
+                vk_.DestroyBuffer(device_, *buffer, nullptr);
+                vk_.FreeMemory(device_, *memory, nullptr);
+                *buffer = nullptr;
+                *memory = nullptr;
+                *mapped = nullptr;
+            }
+            const size_t grown = (std::max)((std::max)(bytes, *capacity * 2),
+                                            static_cast<size_t>(65536));
+            if (!CreateHostBuffer(grown, usage, buffer, memory, mapped))
+                return false;
+            *capacity = grown;
+            return true;
+        };
+        const size_t vertex_bytes = data->vertex_count * sizeof(OverlayVertex);
+        const size_t index_bytes = data->index_count * sizeof(uint32_t);
+        if (!ensure(&overlay_vertices_, &overlay_vertices_memory_, &overlay_vertices_mapped_,
+                    &overlay_vertex_capacity_, vertex_bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT) ||
+            !ensure(&overlay_indices_, &overlay_indices_memory_, &overlay_indices_mapped_,
+                    &overlay_index_capacity_, index_bytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT))
+            return false;
+        // Vulkan's clip space has y down.
+        WriteOverlayVertices(*data, static_cast<int>(extent_.width),
+                             static_cast<int>(extent_.height), true,
+                             static_cast<OverlayVertex*>(overlay_vertices_mapped_));
+        memcpy(overlay_indices_mapped_, data->indices, index_bytes);
+        overlay_index_count_ = data->index_count;
+        return true;
+    }
+
+    // Inside the window's pass, after the picture.
+    void VulkanGraphicsEngine::DrawOverlay(VkCommandBuffer commands) {
+        if (overlay_index_count_ == 0)
+            return;
+        const VkViewport view = { 0.0f, 0.0f, static_cast<float>(extent_.width),
+                                  static_cast<float>(extent_.height), 0.0f, 1.0f };
+        const VkRect2D whole = { { 0, 0 }, extent_ };
+        vk_.CmdSetViewport(commands, 0, 1, &view);
+        vk_.CmdSetScissor(commands, 0, 1, &whole);
+        vk_.CmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, overlay_pipeline_);
+        vk_.CmdBindDescriptorSets(commands, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                  overlay_pipeline_layout_, 0, 1, &overlay_set_, 0, nullptr);
+        const VkDeviceSize offset = 0;
+        vk_.CmdBindVertexBuffers(commands, 0, 1, &overlay_vertices_, &offset);
+        vk_.CmdBindIndexBuffer(commands, overlay_indices_, 0, VK_INDEX_TYPE_UINT32);
+        vk_.CmdDrawIndexed(commands, static_cast<uint32_t>(overlay_index_count_), 1, 0, 0, 0);
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Taking it down
     // ---------------------------------------------------------------------------------------------
 
     void VulkanGraphicsEngine::Shutdown() {
         if (device_ != nullptr) {
             vk_.DeviceWaitIdle(device_);
+            ReleaseOverlay();
             ReleaseChainTargets();
             ReleaseFrameTexture();
             DestroySwapchain();

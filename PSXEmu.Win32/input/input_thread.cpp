@@ -142,6 +142,11 @@ namespace psxemu {
             for (int i = 0; i < emulation::host::HostInput::kPads; ++i) {
                 const Gamepad::State state = gamepads_[i].Poll();
                 reading.pads[i].connected = gamepads_[i].connected();
+                if (reading.pads[i].connected != pads_connected_[i]) {
+                    pads_connected_[i] = reading.pads[i].connected;
+                    if (on_pad_connection_)
+                        on_pad_connection_(i, pads_connected_[i]);
+                }
                 reading.pads[i].inputs = state.inputs;
                 reading.pads[i].left_x = state.left_x;
                 reading.pads[i].left_y = state.left_y;

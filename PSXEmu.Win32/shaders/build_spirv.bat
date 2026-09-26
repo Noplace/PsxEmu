@@ -1,5 +1,6 @@
 @echo off
-REM Rebuilds spirv_filters.h - the Vulkan engine's shaders as SPIR-V - from glsl_filters.h.
+REM Rebuilds spirv_filters.h - the Vulkan engine's shaders as SPIR-V - from glsl_filters.h, and
+REM the overlay's spirv_overlay_vert.h / spirv_overlay_frag.h from overlay.vert / overlay.frag.
 REM
 REM     build_spirv.bat <path to glslang.exe>
 REM
@@ -28,3 +29,9 @@ if errorlevel 1 exit /b 1
 
 cd /d Temp\tools\obj_spirv
 ..\make_spirv.exe "%~f1" "%~dp0spirv_filters.h"
+if errorlevel 1 exit /b 1
+
+REM The on-screen overlay's pair (spirv_overlay.h), straight from glslang.
+"%~f1" -V -g0 --quiet --vn kSpirvOverlayVertex "%~dp0overlay.vert" -o "%~dp0spirv_overlay_vert.h"
+if errorlevel 1 exit /b 1
+"%~f1" -V -g0 --quiet --vn kSpirvOverlayFragment "%~dp0overlay.frag" -o "%~dp0spirv_overlay_frag.h"

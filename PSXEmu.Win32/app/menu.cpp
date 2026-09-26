@@ -208,6 +208,22 @@ namespace psxemu {
         AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandFullscreen),
                     L"F&ull Screen\tAlt+Enter");
 
+        // What is drawn over the picture (ui/overlay): the performance panel at the top left,
+        // notifications at the lower left, the controllers at the top right.
+        HMENU display = CreatePopupMenu();
+        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandStatsOff),
+                    L"Performance &Off");
+        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandStatsCompact),
+                    L"Performance &Compact");
+        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandStatsFull),
+                    L"Performance &Full, with Graphs\tF9");
+        AppendMenuW(display, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandOverlayNotifications),
+                    L"&Notifications");
+        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandOverlayControllersAlways),
+                    L"Always Show &Controllers");
+        AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(display), L"On-Screen &Display");
+
         // Two ports, each with its own controller-type choice and its own input source - four small
         // popups rather than one flat list, so ticking one port's choice never has to be told apart
         // from the other's.
@@ -724,6 +740,19 @@ namespace psxemu {
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandFullscreen),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
+    }
+
+    void TickOnScreenDisplay(HWND window, int stats_mode, bool notifications,
+                             bool controllers_always) {
+        HMENU bar = MenuBar(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuRadioItem(bar, kCommandStatsOff, kCommandStatsFull,
+                           static_cast<UINT>(kCommandStatsOff + stats_mode), MF_BYCOMMAND);
+        CheckMenuItem(bar, static_cast<UINT>(kCommandOverlayNotifications),
+                      MF_BYCOMMAND | (notifications ? MF_CHECKED : MF_UNCHECKED));
+        CheckMenuItem(bar, static_cast<UINT>(kCommandOverlayControllersAlways),
+                      MF_BYCOMMAND | (controllers_always ? MF_CHECKED : MF_UNCHECKED));
     }
 
     emulation::psx::Sio::ControllerType ParseControllerType(const std::string& key) {

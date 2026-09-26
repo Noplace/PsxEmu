@@ -70,8 +70,23 @@ namespace psxemu {
         // use.
         bool LoadPixelShaderFromString(const std::string& name, const char* source) override;
         bool LoadShaderChain(const std::string& name, const std::vector<ShaderPass>& passes) override;
+        void SetOverlay(const OverlayDrawData* overlay) override { overlay_ = overlay; }
 
      private:
+        // ---- the overlay (ui/overlay), drawn last in EndFrame ------------------------------
+        bool CreateOverlayPipeline();
+        void DrawOverlay();
+        void ReleaseOverlay();
+        const OverlayDrawData* overlay_ = nullptr;
+        GLuint overlay_program_ = 0;
+        GLuint overlay_vertex_array_ = 0;
+        GLuint overlay_vertices_ = 0;
+        GLuint overlay_indices_ = 0;
+        GLuint overlay_atlas_ = 0;
+        GLuint overlay_sampler_ = 0;
+        uint64_t overlay_atlas_version_ = 0;
+        std::vector<OverlayVertex> overlay_scratch_;
+
         struct Program {
             GLuint id = 0;
             GLint params = -1;   // u_params: outW, outH, inW, inH

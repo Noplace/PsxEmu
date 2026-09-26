@@ -39,6 +39,12 @@
     <ClCompile Include="ui\controller_bindings_window.cpp">
       <Filter>ui</Filter>
     </ClCompile>
+    <ClCompile Include="ui\overlay\overlay.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\overlay\overlay_atlas.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
     <ClCompile Include="ui\debugger_window.cpp">
       <Filter>ui</Filter>
     </ClCompile>
@@ -101,6 +107,18 @@
     <ClInclude Include="ui\controller_bindings_window.h">
       <Filter>ui</Filter>
     </ClInclude>
+    <ClInclude Include="ui\overlay\overlay.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\overlay\overlay_atlas.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\overlay\overlay_draw.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\overlay\frame_stats_ring.h">
+      <Filter>ui</Filter>
+    </ClInclude>
     <ClInclude Include="ui\debugger_window.h">
       <Filter>ui</Filter>
     </ClInclude>
@@ -159,6 +177,18 @@
       <Filter>shaders</Filter>
     </ClInclude>
     <ClInclude Include="shaders\spirv_filters.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\overlay_shaders.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\spirv_overlay.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\spirv_overlay_vert.h">
+      <Filter>shaders</Filter>
+    </ClInclude>
+    <ClInclude Include="shaders\spirv_overlay_frag.h">
       <Filter>shaders</Filter>
     </ClInclude>
     <ClInclude Include="shaders\legacy_shaders.h">

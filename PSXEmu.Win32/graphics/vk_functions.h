@@ -147,7 +147,12 @@ namespace psxemu {
         VK_FORMAT_UNDEFINED = 0,
         VK_FORMAT_R8G8B8A8_UNORM = 37,
         VK_FORMAT_B8G8R8A8_UNORM = 44,
+        VK_FORMAT_R32G32_SFLOAT = 103,   // the overlay's positions and texture coordinates
     };
+
+    // The overlay's vertices and indices (ui/overlay) - the only drawing here that has either.
+    enum VkVertexInputRate : int32_t { VK_VERTEX_INPUT_RATE_VERTEX = 0 };
+    enum VkIndexType : int32_t { VK_INDEX_TYPE_UINT32 = 1 };
 
     enum VkColorSpaceKHR : int32_t { VK_COLOR_SPACE_SRGB_NONLINEAR_KHR = 0 };
 
@@ -201,7 +206,12 @@ namespace psxemu {
     enum VkPrimitiveTopology : int32_t { VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST = 3 };
     enum VkPolygonMode : int32_t { VK_POLYGON_MODE_FILL = 0 };
     enum VkFrontFace : int32_t { VK_FRONT_FACE_COUNTER_CLOCKWISE = 0 };
-    enum VkBlendFactor : int32_t { VK_BLEND_FACTOR_ZERO = 0, VK_BLEND_FACTOR_ONE = 1 };
+    enum VkBlendFactor : int32_t {
+        VK_BLEND_FACTOR_ZERO = 0,
+        VK_BLEND_FACTOR_ONE = 1,
+        VK_BLEND_FACTOR_SRC_ALPHA = 6,
+        VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA = 7,
+    };
     enum VkBlendOp : int32_t { VK_BLEND_OP_ADD = 0 };
     enum VkLogicOp : int32_t { VK_LOGIC_OP_COPY = 3 };
     enum VkDynamicState : int32_t { VK_DYNAMIC_STATE_VIEWPORT = 0, VK_DYNAMIC_STATE_SCISSOR = 1 };
@@ -224,6 +234,8 @@ namespace psxemu {
     inline constexpr VkFlags VK_IMAGE_USAGE_SAMPLED_BIT = 0x4;
     inline constexpr VkFlags VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x10;
     inline constexpr VkFlags VK_BUFFER_USAGE_TRANSFER_SRC_BIT = 0x1;
+    inline constexpr VkFlags VK_BUFFER_USAGE_INDEX_BUFFER_BIT = 0x40;
+    inline constexpr VkFlags VK_BUFFER_USAGE_VERTEX_BUFFER_BIT = 0x80;
     inline constexpr VkFlags VK_IMAGE_ASPECT_COLOR_BIT = 0x1;
     inline constexpr VkFlags VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT = 0x1;
     inline constexpr VkFlags VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT = 0x80;
@@ -599,14 +611,29 @@ namespace psxemu {
         const void* pSpecializationInfo;   // VkSpecializationInfo; unused
     };
 
+    struct VkVertexInputBindingDescription {
+        uint32_t binding;
+        uint32_t stride;
+        VkVertexInputRate inputRate;
+    };
+
+    struct VkVertexInputAttributeDescription {
+        uint32_t location;
+        uint32_t binding;
+        VkFormat format;
+        uint32_t offset;
+    };
+
     struct VkPipelineVertexInputStateCreateInfo {
         VkStructureType sType;
         const void* pNext;
         VkFlags flags;
         uint32_t vertexBindingDescriptionCount;
-        const void* pVertexBindingDescriptions;     // none: the triangle comes from the vertex id
+        // None for the picture's passes, whose triangle comes from the vertex id; the overlay's
+        // one binding otherwise.
+        const VkVertexInputBindingDescription* pVertexBindingDescriptions;
         uint32_t vertexAttributeDescriptionCount;
-        const void* pVertexAttributeDescriptions;
+        const VkVertexInputAttributeDescription* pVertexAttributeDescriptions;
     };
 
     struct VkPipelineInputAssemblyStateCreateInfo {
@@ -921,7 +948,11 @@ namespace psxemu {
       (VkCommandBuffer, VkPipelineLayout, VkFlags, uint32_t, uint32_t, const void*))               \
     X(void, CmdSetViewport, (VkCommandBuffer, uint32_t, uint32_t, const VkViewport*))              \
     X(void, CmdSetScissor, (VkCommandBuffer, uint32_t, uint32_t, const VkRect2D*))                 \
-    X(void, CmdDraw, (VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t))
+    X(void, CmdDraw, (VkCommandBuffer, uint32_t, uint32_t, uint32_t, uint32_t))                    \
+    X(void, CmdBindVertexBuffers,                                                                  \
+      (VkCommandBuffer, uint32_t, uint32_t, const VkBuffer*, const VkDeviceSize*))                 \
+    X(void, CmdBindIndexBuffer, (VkCommandBuffer, VkBuffer, VkDeviceSize, VkIndexType))            \
+    X(void, CmdDrawIndexed, (VkCommandBuffer, uint32_t, uint32_t, uint32_t, int32_t, uint32_t))
 
     struct VkFunctions {
         typedef VkResult(__stdcall* CreateInstanceProc)(const VkInstanceCreateInfo*, const void*,

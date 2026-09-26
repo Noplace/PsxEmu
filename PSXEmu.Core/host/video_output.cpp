@@ -48,6 +48,7 @@ void VideoOutput::Show(const VideoFrame& frame) {
       static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(took).count()),
       std::memory_order_relaxed);
   presents_.fetch_add(1, std::memory_order_relaxed);
+  last_shown_ = std::chrono::steady_clock::now();
 }
 
 void VideoOutput::Run() {
@@ -59,6 +60,20 @@ void VideoOutput::Run() {
 
     const VideoFrame* frame = frames_.TakeNew();
     if (frame == nullptr) {
+      // Something on top of the picture is animating with no frames coming - the game
+      // paused, or none loaded - so the last frame is shown again under it. Only once a
+      // frame's time has gone by with nothing new, so a running game is never drawn twice.
+      if (presenter_ != nullptr && presenter_->WantsRefresh()) {
+        const auto since = std::chrono::steady_clock::now() - last_shown_;
+        const auto kGap = std::chrono::milliseconds(33);
+        if (since >= kGap) {
+          presenter_->Refresh(frames_.current());
+          last_shown_ = std::chrono::steady_clock::now();
+          continue;
+        }
+        doorbell_.Wait(std::chrono::duration_cast<std::chrono::microseconds>(kGap - since));
+        continue;
+      }
       // A tenth of a second is only the longest this goes without looking at
       // the request queue on its own; a frame or a request rings the bell.
       doorbell_.Wait(std::chrono::milliseconds(100));

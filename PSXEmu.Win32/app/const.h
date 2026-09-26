@@ -138,6 +138,13 @@ namespace psxemu {
         kCommandDmaStopsCpu,
         kCommandMeasuredBusTiming,
         kCommandWriteQueueTiming,
+        // Settings > Video > On-Screen Display: the performance panel's three settings (F9 steps
+        // through them), the notifications, and whether the controllers corner stays up.
+        kCommandStatsOff,
+        kCommandStatsCompact,
+        kCommandStatsFull,
+        kCommandOverlayNotifications,
+        kCommandOverlayControllersAlways,
     };
 
     // ---------------------------------------------------------------------------------------------

@@ -31,6 +31,8 @@
 
 #include "app/engine_factory.h"
 #include "host/video_output.h"
+#include "ui/overlay/frame_stats_ring.h"
+#include "ui/overlay/overlay.h"
 
 #include <functional>
 
@@ -40,8 +42,10 @@ namespace psxemu {
      public:
         // `to_ui` runs a piece of work on the UI thread - App::PostToUi.
         // `windows` says where each engine draws (App::CreateRenderSurfaces).
+        // `stats` is where the machine leaves its per-frame timings for the overlay's graphs;
+        // it outlives this.
         D3DPresenter(const RenderWindows& windows,
-                     std::function<void(std::function<void()>)> to_ui);
+                     std::function<void(std::function<void()>)> to_ui, FrameStatsRing* stats);
         ~D3DPresenter() override;
 
         // Brings up `renderer` ("d3d11", "d3d12", "opengl" or "vulkan") with `filter` on it, at the window's
@@ -49,9 +53,15 @@ namespace psxemu {
         // front end and is reported through `to_ui`.
         bool Open(const std::string& renderer, const std::string& filter);
 
-        // host::Presenter, both on the video thread.
+        // host::Presenter, all on the video thread.
         void Present(const emulation::host::VideoFrame& frame) override;
         void Resize(int width, int height) override;
+        bool WantsRefresh() override;
+        void Refresh(const emulation::host::VideoFrame* last) override;
+
+        // What is drawn over the picture. The video thread's, like everything here: the window
+        // reaches it through requests posted to that thread.
+        Overlay& overlay() { return overlay_; }
 
         // The menu's asks, run as requests on the video thread.
         void SetRenderer(const std::string& key);
@@ -78,6 +88,13 @@ namespace psxemu {
         // Video > View VRAM: the machine ships the raw 16-bit VRAM and the conversion happens
         // here, where there is time for it.
         std::vector<uint32_t> vram_scratch_;
+
+        // Draws `pixels` with the overlay over it.
+        void Draw(const uint32_t* pixels, int width, int height);
+        Overlay overlay_;
+        FrameStatsRing* stats_ = nullptr;
+        // What is shown before the first frame, so the overlay has something to go over.
+        std::vector<uint32_t> blank_;
     };
 
 }   // namespace psxemu
