@@ -53,9 +53,9 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 297, gte 106, timer 79, sio 203, spu 144, gpu 73, mdec 85, media 378, mc 97, debug 174 - 1,636
-checks, no failures, and 2,290 across all eighteen harnesses (re-run
-2026-09-26, after bugs 78-112 - with the rasteriser threaded, now the default).
+cpu 297, gte 106, timer 80, sio 203, spu 144, gpu 73, mdec 85, media 378, mc 97, debug 174 - 1,637
+checks, no failures, and 2,291 across all eighteen harnesses (re-run
+2026-09-26, after bugs 78-113 - with the rasteriser threaded, now the default).
 `host_test`'s two real-speed checks fail now and then on a busy host, before a
 change as well as after it; see Test-Suite.md. The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
@@ -275,7 +275,7 @@ never run at all; it now runs when its device is asking, bug 112.)
 ### Root counters - correct, with coarse edges
 
 The three counters count their real clock sources, honour their sync modes and
-match targets as the hardware does (`timer_test`, 79 checks; bugs 27-31).
+match targets as the hardware does (`timer_test`, 80 checks; bugs 27-31).
 Approximate rather than wrong:
 
 - **Interrupts can be up to 32 CPU cycles late.** `IOInterface::Tick` batches

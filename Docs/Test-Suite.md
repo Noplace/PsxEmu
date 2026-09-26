@@ -611,11 +611,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 73 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
-| `timer_test` | 79 | | `media_test` | 378 |
+| `timer_test` | 80 | | `media_test` | 378 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 97 | | `debug_test` | 174 |
 
-**1,636 checks, 0 failures**, all ten green. Each harness's own section above
+**1,637 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon: every setting in `EmuConfig`

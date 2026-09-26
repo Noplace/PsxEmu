@@ -55,6 +55,10 @@ int IOInterface::Initialize() {
   io.interrupt_mask = 0;
   io.cache_control = 0;
   UpdateBusTiming();
+  // Exact event timing is picked up again at the first batch, from the setting,
+  // and hands the GPU its half then - whatever the machine before this one had.
+  exact_timing_ = false;
+  batch_threshold_ = kBatchCycles;
 
   memset(&access_log, 0, sizeof(access_log));
 

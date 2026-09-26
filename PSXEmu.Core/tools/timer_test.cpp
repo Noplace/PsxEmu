@@ -489,10 +489,22 @@ void TestTimingModels() {
       0x00000000,
       0x00000000,
   };
-  auto store_cycles = [&](bool queue) {
+  // `rebooted` runs it once on a machine that has been going for a billion cycles,
+  // then starts the machine again the way the front end does to boot another game -
+  // Deinitialize, Initialize - and runs it on that.
+  auto store_cycles = [&](bool queue, bool rebooted) {
     System* system = new System();
     system->InitializeWithoutBios();
     system->config().write_queue_timing = queue;
+    if (rebooted) {
+      system->cpu().context()->cycles = 1000000000;
+      TimerHarness(system).WriteMode(2, 0);
+      system->io().RunPending();
+      RunProgram(system, kStoreProgram, 14, 14);
+      system->Deinitialize();
+      system->InitializeWithoutBios();
+      system->config().write_queue_timing = queue;
+    }
     TimerHarness(system).WriteMode(2, 0);
     system->io().RunPending();
     RunProgram(system, kStoreProgram, 14, 14);
@@ -501,13 +513,20 @@ void TestTimingModels() {
     delete system;
     return elapsed;
   };
-  const uint32_t free_stores = store_cycles(false);
-  const uint32_t queued = store_cycles(true);
+  const uint32_t free_stores = store_cycles(false, false);
+  const uint32_t queued = store_cycles(true, false);
   Check(free_stores >= 8 && free_stores < 16, "by default a store costs its one cycle");
   Check(queued >= 40 && queued < 50,
         "with the write queue, stores are paced by the bus and a load waits for them");
   if (!(queued >= 40 && queued < 50))
     printf("        (%u cycles; %u without the queue)\n", queued, free_stores);
+
+  // Booting another game zeroes the CPU's clock. The queue remembered when its
+  // stores finished on the old one, and the new game's first load waited for them -
+  // a billion cycles - so it never got going (bug 113).
+  const uint32_t after_reboot = store_cycles(true, true);
+  CheckEqual(after_reboot, queued,
+             "after the machine is started again, the write queue times it the same");
 }
 
 }  // namespace

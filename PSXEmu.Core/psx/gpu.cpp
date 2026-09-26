@@ -120,6 +120,8 @@ namespace emulation {
             pending_draw_ticks_ = 0;
             queue_head_ = queue_size_ = 0;
             prepaid_ticks_ = 0;
+            // IOInterface hands this over again at its first batch, from the setting.
+            exact_hblank_ = false;
             memset(&raster_env_, 0, sizeof(raster_env_));
             jobs_head_ = jobs_count_ = 0;
             raster_command_ = 0;

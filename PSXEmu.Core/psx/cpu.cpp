@@ -156,6 +156,14 @@ int Cpu::Initialize() {
   // would write a register during the first instruction after a reset.
   pending_load_ = PendingLoad();
   armed_load_ = PendingLoad();
+  // Nor on the bus. The write queue keeps when each store finishes on the clock
+  // just zeroed, so an entry left from before - the last game, when the front end
+  // boots another - finishes billions of cycles from now, and the first load
+  // waited for it: the new game never ran.
+  if (bus_model_)
+    *bus_model_ = BusModel();
+  dma_stall_cycles_ = 0;
+  partial_bytes_ = 0;
   return 0;
 }
 
@@ -206,6 +214,7 @@ uint32_t Cpu::NarrowLoadStall(int region, uint32_t width) {
     units = IOInterface::BusUnits(cost, partial_lane_, partial_bytes_);
   else
     units = IOInterface::BusUnits(cost, 0, 1u << width);
+  ForgetBusIfClockWentBack();
   const uint64_t now = context_->cycles;
   const uint64_t gap = now > bus_model_->idle_since ? now - bus_model_->idle_since : 0;
   const uint32_t total = IOInterface::MeasuredAccessCycles(cost, units, gap);
@@ -240,7 +249,20 @@ uint32_t Cpu::StoreOccupancy(uint32_t physical, MemorySize size) {
 // within a single clock cycle (unless the write-queue was full, in which case the CPU
 // gets halted until there's room in the queue)." The R3000A's queue is four deep.
 // Each entry holds the bus for its occupancy, one after another.
+// Belt and braces for the reset above: nothing on the bus can be more than a few
+// hundred cycles ahead of the clock (four stores of at most ~160 cycles each), so
+// anything further means the clock went back without the model hearing of it, and
+// what it remembers is forgotten rather than waited for.
+void Cpu::ForgetBusIfClockWentBack() {
+  const uint64_t now = context_->cycles;
+  const uint64_t kFurthestAhead = 4096;
+  BusModel& bus = *bus_model_;
+  if (bus.last_done > now + kFurthestAhead || bus.idle_since > now + kFurthestAhead)
+    bus = BusModel();
+}
+
 void Cpu::QueueStore(uint32_t occupancy) {
+  ForgetBusIfClockWentBack();
   BusModel& bus = *bus_model_;
   uint64_t now = context_->cycles;
   while (bus.count > 0 && bus.done[bus.head] <= now) {
@@ -264,6 +286,7 @@ void Cpu::QueueStore(uint32_t occupancy) {
 // A load needs the bus, and the queued stores have it first: the load waits until
 // the last of them is done.
 void Cpu::DrainWriteQueue() {
+  ForgetBusIfClockWentBack();
   BusModel& bus = *bus_model_;
   if (bus.count == 0)
     return;

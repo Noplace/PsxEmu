@@ -817,6 +817,7 @@ class Cpu : public Component {
   // the CPU waits only if it is full. A load waits for it to empty.
   void QueueStore(uint32_t occupancy);
   void DrainWriteQueue();
+  void ForgetBusIfClockWentBack();
   // What a store to `physical` holds the bus for, in cycles.
   uint32_t StoreOccupancy(uint32_t physical, MemorySize size);
 

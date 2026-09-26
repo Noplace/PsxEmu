@@ -7074,3 +7074,42 @@ was meant to protect.
 lets the CPU in between slices of a burst. Every chopped row reads the
 unchopped 2,201 here, where the console takes 16,693 and up. No game on the
 table uses it.
+
+## 113. With Write Queue Timing on, a second game would not load
+
+`psx/cpu.cpp`, `psx/io_interface.cpp`, `psx/gpu.cpp`
+
+**Symptom.** Reported by the user. With `write_queue_timing` on, load a game,
+play for a while, load another: the new one did not load.
+
+**Cause.** Bug 111's write queue remembers when each queued store finishes,
+on the CPU's own cycle count. Booting another game restarts the machine in
+place (`Deinitialize`, then `Initialize`), and `Cpu::Initialize` zeroes that
+count, but the queue was left as the last game had it. Its stores were due
+billions of cycles "from now". The new game's first load waited for them to
+drain, and the machine sat there for as long as the old game had been
+running. The measured bus rule's "when was the bus last busy" had the same
+shape, and so did exact event timing's batch state: harmless there, but it
+could leave the GPU counting hblanks the old way after the setting changed
+across the restart.
+
+**Fix.**
+- `Cpu::Initialize` empties the queue, marks the bus idle, and drops any
+  pending DMA stall.
+- The queue also refuses to believe a finish time more than 4,096 cycles
+  ahead. Four stores can't be more than a few hundred ahead, so anything
+  further means the clock went back without the model hearing of it, and it
+  forgets rather than waits.
+- `IOInterface::Initialize` and `Gpu::Initialize` put exact event timing back
+  to off, and the first batch takes it up again from the setting.
+
+**Verified.**
+- **`timer_test`** gained a check (79 to 80). A machine a billion cycles in
+  runs the store program, is restarted the way the front end boots a game,
+  and runs it again. It has to take the same 43 cycles as a fresh machine.
+  With the reset and the guard both taken out, it took about a billion
+  cycles, which counter 2 read as 51,795 after wrapping - the hang, in
+  miniature.
+- **The harnesses** all pass.
+- **The defaults are untouched:** none of this state exists with the four
+  settings off.
