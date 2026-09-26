@@ -75,23 +75,6 @@ namespace psxemu {
         kCommandFilterLast = kCommandFilterFirst + 9,   // None + 9 filters
         kCommandViewVram,
         kCommandFrameLimiter,
-        kCommandCdMechanicalTiming,
-        kCommandSkipBiosIntro,
-        kCommandRecompiler,
-        kCommandGpuThread,
-        kCommandGpuTransferTiming,
-        kCommandICacheTiming,
-        kCommandControllerTypeFirst,
-        kCommandControllerTypeLast = kCommandControllerTypeFirst + 13,   // 2 ports x 7 types
-        kCommandInputSourceFirst,
-        kCommandInputSourceLast = kCommandInputSourceFirst + 9,   // 2 ports x 5 sources
-        // Player A-D source for whichever port(s) are set to Multitap - greyed out otherwise. A
-        // separate command-id range from kCommandInputSource* above, since a port's own source and
-        // its four players' sources are ticked/dispatched independently.
-        kCommandMultitapSourceFirst,
-        kCommandMultitapSourceLast = kCommandMultitapSourceFirst + 39,   // 2 ports x 4 players x 5 sources
-        kCommandMultitapTypeFirst,
-        kCommandMultitapTypeLast = kCommandMultitapTypeFirst + 31,   // 2 ports x 4 players x 4 types
         // The BIOS images found in the data folder. Unlike every other run here, what these ids
         // mean is not a table in this file but whatever is on disk when the menu was last filled -
         // see App::RefreshBiosMenu, which holds the list the nth id resolves through.
@@ -101,7 +84,6 @@ namespace psxemu {
         kCommandOpenBiosFolder,
         kCommandSpeedFirst,
         kCommandSpeedLast = kCommandSpeedFirst + 5,   // 50, 100, 150, 200, 250, 300%
-        kCommandPauseInMenus,
         kCommandShowTimings,
         kCommandBiosConsole,
         kCommandSerialToConsole,
@@ -125,19 +107,13 @@ namespace psxemu {
         kCommandMultitapCardFirst,
         kCommandMultitapCardLast = kCommandMultitapCardFirst + 17,   // 2 ports x 3 cards x 3 actions
         kCommandDebugger,
-        // Settings > Input > Controller Bindings. kCommandKeyBindings above still opens the older
-        // keyboard-only list, which is no longer on the menu.
+        // Settings > Input > Controllers: each port's type, source and bindings. kCommandKeyBindings
+        // above still opens the older keyboard-only list, which is no longer on the menu.
         kCommandControllerBindings,
         // Settings > Video > Full Screen, and Alt+Enter or F11 anywhere: borderless, over the whole
         // monitor the window is on.
         kCommandFullscreen,
         kCommandExit,
-        // Emulation > Timing Accuracy: the four finer timing models, each an EmuConfig
-        // switch. After kCommandExit so that no existing id moves.
-        kCommandExactEventTiming,
-        kCommandDmaStopsCpu,
-        kCommandMeasuredBusTiming,
-        kCommandWriteQueueTiming,
         // Settings > Video > On-Screen Display: the performance panel's three settings (F9 steps
         // through them), the notifications, and whether the controllers corner stays up.
         kCommandStatsOff,
@@ -148,6 +124,9 @@ namespace psxemu {
         // ...and its look: Classic, or Glass (frosted, over the picture).
         kCommandThemeClassic,
         kCommandThemeGlass,
+        // Emulation > Emulation Settings and Settings > Emulation: the window with the CPU, timing,
+        // GPU and CD-ROM settings and the Accuracy and Performance presets.
+        kCommandEmulationSettings,
     };
 
     // ---------------------------------------------------------------------------------------------

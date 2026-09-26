@@ -30,7 +30,7 @@
 //
 // A map is the person's: one key per pad button, in kKeyBindings order, 0 for none, stored in
 // psxemu.ini by name (key_cross = X) so the file stays readable, and edited in Settings > Input >
-// Controller Bindings.
+// Controllers.
 
 #include "app/framework.h"
 #include "app/const.h"

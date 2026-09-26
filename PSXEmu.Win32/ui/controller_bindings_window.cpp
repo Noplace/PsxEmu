@@ -54,6 +54,7 @@ namespace psxemu {
         const int kIdClearAll = 104;
         const int kIdCopyAll = 105;
         const int kIdClose = 106;
+        const int kIdType = 107;
         const int kIdBoxFirst = 200;   // one per button, in kKeyBindings order
         const int kIdMenuChange = 300;
         const int kIdMenuClear = 301;
@@ -65,8 +66,8 @@ namespace psxemu {
         // the window is the two lists across the top and the buttons along the bottom.
         const int kMargin = 12;
         const int kClientWidth = 804;
-        const int kClientHeight = 610;
-        const int kCanvasTop = 102;
+        const int kClientHeight = 642;
+        const int kCanvasTop = 134;
         const int kCanvasWidth = 780;
         const int kCanvasHeight = 420;
         const int kBoxWidth = 160;
@@ -225,7 +226,7 @@ namespace psxemu {
             return false;
 
         const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
-        window_ = CreateWindowExW(0, kBindingsWindowClass, L"PSXEmu - Controller Bindings", style,
+        window_ = CreateWindowExW(0, kBindingsWindowClass, L"PSXEmu - Controllers", style,
                                   CW_USEDEFAULT, CW_USEDEFAULT, 100, 100, owner, nullptr, instance,
                                   this);
         if (window_ == nullptr)
@@ -264,16 +265,19 @@ namespace psxemu {
             return control;
         };
 
-        make(window_, L"STATIC", L"Port:", SS_LEFT, 0, kMargin, 16, 36, 20);
+        make(window_, L"STATIC", L"Port:", SS_LEFT, 0, kMargin, 16, 66, 20);
         slot_list_ = make(window_, WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
-                          kIdSlot, kMargin + 38, 12, 330, 300);
+                          kIdSlot, kMargin + 70, 12, 298, 300);
         make(window_, L"STATIC", L"Device:", SS_LEFT, 0, 400, 16, 50, 20);
         device_list_ = make(window_, WC_COMBOBOXW, L"",
                             CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, kIdDevice, 452, 12, 200,
                             300);
         use_device_ = make(window_, L"BUTTON", L"Use for This Port", BS_PUSHBUTTON | WS_TABSTOP,
                            kIdUseDevice, 660, 11, 132, 26);
-        info_ = make(window_, L"STATIC", L"", SS_LEFT, 0, kMargin, 46, kClientWidth - kMargin * 2,
+        make(window_, L"STATIC", L"Controller:", SS_LEFT, 0, kMargin, 48, 66, 20);
+        type_list_ = make(window_, WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                          kIdType, kMargin + 70, 44, 298, 300);
+        info_ = make(window_, L"STATIC", L"", SS_LEFT, 0, kMargin, 78, kClientWidth - kMargin * 2,
                      52);
 
         canvas_ = CreateWindowExW(WS_EX_CLIENTEDGE, kCanvasClass, L"",
@@ -393,10 +397,41 @@ namespace psxemu {
             SendMessageW(slot_list_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
         }
         SendMessageW(slot_list_, CB_SETCURSEL, static_cast<WPARAM>(slot_), 0);
+        FillTypeList();
         FillDeviceList();
         UpdateInfo();
         LayoutBoxes();
         InvalidateRect(canvas_, nullptr, TRUE);
+    }
+
+    // What can be plugged into the slot: a port takes anything, a multitap player only a pad.
+    std::span<const ControllerTypeChoice> ControllerBindingsWindow::TypeChoices() const {
+        if (kBindingSlots[slot_].player < 0)
+            return kControllerTypeChoices;
+        return kMultitapPlayerTypeChoices;
+    }
+
+    void ControllerBindingsWindow::FillTypeList() {
+        SendMessageW(type_list_, CB_RESETCONTENT, 0, 0);
+        const BindingSlot& place = kBindingSlots[slot_];
+        const emulation::psx::EmuConfig& config = Config();
+        const std::string& current = place.player < 0
+                                         ? config.controller_type[place.port]
+                                         : config.multitap_player_type[place.port][place.player];
+        int selected = -1;
+        int index = 0;
+        for (const ControllerTypeChoice& choice : TypeChoices()) {
+            const std::wstring label = StripAmpersand(choice.label);
+            SendMessageW(type_list_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str()));
+            if (current == choice.key)
+                selected = index;
+            ++index;
+        }
+        SendMessageW(type_list_, CB_SETCURSEL, static_cast<WPARAM>(selected), 0);
+        // A player has nothing to choose while their port has no multitap.
+        const bool multitap_port =
+            ParseControllerType(config.controller_type[place.port]) == Sio::kMultitap;
+        EnableWindow(type_list_, place.player < 0 || multitap_port);
     }
 
     void ControllerBindingsWindow::FillDeviceList() {
@@ -430,10 +465,11 @@ namespace psxemu {
                                L"buttons.";
         } else if (place.player >= 0 && !multitap_port) {
             text = port_name + L" has no multitap at the moment. These bindings take effect when "
-                               L"it has one (Settings > Input > Controller " + port_name + L").";
+                               L"it has one: choose " + port_name + L" above and set its "
+                               L"controller to Multitap.";
         } else if (type == Sio::kNone) {
             text = L"Nothing is plugged in as " + slot_name +
-                   L". Choose a controller for it in the Settings > Input menu.";
+                   L". Choose a controller for it above.";
         } else if (type == Sio::kMouse) {
             text = port_name + L" has a mouse, which is always the Windows mouse, so there is "
                                L"nothing to bind.";
@@ -1003,6 +1039,16 @@ namespace psxemu {
                                 self->device_ = self->SlotSourceDevice(self->slot_);
                                 self->Refresh();
                             }
+                        }
+                        break;
+                    case kIdType:
+                        if (code == CBN_SELCHANGE) {
+                            const LRESULT index = SendMessageW(self->type_list_, CB_GETCURSEL, 0, 0);
+                            const auto choices = self->TypeChoices();
+                            // The App's setter calls OnConfigChanged, which refreshes the window.
+                            if (index >= 0 && static_cast<size_t>(index) < choices.size() &&
+                                self->host_.set_type)
+                                self->host_.set_type(self->slot_, choices[index].key);
                         }
                         break;
                     case kIdDevice:

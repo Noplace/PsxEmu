@@ -120,7 +120,10 @@ PsxEmu/
       mouse.h                  the host mouse, raw or captured, as a PSX mouse's counts
       controller_bindings.h    every binding, per port and device: defaults, psxemu.ini, mapping
     ui/                        the tool windows
-      controller_bindings_window.h/.cpp  Settings > Input > Controller Bindings: the drawn pad
+      controller_bindings_window.h/.cpp  Settings > Input > Controllers: each port's type and
+                               source, and the drawn pad to bind
+      emulation_settings_window.h/.cpp  Settings > Emulation: CPU, timing, GPU and CD-ROM
+                               switches, and the Accuracy and Performance presets
       key_bindings_window.h/.cpp  the older keyboard-only list, kept but off the menu
       memcard_editor.h/.cpp    File > Memory Cards > Memory Card Editor, both slots side by side
       console_window.h/.cpp    Emulation > BIOS Console: the BIOS's putchar/puts/printf output
@@ -274,10 +277,10 @@ File > Boot disc mounts a `.cue`, a `.mds`, or a `.bin`, `.img`, `.iso`
 or `.mdf` image; a drive letter can
 be passed on the command line.
 
-Each of the two controller ports is fed from whatever Settings > Input > Port n
-Source says - the keyboard, or one of the four XInput pads - and holds whichever
-controller Settings > Input > Controller Port n says. Which key or pad control
-presses which button is set in Settings > Input > Controller Bindings, separately
+Each of the two controller ports holds whichever controller Settings > Input >
+Controllers says, and is fed from the device chosen there - the keyboard, or one
+of the four XInput pads. Which key or pad control presses which button is set in
+the same window, separately
 for each port, each multitap player and each device, and kept in `psxemu.ini`. It
 starts as the table in `const.h`: on the keyboard, arrows for the d-pad, X/Z/S/A
 for cross/square/circle/triangle, Q/W and 1/2 for the shoulders, Enter for start

@@ -18,15 +18,17 @@
 *****************************************************************************************************************/
 #pragma once
 
-// Settings > Input > Controller Bindings: pick a port (or a multitap player) and a device (the
-// keyboard or a gamepad), and the window draws that port's controller with a line from each
-// button to a box holding what presses it. Click a box, press the key or the pad button, done.
+// Settings > Input > Controllers: pick a port (or a multitap player), what is plugged into it,
+// and a device (the keyboard or a gamepad), and the window draws that port's controller with a
+// line from each button to a box holding what presses it. Click a box, press the key or the pad
+// button, done.
 //
 // It edits a copy of the App's ControllerBindings and hands every change straight back, the way
 // the older Keyboard Bindings list does - there is no OK or Cancel, and a change applies to the
-// running game at once. It reads which controller each port has and which device plays it from
-// the App's settings, and can change the device ("Use for This Port"), since choosing what to
-// bind and choosing what to play with are usually the same decision.
+// running game at once. Which controller each port has and which device plays it are the App's
+// settings; the window shows them and changes them through the Host (the Controller list, "Use
+// for This Port"), since choosing what to plug in, what to bind and what to play with are
+// usually one decision.
 //
 // The picture is drawn here with GDI+ rather than loaded: no artwork to ship or license, and it
 // follows the port's type - a DualShock or Dual Analog gets sticks, L3/R3 and ANALOG; the original
@@ -36,6 +38,7 @@
 #include "input/controller_bindings.h"
 
 #include <functional>
+#include <span>
 
 namespace psxemu {
 
@@ -49,6 +52,9 @@ namespace psxemu {
             // "Use for This Port": `slot` is a kBindingSlots index, `source` a
             // kInputSourceChoices key.
             std::function<void(int slot, const std::string& source)> set_source;
+            // The Controller list: what is plugged into `slot`, a kControllerTypeChoices key
+            // for a port or a kMultitapPlayerTypeChoices key for a multitap player.
+            std::function<void(int slot, const std::string& type)> set_type;
         };
 
         ControllerBindingsWindow() = default;
@@ -83,6 +89,8 @@ namespace psxemu {
         bool PadShown() const;
 
         void Refresh();              // everything, from the bindings and the settings
+        std::span<const ControllerTypeChoice> TypeChoices() const;
+        void FillTypeList();
         void FillDeviceList();
         void UpdateInfo();
         void LayoutBoxes();
@@ -103,6 +111,7 @@ namespace psxemu {
         HWND window_ = nullptr;
         HWND canvas_ = nullptr;
         HWND slot_list_ = nullptr;
+        HWND type_list_ = nullptr;
         HWND device_list_ = nullptr;
         HWND use_device_ = nullptr;
         HWND info_ = nullptr;

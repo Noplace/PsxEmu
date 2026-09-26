@@ -384,7 +384,7 @@ programs, by psx-spx's formula (bug 77). What is left, and why it is left:
   fit all eighteen cells: first access = read delay + 4, then read delay + 2 +
   COM0 + COM2 for each further one. But it comes from one register setting per
   region and these same measurements, and nothing independent could check it -
-  so it is Emulation > Timing Accuracy > Measured Bus Timing, off by default
+  so it is Settings > Emulation > Measured Bus Timing, off by default
   (bug 111), rather than the default.
 - **The SPU's 32-bit cell** is not a 32-bit load. 1F801DAA is not
   word-aligned, so the test's read compiles to `lwl`, `addiu`, `lwr`. By
@@ -658,7 +658,7 @@ twice, once with the register allocator off and once on. See
 `boot_runner --recompiler` runs the machine on the recompiler instead of the
 interpreter, which is how the baselines below get checked against it, and
 `--recompiler-toggle N` switches between the two every N frames - the headless
-stand-in for the front end's **Emulation > Recompiler** item, which can be
+stand-in for the front end's **Settings > Emulation > Recompiler** switch, which can be
 changed while a game is running. The BIOS
 boot is identical either way; a game's framebuffer checksum is not yet, because
 the cycle model is approximate - see the timing section of

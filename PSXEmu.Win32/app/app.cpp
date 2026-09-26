@@ -156,7 +156,19 @@ namespace psxemu {
                 SetControllerBindings(bindings);
             };
             host.set_source = [this](int slot, const std::string& key) { SetSlotSource(slot, key); };
+            host.set_type = [this](int slot, const std::string& key) { SetSlotType(slot, key); };
             controller_bindings_.Create(instance, window_, std::move(host));
+        }
+        {
+            EmulationSettingsWindow::Host host;
+            host.config = [this]() -> const emulation::psx::EmuConfig& { return config_; };
+            host.set = [this](bool EmuConfig::*setting, bool on) {
+                SetEmulationSetting(setting, on);
+            };
+            host.apply_preset = [this](emulation::psx::EmulationPreset preset) {
+                SetEmulationPreset(preset);
+            };
+            emulation_settings_.Create(instance, window_, std::move(host));
         }
 
         // Before the threads start, so this is still the only thread touching the machine.
@@ -276,20 +288,9 @@ namespace psxemu {
         // The renderer and the sound device are ticked when the threads that open them report
         // back what actually opened, which is not always what was asked for.
         UpdateVolumeMenu();
-        UpdateControllerTypeMenu();
-        UpdateInputSourceMenu();
-        UpdateMultitapSourceMenu();
-        UpdateMultitapTypeMenu();
+        UpdateMultitapCardsMenu();
         UpdateFrameLimiterMenu();
         UpdateSpeedMenu();
-        UpdateCdTimingMenu();
-        UpdateSkipBiosIntroMenu();
-        UpdateRecompilerMenu();
-        UpdateGpuThreadMenu();
-        UpdateGpuTransferTimingMenu();
-        UpdateICacheTimingMenu();
-        UpdateTimingAccuracyMenu();
-        UpdatePauseInMenusMenu();
         UpdateShowTimingsMenu();
         UpdateBiosConsoleMenu();
         UpdateSerialToConsoleMenu();
@@ -868,16 +869,13 @@ namespace psxemu {
         });
     }
 
-    void App::UpdateControllerTypeMenu() { TickControllerTypes(window_, config_.controller_type); }
+    // The Memory Cards items for a multitap's cards B-D are greyed out for a port without one.
+    void App::UpdateMultitapCardsMenu() { TickMultitapCards(window_, config_.controller_type); }
 
+    // What each port holds and what plays it, all from the Controllers window.
     void App::SetControllerType(int port, const std::string& key) {
         config_.controller_type[port] = key;
-        UpdateControllerTypeMenu();
-        // Switching to or from kMouse/kNone/kMultitap changes whether this port's own source items
-        // (or, for kMultitap, its four players' source items) should be greyed out.
-        UpdateInputSourceMenu();
-        UpdateMultitapSourceMenu();
-        UpdateMultitapTypeMenu();
+        UpdateMultitapCardsMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
         // A port just given a multitap gets the disc's cards B-D in its three new sockets.
@@ -889,44 +887,28 @@ namespace psxemu {
         UpdateOverlayControllers(true);
     }
 
-    void App::UpdateInputSourceMenu() {
-        TickInputSources(window_, config_.input_source, config_.controller_type);
-    }
-
     void App::SetInputSource(int port, const std::string& key) {
         config_.input_source[port] = key;
-        UpdateInputSourceMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
         controller_bindings_.OnConfigChanged();
         UpdateOverlayControllers(true);
-    }
-
-    void App::UpdateMultitapTypeMenu() {
-        TickMultitapTypes(window_, config_.multitap_player_type, config_.controller_type);
     }
 
     void App::SetMultitapType(int port, int player, const std::string& key) {
         if (port < 0 || port >= 2 || player < 0 || player >= 4)
             return;
         config_.multitap_player_type[port][player] = key;
-        UpdateMultitapTypeMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
         controller_bindings_.OnConfigChanged();
         UpdateOverlayControllers(true);
     }
 
-    void App::UpdateMultitapSourceMenu() {
-        TickMultitapSources(window_, config_.multitap_player_source, config_.controller_type);
-    }
-
     void App::SetMultitapSource(int port, int player, const std::string& key) {
         if (port < 0 || port >= 2 || player < 0 || player >= 4)
             return;
         config_.multitap_player_source[port][player] = key;
-        UpdateMultitapSourceMenu();
-        UpdateMultitapTypeMenu();
         SaveSettingsIfChanged();
         SendConfigToMachine();
         controller_bindings_.OnConfigChanged();
@@ -964,112 +946,55 @@ namespace psxemu {
                on ? L"" : L"Running as fast as the machine allows");
     }
 
-    void App::UpdateCdTimingMenu() { TickCdTiming(window_, config_.cdrom_mechanical_timing); }
-
-    void App::SetCdMechanicalTiming(bool on) {
-        config_.cdrom_mechanical_timing = on;
-        UpdateCdTimingMenu();
+    // Every switch in the Emulation Settings window. Each is safe to change under a running
+    // game, and each for its own reason: the recompiler, the instruction cache and the four
+    // timing models are latched between instructions (System::StepInstruction - switching
+    // the recompiler off frees compiled code, which is only safe there); the GPU thread at
+    // the next vblank (Gpu::SyncThreadWithConfig, bug 91); GPU transfer timing by the next
+    // transfer to start (bug 93); and the rest the next time they are read - the drive's next
+    // seek, the next boot, the next menu.
+    void App::SetEmulationSetting(bool EmuConfig::*setting, bool on) {
+        if (config_.*setting == on)
+            return;
+        config_.*setting = on;
         SaveSettingsIfChanged();
         SendConfigToMachine();
+        emulation_settings_.OnConfigChanged();
+        // The ones that change how a game runs say so over the picture, since the window
+        // may not be where the person is looking.
+        const wchar_t* name = setting == &EmuConfig::recompiler           ? L"Recompiler"
+                              : setting == &EmuConfig::exact_event_timing ? L"Exact event timing"
+                              : setting == &EmuConfig::dma_stops_cpu      ? L"DMA stops the CPU"
+                              : setting == &EmuConfig::measured_bus_timing ? L"Measured bus timing"
+                              : setting == &EmuConfig::write_queue_timing ? L"Write queue timing"
+                              : setting == &EmuConfig::icache_timing ? L"Instruction cache timing"
+                                                                     : nullptr;
+        if (name != nullptr)
+            Notify(OverlayIcon::kInfo, ToastKind::kInfo,
+                   std::wstring(name) + (on ? L" on" : L" off"));
     }
 
-    void App::UpdateSkipBiosIntroMenu() { TickSkipBiosIntro(window_, config_.skip_bios_intro); }
-
-    void App::SetSkipBiosIntro(bool on) {
-        config_.skip_bios_intro = on;
-        UpdateSkipBiosIntroMenu();
+    void App::SetEmulationPreset(emulation::psx::EmulationPreset preset) {
+        using emulation::psx::EmulationPreset;
+        if (preset == EmulationPreset::kCustom)
+            return;
+        emulation::psx::ApplyEmulationPreset(config_, preset);
         SaveSettingsIfChanged();
         SendConfigToMachine();
-    }
-
-    void App::UpdateRecompilerMenu() { TickRecompiler(window_, config_.recompiler); }
-
-    // Changing CPU while a game is running is allowed, and this is all it takes from here: the
-    // setting reaches the machine as a request, and System::StepInstruction acts on it between
-    // instructions - the only place it is safe, since switching it off frees compiled code.
-    void App::SetRecompiler(bool on) {
-        config_.recompiler = on;
-        UpdateRecompilerMenu();
-        SaveSettingsIfChanged();
-        SendConfigToMachine();
-        Notify(OverlayIcon::kInfo, ToastKind::kInfo, on ? L"Recompiler on" : L"Interpreter",
-               on ? L"Faster, experimental" : L"");
-    }
-
-    void App::UpdateGpuThreadMenu() { TickGpuThread(window_, config_.gpu_thread); }
-
-    // Rasterising on a thread of its own (bug 91). Safe to turn on or off mid-game:
-    // the setting reaches the machine as a request and Gpu::SyncThreadWithConfig acts
-    // on it at the next vblank, which is on the machine's own thread and the only
-    // place that can start or stop the rasteriser without racing a submission.
-    void App::SetGpuThread(bool on) {
-        config_.gpu_thread = on;
-        UpdateGpuThreadMenu();
-        SaveSettingsIfChanged();
-        SendConfigToMachine();
-    }
-
-    void App::UpdateGpuTransferTimingMenu() {
-        TickGpuTransferTiming(window_, config_.gpu_transfer_timing);
-    }
-
-    // Charging the GPU for CPU-VRAM transfers (bug 93). Picked up by the next
-    // transfer to start, so one already streaming in finishes the way it began.
-    void App::SetGpuTransferTiming(bool on) {
-        config_.gpu_transfer_timing = on;
-        UpdateGpuTransferTimingMenu();
-        SaveSettingsIfChanged();
-        SendConfigToMachine();
-    }
-
-    void App::UpdateICacheTimingMenu() { TickICacheTiming(window_, config_.icache_timing); }
-
-    // The instruction-cache timing model (bug 94). System latches it between
-    // instructions, and only while the interpreter runs: with the recompiler on it
-    // does nothing, since compiled blocks do not fetch.
-    void App::SetICacheTiming(bool on) {
-        config_.icache_timing = on;
-        UpdateICacheTimingMenu();
-        SaveSettingsIfChanged();
-        SendConfigToMachine();
-    }
-
-    void App::UpdateTimingAccuracyMenu() {
-        TickTimingAccuracy(window_, config_.exact_event_timing, config_.dma_stops_cpu,
-                           config_.measured_bus_timing, config_.write_queue_timing);
-    }
-
-    // The four timing models behind Emulation > Timing Accuracy. The machine picks each
-    // up between instructions, so they can change under a running game.
-    void App::ToggleTimingAccuracy(bool emulation::psx::EmuConfig::*setting) {
-        config_.*setting = !(config_.*setting);
-        UpdateTimingAccuracyMenu();
-        SaveSettingsIfChanged();
-        SendConfigToMachine();
-        const bool on = config_.*setting;
-        const wchar_t* name = setting == &EmuConfig::exact_event_timing ? L"Exact event timing"
-                              : setting == &EmuConfig::dma_stops_cpu    ? L"DMA stops the CPU"
-                              : setting == &EmuConfig::measured_bus_timing
-                                  ? L"Measured bus timing"
-                                  : L"Write queue timing";
-        Notify(OverlayIcon::kInfo, ToastKind::kInfo, std::wstring(name) + (on ? L" on" : L" off"));
+        emulation_settings_.OnConfigChanged();
+        Notify(OverlayIcon::kInfo, ToastKind::kInfo,
+               preset == EmulationPreset::kAccuracy      ? L"Accuracy preset"
+               : preset == EmulationPreset::kPerformance ? L"Performance preset"
+                                                         : L"Default emulation settings",
+               preset == EmulationPreset::kAccuracy      ? L"Interpreter, timing models on"
+               : preset == EmulationPreset::kPerformance ? L"Recompiler on, timing models off"
+                                                         : L"");
     }
 
     // The ANALOG button from the menu, for a pad the keyboard is not driving - an XInput pad has
     // no spare button to put it on. On a multitap port it presses player A's (bug 97).
     void App::PressAnalogButton(int port) {
         PostToMachine([port](Machine& machine) { machine.system().sio().PressAnalogButton(port); });
-    }
-
-    void App::UpdatePauseInMenusMenu() { TickPauseInMenus(window_, config_.pause_in_menus); }
-
-    void App::SetPauseInMenus(bool on) {
-        config_.pause_in_menus = on;
-        UpdatePauseInMenusMenu();
-        SaveSettingsIfChanged();
-        SendConfigToMachine();
-        // Asked for while a menu is open - which is the only way to ask - so it takes effect from
-        // the next one rather than pausing under the one being used.
     }
 
     void App::UpdateShowTimingsMenu() { TickShowTimings(window_, config_.show_timings); }
@@ -2176,7 +2101,7 @@ namespace psxemu {
                 controller_bindings_.Show(bindings_);
                 break;
 
-            // Off the menu since Controller Bindings replaced it, but still here: Port 1 on the
+            // Off the menu since the Controllers window replaced it, but still here: Port 1 on the
             // keyboard, as a plain list.
             case kCommandKeyBindings:
                 key_bindings_.Show(bindings_.map[0][kKeyboardDevice]);
@@ -2259,45 +2184,8 @@ namespace psxemu {
                 SetFrameLimiter(!config_.frame_limiter);
                 break;
 
-            case kCommandCdMechanicalTiming:
-                SetCdMechanicalTiming(!config_.cdrom_mechanical_timing);
-                break;
-
-            case kCommandSkipBiosIntro:
-                SetSkipBiosIntro(!config_.skip_bios_intro);
-                break;
-
-            case kCommandRecompiler:
-                SetRecompiler(!config_.recompiler);
-                break;
-
-            case kCommandGpuThread:
-                SetGpuThread(!config_.gpu_thread);
-                break;
-
-            case kCommandGpuTransferTiming:
-                SetGpuTransferTiming(!config_.gpu_transfer_timing);
-                break;
-
-            case kCommandICacheTiming:
-                SetICacheTiming(!config_.icache_timing);
-                break;
-
-            case kCommandExactEventTiming:
-                ToggleTimingAccuracy(&emulation::psx::EmuConfig::exact_event_timing);
-                break;
-            case kCommandDmaStopsCpu:
-                ToggleTimingAccuracy(&emulation::psx::EmuConfig::dma_stops_cpu);
-                break;
-            case kCommandMeasuredBusTiming:
-                ToggleTimingAccuracy(&emulation::psx::EmuConfig::measured_bus_timing);
-                break;
-            case kCommandWriteQueueTiming:
-                ToggleTimingAccuracy(&emulation::psx::EmuConfig::write_queue_timing);
-                break;
-
-            case kCommandPauseInMenus:
-                SetPauseInMenus(!config_.pause_in_menus);
+            case kCommandEmulationSettings:
+                emulation_settings_.Show();
                 break;
 
             case kCommandShowTimings:
@@ -2348,28 +2236,6 @@ namespace psxemu {
                            command <
                                kCommandFilterFirst + static_cast<int>(std::size(kFilterChoices))) {
                     SetFilter(kFilterChoices[command - kCommandFilterFirst].key);
-                } else if (command >= kCommandControllerTypeFirst &&
-                           command <= kCommandControllerTypeLast) {
-                    const int type_count = static_cast<int>(std::size(kControllerTypeChoices));
-                    const int offset = command - kCommandControllerTypeFirst;
-                    SetControllerType(offset / type_count,
-                                     kControllerTypeChoices[offset % type_count].key);
-                } else if (command >= kCommandInputSourceFirst &&
-                           command <= kCommandInputSourceLast) {
-                    const int source_count = static_cast<int>(std::size(kInputSourceChoices));
-                    const int offset = command - kCommandInputSourceFirst;
-                    SetInputSource(offset / source_count,
-                                   kInputSourceChoices[offset % source_count].key);
-                } else if (command >= kCommandMultitapSourceFirst &&
-                           command <= kCommandMultitapSourceLast) {
-                    // Same offset math as the plain per-port source above, with one more dimension
-                    // (player) folded in - see menu.cpp's CreateMainMenu for how it was built.
-                    const int source_count = static_cast<int>(std::size(kInputSourceChoices));
-                    const int offset = command - kCommandMultitapSourceFirst;
-                    const int port = offset / (4 * source_count);
-                    const int player = (offset / source_count) % 4;
-                    SetMultitapSource(port, player,
-                                      kInputSourceChoices[offset % source_count].key);
                 } else if (command >= kCommandMultitapCardFirst &&
                            command <= kCommandMultitapCardLast) {
                     // (port * 3 + card B-D) * 3 + action, as menu.cpp's CreateMainMenu builds it.
@@ -2380,12 +2246,6 @@ namespace psxemu {
                         case 1: NewMemoryCard(card); break;
                         default: EjectMemoryCard(card); break;
                     }
-                } else if (command >= kCommandMultitapTypeFirst &&
-                           command <= kCommandMultitapTypeLast) {
-                    const int type_count = static_cast<int>(std::size(kMultitapPlayerTypeChoices));
-                    const int offset = command - kCommandMultitapTypeFirst;
-                    SetMultitapType(offset / (4 * type_count), (offset / type_count) % 4,
-                                    kMultitapPlayerTypeChoices[offset % type_count].key);
                 } else if (command >= kCommandMouseMotionFirst &&
                            command <= kCommandMouseMotionLast) {
                     SetMouseMotion(kMouseMotionChoices[command - kCommandMouseMotionFirst].key);
@@ -2466,6 +2326,16 @@ namespace psxemu {
             SetInputSource(place.port, key);
         else
             SetMultitapSource(place.port, place.player, key);
+    }
+
+    void App::SetSlotType(int slot, const std::string& key) {
+        if (slot < 0 || slot >= kBindingSlotCount)
+            return;
+        const BindingSlot& place = kBindingSlots[slot];
+        if (place.player < 0)
+            SetControllerType(place.port, key);
+        else
+            SetMultitapType(place.port, place.player, key);
     }
 
     void App::LoadRecentDiscs() {

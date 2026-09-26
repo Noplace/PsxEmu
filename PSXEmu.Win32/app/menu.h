@@ -81,54 +81,16 @@ namespace psxemu {
     // nothing on click is worse than one that looks unavailable.
     void TickFilter(HWND window, const std::string& backend, const std::string& filter);
 
-    // The controller type set on each port, and the source each port's buttons come from. A port
-    // whose type does not use a source at all - Sio::kMouse's mapping is fixed to the real mouse,
-    // Sio::kNone has no buttons to source, Sio::kMultitap sources each of its four players
-    // separately (see TickMultitapSources) rather than the port as a whole - has its source items
-    // greyed out rather than removed, the same treatment TickFilter already gives a filter menu the
-    // active renderer cannot use.
-    void TickControllerTypes(HWND window, const std::array<std::string, 2>& types);
-    void TickInputSources(HWND window, const std::array<std::string, 2>& sources,
-                          const std::array<std::string, 2>& controller_types);
-
-    // The kind of pad each of a Multitap's four players is, and the Memory Cards items for the
-    // three cards a multitap adds - both greyed out for a port with no multitap.
-    void TickMultitapTypes(
-        HWND window, const std::array<std::array<std::string, 4>, 2>& types,
-        const std::array<std::string, 2>& controller_types);
-
-    // The source each of a Multitap's four players comes from, for whichever port(s) are actually
-    // set to Sio::kMultitap - greyed out for a port that is not, the same way TickInputSources
-    // greys out a port's own source for a type that does not use one.
-    void TickMultitapSources(
-        HWND window, const std::array<std::array<std::string, 4>, 2>& sources,
-        const std::array<std::string, 2>& controller_types);
+    // The Memory Cards items for the three cards a multitap adds, greyed out for a port with no
+    // multitap.
+    void TickMultitapCards(HWND window, const std::array<std::string, 2>& controller_types);
 
     // Whether the machine is being held to the emulated display's frame rate. Ticked is a console;
     // unticked runs at whatever the monitor's refresh rate or the sound device allows, which the
     // title bar's percentage shows.
     void TickFrameLimiter(HWND window, bool on);
 
-    // Whether the drive is being charged for spin-up, seek distance and rotational latency. Off is
-    // the timing the emulator has always had; on makes loading take about as long as a console's,
-    // which is most visible on the BIOS's "Licensed by SCEA" logo screen - that screen is up for
-    // exactly as long as the drive takes, and nothing else.
-    void TickCdTiming(HWND window, bool on);
-
-    // Whether a disc boot arms the BIOS hand-off that skips its logo and disc-check screens - see
-    // EmuConfig::skip_bios_intro. Has no separate tick of its own for a PS-EXE boot: that path
-    // already always uses the same hand-off, regardless of this setting.
-    void TickSkipBiosIntro(HWND window, bool on);
-    void TickRecompiler(HWND window, bool on);
-    void TickGpuThread(HWND window, bool on);
-    void TickGpuTransferTiming(HWND window, bool on);
-    void TickICacheTiming(HWND window, bool on);
-    // Emulation > Timing Accuracy's four switches.
-    void TickTimingAccuracy(HWND window, bool exact_events, bool dma_stops_cpu,
-                            bool measured_bus, bool write_queue);
-
-    // EmuConfig::pause_in_menus and EmuConfig::show_timings.
-    void TickPauseInMenus(HWND window, bool on);
+    // EmuConfig::show_timings.
     void TickShowTimings(HWND window, bool on);
 
     // EmuConfig::show_bios_console - whether the BIOS console window is open.

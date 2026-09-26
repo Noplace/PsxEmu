@@ -7181,3 +7181,58 @@ Display, and `overlay_theme` in `psxemu.ini`.
 - **Layout.** The first glass pass was too faint, the frame's text readable
   through it, and led to the screen-sized blur. The controllers corner stacks
   its cards when side by side would run into the panel.
+
+## 115. Settings moved off the menus: an Emulation Settings window with presets, and port types in Controllers
+
+`PSXEmu.Win32/ui/emulation_settings_window.*`, `ui/controller_bindings_window.*`,
+`app/menu.cpp`, `app/app.cpp`, `PSXEmu.Core/psx/emuconfig.h`
+
+Not a bug: a change the user asked for. The Emulation and Input menus had grown
+to hold every setting as a tick, and the two windows now hold them instead.
+
+**Settings > Emulation** (also Emulation > Emulation Settings...). Every switch
+for how the machine is emulated, each with a line on what it costs, in groups:
+- **CPU:** the recompiler, instruction cache timing
+- **Timing accuracy:** exact events, DMA stops the CPU, the measured bus, the
+  write queue
+- **GPU:** the rasteriser thread, GPU time for VRAM transfers
+- **CD-ROM and BIOS:** mechanical timing, skip the BIOS intro
+- **Front end:** pause while in menus
+
+Every change applies at once, as the menu items did; the App's setters are the
+same path to the machine (`SetEmulationSetting`).
+
+**The presets** (`ApplyEmulationPreset`, `emuconfig.h`), one click each, and the
+window says which one the settings match, or Custom:
+- **Accuracy:** the interpreter, with every timing model built on a console's
+  behaviour on - exact events, DMA stops the CPU, the measured bus, the instruction
+  cache, GPU transfer time, the CD-ROM's mechanics. Not the write queue: it is an
+  estimate, not a measurement.
+- **Performance:** the recompiler, with all of them off.
+- **Defaults:** what `EmuConfig` starts with - the interpreter, all off.
+
+All three leave the rasteriser thread on, since a threaded run is byte-identical.
+None of them touches Skip BIOS Intro or Pause While in Menus, which are
+preferences rather than accuracy.
+
+**Settings > Input > Controllers** (the bindings window, renamed) gained a
+Controller list under Port: a port's type - DualShock, Dual Analog, digital,
+mouse, GunCon, multitap, none - or a multitap player's, greyed out while that
+port has no multitap. With Use for This Port already there, the six Controller
+Port, Port Source and Multitap Port popups are gone from the Input menu, which
+keeps Controllers..., Mouse and Press ANALOG Button. The Memory Cards items for a
+multitap's cards B-D are still greyed out without one.
+
+**Unchanged:** `psxemu.ini`'s keys and every default. The menu ids for the moved
+items are gone, so the ids after them moved; nothing stores them.
+
+**Verified** from a scratch copy of the Release build, driven by posted
+commands:
+- the menus as listed
+- each preset, and a switch by hand, read back from the check boxes and from
+  `psxemu.ini`
+- port 1 set to digital, then to multitap, and a player's type set - also read
+  back from `psxemu.ini` - with the player's list greyed out while there was no
+  multitap
+- presets flipped six times under the running BIOS: 59.3 fps throughout, a
+  notification each time, and a clean exit

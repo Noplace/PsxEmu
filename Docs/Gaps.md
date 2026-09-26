@@ -237,7 +237,7 @@ console, and 42 of 51 cells match.
   - a partial `lwl`/`lwr` from a narrow bus, charged a whole word where the
     console reads only what it needs.
 
-  Emulation > Timing Accuracy > Measured Bus Timing (bug 111) fixes both, and
+  Settings > Emulation > Measured Bus Timing (bug 111) fixes both, and
   all 51 cells match with it on. It is off by default because the rule is
   fitted to the same table it matches - one register setting per region - and
   nothing independent checks it.
@@ -259,7 +259,7 @@ whose readiness depends on partial progress mid-transfer is otherwise not
 modelled; channel 0's version of this is the crash path at the top.
 
 By default the CPU also runs on through the transfer's time, where a console
-stops it. Emulation > Timing Accuracy > DMA Stops the CPU (bug 111) makes it wait
+stops it. Settings > Emulation > DMA Stops the CPU (bug 111) makes it wait
 the transfer out before its next instruction, the rest of the machine running
 through it. That leaves the eager data movement unobservable by the program,
 since it cannot run until the transfer is over. Other devices can still see it:
@@ -294,7 +294,7 @@ Approximate rather than wrong:
 - **Everything above still moves in 32-cycle steps**, which is the real floor:
   `IOInterface::Tick` batches, and a counter read runs the batch early.
 
-Emulation > Timing Accuracy > Exact Event Timing (bug 111) removes the first
+Settings > Emulation > Exact Event Timing (bug 111) removes the first
 and last of these. A batch ends at the next event any device has scheduled
 instead of every 32 cycles:
 - a counter's target or wrap
@@ -361,7 +361,7 @@ Four simplifications are left, and all four are deliberate:
   undershoots where intersecting its edges with the drawing area would be
   exact. DuckStation documents the same approximation and takes it.
 - **Transfers are not charged, unless asked (bug 93).** By default a CPU-to-VRAM
-  or VRAM-to-CPU blit still costs no GPU time. Emulation > Charge GPU Time for
+  or VRAM-to-CPU blit still costs no GPU time. Settings > Emulation > Charge GPU Time for
   VRAM Transfers charges one tick a pixel - a figure derived from the
   VRAM-to-VRAM copy cost, since DuckStation charges nothing here and nobody
   measured it - which is why it is off. Either way the words flow past a busy
@@ -380,7 +380,7 @@ This entry was missing until the 2026-09-21 audit, while Test-Suite.md's
 
 By default every instruction fetch costs one cycle wherever it comes from,
 which is the same as assuming it always hits the cache - including the BIOS
-running uncached out of ROM. Emulation > Instruction Cache Timing (bug 94)
+running uncached out of ROM. Settings > Emulation > Instruction Cache Timing (bug 94)
 models the cache: DuckStation's 256-line layout, a refill to the end of the line
 on a miss, the full bus cost for every uncached fetch. It is a timing model only
 - instructions still come from memory, never from the cache - so it cannot run
@@ -607,7 +607,7 @@ needs a person is what a frame looks like and what anything sounds like.
 input each have a thread and the UI thread only answers the window, so a menu or
 a drag no longer stops the game and a long frame no longer stops the window -
 [Threading-Plan.md](Threading-Plan.md) has what that cost and bought. Whether
-the game keeps running under an open menu is a setting: Emulation > Pause While
+the game keeps running under an open menu is a setting: Settings > Emulation > Pause While
 in Menus, off by default. Phase 7, the rasteriser's own thread, is done too
 (bug 91), so the plan is complete.
 

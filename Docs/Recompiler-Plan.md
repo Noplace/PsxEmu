@@ -254,7 +254,7 @@ justification for this project". It is reachable now.
 
 ### Switching it on and off
 
-**Emulation > Recompiler**, and it can be changed while a game is running.
+**Settings > Emulation > Recompiler**, and it can be changed while a game is running.
 
 The setting is all the menu touches. `System::StepInstruction` compares it
 against what is actually attached and acts on the difference - between

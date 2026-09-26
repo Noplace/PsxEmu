@@ -19,6 +19,7 @@
 #pragma once
 
 #include <array>
+#include <initializer_list>
 #include <string>
 
 // The knobs that change how the machine behaves for the person using it, as
@@ -324,6 +325,56 @@ struct EmuConfig {
   int mouse_dpi = 800;
   static const std::array<int, 4> kValidMouseDpis;
 };
+
+// The Emulation Settings window's two presets, and the defaults they can be put back
+// to. They cover only how the machine is emulated - the CPU, the timing models, the
+// GPU and the CD-ROM - never the front end's own choices or anything about a game.
+//
+//   Accuracy     every timing model built on a console's behaviour on: exact event
+//                timing, DMA stopping the CPU, the measured bus, the instruction
+//                cache, GPU time for transfers (its per-pixel cost derived from the
+//                measured copy cost), the CD-ROM's mechanics - and the interpreter,
+//                which every baseline is measured with. Not the write queue: nobody
+//                here has measured one, so it is an estimate, and it moves every store.
+//   Performance  all of those off and the recompiler on.
+//   Default      what EmuConfig starts with.
+//
+// The rasteriser's thread is on in all three: a threaded run is byte-identical.
+enum class EmulationPreset { kDefault, kAccuracy, kPerformance, kCustom };
+
+inline void ApplyEmulationPreset(EmuConfig& config, EmulationPreset preset) {
+  if (preset == EmulationPreset::kCustom)
+    return;
+  const bool accurate = preset == EmulationPreset::kAccuracy;
+  config.recompiler = preset == EmulationPreset::kPerformance;
+  config.gpu_thread = true;
+  config.icache_timing = accurate;
+  config.gpu_transfer_timing = accurate;
+  config.cdrom_mechanical_timing = accurate;
+  config.exact_event_timing = accurate;
+  config.dma_stops_cpu = accurate;
+  config.measured_bus_timing = accurate;
+  config.write_queue_timing = false;
+}
+
+// Which preset the settings are exactly, or kCustom.
+inline EmulationPreset MatchingEmulationPreset(const EmuConfig& config) {
+  for (EmulationPreset preset : { EmulationPreset::kDefault, EmulationPreset::kAccuracy,
+                                  EmulationPreset::kPerformance }) {
+    EmuConfig expected = config;
+    ApplyEmulationPreset(expected, preset);
+    if (expected.recompiler == config.recompiler && expected.gpu_thread == config.gpu_thread &&
+        expected.icache_timing == config.icache_timing &&
+        expected.gpu_transfer_timing == config.gpu_transfer_timing &&
+        expected.cdrom_mechanical_timing == config.cdrom_mechanical_timing &&
+        expected.exact_event_timing == config.exact_event_timing &&
+        expected.dma_stops_cpu == config.dma_stops_cpu &&
+        expected.measured_bus_timing == config.measured_bus_timing &&
+        expected.write_queue_timing == config.write_queue_timing)
+      return preset;
+  }
+  return EmulationPreset::kCustom;
+}
 
 // Out of line so there is one definition; these are bounds a UI can offer
 // rather than anything the emulation depends on.

@@ -28,7 +28,7 @@
 //
 // What it reports is the pad's own controls, not PSX buttons: which PSX
 // button A presses is the person's choice, per port (Settings > Input >
-// Controller Bindings), and is applied on the machine's thread where the port
+// Controllers), and is applied on the machine's thread where the port
 // is known - see controller_bindings.h. The triggers and the sticks' four
 // directions count as controls too, so a button can be bound to any of them;
 // the sticks' positions still go to the pad's analog axes as they are.

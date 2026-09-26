@@ -8,7 +8,7 @@ what was measured is under "What it buys, in numbers".
 Phase 7 landed last (bug 91) and is the only one that made the machine faster
 rather than merely better paced: 13-19% recompiled, and the BIOS shell's ceiling
 in the front end goes from 144-165% to 184-188% at a 300% setting. It is off by
-default - Emulation > Rasterise on a GPU Thread - because it is the one phase
+default - Settings > Emulation > Rasterise on a GPU Thread - because it is the one phase
 whose benefit depends on the workload. Its second half, disc read-ahead, is
 built and byte-identical but measured as noise on this host: Windows' own file
 cache was already doing the job.
@@ -111,7 +111,7 @@ What that fixed, in the order it used to hurt:
 
 - **A menu, a drag or a dialog no longer stops the machine.** They block the UI
   thread only. Whether the machine *should* keep running under a menu is now a
-  setting - Emulation > Pause While in Menus, off by default, which is what
+  setting - Settings > Emulation > Pause While in Menus, off by default, which is what
   DuckStation, PCSX2 and Dolphin do.
 - **A long frame no longer stops the window.** Messages are answered while the
   machine is mid-frame, so the window redraws, the menu opens and a drag moves.
@@ -187,7 +187,7 @@ went with the thread: `EnterStall` and `LeaveStall` are gone, and left in they
 would have silenced a game that was still playing.
 
 Whether a menu *should* stop the game is a matter of taste, so it is a setting:
-**Emulation > Pause While in Menus**, `EmuConfig::pause_in_menus`, off by
+**Settings > Emulation > Pause While in Menus**, `EmuConfig::pause_in_menus`, off by
 default. On, `WM_ENTERMENULOOP` and the dialogs this thread opens itself hold a
 counted `kPausedForMenu` on the machine - counted because a file picker can open
 over a menu, and the machine should come back only when the last of them closes.
@@ -249,7 +249,7 @@ input; then `DestroyWindow`. The UI joins each thread with
 | 4 | Video thread and the frame mailbox | yes | present and the upload left the machine's frame; a resize repaints from the video thread; frames the monitor cannot show are dropped and counted |
 | 5 | Machine thread; the UI becomes a pure `GetMessage` pump; the bug 63 stall wiring comes out | yes | menus, drags and dialogs no longer freeze the game - and Pause While in Menus is there for anyone who wants the old behaviour |
 | 6 | Input thread, at 1 kHz, owning raw mouse input on a message-only window of its own | yes | an empty XInput slot's once-a-second probe can no longer hitch a frame; the reading a frame takes is at most a millisecond old |
-| 7 | A GPU thread (DuckStation-style - registers and timing stay with the machine, rasterising moves behind a FIFO), and disc read-ahead for images on the network share | yes | bug 91. 19.4% on the BIOS shell, 17.7% on Wild Arms, 13.1% on Ridge Racer, recompiled - at or above the 12% guessed here. Off by default: Emulation > Rasterise on a GPU Thread, or `gpu_thread` in the settings file. In the front end it lifts the BIOS shell from 144-165% to 184-188% at a 300% setting. The read-ahead measured as noise on this host: Windows' file cache was already doing it |
+| 7 | A GPU thread (DuckStation-style - registers and timing stay with the machine, rasterising moves behind a FIFO), and disc read-ahead for images on the network share | yes | bug 91. 19.4% on the BIOS shell, 17.7% on Wild Arms, 13.1% on Ridge Racer, recompiled - at or above the 12% guessed here. Off by default: Settings > Emulation > Rasterise on a GPU Thread, or `gpu_thread` in the settings file. In the front end it lifts the BIOS shell from 144-165% to 184-188% at a 300% setting. The read-ahead measured as noise on this host: Windows' file cache was already doing it |
 
 ### What it buys, in numbers
 

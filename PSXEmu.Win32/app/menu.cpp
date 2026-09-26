@@ -127,43 +127,13 @@ namespace psxemu {
                         label.c_str());
         }
         AppendMenuW(emulation, MF_POPUP, reinterpret_cast<UINT_PTR>(speed), L"&Speed");
-        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandCdMechanicalTiming),
-                    L"CD-ROM &Mechanical Timing");
-        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandSkipBiosIntro),
-                    L"S&kip BIOS Intro");
-        // Safe to toggle while a game is running: the machine picks it up
-        // between instructions.
-        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandRecompiler),
-                    L"&Recompiler (faster, experimental)");
-        // Also safe to toggle while a game is running: the GPU picks it up at the
-        // next vblank, and every read of VRAM waits for the rasteriser either way.
-        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandGpuThread),
-                    L"Rasterise on a &GPU Thread");
-        // Two timing models, both off by default because they change how fast games
-        // run and neither is proven more accurate against hardware (bugs 93, 94).
-        // Safe to toggle mid-game: each is picked up between instructions or at
-        // the start of the next transfer.
-        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandGpuTransferTiming),
-                    L"Charge GPU Time for VRAM &Transfers");
-        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandICacheTiming),
-                    L"&Instruction Cache Timing (interpreter)");
-        // Four more, each replacing one of Docs/Gaps.md's timing approximations and each
-        // off by default, so the timing every baseline was measured with is what anyone
-        // who never opens this gets. All four are picked up between instructions.
-        HMENU accuracy = CreatePopupMenu();
-        AppendMenuW(accuracy, MF_STRING, static_cast<UINT_PTR>(kCommandExactEventTiming),
-                    L"&Exact Event Timing (interrupts on the cycle, slower)");
-        AppendMenuW(accuracy, MF_STRING, static_cast<UINT_PTR>(kCommandDmaStopsCpu),
-                    L"&DMA Stops the CPU");
-        AppendMenuW(accuracy, MF_STRING, static_cast<UINT_PTR>(kCommandMeasuredBusTiming),
-                    L"&Measured Bus Timing (8/16-bit devices)");
-        AppendMenuW(accuracy, MF_STRING, static_cast<UINT_PTR>(kCommandWriteQueueTiming),
-                    L"&Write Queue Timing (interpreter, estimated)");
-        AppendMenuW(emulation, MF_POPUP, reinterpret_cast<UINT_PTR>(accuracy),
-                    L"Timing &Accuracy");
+        // How the machine is emulated - the CPU, the timing models, the GPU, the CD-ROM - is a
+        // window of its own (ui/emulation_settings_window), with the Accuracy and Performance
+        // presets. Here as well as under Settings, since this is where it used to be.
         AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandPauseInMenus),
-                    L"Pause &While in Menus");
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandEmulationSettings),
+                    L"Emulation Se&ttings...");
+        AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandShowTimings),
                     L"Show &Timings in Title Bar");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandBiosConsole),
@@ -229,80 +199,12 @@ namespace psxemu {
                     L"Theme: &Glass");
         AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(display), L"On-Screen &Display");
 
-        // Two ports, each with its own controller-type choice and its own input source - four small
-        // popups rather than one flat list, so ticking one port's choice never has to be told apart
-        // from the other's.
-        HMENU controller_port[2];
-        HMENU source_port[2];
-        const int type_count = static_cast<int>(std::size(kControllerTypeChoices));
-        const int source_count = static_cast<int>(std::size(kInputSourceChoices));
-        for (int port = 0; port < 2; ++port) {
-            controller_port[port] = CreatePopupMenu();
-            for (size_t i = 0; i < std::size(kControllerTypeChoices); ++i) {
-                AppendMenuW(controller_port[port], MF_STRING,
-                            static_cast<UINT_PTR>(kCommandControllerTypeFirst + port * type_count +
-                                                  static_cast<int>(i)),
-                            kControllerTypeChoices[i].label);
-            }
-            source_port[port] = CreatePopupMenu();
-            for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
-                AppendMenuW(source_port[port], MF_STRING,
-                            static_cast<UINT_PTR>(kCommandInputSourceFirst + port * source_count +
-                                                  static_cast<int>(i)),
-                            kInputSourceChoices[i].label);
-            }
-        }
-
-        // Each port's Multitap sub-menu: which source feeds each of its four players, laid out the
-        // same way source_port above is - one popup per port, greyed out by TickMultitapSources
-        // whenever that port is not actually set to Multitap.
-        static constexpr const wchar_t* kPlayerLabels[4] = {
-            L"Player &A Source", L"Player &B Source", L"Player &C Source", L"Player &D Source" };
-        HMENU multitap_port[2];
-        for (int port = 0; port < 2; ++port) {
-            multitap_port[port] = CreatePopupMenu();
-            for (int player = 0; player < 4; ++player) {
-                HMENU player_source = CreatePopupMenu();
-                for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
-                    const int offset = (port * 4 + player) * source_count + static_cast<int>(i);
-                    AppendMenuW(player_source, MF_STRING,
-                                static_cast<UINT_PTR>(kCommandMultitapSourceFirst + offset),
-                                kInputSourceChoices[i].label);
-                }
-                AppendMenuW(multitap_port[port], MF_POPUP,
-                            reinterpret_cast<UINT_PTR>(player_source), kPlayerLabels[player]);
-            }
-            // And what each player is (bug 98), below the sources.
-            static constexpr const wchar_t* kTypeLabels[4] = {
-                L"Player A &Type", L"Player B T&ype", L"Player C Ty&pe", L"Player D Typ&e" };
-            const int type_count = static_cast<int>(std::size(kMultitapPlayerTypeChoices));
-            AppendMenuW(multitap_port[port], MF_SEPARATOR, 0, nullptr);
-            for (int player = 0; player < 4; ++player) {
-                HMENU player_type = CreatePopupMenu();
-                for (int i = 0; i < type_count; ++i) {
-                    const int offset = (port * 4 + player) * type_count + i;
-                    AppendMenuW(player_type, MF_STRING,
-                                static_cast<UINT_PTR>(kCommandMultitapTypeFirst + offset),
-                                kMultitapPlayerTypeChoices[i].label);
-                }
-                AppendMenuW(multitap_port[port], MF_POPUP,
-                            reinterpret_cast<UINT_PTR>(player_type), kTypeLabels[player]);
-            }
-        }
-
+        // What each port holds and what plays it - the controller type, the source, a multitap's
+        // four players - is chosen in the Controllers window, beside the bindings, rather than
+        // here: one window that shows a port whole beats six popups that each show a slice.
         HMENU input = CreatePopupMenu();
-        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(controller_port[0]),
-                    L"Controller Port &1");
-        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(controller_port[1]),
-                    L"Controller Port &2");
-        AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(source_port[0]), L"Port 1 &Source");
-        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(source_port[1]), L"Port 2 S&ource");
-        AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(multitap_port[0]),
-                    L"&Multitap Port 1");
-        AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(multitap_port[1]),
-                    L"M&ultitap Port 2");
+        AppendMenuW(input, MF_STRING, static_cast<UINT_PTR>(kCommandControllerBindings),
+                    L"&Controllers...");
         AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
 
         // What a host mouse's movement is worth, for whichever port is set to Mouse. Two
@@ -330,12 +232,6 @@ namespace psxemu {
         AppendMenuW(analog, MF_STRING, static_cast<UINT_PTR>(kCommandAnalogButtonPort2), L"Port &2");
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(analog), L"Press &ANALOG Button");
 
-        AppendMenuW(input, MF_SEPARATOR, 0, nullptr);
-        // Which key or pad control presses which button, per port and device. The older
-        // keyboard-only list (kCommandKeyBindings) is still in the front end but no longer here.
-        AppendMenuW(input, MF_STRING, static_cast<UINT_PTR>(kCommandControllerBindings),
-                    L"&Controller Bindings...");
-
         // Which API the sound goes out through. Beside the volume rather than in place of it, the
         // way Video holds Renderer and Filter side by side.
         HMENU output = CreatePopupMenu();
@@ -358,6 +254,8 @@ namespace psxemu {
         // short: File for things to open, Emulation for things the running machine does, Settings
         // for how it does them.
         HMENU settings = CreatePopupMenu();
+        AppendMenuW(settings, MF_STRING, static_cast<UINT_PTR>(kCommandEmulationSettings),
+                    L"&Emulation...");
         AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(input), L"&Input");
         AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(audio), L"&Audio");
         AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(video), L"&Video");
@@ -519,96 +417,16 @@ namespace psxemu {
         }
     }
 
-    void TickControllerTypes(HWND window, const std::array<std::string, 2>& types) {
+    void TickMultitapCards(HWND window, const std::array<std::string, 2>& controller_types) {
         HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
-        const int type_count = static_cast<int>(std::size(kControllerTypeChoices));
-        for (int port = 0; port < 2; ++port) {
-            const std::string& current = types[port];
-            for (size_t i = 0; i < std::size(kControllerTypeChoices); ++i) {
-                const UINT id = static_cast<UINT>(kCommandControllerTypeFirst +
-                                                  port * type_count + static_cast<int>(i));
-                const bool on = (current == kControllerTypeChoices[i].key);
-                CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-            }
-        }
-    }
-
-    void TickInputSources(HWND window, const std::array<std::string, 2>& sources,
-                          const std::array<std::string, 2>& controller_types) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        const int source_count = static_cast<int>(std::size(kInputSourceChoices));
-        for (int port = 0; port < 2; ++port) {
-            // A mouse's mapping is fixed, kNone has no buttons at all, and a Multitap sources each
-            // of its four players separately (see TickMultitapSources) rather than the port as a
-            // whole - none of the three leaves this port's own source choice doing anything, greyed
-            // out for the same reason TickFilter greys out a filter a renderer cannot use, rather
-            // than leaving a clickable item that silently does nothing.
-            const emulation::psx::Sio::ControllerType type =
-                ParseControllerType(controller_types[port]);
-            const bool has_source = (type != emulation::psx::Sio::kMouse &&
-                                     type != emulation::psx::Sio::kNone &&
-                                     type != emulation::psx::Sio::kMultitap);
-            const std::string& current = sources[port];
-            for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
-                const UINT id = static_cast<UINT>(kCommandInputSourceFirst +
-                                                  port * source_count + static_cast<int>(i));
-                const bool on = has_source && (current == kInputSourceChoices[i].key);
-                CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-                EnableMenuItem(bar, id, MF_BYCOMMAND | (has_source ? MF_ENABLED : MF_GRAYED));
-            }
-        }
-    }
-
-    void TickMultitapSources(
-        HWND window, const std::array<std::array<std::string, 4>, 2>& sources,
-        const std::array<std::string, 2>& controller_types) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        const int source_count = static_cast<int>(std::size(kInputSourceChoices));
         for (int port = 0; port < 2; ++port) {
             const bool is_multitap =
                 ParseControllerType(controller_types[port]) == emulation::psx::Sio::kMultitap;
-            for (int player = 0; player < 4; ++player) {
-                const std::string& current = sources[port][player];
-                for (size_t i = 0; i < std::size(kInputSourceChoices); ++i) {
-                    const int offset = (port * 4 + player) * source_count + static_cast<int>(i);
-                    const UINT id = static_cast<UINT>(kCommandMultitapSourceFirst + offset);
-                    const bool on = is_multitap && (current == kInputSourceChoices[i].key);
-                    CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-                    EnableMenuItem(bar, id, MF_BYCOMMAND | (is_multitap ? MF_ENABLED : MF_GRAYED));
-                }
-            }
             for (int i = 0; i < 9; ++i) {   // cards B-D x Insert, New, Eject
                 const UINT id = static_cast<UINT>(kCommandMultitapCardFirst + port * 9 + i);
                 EnableMenuItem(bar, id, MF_BYCOMMAND | (is_multitap ? MF_ENABLED : MF_GRAYED));
-            }
-        }
-    }
-
-    void TickMultitapTypes(
-        HWND window, const std::array<std::array<std::string, 4>, 2>& types,
-        const std::array<std::string, 2>& controller_types) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        const int type_count = static_cast<int>(std::size(kMultitapPlayerTypeChoices));
-        for (int port = 0; port < 2; ++port) {
-            const bool is_multitap =
-                ParseControllerType(controller_types[port]) == emulation::psx::Sio::kMultitap;
-            for (int player = 0; player < 4; ++player) {
-                for (int i = 0; i < type_count; ++i) {
-                    const int offset = (port * 4 + player) * type_count + i;
-                    const UINT id = static_cast<UINT>(kCommandMultitapTypeFirst + offset);
-                    const bool on = is_multitap &&
-                                    (types[port][player] == kMultitapPlayerTypeChoices[i].key);
-                    CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-                    EnableMenuItem(bar, id, MF_BYCOMMAND | (is_multitap ? MF_ENABLED : MF_GRAYED));
-                }
             }
         }
     }
@@ -618,78 +436,6 @@ namespace psxemu {
         if (bar == nullptr)
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandFrameLimiter),
-                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-    }
-
-    void TickCdTiming(HWND window, bool on) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        CheckMenuItem(bar, static_cast<UINT>(kCommandCdMechanicalTiming),
-                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-    }
-
-    void TickSkipBiosIntro(HWND window, bool on) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        CheckMenuItem(bar, static_cast<UINT>(kCommandSkipBiosIntro),
-                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-    }
-
-    void TickRecompiler(HWND window, bool on) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        CheckMenuItem(bar, static_cast<UINT>(kCommandRecompiler),
-                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-    }
-
-    void TickGpuThread(HWND window, bool on) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        CheckMenuItem(bar, static_cast<UINT>(kCommandGpuThread),
-                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-    }
-
-    void TickGpuTransferTiming(HWND window, bool on) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        CheckMenuItem(bar, static_cast<UINT>(kCommandGpuTransferTiming),
-                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-    }
-
-    void TickICacheTiming(HWND window, bool on) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        CheckMenuItem(bar, static_cast<UINT>(kCommandICacheTiming),
-                      MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-    }
-
-    void TickTimingAccuracy(HWND window, bool exact_events, bool dma_stops_cpu,
-                            bool measured_bus, bool write_queue) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        const struct { MenuCommand command; bool on; } items[] = {
-            { kCommandExactEventTiming, exact_events },
-            { kCommandDmaStopsCpu, dma_stops_cpu },
-            { kCommandMeasuredBusTiming, measured_bus },
-            { kCommandWriteQueueTiming, write_queue },
-        };
-        for (const auto& item : items)
-            CheckMenuItem(bar, static_cast<UINT>(item.command),
-                          MF_BYCOMMAND | (item.on ? MF_CHECKED : MF_UNCHECKED));
-    }
-
-    void TickPauseInMenus(HWND window, bool on) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        CheckMenuItem(bar, static_cast<UINT>(kCommandPauseInMenus),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
     }
 

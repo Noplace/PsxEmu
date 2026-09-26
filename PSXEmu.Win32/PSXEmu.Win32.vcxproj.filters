@@ -39,6 +39,9 @@
     <ClCompile Include="ui\controller_bindings_window.cpp">
       <Filter>ui</Filter>
     </ClCompile>
+    <ClCompile Include="ui\emulation_settings_window.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
     <ClCompile Include="ui\overlay\overlay.cpp">
       <Filter>ui</Filter>
     </ClCompile>
@@ -105,6 +108,9 @@
       <Filter>input</Filter>
     </ClInclude>
     <ClInclude Include="ui\controller_bindings_window.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\emulation_settings_window.h">
       <Filter>ui</Filter>
     </ClInclude>
     <ClInclude Include="ui\overlay\overlay.h">

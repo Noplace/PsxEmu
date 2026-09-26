@@ -48,6 +48,7 @@
 #include "ui/key_bindings_window.h"
 #include "input/controller_bindings.h"
 #include "ui/controller_bindings_window.h"
+#include "ui/emulation_settings_window.h"
 #include "app/engine_factory.h"
 #include "host/audio_output.h"
 #include "host/machine.h"
@@ -146,17 +147,12 @@ namespace psxemu {
         void SetMultitapSource(int port, int player, const std::string& key);
         void SetFrameLimiter(bool on);
         void SetSpeed(float speed);
-        void SetCdMechanicalTiming(bool on);
-        void SetSkipBiosIntro(bool on);
-        void SetRecompiler(bool on);
-        void SetGpuThread(bool on);
+        // The Emulation Settings window: one EmuConfig switch, or a preset over all of them.
+        // Both apply at once - every one of them is safe to change under a running game.
+        void SetEmulationSetting(bool emulation::psx::EmuConfig::*setting, bool on);
+        void SetEmulationPreset(emulation::psx::EmulationPreset preset);
         void PressAnalogButton(int port);
-        void SetGpuTransferTiming(bool on);
-        void SetICacheTiming(bool on);
-        // Emulation > Timing Accuracy: flips one of the four EmuConfig timing models.
-        void ToggleTimingAccuracy(bool emulation::psx::EmuConfig::*setting);
         void SetAudioBackend(const std::string& key);
-        void SetPauseInMenus(bool on);
         void SetShowTimings(bool on);
         void SetShowBiosConsole(bool on);
         void SetSerialToConsole(bool on);
@@ -195,7 +191,7 @@ namespace psxemu {
         void NoteRecentDisc(const std::string& path);
         void SaveRecentDiscs();
 
-        // Settings > Input > Controller Bindings. Kept in the settings file (controller_bindings.h);
+        // Settings > Input > Controllers. The bindings are kept in the settings file (controller_bindings.h);
         // on every change the input thread is told which keys to read and the machine thread gets
         // a fresh copy to map them through.
         void LoadControllerBindings();
@@ -204,6 +200,8 @@ namespace psxemu {
         void SetKeyBindings(const KeyMap& map);
         // The bindings window's "Use for This Port".
         void SetSlotSource(int slot, const std::string& key);
+        // Its Controller list: a port's type, or a multitap player's.
+        void SetSlotType(int slot, const std::string& key);
 
         void RefreshBiosMenu();
         void SelectBios(int index);
@@ -211,22 +209,11 @@ namespace psxemu {
         void UpdateVolumeMenu();
         void UpdateRendererMenu();
         void UpdateFilterMenu();
-        void UpdateControllerTypeMenu();
-        void UpdateInputSourceMenu();
-        void UpdateMultitapSourceMenu();
-        void UpdateMultitapTypeMenu();
+        void UpdateMultitapCardsMenu();
         void SetMultitapType(int port, int player, const std::string& key);
         void UpdateFrameLimiterMenu();
         void UpdateSpeedMenu();
-        void UpdateCdTimingMenu();
-        void UpdateSkipBiosIntroMenu();
-        void UpdateRecompilerMenu();
-        void UpdateGpuThreadMenu();
-        void UpdateGpuTransferTimingMenu();
-        void UpdateICacheTimingMenu();
-        void UpdateTimingAccuracyMenu();
         void UpdateAudioBackendMenu();
-        void UpdatePauseInMenusMenu();
         void UpdateShowTimingsMenu();
         void UpdateBiosConsoleMenu();
         void UpdateSerialToConsoleMenu();
@@ -419,6 +406,7 @@ namespace psxemu {
         std::shared_ptr<const ControllerBindings> machine_bindings_ =
             std::make_shared<const ControllerBindings>();
         ControllerBindingsWindow controller_bindings_;
+        EmulationSettingsWindow emulation_settings_;
         KeyBindingsWindow key_bindings_;
 
         // The overlay's settings, as the View menu has them. The UI thread's; the overlay itself

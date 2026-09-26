@@ -85,6 +85,7 @@
     <ClCompile Include="ui\memcard_editor.cpp" />
     <ClCompile Include="ui\key_bindings_window.cpp" />
     <ClCompile Include="ui\controller_bindings_window.cpp" />
+    <ClCompile Include="ui\emulation_settings_window.cpp" />
     <ClCompile Include="ui\overlay\overlay.cpp" />
     <ClCompile Include="ui\overlay\overlay_atlas.cpp" />
     <ClCompile Include="ui\debugger_window.cpp" />
@@ -109,6 +110,7 @@
     <ClInclude Include="ui\key_bindings_window.h" />
     <ClInclude Include="input\controller_bindings.h" />
     <ClInclude Include="ui\controller_bindings_window.h" />
+    <ClInclude Include="ui\emulation_settings_window.h" />
     <ClInclude Include="ui\overlay\overlay.h" />
     <ClInclude Include="ui\overlay\overlay_atlas.h" />
     <ClInclude Include="ui\overlay\overlay_draw.h" />
