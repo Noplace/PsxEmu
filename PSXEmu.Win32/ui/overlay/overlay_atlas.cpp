@@ -449,6 +449,11 @@ namespace psxemu {
             if (!packer.Place(entry.width, entry.height, &entry.x, &entry.y))
                 return false;
         }
+        // The thumbnails' block, four across and two down, each cell padded like any entry.
+        const int thumb_cell_w = kThumbWidth + kPadding;
+        const int thumb_cell_h = kThumbHeight + kPadding;
+        if (!packer.Place(thumb_cell_w * 4, thumb_cell_h * 2, &thumbs_x_, &thumbs_y_))
+            return false;
         int height = 64;
         while (height < packer.used_height())
             height *= 2;
@@ -497,10 +502,45 @@ namespace psxemu {
             icons_[i].u1 = static_cast<float>(icon.x + icon.width) * inv_w;
             icons_[i].v1 = static_cast<float>(icon.y + icon.height) * inv_h;
         }
+        for (int slot = 0; slot < kThumbSlots; ++slot) {
+            const int x = thumbs_x_ + (slot % 4) * thumb_cell_w;
+            const int y = thumbs_y_ + (slot / 4) * thumb_cell_h;
+            // Half a texel in from each edge, so a linear sample never takes in the neighbour.
+            thumb_uv_[slot].u0 = (static_cast<float>(x) + 0.5f) * inv_w;
+            thumb_uv_[slot].v0 = (static_cast<float>(y) + 0.5f) * inv_h;
+            thumb_uv_[slot].u1 = (static_cast<float>(x + kThumbWidth) - 0.5f) * inv_w;
+            thumb_uv_[slot].v1 = (static_cast<float>(y + kThumbHeight) - 0.5f) * inv_h;
+            CopyThumbnail(slot);
+        }
 
         scale_ = scale;
         ++version_;
         return true;
+    }
+
+    void OverlayAtlas::SetThumbnail(int slot, const std::vector<uint8_t>& rgba) {
+        if (slot < 0 || slot >= kThumbSlots)
+            return;
+        if (!rgba.empty() && rgba.size() != static_cast<size_t>(kThumbWidth) * kThumbHeight * 4)
+            return;
+        thumbs_[slot] = rgba;
+        if (pixels_.empty())
+            return;   // copied in by the first Build
+        CopyThumbnail(slot);
+        ++version_;
+    }
+
+    void OverlayAtlas::CopyThumbnail(int slot) {
+        const int x = thumbs_x_ + (slot % 4) * (kThumbWidth + kPadding);
+        const int y = thumbs_y_ + (slot / 4) * (kThumbHeight + kPadding);
+        for (int row = 0; row < kThumbHeight; ++row) {
+            uint8_t* out = &pixels_[(static_cast<size_t>(y + row) * width_ + x) * 4];
+            if (thumbs_[slot].empty())
+                memset(out, 0, static_cast<size_t>(kThumbWidth) * 4);
+            else
+                memcpy(out, &thumbs_[slot][static_cast<size_t>(row) * kThumbWidth * 4],
+                       static_cast<size_t>(kThumbWidth) * 4);
+        }
     }
 
 }   // namespace psxemu

@@ -53,6 +53,7 @@ PsxEmu/
       root_counter.h/.cpp      timers
       mc.h/.cpp                a memory card slot: the card in memory, written to its file whole
       mc_directory.h/.cpp      what is on a card: list, delete, undelete, export, import, format
+      cheats.h                 GameShark codes: read, run once a frame, and filed per game
       kernel.h/.cpp            BIOS call logging
       debugger.h/.cpp          breakpoints and stepping: halts the machine before an instruction
       disasm.h                 MIPS disassembler - boot_runner and the debugger window
@@ -86,6 +87,7 @@ PsxEmu/
       host_test.cpp            the threads and channels in host/
       frame_limiter_test.cpp  speed_resampler_test.cpp  letterbox_test.cpp
       bindings_test.cpp        keys and pad controls onto PSX buttons, and the settings they live in
+      cheats_test.cpp          GameShark codes read, every code type run, and the cheat files
       wav_pitch.cpp            the note in a WAV boot_runner wrote
       make_test_disc.cpp       writes a synthetic disc image
       make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format
@@ -99,7 +101,7 @@ PsxEmu/
       app.h/.cpp               class App - the UI thread: window, menus, settings, full screen,
                                and the four threads everything else runs on
       menu.h/.cpp              builds the menu bar; ticks an item against a value
-      screenshot.h/.cpp        F12: the frame as a 4:3 PNG
+      screenshot.h/.cpp        F12: the frame as a 4:3 PNG; save-state thumbnails, 160x120
       disc_set.h               which disc images are one game's discs, from their names
       engine_factory.h/.cpp    brings up a graphics and an audio engine, each with a fallback
       win32_paths.h/.cpp       command line, BIOS, settings file, data root, disc-derived names
@@ -126,6 +128,7 @@ PsxEmu/
     ui/                        the tool windows
       controller_bindings_window.h/.cpp  Settings > Input > Controllers: each port's type and
                                source, and the drawn pad to bind
+      cheats_window.h/.cpp     Emulation > Cheats: the game's codes, on and off, typed or imported
       emulation_settings_window.h/.cpp  Settings > Emulation: CPU, timing, GPU and CD-ROM
                                switches, and the Accuracy and Performance presets
       game_scope.h             whether those two windows are editing everyone's settings or

@@ -18,7 +18,8 @@
 *****************************************************************************************************************/
 #pragma once
 
-// The overlay's one texture: its fonts, its icons, and a white pixel to draw solid shapes with.
+// The overlay's one texture: its fonts, its icons, a white pixel to draw solid shapes with, and
+// eight cells for the save-state picker's thumbnails.
 //
 // Built on the CPU when the overlay first draws and again whenever its scale changes - the
 // fonts are rasterised by GDI at the size they are drawn, rather than drawn at one size and
@@ -92,10 +93,29 @@ namespace psxemu {
         // Width `text` takes in `which`.
         float Measure(OverlayFont which, const std::wstring& text) const;
 
+        // The picker's thumbnails: one cell per save-state slot, kThumbWidth x kThumbHeight,
+        // kept here and copied back in whenever the atlas is rebuilt. `rgba` is that size, RGBA8;
+        // empty clears the cell. Either way the atlas's version moves, so the engines upload it.
+        static const int kThumbWidth = 160;
+        static const int kThumbHeight = 120;
+        static const int kThumbSlots = 8;
+        void SetThumbnail(int slot, const std::vector<uint8_t>& rgba);
+        bool has_thumbnail(int slot) const {
+            return slot >= 0 && slot < kThumbSlots && !thumbs_[slot].empty();
+        }
+        const Icon& thumbnail(int slot) const { return thumb_uv_[slot]; }
+
         static const wchar_t kFirst = 32;
         static const wchar_t kLast = 255;
 
      private:
+        void CopyThumbnail(int slot);
+
+        std::vector<uint8_t> thumbs_[kThumbSlots];
+        Icon thumb_uv_[kThumbSlots];
+        int thumbs_x_ = 0;   // the thumbnail block's corner in the atlas
+        int thumbs_y_ = 0;
+
         float scale_ = 0.0f;
         uint64_t version_ = 0;
         std::vector<uint8_t> pixels_;

@@ -58,12 +58,12 @@ namespace psxemu {
     }
 
     // Keys the window already answers to: Space pauses, Tab held fast-forwards, F1-F8 load and
-    // save states, F9 steps through the performance overlay, F11 and Escape go in and out of
-    // full screen, F12 takes a screenshot, and Escape is how the binding editors cancel. A pad
-    // button on one of them would do both.
+    // save states, F9 steps through the performance overlay, F10 opens the save-state picker,
+    // F11 and Escape go in and out of full screen, F12 takes a screenshot, and Escape is how the
+    // binding editors cancel. A pad button on one of them would do both.
     inline bool IsReservedKey(int key) {
-        return key == VK_SPACE || key == VK_ESCAPE || key == VK_TAB || key == VK_F9 ||
-               key == VK_F11 || key == VK_F12 || (key >= VK_F1 && key <= VK_F8);
+        return key == VK_SPACE || key == VK_ESCAPE || key == VK_TAB ||
+               (key >= VK_F1 && key <= VK_F12);
     }
 
     namespace detail {

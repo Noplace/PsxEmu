@@ -7456,3 +7456,129 @@ is left for them to decide.
   check).
 - **`mc_test`, 97 -> 103 checks:** the retry timing and the save once the
   file is writable. All eighteen harnesses green, 2,361 checks.
+
+## 119. A save-state picker, with thumbnails
+
+`PSXEmu.Win32/app/app.cpp` (`OpenStatePicker`, `StatePickerKey`,
+`CaptureStateThumbnail`), `ui/overlay/overlay.*`, `ui/overlay/overlay_atlas.*`,
+`app/screenshot.*`, `PSXEmu.Core/host/machine.h`
+
+Not a bug: a feature the user asked for. F1-F8 loaded and Ctrl+F1-F8 saved
+with nothing to show what a slot held.
+
+**What it is.** F10, or Emulation > Save States..., puts the eight slots over
+the picture.
+- **The layout:** four across and two down, the picture dimmed behind them, in
+  the overlay's current theme.
+- **Each card:**
+  - a thumbnail of the moment it was saved
+  - "Slot 3  F3"
+  - when it was saved: "Today 21:04", "Yesterday", or a date
+  - "Empty" for a slot with nothing in it, and "No picture" for a state saved
+    before thumbnails existed
+- **The keys:**
+  - arrows, or F1-F8, choose a slot
+  - Enter loads it and Ctrl+Enter saves to it
+  - Esc or F10 closes
+- **Pausing:** the game is paused while the picker is up, with a pause reason
+  of its own (`kPausedForPicker`), so the user's own pause is not disturbed. A
+  menu command closes it first.
+
+F10 is Windows' key for the menu bar, which Alt still opens. It arrives as a
+system key, and both its press and its release are taken so the menu bar does
+not open anyway.
+
+**The thumbnails.**
+- **Written on every save** - F-key, menu or picker. The frame on screen at the
+  time is shrunk to 160x120 and written as `<state>.png` beside the state, the
+  same copy-on-the-video-thread, write-on-the-UI-thread path as F12. The state
+  file is not touched, so `kStateVersion` stays where it is.
+- **Drawn from the atlas.** It gains a block of eight 160x120 cells, filled
+  from the PNGs when the picker opens. They are kept and copied back whenever
+  the atlas is rebuilt at a new scale, and bump its version so each engine
+  uploads it again. No engine changed.
+
+**Verified** in the scratch front end on the throwaway test disc, with Classic
+and Glass:
+- slots 1 and 3 saved at different moments: black, then the licence screen,
+  each with its PNG
+- F10 showed both with today's time and the other six empty, and paused the
+  game
+- the selection moved and wrapped with the arrows
+- Esc closed it and the game ran on at 59.3 fps
+- F10, F1 and Enter loaded slot 1
+
+Every state and card file the test made was deleted afterwards.
+
+## 120. Cheats: GameShark codes, per game
+
+`PSXEmu.Core/psx/cheats.h`, `tools/cheats_test.cpp`, `PSXEmu.Win32/ui/cheats_window.*`,
+`app/app.cpp` (`ApplyCheats`, `LoadCheats`, `SetCheat`, `ImportCheats`)
+
+Not a bug: a feature the user asked for.
+
+**The codes.** GameShark, which is how PlayStation cheats are written down
+everywhere: lines of `TTAAAAAA VVVV`. `psx/cheats.h` runs the original
+cartridge's types:
+- **Writes:** 30 and 80 write 8 or 16 bits; 1F writes the scratchpad.
+- **Arithmetic:** 10/11 and 20/21 add and subtract, every frame, as the
+  cartridge did.
+- **Conditions on one line:** D0-D3 and E0-E3 compare 16 or 8 bits, and D4 the
+  buttons. Each guards the next line that is not itself a condition.
+- **Conditions on the rest:** C0, D5 and D6 guard the rest of the code, up to a
+  `00000000 FFFF` separator.
+- **The rest:** C1 delays everything after it, C2 copies, and 50 repeats the
+  next line's write with the address and value stepping.
+
+DuckStation's newer extension types are not taken; a line of one is refused by
+name.
+
+**How they run.**
+- **Once a frame** on the machine's thread (`ApplyCheats`, from the machine's
+  after-frame hook), which is when the cartridge ran them too, once a vertical
+  blank.
+- **A value already right is not written again.** A write that changes RAM
+  goes through `Cpu::NoteBulkWrite`, the way the debugger's memory writes and
+  DMA do, so code a cheat patches is recompiled rather than run stale.
+- **Buttons:** the button codes see every pad's held buttons as the
+  cartridge's own word, which is the pad's bits with their bytes swapped.
+- **No I/O in the engine,** which is what lets `cheats_test` run it against a
+  RAM of its own.
+
+**Where they are kept.** `cheats\<serial>.cht` beside `psxemu.ini`, per disc,
+not per set, since a game's addresses can differ between its discs. The layout
+is DuckStation's, `[Name]` then the code lines, plus an `Enabled = 1` line of
+its own, so DuckStation's cheat files load as they are.
+- **Import** also reads RetroArch's `.cht` (`cheatN_desc`, `cheatN_code` with
+  '+' between the halves and lines, `cheatN_enable`).
+- **What import leaves out:** a cheat that is not GameShark, one DuckStation
+  marks "Activation = Manual" (meant to apply once, not every frame), or one
+  whose code does not parse - and it says how many.
+
+**Emulation > Cheats.**
+- **The list:** the running game's cheats, each with a check box that turns it
+  on or off at once.
+- **The editor:** the chosen cheat's name and code in a fixed-width font. A code
+  that does not parse says which line and why ("Line 1 has 11 hex digits...").
+  A new cheat starts on.
+- **A game that boots with cheats on says so** - "1 cheat on" - since a game
+  behaving oddly because of one left on from last time is a puzzle nobody should
+  have to solve.
+
+**Verified.**
+- **`cheats_test`, new, 72 checks:**
+  - every code type against a fake RAM
+  - the parse errors
+  - both file layouts, round-tripped
+- **In the scratch front end, on the throwaway test disc:**
+  - a cheat typed into the window was refused while a line was short, and
+    taken once whole, into `cheats\PSX-TESTEXE.cht`
+  - a state saved a moment later has its bytes, `EF BE 42 .. FE CA`, in its
+    copy of RAM, with the byte the code does not touch left as it was
+  - importing a RetroArch file through the Open dialog added its good cheat,
+    unticked, and left out the broken one
+  - booting the disc again brought the cheats back, with "1 cheat on"
+  - the same with the recompiler on
+- **All nineteen harnesses green, 2,433 checks.**
+
+Every state and card the test made under Documents was deleted afterwards.

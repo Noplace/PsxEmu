@@ -174,6 +174,99 @@ namespace psxemu {
              label, kTextMain);
     }
 
+    void Overlay::ShowStatePicker(const std::vector<StatePickerSlot>& slots, int selected) {
+        picker_slots_ = slots;
+        picker_slots_.resize(OverlayAtlas::kThumbSlots);
+        picker_selected_ = (std::min)((std::max)(selected, 0), OverlayAtlas::kThumbSlots - 1);
+        picker_open_ = true;
+        dirty_ = true;
+    }
+
+    void Overlay::SetStatePickerSelection(int selected) {
+        picker_selected_ = (std::min)((std::max)(selected, 0), OverlayAtlas::kThumbSlots - 1);
+        dirty_ = true;
+    }
+
+    void Overlay::SetStateThumbnail(int slot, const std::vector<uint8_t>& rgba) {
+        atlas_.SetThumbnail(slot, rgba);
+        dirty_ = true;
+    }
+
+    void Overlay::HideStatePicker() {
+        picker_open_ = false;
+        dirty_ = true;
+    }
+
+    // Over everything else, the picture dimmed behind it: a panel of eight cards, the slot
+    // chosen outlined, and what each key does along the bottom. Shrinks to fit a narrow window.
+    void Overlay::DrawStatePicker(float width, float height) {
+        if (!picker_open_)
+            return;
+        Rect(0.0f, 0.0f, width, height, OverlayColor(0, 0, 0, 150));
+
+        const OverlayAtlas::Font& bold = atlas_.font(OverlayFont::kBold);
+        const OverlayAtlas::Font& small = atlas_.font(OverlayFont::kSmall);
+        const OverlayAtlas::Font& large = atlas_.font(OverlayFont::kLarge);
+        float card_w = 196.0f * s_;
+        float gap = 14.0f * s_;
+        const float pad = 20.0f * s_;
+        const float label_h = bold.line_height + small.line_height + 10.0f * s_;
+        const float title_h = large.line_height + 10.0f * s_;
+        const float footer_h = small.line_height + 14.0f * s_;
+        float panel_w = pad * 2.0f + card_w * 4.0f + gap * 3.0f;
+        if (panel_w > width - 32.0f * s_) {
+            const float fit = (width - 32.0f * s_) / panel_w;
+            card_w *= fit;
+            gap *= fit;
+            panel_w = pad * 2.0f + card_w * 4.0f + gap * 3.0f;
+        }
+        const float thumb_h = card_w * 3.0f / 4.0f;
+        const float panel_h = pad + title_h + 2.0f * (thumb_h + label_h) + gap + footer_h + pad;
+        const float px = (width - panel_w) * 0.5f;
+        const float py = (std::max)(16.0f * s_, (height - panel_h) * 0.5f);
+        Panel(px, py, panel_w, panel_h, 14.0f * s_, 1.0f);
+        Text(OverlayFont::kLarge, px + pad, py + pad, L"Save States", kTextMain);
+
+        const uint32_t accent = AccentOf(ToastKind::kInfo);
+        for (int slot = 0; slot < OverlayAtlas::kThumbSlots; ++slot) {
+            const StatePickerSlot& info = picker_slots_[static_cast<size_t>(slot)];
+            const float x = px + pad + static_cast<float>(slot % 4) * (card_w + gap);
+            const float y = py + pad + title_h +
+                            static_cast<float>(slot / 4) * (thumb_h + label_h + gap);
+            const bool chosen = slot == picker_selected_;
+            if (chosen)
+                RoundRect(x - 4.0f * s_, y - 4.0f * s_, card_w + 8.0f * s_,
+                          thumb_h + label_h + 8.0f * s_, 8.0f * s_, OverlayFade(accent, 0.9f));
+            RoundRect(x, y, card_w, thumb_h, 4.0f * s_, OverlayColor(8, 9, 11, 255));
+            if (info.picture && atlas_.has_thumbnail(slot)) {
+                const OverlayAtlas::Icon& uv = atlas_.thumbnail(slot);
+                Quad(x, y, x + card_w, y + thumb_h, uv.u0, uv.v0, uv.u1, uv.v1,
+                     OverlayColor(255, 255, 255));
+            } else {
+                const std::wstring note = info.used ? L"No picture" : L"Empty";
+                const float nw = atlas_.Measure(OverlayFont::kSmall, note);
+                Text(OverlayFont::kSmall, x + (card_w - nw) * 0.5f,
+                     y + (thumb_h - small.line_height) * 0.5f, note, kTextDim);
+            }
+            if (chosen)
+                RoundRect(x, y + thumb_h, card_w, label_h, 0.0f, OverlayFade(accent, 0.9f));
+            const float ty = y + thumb_h + 5.0f * s_;
+            Text(OverlayFont::kBold, x + 8.0f * s_, ty,
+                 L"Slot " + std::to_wstring(slot + 1) + L"   F" + std::to_wstring(slot + 1),
+                 kTextMain);
+            Text(OverlayFont::kSmall, x + 8.0f * s_, ty + bold.line_height,
+                 Fit(OverlayFont::kSmall, info.used ? info.when : L"Nothing saved",
+                     card_w - 16.0f * s_),
+                 chosen ? kTextMain : kTextDim);
+        }
+
+        const std::wstring hint =
+            L"Arrows or F1-F8 choose    Enter loads    Ctrl+Enter saves    Esc closes";
+        const float hw = atlas_.Measure(OverlayFont::kSmall, hint);
+        Text(OverlayFont::kSmall, px + (panel_w - hw) * 0.5f,
+             py + panel_h - pad - small.line_height, hint, kTextDim);
+    }
+
     void Overlay::SetCounters(uint64_t frames_dropped, uint64_t audio_short, uint64_t audio_dropped) {
         frames_dropped_ = frames_dropped;
         audio_short_ = audio_short;
@@ -302,6 +395,7 @@ namespace psxemu {
         DrawFastForward(w);
         DrawControllers(w, now);
         DrawToasts(w, h, now);
+        DrawStatePicker(w, h);
 
         data_.vertices = vertices_.data();
         data_.vertex_count = vertices_.size();

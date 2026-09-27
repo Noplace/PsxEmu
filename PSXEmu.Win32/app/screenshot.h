@@ -41,4 +41,15 @@ namespace psxemu {
     // The width a `width` x `height` frame is saved at: 4:3 at its own height.
     int ScreenshotWidth(int width, int height);
 
+    // A save state's thumbnail, `<state>.png` beside it: the frame at 160x120, which is what the
+    // save-state picker shows. The state file itself is never touched, so its format stays as
+    // it is.
+    const int kThumbnailWidth = 160;
+    const int kThumbnailHeight = 120;
+    bool SaveThumbnailPng(const std::wstring& path, const std::vector<uint32_t>& pixels, int width,
+                          int height);
+    // The thumbnail as RGBA8, kThumbnailWidth x kThumbnailHeight - whatever size the file is, it
+    // is fitted to that. False, and `rgba` empty, if there is none or it cannot be read.
+    bool LoadThumbnailRgba(const std::wstring& path, std::vector<uint8_t>* rgba);
+
 }   // namespace psxemu

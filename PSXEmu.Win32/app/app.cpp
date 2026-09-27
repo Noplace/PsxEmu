@@ -28,6 +28,10 @@
 
 #include <shellapi.h>   // ShellExecuteA, to open the BIOS folder from its menu
 
+#include <algorithm>
+#include <fstream>
+#include <sstream>
+
 namespace psxemu {
 
     using emulation::psx::EmuConfig;
@@ -89,8 +93,10 @@ namespace psxemu {
         emulation::psx::LoadConfig(settings_, config_);
         {
             const size_t slash = settings_path_.find_last_of("\\/");
-            if (slash != std::string::npos)
+            if (slash != std::string::npos) {
                 game_settings_dir_ = settings_path_.substr(0, slash) + "\\gamesettings";
+                cheats_dir_ = settings_path_.substr(0, slash) + "\\cheats";
+            }
         }
 
         // Before the machine, because the machine is built around a BIOS: the folder has to exist
@@ -186,6 +192,18 @@ namespace psxemu {
             host.game = [this] { return CurrentGame(); };
             host.set_separate = [this](bool separate) { SetGameSettingsSeparate(separate); };
             emulation_settings_.Create(instance, window_, std::move(host));
+        }
+        {
+            CheatsWindow::Host host;
+            host.game = [this] { return CurrentGame(); };
+            host.cheats = [this]() -> const std::vector<emulation::psx::Cheat>& { return cheats_; };
+            host.set_enabled = [this](int index, bool enabled) { SetCheatEnabled(index, enabled); };
+            host.save = [this](int index, const std::string& name, const std::string& code) {
+                return SetCheat(index, name, code);
+            };
+            host.remove = [this](int index) { RemoveCheat(index); };
+            host.import = [this] { ImportCheats(); };
+            cheats_window_.Create(instance, window_, std::move(host));
         }
 
         // Before the threads start, so this is still the only thread touching the machine.
@@ -464,6 +482,7 @@ namespace psxemu {
         hooks.after_frame = [this](Machine& machine) {
             CollectConsoleText(machine.system());
             WatchMemoryCardWrites(machine.system());
+            ApplyCheats(machine.system());
         };
         hooks.halted = [this](Machine& machine) {
             SendDebuggerSnapshot(machine, DebuggerWindow::kAtPc, true);
@@ -647,6 +666,7 @@ namespace psxemu {
     // vocabulary, and arrives at most a millisecond old.
     void App::ApplyInput(System& system, const HostInput& input) {
         const EmuConfig& config = system.config();
+        cheat_buttons_ = 0;   // what the pads hold this frame, for cheats that check buttons
 
         // A different controller is a different physical device, and on a real console the port
         // sits empty while one is unplugged and the next plugged in. Some games need to see that
@@ -785,6 +805,7 @@ namespace psxemu {
                     const SourceReading r = read_source(source, BindingSlotFor(port, player));
                     system.sio().set_connected(port, r.connected, player);
                     system.sio().set_buttons(port, r.buttons, player);
+                    cheat_buttons_ |= r.buttons;
                     system.sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y, player);
                     apply_analog(port, player, r);
                     apply_rumble(port, player, r);
@@ -796,6 +817,7 @@ namespace psxemu {
             const SourceReading r = read_source(source, BindingSlotFor(port, -1));
             system.sio().set_connected(port, r.connected);
             system.sio().set_buttons(port, r.buttons);
+            cheat_buttons_ |= r.buttons;
             system.sio().set_axes(port, r.left_x, r.left_y, r.right_x, r.right_y);
             apply_analog(port, /*player=*/0, r);
             apply_rumble(port, /*player=*/0, r);
@@ -901,6 +923,7 @@ namespace psxemu {
         if (game.separate)
             emulation::psx::LoadConfig(game.file, game.config);
         game.title = title;
+        game.cheat_key = own_key;
         if (whole_set)
             game.name = Wide(set) + L" (every disc)";
         else
@@ -917,9 +940,29 @@ namespace psxemu {
         game_separate_ = lookup.separate;
         config_ = lookup.config;
         ConfigReplaced(before);
+
+        // Its cheats - and a word if any are on, since a game behaving oddly with a cheat left on
+        // from last time is a puzzle nobody should have to solve.
+        game_cheat_key_ = std::move(lookup.cheat_key);
+        LoadCheats();
+        SendCheatsToMachine(true);
+        cheats_window_.OnCheatsChanged(-1);
+        const size_t on = static_cast<size_t>(
+            std::count_if(cheats_.begin(), cheats_.end(),
+                          [](const emulation::psx::Cheat& c) { return c.enabled; }));
+        if (on > 0)
+            Notify(OverlayIcon::kInfo, ToastKind::kWarning,
+                   on == 1 ? std::wstring(L"1 cheat on") : std::to_wstring(on) + L" cheats on",
+                   L"Emulation > Cheats to change");
     }
 
     void App::LeaveGame() {
+        if (!game_cheat_key_.empty()) {
+            game_cheat_key_.clear();
+            cheats_.clear();
+            SendCheatsToMachine(true);
+            cheats_window_.OnCheatsChanged(-1);
+        }
         if (game_key_.empty())
             return;
         const bool had_own = game_separate_;
@@ -2050,10 +2093,12 @@ namespace psxemu {
                 RefreshDebuggerIfOpen(machine);
             }
             const std::wstring message(error.begin(), error.end());
-            PostToUi([this, slot, save, message] {
+            PostToUi([this, slot, save, message, path] {
                 const std::wstring what = save ? L"Saved to slot " + std::to_wstring(slot)
                                                : L"Loaded slot " + std::to_wstring(slot);
                 if (message.empty()) {
+                    if (save)
+                        CaptureStateThumbnail(path);
                     Notify(save ? OverlayIcon::kSave : OverlayIcon::kLoad, ToastKind::kSuccess, what);
                 } else if (overlay_notifications_) {
                     Notify(OverlayIcon::kWarning, ToastKind::kError,
@@ -2258,11 +2303,28 @@ namespace psxemu {
             // (Alt alone opens the menu bar). Bit 29 is "Alt is down"; bit 30 set means a repeat,
             // which would toggle it back and forth for as long as the keys are held.
             case WM_SYSKEYDOWN:
+                // F10 arrives as a system key, since Windows' own use of it is to open the menu
+                // bar - which Alt still does. Here it opens and closes the save-state picker.
+                if (app != nullptr && wparam == VK_F10) {
+                    if ((lparam & (1 << 30)) == 0 && !app->stopping_) {
+                        if (app->picker_open_)
+                            app->CloseStatePicker();
+                        else
+                            app->OpenStatePicker();
+                    }
+                    return 0;
+                }
                 if (app != nullptr && wparam == VK_RETURN && (lparam & (1 << 29)) != 0) {
                     if ((lparam & (1 << 30)) == 0 && !app->stopping_)
                         app->SetFullscreen(!app->fullscreen_);
                     return 0;
                 }
+                break;
+
+            // F10's release would otherwise open the menu bar after all.
+            case WM_SYSKEYUP:
+                if (wparam == VK_F10)
+                    return 0;
                 break;
 
             // Handled, so Alt+Enter does not also beep for a menu mnemonic it did not find.
@@ -2327,6 +2389,9 @@ namespace psxemu {
 
     void App::OnKeyDown(WPARAM key, bool repeat) {
         if (stopping_)
+            return;
+        // The save-state picker, while it is up, takes every key.
+        if (StatePickerKey(key))
             return;
         // Tab: fast forward for as long as it is held.
         if (key == VK_TAB)
@@ -2414,6 +2479,285 @@ namespace psxemu {
         });
     }
 
+    // ---------------------------------------------------------------------------------------------
+    // Cheats
+    // ---------------------------------------------------------------------------------------------
+
+    void App::LoadCheats() {
+        cheats_.clear();
+        if (game_cheat_key_.empty() || cheats_dir_.empty())
+            return;
+        std::ifstream file(cheats_dir_ + "\\" + game_cheat_key_ + ".cht", std::ios::binary);
+        if (!file.is_open())
+            return;
+        std::stringstream text;
+        text << file.rdbuf();
+        cheats_ = emulation::psx::ParseCheatFile(text.str(), nullptr);
+    }
+
+    void App::SaveCheats() {
+        if (game_cheat_key_.empty() || cheats_dir_.empty())
+            return;
+        const std::string path = cheats_dir_ + "\\" + game_cheat_key_ + ".cht";
+        if (cheats_.empty()) {
+            DeleteFileA(path.c_str());
+            return;
+        }
+        EnsureDirectory(cheats_dir_);
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << emulation::psx::SerialiseCheatFile(cheats_, Narrow(game_name_));
+    }
+
+    void App::SendCheatsToMachine(bool new_game) {
+        std::vector<emulation::psx::Cheat> cheats = cheats_;
+        PostToMachine([this, cheats = std::move(cheats), new_game](Machine&) {
+            cheat_engine_.Set(cheats);
+            if (new_game)
+                cheat_engine_.ResetFrames();
+        });
+    }
+
+    // On the machine's thread, after every frame - where the cartridge ran its codes too, once a
+    // vertical blank. A value a cheat changes is written behind the CPU's back, so whatever was
+    // compiled from it goes, the way a DMA's writes are handled.
+    void App::ApplyCheats(System& system) {
+        emulation::psx::CheatMemory memory;
+        memory.ram = system.ram();
+        memory.scratchpad = system.io().scratchpad.u8;
+        memory.written = [](void* context, uint32_t offset, uint32_t bytes) {
+            static_cast<System*>(context)->cpu().NoteBulkWrite(offset, bytes);
+        };
+        memory.context = &system;
+        cheat_engine_.Apply(memory, cheat_buttons_);
+    }
+
+    std::string App::SetCheat(int index, const std::string& name, const std::string& code) {
+        if (game_cheat_key_.empty())
+            return "Start a game first - cheats are kept for each game.";
+        emulation::psx::Cheat cheat;
+        std::string error;
+        if (!emulation::psx::ParseCheatCode(code, &cheat.lines, &error))
+            return error;
+        // One line per row, upper case, as the file keeps it.
+        for (const emulation::psx::CheatLine& line : cheat.lines) {
+            char row[16];
+            snprintf(row, sizeof(row), "%08X %04X", line.first, line.value);
+            cheat.code += (cheat.code.empty() ? "" : "\n") + std::string(row);
+        }
+        // A name is a section heading in the file, so it keeps to one line and no brackets.
+        for (char c : name) {
+            if (c == '\r' || c == '\n')
+                continue;
+            cheat.name += (c == '[') ? '(' : (c == ']') ? ')' : c;
+        }
+        while (!cheat.name.empty() && cheat.name.back() == ' ')
+            cheat.name.pop_back();
+        while (!cheat.name.empty() && cheat.name.front() == ' ')
+            cheat.name.erase(cheat.name.begin());
+        if (cheat.name.empty())
+            cheat.name = "Cheat " + std::to_string(cheats_.size() + 1);
+
+        int shown = index;
+        if (index >= 0 && index < static_cast<int>(cheats_.size())) {
+            cheat.enabled = cheats_[static_cast<size_t>(index)].enabled;
+            cheats_[static_cast<size_t>(index)] = cheat;
+        } else {
+            cheat.enabled = true;   // typed in to be used
+            cheats_.push_back(cheat);
+            shown = static_cast<int>(cheats_.size()) - 1;
+        }
+        SaveCheats();
+        SendCheatsToMachine(false);
+        cheats_window_.OnCheatsChanged(shown);
+        return std::string();
+    }
+
+    void App::SetCheatEnabled(int index, bool enabled) {
+        if (index < 0 || index >= static_cast<int>(cheats_.size()) ||
+            cheats_[static_cast<size_t>(index)].enabled == enabled)
+            return;
+        cheats_[static_cast<size_t>(index)].enabled = enabled;
+        SaveCheats();
+        SendCheatsToMachine(false);
+        cheats_window_.OnCheatsChanged();
+        Notify(OverlayIcon::kInfo, ToastKind::kInfo,
+               std::wstring(enabled ? L"Cheat on" : L"Cheat off"),
+               Widen(cheats_[static_cast<size_t>(index)].name));
+    }
+
+    void App::RemoveCheat(int index) {
+        if (index < 0 || index >= static_cast<int>(cheats_.size()))
+            return;
+        cheats_.erase(cheats_.begin() + index);
+        SaveCheats();
+        SendCheatsToMachine(false);
+        cheats_window_.OnCheatsChanged(-1);
+    }
+
+    void App::ImportCheats() {
+        if (game_cheat_key_.empty())
+            return;
+        const std::string path = ChooseFile(cheats_window_.window(), FileDialog::kOpen,
+                                            kCheatFilter, nullptr);
+        if (path.empty())
+            return;
+        std::ifstream file(path, std::ios::binary);
+        std::stringstream text;
+        text << file.rdbuf();
+        int skipped = 0;
+        const std::vector<emulation::psx::Cheat> found =
+            emulation::psx::ParseCheatFile(text.str(), &skipped);
+        cheats_.insert(cheats_.end(), found.begin(), found.end());
+        SaveCheats();
+        SendCheatsToMachine(false);
+        cheats_window_.OnCheatsChanged(-1);
+        std::wstring detail = std::to_wstring(found.size()) + L" added";
+        if (skipped > 0)
+            detail += L", " + std::to_wstring(skipped) + L" left out (not GameShark codes)";
+        Notify(OverlayIcon::kInfo, found.empty() ? ToastKind::kWarning : ToastKind::kSuccess,
+               L"Cheats imported", detail);
+    }
+
+    void App::CaptureStateThumbnail(const std::string& state_path) {
+        if (video_ == nullptr || state_path.empty())
+            return;
+        const std::wstring path = Widen(state_path) + L".png";
+        video_->Post([this, path](VideoOutput& video) {
+            const emulation::host::VideoFrame* frame = video.frames().current();
+            if (frame == nullptr || frame->is_vram || frame->pixels.empty()) {
+                // An old picture would be a wrong one.
+                PostToUi([path] { DeleteFileW(path.c_str()); });
+                return;
+            }
+            std::vector<uint32_t> pixels = frame->pixels;
+            const int width = frame->width;
+            const int height = frame->height;
+            PostToUi([path, pixels = std::move(pixels), width, height] {
+                if (!SaveThumbnailPng(path, pixels, width, height))
+                    DeleteFileW(path.c_str());
+            });
+        });
+    }
+
+    namespace {
+
+        // When a state was saved, as the picker shows it: "Today 21:04", "Yesterday 18:30",
+        // "Sep 24 14:02", or with the year if it is not this one.
+        std::wstring WhenSaved(const FILETIME& written) {
+            FILETIME local_file;
+            SYSTEMTIME when, now;
+            FileTimeToLocalFileTime(&written, &local_file);
+            FileTimeToSystemTime(&local_file, &when);
+            GetLocalTime(&now);
+            auto day_number = [](const SYSTEMTIME& t) {
+                FILETIME f;
+                SYSTEMTIME midnight = t;
+                midnight.wHour = midnight.wMinute = midnight.wSecond = midnight.wMilliseconds = 0;
+                SystemTimeToFileTime(&midnight, &f);
+                ULARGE_INTEGER v;
+                v.LowPart = f.dwLowDateTime;
+                v.HighPart = f.dwHighDateTime;
+                return static_cast<long long>(v.QuadPart / (10000000ull * 60 * 60 * 24));
+            };
+            const long long days = day_number(now) - day_number(when);
+            wchar_t clock[16];
+            swprintf(clock, std::size(clock), L"%02u:%02u", when.wHour, when.wMinute);
+            if (days == 0)
+                return std::wstring(L"Today ") + clock;
+            if (days == 1)
+                return std::wstring(L"Yesterday ") + clock;
+            static const wchar_t* kMonths[12] = { L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun",
+                                                  L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec" };
+            std::wstring date = std::wstring(kMonths[(when.wMonth + 11) % 12]) + L" " +
+                                std::to_wstring(when.wDay);
+            if (when.wYear != now.wYear)
+                date += L" " + std::to_wstring(when.wYear);
+            return date + L" " + clock;
+        }
+
+    }   // namespace
+
+    void App::OpenStatePicker() {
+        if (picker_open_ || stopping_ || video_ == nullptr)
+            return;
+        picker_open_ = true;
+        picker_selected_ = (std::min)((std::max)(last_slot_ - 1, 0), 7);
+        SetFastForward(false);
+        // The machine knows which disc is in, which is what names the slots' files; the rest -
+        // reading eight PNGs - is done here, while the game waits.
+        PostToMachine([this](Machine& machine) {
+            machine.SetPaused(emulation::host::kPausedForPicker, true);
+            std::vector<std::string> paths;
+            for (int slot = 1; slot <= 8; ++slot)
+                paths.push_back(SaveStateSlotPath(machine.system(), slot));
+            PostToUi([this, paths] {
+                if (!picker_open_)
+                    return;
+                std::vector<StatePickerSlot> slots(8);
+                std::vector<std::vector<uint8_t>> pictures(8);
+                for (int i = 0; i < 8; ++i) {
+                    WIN32_FILE_ATTRIBUTE_DATA info;
+                    const std::wstring path = Widen(paths[i]);
+                    if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &info)) {
+                        slots[i].used = true;
+                        slots[i].when = WhenSaved(info.ftLastWriteTime);
+                        slots[i].picture = LoadThumbnailRgba(path + L".png", &pictures[i]);
+                    }
+                }
+                const int selected = picker_selected_;
+                PostToOverlay([slots, pictures = std::move(pictures), selected](Overlay& overlay) {
+                    for (int i = 0; i < 8; ++i)
+                        overlay.SetStateThumbnail(i, pictures[i]);
+                    overlay.ShowStatePicker(slots, selected);
+                });
+            });
+        });
+    }
+
+    void App::CloseStatePicker() {
+        if (!picker_open_)
+            return;
+        picker_open_ = false;
+        PostToOverlay([](Overlay& overlay) { overlay.HideStatePicker(); });
+        PostToMachine(
+            [](Machine& machine) { machine.SetPaused(emulation::host::kPausedForPicker, false); });
+    }
+
+    bool App::StatePickerKey(WPARAM key) {
+        if (!picker_open_)
+            return false;
+        int selected = picker_selected_;
+        switch (key) {
+            case VK_LEFT: selected = (selected + 7) % 8; break;
+            case VK_RIGHT: selected = (selected + 1) % 8; break;
+            case VK_UP:
+            case VK_DOWN: selected = (selected + 4) % 8; break;
+            case VK_ESCAPE:
+            case VK_F10:
+                CloseStatePicker();
+                return true;
+            case VK_RETURN: {
+                const int slot = picker_selected_ + 1;
+                const bool save = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+                last_slot_ = slot;
+                CloseStatePicker();
+                SaveOrLoadState(slot, save);
+                return true;
+            }
+            default:
+                if (key >= VK_F1 && key <= VK_F8) {
+                    selected = static_cast<int>(key - VK_F1);
+                    break;
+                }
+                // Everything else is the picker's too while it is up - nothing reaches the
+                // paused game, and Space should not unpause it underneath.
+                return true;
+        }
+        picker_selected_ = selected;
+        PostToOverlay([selected](Overlay& overlay) { overlay.SetStatePickerSelection(selected); });
+        return true;
+    }
+
     void App::SetFastForward(bool on) {
         if (on == fast_forward_ || stopping_)
             return;
@@ -2425,6 +2769,10 @@ namespace psxemu {
     void App::OnCommand(int command) {
         if (stopping_)
             return;
+        // Anything chosen from a menu goes to the machine as it is, so the picker, which holds
+        // it paused, gets out of the way first - except for the item that opens it.
+        if (command != kCommandStatePicker)
+            CloseStatePicker();
 
         switch (command) {
             case kCommandBootDisc: {
@@ -2582,6 +2930,17 @@ namespace psxemu {
 
             case kCommandEmulationSettings:
                 emulation_settings_.Show();
+                break;
+
+            case kCommandCheats:
+                cheats_window_.Show();
+                break;
+
+            case kCommandStatePicker:
+                if (picker_open_)
+                    CloseStatePicker();
+                else
+                    OpenStatePicker();
                 break;
 
             case kCommandScreenshot:

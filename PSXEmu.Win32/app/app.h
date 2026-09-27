@@ -49,6 +49,8 @@
 #include "input/controller_bindings.h"
 #include "ui/controller_bindings_window.h"
 #include "ui/emulation_settings_window.h"
+#include "ui/cheats_window.h"
+#include "psx/cheats.h"
 #include "app/engine_factory.h"
 #include "host/audio_output.h"
 #include "host/machine.h"
@@ -176,6 +178,30 @@ namespace psxemu {
         // 4:3, as a PNG in Documents\My Games\PSXEmu\screenshots.
         void TakeScreenshot();
 
+        // F10, or Emulation > Save States...: the eight slots over the picture, with a thumbnail
+        // and the time each was saved. The machine is paused while it is open, and the keyboard
+        // is its: arrows or F1-F8 choose, Enter loads, Ctrl+Enter saves, Esc or F10 closes.
+        void OpenStatePicker();
+        void CloseStatePicker();
+        // A key while the picker is open. True if the picker used it.
+        bool StatePickerKey(WPARAM key);
+        // After a state is saved: the frame on screen, small, as `<state>.png` beside it.
+        void CaptureStateThumbnail(const std::string& state_path);
+
+        // Emulation > Cheats. Each game's cheats are cheats\<serial>.cht beside psxemu.ini, read
+        // when it boots and written on every change; the enabled ones run once a frame on the
+        // machine's thread (ApplyCheats). psx/cheats.h has the codes and the file layout.
+        void LoadCheats();
+        void SaveCheats();
+        void SendCheatsToMachine(bool new_game);
+        void ApplyCheats(emulation::psx::System& system);
+        // The Cheats window's changes. `index` -1 adds a cheat. Each returns what was wrong, or
+        // nothing if it took.
+        std::string SetCheat(int index, const std::string& name, const std::string& code);
+        void SetCheatEnabled(int index, bool enabled);
+        void RemoveCheat(int index);
+        void ImportCheats();
+
         // The memory card editor's two ways into the machine: fresh copies of both cards, and a
         // change to one of them. Both run on the machine's thread and answer by posting the
         // cards back to the editor.
@@ -223,6 +249,7 @@ namespace psxemu {
             std::string key;         // the serial, or the image's file name if it has none
             std::wstring name;       // "Wild Arms (SCUS-94608)"
             std::wstring title;      // "Wild Arms" - for a screenshot's file name
+            std::string cheat_key;   // the disc's own key - cheats are per disc, not per set
             emulation::psx::SettingsFile file;   // the game's settings, empty if it has none
             bool separate = false;   // the file was there
             emulation::psx::EmuConfig config;    // what the game runs with
@@ -374,6 +401,10 @@ namespace psxemu {
         emulation::psx::SettingsFile game_settings_;
         bool game_separate_ = false;
         std::string game_settings_dir_;   // gamesettings\, beside psxemu.ini
+        // The running game's cheats, and where they are kept. The UI thread's.
+        std::string game_cheat_key_;
+        std::vector<emulation::psx::Cheat> cheats_;
+        std::string cheats_dir_;          // cheats\, beside psxemu.ini
 
         // Whichever backends are actually open, as the threads that opened them reported. Not the
         // requested ones: opening can fall back.
@@ -406,6 +437,10 @@ namespace psxemu {
         bool paused_by_user_ = true;
         // Tab is held (SetFastForward). The UI thread's; SendConfigToMachine applies it.
         bool fast_forward_ = false;
+        // The save-state picker (OpenStatePicker): whether it is up, and the slot it has chosen,
+        // 0-7. The UI thread's.
+        bool picker_open_ = false;
+        int picker_selected_ = 0;
         int menu_depth_ = 0;
 
         // Set once WM_CLOSE has started shutting things down: menu commands stop being taken, so
@@ -445,6 +480,10 @@ namespace psxemu {
         bool card_failing_[2][4] = {};
         std::string card_failing_file_[2][4];
 
+        // The machine thread's: the enabled cheats' codes, and what the pads hold this frame.
+        emulation::psx::CheatEngine cheat_engine_;
+        uint16_t cheat_buttons_ = 0;
+
         // File > Memory Cards > Memory Card Editor. The UI thread's; it sees the cards only as
         // snapshots the machine thread sends it.
         MemoryCardEditor card_editor_;
@@ -469,6 +508,7 @@ namespace psxemu {
             std::make_shared<const ControllerBindings>();
         ControllerBindingsWindow controller_bindings_;
         EmulationSettingsWindow emulation_settings_;
+        CheatsWindow cheats_window_;
         KeyBindingsWindow key_bindings_;
 
         // The overlay's settings, as the View menu has them. The UI thread's; the overlay itself

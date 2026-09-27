@@ -129,6 +129,10 @@ namespace psxemu {
         kCommandEmulationSettings,
         // Emulation > Take Screenshot, and F12.
         kCommandScreenshot,
+        // Emulation > Save States..., and F10: the save-state picker.
+        kCommandStatePicker,
+        // Emulation > Cheats...: the running game's GameShark codes.
+        kCommandCheats,
     };
 
     // ---------------------------------------------------------------------------------------------
@@ -299,6 +303,12 @@ namespace psxemu {
         "All files (*.*)\0*.*\0";
     inline constexpr const char* kExeFilter =
         "PSX Executables (*.exe;*.psx;*.psexe)\0*.exe;*.psx;*.psexe\0"
+        "All files (*.*)\0*.*\0";
+
+    // Cheats > Import: DuckStation's and RetroArch's files are both .cht; a list pasted from a
+    // web page is as likely to be a .txt.
+    inline constexpr const char* kCheatFilter =
+        "Cheat files (*.cht;*.txt)\0*.cht;*.txt\0"
         "All files (*.*)\0*.*\0";
 
     // ---------------------------------------------------------------------------------------------

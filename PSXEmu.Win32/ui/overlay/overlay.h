@@ -60,6 +60,14 @@ namespace psxemu {
         bool connected = true; // whether what drives it is there - a pad can be unplugged
     };
 
+    // One slot of the save-state picker (F10): whether a state is there, when it was saved, and
+    // whether a thumbnail of it is in the atlas.
+    struct StatePickerSlot {
+        bool used = false;
+        std::wstring when;      // "Today 21:04", "Yesterday 18:30", "Sep 24 14:02"
+        bool picture = false;
+    };
+
     class Overlay {
      public:
         typedef std::chrono::steady_clock Clock;
@@ -70,6 +78,14 @@ namespace psxemu {
         // The ports as they are now. `announce` shows the corner for a few seconds even when
         // it is not set to stay up - a pad plugged in, a port's type changed, a game started.
         void SetControllers(const std::vector<ControllerSlot>& slots, bool announce);
+
+        // The save-state picker: eight slots, four across and two down, over a dimmed picture.
+        // `selected` is 0-7. Thumbnails go in separately - `rgba` is
+        // OverlayAtlas::kThumbWidth x kThumbHeight, or empty for none.
+        void ShowStatePicker(const std::vector<StatePickerSlot>& slots, int selected);
+        void SetStatePickerSelection(int selected);
+        void SetStateThumbnail(int slot, const std::vector<uint8_t>& rgba);
+        void HideStatePicker();
 
         // ---- settings (the View menu) ---------------------------------------------------------
         void SetNotificationsEnabled(bool on);
@@ -145,6 +161,7 @@ namespace psxemu {
         void DrawStats(float width, float height, int frame_width, int frame_height);
         void DrawCompactStats(float x, float y);
         void DrawFastForward(float width);
+        void DrawStatePicker(float width, float height);
         // A line graph of `values` over a box, `low`..`high` bottom to top, with an optional
         // dashed guide at `guide`.
         void Graph(float x, float y, float w, float h, const std::vector<float>& values,
@@ -175,6 +192,9 @@ namespace psxemu {
         StatsMode stats_mode_ = StatsMode::kOff;
         bool paused_ = false;
         bool fast_forward_ = false;
+        bool picker_open_ = false;
+        int picker_selected_ = 0;
+        std::vector<StatePickerSlot> picker_slots_;
         std::string renderer_, filter_;
         uint64_t frames_dropped_ = 0, audio_short_ = 0, audio_dropped_ = 0;
 

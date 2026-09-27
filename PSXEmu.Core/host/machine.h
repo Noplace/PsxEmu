@@ -42,6 +42,7 @@ enum PauseReason : uint32_t {
   kPausedByUser = 1u << 0,    // Space, Emulation > Pause - and nothing booted yet
   kPausedForMenu = 1u << 1,   // a menu is open and EmuConfig::pause_in_menus asks for it
   kPausedByDebugger = 1u << 2,   // halted at a breakpoint or a step - psx/debugger.h
+  kPausedForPicker = 1u << 3,    // the save-state picker is open over the picture
 };
 
 // Means per emulated frame over the last second or so - the title's readout.

@@ -641,7 +641,14 @@ every keyboard slot inherits - and, from bug 117, the DualShock 4's and
 DualSense's reports: every button over USB and Bluetooth, all nine hat
 positions, the triggers' threshold, the sticks' deadzone, the four motor
 reports byte by byte, and their Bluetooth CRC against a second, table-driven
-CRC-32), `timing_test` (19 checks,
+CRC-32), `cheats_test` (72 checks, bug 120 - GameShark codes: reading them as
+people write them, with RetroArch's '+', several on one row, comments, and the
+errors for a short line, an unknown type or a 50 with nothing after it; every
+code type run against a RAM of the test's own, a value already right not
+written again, conditions guarding one line or the rest of a code up to its
+separator, the buttons as the cartridge's own word, C1's delay, slides and
+copies; and DuckStation's and RetroArch's cheat files, the manual-activation and
+non-GameShark cheats left out, written and read back), `timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is) and `host_test` (33 checks, the
 threads and the channels between them - its own section above).
@@ -834,6 +841,58 @@ stray pixel above its top-left corner and a few stair pixels on its slanted top,
 and a mountain peak behind Ridge Racer's attract mode loses a one-pixel spike on
 its apex - both edge pixels a triangle drew that the rule gives to nothing.
 Ridge Racer's frame 3000 has two fewer non-black pixels for it.
+
+**Run with the Accuracy preset, 2026-09-26: every disc plays on, at a different
+pace.** That is Settings > Emulation's Accuracy (bug 115): the interpreter, with
+every timing model on except the write queue.
+
+    boot_runner ... --icache-timing --gpu-transfer-timing --cd-mechanical
+                    --exact-timing --dma-stops-cpu --measured-bus
+
+Each model had been run over this table on its own (bugs 93, 94, 111). This is
+the first run with all of them on at once. The default table was re-run
+alongside it and matched every checkpoint above, so the comparison is against
+the current build.
+
+- **No checkpoint matches the default table,** which is expected. Almost every
+  disc is still on the licence screen at frame 1000 (`eac4dfab83da3880`), because
+  CD-ROM mechanical timing keeps it up as long as a drive takes. Every game
+  after it runs at a different pace.
+- **Nothing hangs or breaks.** Run on to 6,000 frames:
+  - every disc's picture changed at every checkpoint
+  - every disc that streams kept reading sectors
+  - every film disc kept decoding macroblocks
+  - every disc made sound
+  - no run hit an unimplemented path
+- **By eye, frame 3000 and 6000 are clean scenes further on:** Air Combat's
+  title menu, Area 51's and Vandal Hearts' attract gameplay, FF8's opening
+  film, and Captain Tsubasa J past its title.
+- **FF8 at frame 3000 is a black frame between its opening credits,** with 562
+  non-black pixels. It is 640x480 and drawn again by frame 4000.
+
+| Disc (Accuracy) | f3000 | non-black | f6000 | sectors at 6000 |
+|---|---|---|---|---|
+| Air Combat | `26ca0205b286f394` | 51,200 | `6dfd08b5830e96f6` | 10,138 |
+| Wild Arms | `e41ea6138351d407` | 61,440 | `3af6c61bba8a5eb0` | 9,395 |
+| Wild Arms 2 (cd1) | `8008dddf75075c79` | 76,800 | `fe2061d3e89541d5` | 100 |
+| Vandal Hearts | `2519aac3644e3f61` | 76,800 | `f325a5ea3401cdf4` | 7,438 |
+| Legend of Mana | `6fb713088837f90e` | 76,800 | `6545413c0701e369` | 12,002 |
+| Ridge Racer | `e3c4b4532eff29a3` | 75,671 | `a8eec6d707480f54` | 1,578 |
+| Bomberman Party Ed. | `0277e44aed484618` | 76,422 | `3e0469e96ccdf830` | 11,566 |
+| Area 51 | `676ff7de49d5b4fb` | 9,917 | `214e56099138100c` | 11,101 |
+| Final Fantasy VII | `dea5b47bd3d357d5` | 75,974 | `1add80ed7008b34c` | 668 |
+| Final Fantasy VIII | `d7ef5a0cdb2f5703` | 562 | `9257118984bf8e7b` | 1,550 |
+| Ace Combat 3 | `d9cc3b9995e0bf0a` | 62,139 | `086ed6835804e117` | 8,065 |
+| Captain Tsubasa J | `816d516f2ba1d3f8` | 76,800 | `73cea774641c9685` | 9,451 |
+
+**What it does not show:**
+- **Whether Accuracy is closer to a console.** Only that it breaks none of
+  these twelve over their first 6,000 frames, with no input - intros and
+  attract modes, never the game itself played.
+- **Anything about sound,** beyond that there is some.
+
+Checksums from this table are a baseline for the Accuracy set in the same way
+as the default ones, and move for the same kinds of change.
 
 **Run with `--recompiler`, 2026-09-25: identical at all 36 checkpoints.** Every
 disc gives the same checksum, non-black count and resolution at frames 1000,

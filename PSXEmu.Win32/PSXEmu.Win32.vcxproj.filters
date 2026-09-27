@@ -42,6 +42,9 @@
     <ClCompile Include="ui\emulation_settings_window.cpp">
       <Filter>ui</Filter>
     </ClCompile>
+    <ClCompile Include="ui\cheats_window.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
     <ClCompile Include="ui\overlay\overlay.cpp">
       <Filter>ui</Filter>
     </ClCompile>
@@ -117,6 +120,9 @@
       <Filter>ui</Filter>
     </ClInclude>
     <ClInclude Include="ui\emulation_settings_window.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\cheats_window.h">
       <Filter>ui</Filter>
     </ClInclude>
     <ClInclude Include="ui\game_scope.h">

@@ -106,6 +106,12 @@ and whichever slot was last used is the one the two menu items act on. The
 F5/F9 quick save/load pair this originally called for was never added; the
 menu items covered the need.
 
+Later (bug 119), F10 or `Emulation > Save States...` opens a picker over the
+picture. It shows the eight slots with a thumbnail and the time each was saved,
+and pauses the game while it is up. Each thumbnail is a 160x120 PNG written
+beside its state as `<disc identifier>.st<n>.png` when the state is saved, so
+the state format is untouched and a state from before then shows "No picture".
+
 The location is `App::savestates_root_` in `app.h`, resolved by
 `SetUpDataDirectories` to `Documents\My Games\PSXEmu\savestates`, created at
 startup alongside `memcards`. States go in there as

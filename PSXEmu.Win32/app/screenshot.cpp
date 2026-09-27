@@ -53,6 +53,82 @@ namespace psxemu {
 
     }   // namespace
 
+    bool SaveThumbnailPng(const std::wstring& path, const std::vector<uint32_t>& pixels, int width,
+                          int height) {
+        if (width <= 0 || height <= 0 ||
+            pixels.size() < static_cast<size_t>(width) * static_cast<size_t>(height))
+            return false;
+        Gdiplus::GdiplusStartupInput input;
+        ULONG_PTR token = 0;
+        if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok)
+            return false;
+        bool saved = false;
+        {
+            CLSID png;
+            Gdiplus::Bitmap frame(width, height, width * 4, PixelFormat32bppRGB,
+                                  reinterpret_cast<BYTE*>(const_cast<uint32_t*>(pixels.data())));
+            Gdiplus::Bitmap shrunk(kThumbnailWidth, kThumbnailHeight, PixelFormat24bppRGB);
+            if (PngEncoder(&png) && frame.GetLastStatus() == Gdiplus::Ok &&
+                shrunk.GetLastStatus() == Gdiplus::Ok) {
+                {
+                    Gdiplus::Graphics graphics(&shrunk);
+                    // Shrinking by 2-4x: high-quality bilinear averages enough of each area.
+                    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBilinear);
+                    graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+                    Gdiplus::ImageAttributes clamp;
+                    clamp.SetWrapMode(Gdiplus::WrapModeTileFlipXY);
+                    graphics.DrawImage(&frame,
+                                       Gdiplus::Rect(0, 0, kThumbnailWidth, kThumbnailHeight), 0,
+                                       0, width, height, Gdiplus::UnitPixel, &clamp);
+                }
+                saved = shrunk.Save(path.c_str(), &png, nullptr) == Gdiplus::Ok;
+            }
+        }
+        Gdiplus::GdiplusShutdown(token);
+        return saved;
+    }
+
+    bool LoadThumbnailRgba(const std::wstring& path, std::vector<uint8_t>* rgba) {
+        rgba->clear();
+        if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES)
+            return false;
+        Gdiplus::GdiplusStartupInput input;
+        ULONG_PTR token = 0;
+        if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok)
+            return false;
+        {
+            Gdiplus::Bitmap file(path.c_str());
+            Gdiplus::Bitmap fitted(kThumbnailWidth, kThumbnailHeight, PixelFormat32bppARGB);
+            if (file.GetLastStatus() == Gdiplus::Ok && fitted.GetLastStatus() == Gdiplus::Ok) {
+                {
+                    Gdiplus::Graphics graphics(&fitted);
+                    graphics.SetInterpolationMode(Gdiplus::InterpolationModeHighQualityBilinear);
+                    graphics.DrawImage(&file, 0, 0, kThumbnailWidth, kThumbnailHeight);
+                }
+                Gdiplus::BitmapData data;
+                Gdiplus::Rect all(0, 0, kThumbnailWidth, kThumbnailHeight);
+                if (fitted.LockBits(&all, Gdiplus::ImageLockModeRead, PixelFormat32bppARGB,
+                                    &data) == Gdiplus::Ok) {
+                    rgba->resize(static_cast<size_t>(kThumbnailWidth) * kThumbnailHeight * 4);
+                    for (int y = 0; y < kThumbnailHeight; ++y) {
+                        const uint8_t* row = static_cast<const uint8_t*>(data.Scan0) +
+                                             static_cast<ptrdiff_t>(y) * data.Stride;
+                        uint8_t* out = &(*rgba)[static_cast<size_t>(y) * kThumbnailWidth * 4];
+                        for (int x = 0; x < kThumbnailWidth; ++x) {
+                            out[x * 4 + 0] = row[x * 4 + 2];   // BGRA in, RGBA out
+                            out[x * 4 + 1] = row[x * 4 + 1];
+                            out[x * 4 + 2] = row[x * 4 + 0];
+                            out[x * 4 + 3] = 255;
+                        }
+                    }
+                    fitted.UnlockBits(&data);
+                }
+            }
+        }
+        Gdiplus::GdiplusShutdown(token);
+        return !rgba->empty();
+    }
+
     int ScreenshotWidth(int width, int height) {
         const int wide = (height * 4 + 1) / 3;
         return wide > 0 ? wide : width;

@@ -54,8 +54,8 @@ that watches STAT's request bits closely rather than using DMA would not.
 ### Every harness is green
 
 cpu 297, gte 106, timer 80, sio 203, spu 144, gpu 73, mdec 85, media 378, mc 103, debug 174 - 1,643
-checks, no failures, and 2,361 across all eighteen harnesses (re-run
-2026-09-26, after bugs 78-118 - with the rasteriser threaded, now the default).
+checks, no failures, and 2,433 across all nineteen harnesses (re-run
+2026-09-27, after bugs 78-120 - with the rasteriser threaded, now the default).
 `host_test`'s two real-speed checks fail now and then on a busy host, before a
 change as well as after it; see Test-Suite.md. The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
@@ -240,7 +240,9 @@ console, and 42 of 51 cells match.
   Settings > Emulation > Measured Bus Timing (bug 111) fixes both, and
   all 51 cells match with it on. It is off by default because the rule is
   fitted to the same table it matches - one register setting per region - and
-  nothing independent checks it.
+  nothing independent checks it. With every timing model on at once - the
+  Accuracy preset - the twelve-disc table still plays on to frame 6,000,
+  every disc at a different pace (Test-Suite.md, 2026-09-26).
 - **Not modelled:** a slow load overlapping the instructions after it.
 - **Unmeasured:** stores. Write Queue Timing (bug 111) models psx-spx's
   four-deep write queue: a store is free until the queue is full, and a load
@@ -601,7 +603,11 @@ by all four renderers through one small pass each:
 
 It has two looks: Classic, flat and dark, and Glass, whose panels frost the
 picture behind them. Tab held fast-forwards, with a badge at the top middle,
-and F12 saves the picture as a 4:3 PNG in `screenshots` (bug 118).
+and F12 saves the picture as a 4:3 PNG in `screenshots` (bug 118). F10 opens the
+save-state picker: the eight slots with a thumbnail each and when they were
+saved, the game paused under it (bug 119). Emulation > Cheats keeps each game's
+GameShark codes, runs the ticked ones every frame, and imports DuckStation's and
+RetroArch's cheat files (bug 120).
 
 It *can* be driven from an agent session after all - launched, sent
 `WM_COMMAND`s, and read back through its title bar (Test-Suite.md's host_test

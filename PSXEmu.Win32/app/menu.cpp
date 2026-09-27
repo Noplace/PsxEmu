@@ -107,6 +107,8 @@ namespace psxemu {
         // keyboard and the menu stay in step with each other.
         AppendMenuW(emulation, MF_STRING, kCommandSaveState, L"&Save State\tCtrl+F1..F8");
         AppendMenuW(emulation, MF_STRING, kCommandLoadState, L"&Load State\tF1..F8");
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandStatePicker),
+                    L"Sa&ve States...\tF10");
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandScreenshot),
                     L"Take Scree&nshot\tF12");
         AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
@@ -135,6 +137,7 @@ namespace psxemu {
         AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandEmulationSettings),
                     L"Emulation Se&ttings...");
+        AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandCheats), L"C&heats...");
         AppendMenuW(emulation, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(emulation, MF_STRING, static_cast<UINT_PTR>(kCommandShowTimings),
                     L"Show &Timings in Title Bar");

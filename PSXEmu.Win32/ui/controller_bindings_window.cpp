@@ -989,7 +989,7 @@ namespace psxemu {
                 } else if (IsReservedKey(key)) {
                     self->SetStatus(BindingCodeLabel(kKeyboardDevice, key) +
                                     L" is taken by the emulator itself (Space pauses, Tab "
-                                    L"fast-forwards, F1-F8 load and save states, F11 is full "
+                                    L"fast-forwards, F1-F8 load and save states, F10 picks one, F11 is full "
                                     L"screen, F12 takes a screenshot). Press another key, or "
                                     L"Escape.");
                 } else {

@@ -149,6 +149,12 @@ cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_bindings\ /Fe:Temp\tools\bindings_
    PSXEmu.Core\tools\bindings_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
+rem GameShark codes: psx\cheats.h is header-only, and runs against a RAM of the test's own.
+if not exist Temp\tools\obj_cheats mkdir Temp\tools\obj_cheats
+cl %FLAGS% /Fo:Temp\tools\obj_cheats\ /Fe:Temp\tools\cheats_test.exe ^
+   PSXEmu.Core\tools\cheats_test.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 rem The recompiler, which is being built beside the core rather than into it -
 rem nothing in psx\ includes any of this, and the emulator does not link it.
 rem Only the emitter files rec_test actually reaches are compiled; the rest of
