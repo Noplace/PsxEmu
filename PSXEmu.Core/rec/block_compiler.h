@@ -143,8 +143,8 @@ class BlockCompiler {
   static const uint8_t kScratchA = 0;      // EAX - and a call's return value
   static const uint8_t kScratchB = 1;      // ECX - a shift count, and arg 1
   static const uint8_t kScratchC = 2;      // EDX - and arg 2
-  static const uint8_t kArg3 = 8;          // R8D
-  static const uint8_t kArg4 = 9;          // R9D - the guest pc of an access
+  static const uint8_t kArg3 = 8;          // R8D - a store's value, a load's guest pc
+  static const uint8_t kArg4 = 9;          // R9D - a store's guest pc
 
   // Windows x64: 32 bytes of shadow space, and RSP 16-byte aligned at the call.
   // Three pushes leave RSP 16-aligned, so the shadow space is all that is
@@ -210,6 +210,11 @@ class BlockCompiler {
   // dispatcher. The A/B for linking, and the same switch discipline as the
   // allocator's.
   void set_link_blocks(bool on) { link_blocks_ = on; }
+
+  // On, every register copy - addu/or with r0, addiu/ori with 0 - also calls
+  // BlockState::move, for a host keeping something beside each register. Off,
+  // not a byte of it is emitted.
+  void set_track_moves(bool on) { track_moves_ = on; }
 
   CompiledBlock Compile(const DecodedBlock& block, CodeBlock* code) {
     CompiledBlock result;
@@ -415,6 +420,7 @@ class BlockCompiler {
   static const int8_t kOffNextPc = static_cast<int8_t>(offsetof(BlockState, next_pc));
   static const int8_t kOffBudget = static_cast<int8_t>(offsetof(BlockState, budget));
   static const int8_t kOffFault = static_cast<int8_t>(offsetof(BlockState, fault));
+  static const int8_t kOffMove = static_cast<int8_t>(offsetof(BlockState, move));
 
   // How far into the block the compiled code gets. Computed backwards, because
   // whether an instruction can be compiled depends on whether the one after it
@@ -743,6 +749,8 @@ class BlockCompiler {
         LoadReg(kScratchA, rs);
         x86::AluRegImm(emitter_, x86::AluImmOp::kAdd, kScratchA, SignExtend(immediate));
         StoreReg(rt, kScratchA);
+        if (immediate == 0)
+          EmitMove(rt, rs);
         return;
 
       case 0x0C:   // andi - zero-extended
@@ -755,6 +763,8 @@ class BlockCompiler {
         LoadReg(kScratchA, rs);
         x86::AluRegImm(emitter_, x86::AluImmOp::kOr, kScratchA, immediate);
         StoreReg(rt, kScratchA);
+        if (immediate == 0)
+          EmitMove(rt, rs);
         return;
 
       case 0x0E:   // xori
@@ -832,6 +842,7 @@ class BlockCompiler {
 
       case 0x21:   // addu
         EmitAlu(x86::AluOp::kAdd, rd, rs, rt);
+        EmitMoveIfCopy(rd, rs, rt);
         break;
       case 0x23:   // subu
         EmitAlu(x86::AluOp::kSub, rd, rs, rt);
@@ -841,6 +852,7 @@ class BlockCompiler {
         break;
       case 0x25:   // or
         EmitAlu(x86::AluOp::kOr, rd, rs, rt);
+        EmitMoveIfCopy(rd, rs, rt);
         break;
       case 0x26:   // xor
         EmitAlu(x86::AluOp::kXor, rd, rs, rt);
@@ -967,7 +979,7 @@ class BlockCompiler {
     FlushPendingBeforeMemory();
 
     EmitAddress(rs, immediate);
-    EmitCall(function, instruction.pc);
+    EmitCall(function, instruction.pc, kArg3);   // (context, address, pc)
     EmitFaultCheck(code_, block_start_);
 
     switch (opcode) {
@@ -1005,7 +1017,7 @@ class BlockCompiler {
     FlushPendingBeforeMemory();
     EmitAddress(rs, immediate);
     LoadReg(kArg3, rt);        // the value, whole; the callback narrows it
-    EmitCall(function, instruction.pc);
+    EmitCall(function, instruction.pc, kArg4);   // (context, address, value, pc)
     EmitFaultCheck(code_, block_start_);
   }
 
@@ -1042,10 +1054,13 @@ class BlockCompiler {
 
   // The context and the function pointer both come out of the state at run
   // time, so nothing about where the host's code lives is baked into the block.
-  // The guest pc goes in the last argument register: the host needs it to point
-  // an exception at the right instruction.
-  void EmitCall(int8_t function_offset, uint32_t pc) {
-    x86::MovRegImm(emitter_, kArg4, pc);                             // arg 4
+  // The guest pc goes in the callback's last argument - `pc_register`, the
+  // third for a load and the fourth for a store, whose third is the value: the
+  // host needs it to point an exception at the right instruction. Until phase 6
+  // of Docs/Hardware-Renderer-Plan.md every call put it in the fourth, so a load
+  // was handed whatever R8 held (bug 126).
+  void EmitCall(int8_t function_offset, uint32_t pc, uint8_t pc_register) {
+    x86::MovRegImm(emitter_, pc_register, pc);
     x86::Mov64RegMem(emitter_, kScratchB, kStatePtr, kOffContext);   // arg 1
     x86::Mov64RegMem(emitter_, kScratchA, kStatePtr, function_offset);
     x86::CallReg(emitter_, kScratchA);
@@ -1065,6 +1080,29 @@ class BlockCompiler {
     fault_exits_.push_back(code->cursor);
     x86::JmpRel32(emitter_, 0);
     (void)block_start;
+  }
+
+  // BlockState::move(context, to, from), after the copy itself, while the host
+  // tracks moves. Nothing is live in the volatile registers between guest
+  // instructions - the pending load and allocated registers are callee-saved -
+  // so the call needs no saving around it.
+  void EmitMove(uint32_t to, uint32_t from) {
+    if (!track_moves_ || to == 0)
+      return;
+    x86::MovRegImm(emitter_, kScratchC, to);                         // arg 2
+    x86::MovRegImm(emitter_, kArg3, from);                           // arg 3
+    x86::Mov64RegMem(emitter_, kScratchB, kStatePtr, kOffContext);   // arg 1
+    x86::Mov64RegMem(emitter_, kScratchA, kStatePtr, kOffMove);
+    x86::CallReg(emitter_, kScratchA);
+  }
+
+  // addu and or are copies when either operand is r0 - rt first, as the
+  // interpreter's ADDU and OR decide it.
+  void EmitMoveIfCopy(uint32_t rd, uint32_t rs, uint32_t rt) {
+    if (rt == 0)
+      EmitMove(rd, rs);
+    else if (rs == 0)
+      EmitMove(rd, rt);
   }
 
   void EmitAlu(x86::AluOp op, uint32_t rd, uint32_t rs, uint32_t rt) {
@@ -1125,6 +1163,7 @@ class BlockCompiler {
   // Block linking: where this block can go next, and whether to emit the slots
   // that would let it jump there directly.
   bool link_blocks_ = true;
+  bool track_moves_ = false;
   uint32_t successors_[2] = {};
   int successor_count_ = 0;
 

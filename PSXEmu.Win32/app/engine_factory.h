@@ -56,6 +56,13 @@ namespace psxemu {
     // `*active_backend` is set to whichever engine actually ended up running, which the caller uses
     // instead of the requested one for menu ticks and persisted state from here on.
     //
+    // `adapter_luid` and `adapter_name` are the graphics card chosen at Settings > Video >
+    // Graphics Card (graphics/adapters.h), passed to each engine before it starts; 0 and empty
+    // leave it to the engine. Not every engine can honour it - see
+    // IGraphicsEngine::SetPreferredAdapter - and one that is asked for a card it cannot make a
+    // device on fails like any other, so the fallback below carries on rather than drawing
+    // somewhere the person did not ask for.
+    //
     // A fallback does not put a dialog up itself: it writes what it would have said into
     // `*warning`, and the caller shows it. This runs on the video thread now, and a message box
     // from any thread but the window's is a wait on the window's thread - see Docs/Threading-
@@ -64,7 +71,9 @@ namespace psxemu {
                                                           const RenderWindows& windows,
                                                           int width, int height,
                                                           std::string* active_backend,
-                                                          std::wstring* warning);
+                                                          std::wstring* warning,
+                                                          uint64_t adapter_luid = 0,
+                                                          const std::string& adapter_name = std::string());
 
     // Compiles every ported filter into the engine at once - cheap (startup-cost shader compiles,
     // not per-frame work), so there is no reason to defer any of them until first selected. HLSL

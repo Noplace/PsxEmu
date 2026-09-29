@@ -100,6 +100,9 @@ struct HostInterface {
   Store16Fn store16 = nullptr;
   Store8Fn store8 = nullptr;
 
+  // Told of every register copy compiled code makes, while set_track_moves is on.
+  MoveFn move = nullptr;
+
   // Runs the instruction at `pc` and returns the address of the next one.
   //
   // "The instruction" includes its delay slot when it has one: a branch and
@@ -158,6 +161,7 @@ class Recompiler {
     state_.store32 = &StoreThunk32;
     state_.store16 = &StoreThunk16;
     state_.store8 = &StoreThunk8;
+    state_.move = &MoveThunk;
   }
 
   ~Recompiler() {
@@ -312,6 +316,17 @@ class Recompiler {
   // whatever they were compiled with, so flip this before anything runs.
   void set_allocate_registers(bool on) { compiler_.set_allocate_registers(on); }
 
+  // Whether compiled register copies call HostInterface::move - the emulator's
+  // PGXP, while it is on. Blocks carry the choice they were compiled with, so a
+  // change throws them all away, as software replacing its code does.
+  void set_track_moves(bool on) {
+    if (on == track_moves_)
+      return;
+    track_moves_ = on;
+    compiler_.set_track_moves(on);
+    Reset();
+  }
+
   // For tests: see BlockCompiler::set_minimum_block_instructions.
   void set_minimum_block_instructions(uint32_t instructions) {
     compiler_.set_minimum_block_instructions(instructions);
@@ -457,6 +472,11 @@ class Recompiler {
     return static_cast<Recompiler*>(context);
   }
 
+  static void MoveThunk(void* c, uint32_t to, uint32_t from) {
+    Recompiler* self = Self(c);
+    if (self->host_.move != nullptr)
+      self->host_.move(self->host_.context, to, from);
+  }
   static uint32_t LoadThunk32(void* c, uint32_t a, uint32_t pc) {
     Recompiler* self = Self(c);
     return self->host_.load32(self->host_.context, a, pc);
@@ -504,6 +524,7 @@ class Recompiler {
   // direction invalidation needs: "this block is going, who points at it?"
   std::unordered_map<uint32_t, std::vector<Link>> incoming_;
   bool link_blocks_ = true;
+  bool track_moves_ = false;
 
   // Long enough that a hot loop stays inside compiled code, short enough that
   // the host still hears from the CPU promptly.

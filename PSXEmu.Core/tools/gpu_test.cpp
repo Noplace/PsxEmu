@@ -9,8 +9,12 @@
 // issued.
 
 #include "psx/psx.h"
+#ifdef PSXEMU_HW_RASTER
+#include "graphics/hw_raster/d3d11_raster.h"
+#endif
 
 #include <cstdio>
+#include <cstring>
 
 using emulation::psx::Gpu;
 using emulation::psx::kInterruptGPU;
@@ -840,9 +844,31 @@ void TestBurstDmaStartsOnTheDevicesRequest(System* system) {
   io.Write32(0x1F8010F0, 0x00000000);
 }
 
-int main() {
+int main(int argc, char** argv) {
   System* system = new System();
+  // --hw-raster: every scene drawn by the Direct3D 11 rasteriser on WARP instead, which must
+  // give the same answers (Docs/Hardware-Renderer-Plan.md). In a build that has it.
+  if (argc > 1 && strcmp(argv[1], "--hw-raster") == 0) {
+#ifdef PSXEMU_HW_RASTER
+    system->set_hardware_raster([](uint16_t* vram, const emulation::psx::RasterOptions& options,
+                                   std::string* error)
+                                    -> std::unique_ptr<emulation::psx::RasterBackend> {
+      return psxemu::D3D11Raster::Create(vram, options, true, error);
+    });
+    system->config().gpu_rasteriser = "hardware";
+#else
+    printf("--hw-raster: this build has no hardware rasteriser\n");
+    return 2;
+#endif
+  }
   system->InitializeWithoutBios();
+  if (system->config().gpu_rasteriser == "hardware") {
+    if (!system->gpu().hardware_raster()) {
+      printf("--hw-raster: %s\n", system->gpu().raster_error().c_str());
+      return 1;
+    }
+    printf("drawing with the hardware rasteriser, on WARP\n\n");
+  }
 
   TestResetStartsIdle(system);
   TestInterruptRequestSetsStatusAndIrq(system);

@@ -128,8 +128,22 @@ bool System::StepImpl() {
   // thread that runs the machine. Switching the recompiler off frees the
   // compiled code, and the menu that asks for it runs on the message thread -
   // doing it there could free the block the machine is executing.
-  if (config_.recompiler != (recompiler_ != nullptr))
-    EnableRecompiler(config_.recompiler);
+  //
+  // PGXP (psx/pgxp.h) keeps its shadows in the interpreter's loads, stores and moves - and under
+  // the recompiler in the word loads and stores compiled code calls out for (RecompilerBridge),
+  // with every GTE instruction interpreted anyway. It is on only while the hardware rasteriser
+  // draws: nothing else uses what it keeps.
+  const bool pgxp = config_.pgxp_vertices && gpu_.hardware_raster();
+  if (pgxp != pgxp_.enabled()) {
+    pgxp_.set_enabled(pgxp);
+    gte_.set_pgxp(pgxp, config_.pgxp_culling);
+  }
+  else if (pgxp) {
+    gte_.set_pgxp(true, config_.pgxp_culling);
+  }
+  const bool recompile = config_.recompiler;
+  if (recompile != (recompiler_ != nullptr))
+    EnableRecompiler(recompile);
 
   cpu_.context()->current_cycles = 0;
 

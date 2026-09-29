@@ -18,10 +18,13 @@
 *****************************************************************************************************************/
 #include "graphics/d3d11_presenter.h"
 
+#include "graphics/adapters.h"
 #include "shaders/overlay_shaders.h"
 #include "tools/letterbox.h"
 
+#include <d3d11_1.h>
 #include <d3dcompiler.h>
+#include <dxgi.h>
 #include <algorithm>
 #include <cstring>
 
@@ -115,8 +118,16 @@ namespace psxemu {
         const D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1,
                                              D3D_FEATURE_LEVEL_10_0 };
 
+        // The card chosen at Settings > Video > Graphics Card, if it can be found; otherwise
+        // Windows' default. A device made on an explicit adapter has to say so with the driver
+        // type "unknown".
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> chosen = OpenAdapter(preferred_luid_);
+        IDXGIAdapter* const adapter_to_use = chosen.Get();
+        const D3D_DRIVER_TYPE driver_type =
+            adapter_to_use != nullptr ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE;
+
         HRESULT result = D3D11CreateDeviceAndSwapChain(
-            nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, ARRAYSIZE(levels),
+            adapter_to_use, driver_type, nullptr, flags, levels, ARRAYSIZE(levels),
             D3D11_SDK_VERSION, &description, &swap_chain_, &device_, nullptr, &context_);
 
         if (FAILED(result)) {
@@ -124,11 +135,25 @@ namespace psxemu {
             // debug flag set is worth retrying without it before giving up.
             flags = 0;
             result = D3D11CreateDeviceAndSwapChain(
-                nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, levels, ARRAYSIZE(levels),
+                adapter_to_use, driver_type, nullptr, flags, levels, ARRAYSIZE(levels),
                 D3D11_SDK_VERSION, &description, &swap_chain_, &device_, nullptr, &context_);
         }
         if (FAILED(result))
             return false;
+
+        // The card, for the hardware rasteriser to draw on the same one and share its pictures.
+        IDXGIDevice* dxgi_device = nullptr;
+        IDXGIAdapter* adapter = nullptr;
+        DXGI_ADAPTER_DESC adapter_description = {};
+        if (SUCCEEDED(device_->QueryInterface(__uuidof(IDXGIDevice),
+                                              reinterpret_cast<void**>(&dxgi_device))) &&
+            SUCCEEDED(dxgi_device->GetAdapter(&adapter)) &&
+            SUCCEEDED(adapter->GetDesc(&adapter_description)))
+            adapter_luid_ = (static_cast<uint64_t>(static_cast<uint32_t>(
+                                 adapter_description.AdapterLuid.HighPart)) << 32) |
+                            adapter_description.AdapterLuid.LowPart;
+        Release(&adapter);
+        Release(&dxgi_device);
 
         // DXGI watches the window for Alt+Enter and, left alone, answers it with exclusive full
         // screen. Full screen here is the front end's own borderless kind (App::SetFullscreen),
@@ -336,7 +361,7 @@ namespace psxemu {
         context_->VSSetShader(overlay_vs_, nullptr, 0);
         context_->PSSetShader(overlay_ps_, nullptr, 0);
         // t0 the atlas, t1 the game's frame - what the glass theme blurs.
-        ID3D11ShaderResourceView* views[2] = { overlay_atlas_view_, frame_view_ };
+        ID3D11ShaderResourceView* views[2] = { overlay_atlas_view_, shown_view_ };
         context_->PSSetShaderResources(0, 2, views);
         context_->PSSetSamplers(0, 1, &overlay_sampler_);
         context_->DrawIndexed(static_cast<UINT>(data->index_count), 0, 0);
@@ -366,6 +391,16 @@ namespace psxemu {
     }
 
     void D3D11Presenter::Shutdown() {
+        // Everything drawn is finished first: the pictures go back to their sources.
+        if (context_ != nullptr)
+            context_->Flush();
+        ReleasePictures(true);
+        trail_source_.reset();
+        ForgetOpenedPictures();
+        for (ID3D11Query* query : spare_queries_)
+            query->Release();
+        spare_queries_.clear();
+        shown_view_ = nullptr;
         ReleaseOverlay();
         Release(&sampler_);
         Release(&pixel_shader_);
@@ -432,6 +467,7 @@ namespace psxemu {
         const float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
         context_->OMSetRenderTargets(1, &render_target_, nullptr);
         context_->ClearRenderTargetView(render_target_, clear);
+        shown_view_ = nullptr;
     }
 
     void D3D11Presenter::RenderFramebuffer(const void* data, int width, int height) {
@@ -455,6 +491,115 @@ namespace psxemu {
             }
             context_->Unmap(frame_texture_, 0);
         }
+        ReleasePictures(false);
+        DrawFrame(frame_view_);
+        HandBackTrail();
+    }
+
+    // The hardware rasteriser's picture, drawn from its own texture: nothing is copied at all.
+    // The source has already said it is drawn.
+    bool D3D11Presenter::RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
+        if (device_ == nullptr || render_target_ == nullptr || !picture || picture.width <= 0 ||
+            picture.height <= 0 || picture.source->adapter() != adapter_luid_)
+            return false;
+        ReleasePictures(false);
+
+        ID3D11ShaderResourceView* view = nullptr;
+        for (const OpenedPicture& opened : opened_pictures_)
+            if (opened.id == picture.texture_id)
+                view = opened.view;
+        if (view == nullptr) {
+            // A new rasteriser's pictures, or a handful already open: the old ones are let go
+            // of rather than kept alive. Direct3D 11 keeps one alive itself while queued work
+            // still reads it.
+            if (opened_source_ != picture.source.get() ||
+                opened_pictures_.size() >= emulation::psx::kMaxOpenedPictures)
+                ForgetOpenedPictures();
+            opened_source_ = picture.source.get();
+            ID3D11Device1* device1 = nullptr;
+            ID3D11Texture2D* texture = nullptr;
+            if (SUCCEEDED(device_->QueryInterface(__uuidof(ID3D11Device1),
+                                                  reinterpret_cast<void**>(&device1))) &&
+                SUCCEEDED(device1->OpenSharedResource1(static_cast<HANDLE>(picture.texture),
+                                                       __uuidof(ID3D11Texture2D),
+                                                       reinterpret_cast<void**>(&texture))) &&
+                SUCCEEDED(device_->CreateShaderResourceView(texture, nullptr, &view))) {
+                opened_pictures_.push_back({ picture.texture_id, texture, view });
+            } else {
+                Release(&texture);
+                view = nullptr;
+            }
+            Release(&device1);
+            if (view == nullptr)
+                return false;
+        }
+
+        DrawFrame(view);
+
+        // Every picture before this one is the rasteriser's again once the card has drawn this.
+        HandBack(picture.source, picture.serial);
+        // And if the next frame comes as pixels, this one is too: see HandBackTrail.
+        trail_source_ = picture.source;
+        trail_serial_ = picture.serial;
+        return true;
+    }
+
+    // Gives pictures before `serial` back to `source` when the card has finished the frame just
+    // drawn. A query per frame, kept for reuse.
+    void D3D11Presenter::HandBack(const std::shared_ptr<emulation::psx::SharedPictureSource>& source,
+                                  uint64_t serial) {
+        ID3D11Query* done = nullptr;
+        if (!spare_queries_.empty()) {
+            done = spare_queries_.back();
+            spare_queries_.pop_back();
+        } else {
+            D3D11_QUERY_DESC query = {};
+            query.Query = D3D11_QUERY_EVENT;
+            device_->CreateQuery(&query, &done);
+        }
+        if (done != nullptr) {
+            context_->End(done);
+            pending_releases_.push_back({ done, source, serial });
+        }
+    }
+
+    // A frame that arrived as pixels does not show the last shared picture any more, so that one
+    // is the rasteriser's again once this frame is done - which is what lets it draw shared
+    // pictures once more. Without this a rasteriser that ran out of textures for a moment, and
+    // sent a frame as pixels, would never get one back: nothing releases while no shared
+    // picture is being drawn, and it would read back for good.
+    void D3D11Presenter::HandBackTrail() {
+        if (trail_source_ == nullptr)
+            return;
+        HandBack(trail_source_, trail_serial_ + 1);
+        trail_source_.reset();
+    }
+
+    void D3D11Presenter::ReleasePictures(bool all) {
+        size_t finished = 0;
+        while (finished < pending_releases_.size()) {
+            PendingRelease& pending = pending_releases_[finished];
+            if (!all && context_->GetData(pending.done, nullptr, 0,
+                                          D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK)
+                break;
+            pending.source->Release(pending.serial);
+            spare_queries_.push_back(pending.done);
+            ++finished;
+        }
+        pending_releases_.erase(pending_releases_.begin(), pending_releases_.begin() + finished);
+    }
+
+    void D3D11Presenter::ForgetOpenedPictures() {
+        for (OpenedPicture& opened : opened_pictures_) {
+            Release(&opened.view);
+            Release(&opened.texture);
+        }
+        opened_pictures_.clear();
+        opened_source_ = nullptr;
+    }
+
+    void D3D11Presenter::DrawFrame(ID3D11ShaderResourceView* view) {
+        shown_view_ = view;
 
         // Letterbox to a fixed 4:3, not to the framebuffer's own width:height.
         // Horizontal resolution (256..640) and the vertical/interlace range are
@@ -483,9 +628,13 @@ namespace psxemu {
         context_->IASetInputLayout(nullptr);
         context_->VSSetShader(vertex_shader_, nullptr, 0);
         context_->PSSetShader(pixel_shader_, nullptr, 0);
-        context_->PSSetShaderResources(0, 1, &frame_view_);
+        context_->PSSetShaderResources(0, 1, &view);
         context_->PSSetSamplers(0, 1, &sampler_);
         context_->Draw(3, 0);
+        // Unbound again: a shared picture's texture is not to be left bound for its source to
+        // draw into.
+        ID3D11ShaderResourceView* none = nullptr;
+        context_->PSSetShaderResources(0, 1, &none);
     }
 
     void D3D11Presenter::EndFrame() {

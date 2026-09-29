@@ -57,6 +57,9 @@
     <ClCompile Include="graphics\d3d11_presenter.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
+    <ClCompile Include="graphics\hw_raster\d3d11_raster.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
     <ClCompile Include="graphics\d3d12_graphics_engine.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
@@ -147,6 +150,12 @@
       <Filter>app</Filter>
     </ClInclude>
     <ClInclude Include="graphics\d3d11_presenter.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\adapters.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\hw_raster\d3d11_raster.h">
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\d3d12_graphics_engine.h">

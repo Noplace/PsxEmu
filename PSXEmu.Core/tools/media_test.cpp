@@ -1812,6 +1812,80 @@ void TestSettingsFile(const std::string& directory) {
     Check(loaded.show_bios_console, "an open BIOS console survives the round trip");
   }
 
+  // Settings > Video > Rasteriser (Docs/Hardware-Renderer-Plan.md): software by default, the
+  // hardware one remembered, and a name the file does not know left at the default.
+  {
+    EmuConfig config;
+    Check(config.gpu_rasteriser == "software", "the software rasteriser draws by default");
+    config.gpu_rasteriser = "hardware";
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.gpu_rasteriser == "hardware", "the hardware rasteriser survives the round trip");
+    out.SetString("gpu_rasteriser", "vulkan");
+    EmuConfig rejected;
+    emulation::psx::LoadConfig(out, rejected);
+    Check(rejected.gpu_rasteriser == "software", "an unknown rasteriser is ignored");
+  }
+
+  // Its internal resolution and true colour: native and on by default, each kept, and a scale
+  // the menu does not offer left at the default.
+  {
+    EmuConfig config;
+    Check(config.resolution_scale == 1 && config.true_color,
+          "the hardware rasteriser is native and in true colour by default");
+    config.resolution_scale = 6;
+    config.true_color = false;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.resolution_scale == 6 && !loaded.true_color,
+          "a resolution and true colour off survive the round trip");
+    out.SetInt("resolution_scale", 7);
+    EmuConfig rejected;
+    emulation::psx::LoadConfig(out, rejected);
+    Check(rejected.resolution_scale == 1, "a resolution the menu does not offer is ignored");
+  }
+
+  // PGXP: off, with perspective-correct textures ready for when it is on and precise culling
+  // not - and each of the three kept.
+  {
+    EmuConfig config;
+    Check(!config.pgxp_vertices && config.pgxp_textures && !config.pgxp_culling,
+          "PGXP is off by default, with textures ready and culling not");
+    config.pgxp_vertices = true;
+    config.pgxp_textures = false;
+    config.pgxp_culling = true;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.pgxp_vertices && !loaded.pgxp_textures && loaded.pgxp_culling,
+          "each of PGXP's three survives the round trip");
+  }
+
+  // The graphics card (Settings > Video > Graphics Card): automatic by default, and a name -
+  // spaces, brackets and all - kept as it is. A saved name for a card that is not here is
+  // kept too: it is the front end that treats it as automatic, so that the choice comes back
+  // with the card. One that is absurd is not taken.
+  {
+    EmuConfig config;
+    Check(config.graphics_adapter.empty(), "the graphics card is automatic by default");
+    config.graphics_adapter = "NVIDIA GeForce RTX 4060 Laptop GPU";
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.graphics_adapter == "NVIDIA GeForce RTX 4060 Laptop GPU",
+          "a graphics card's name survives the round trip");
+    out.SetString("graphics_adapter", std::string(500, 'x'));
+    EmuConfig too_long;
+    emulation::psx::LoadConfig(out, too_long);
+    Check(too_long.graphics_adapter.empty(), "a name longer than any card's is ignored");
+  }
+
   // The serial port's console redirect: off by default, and remembered on.
   {
     EmuConfig config;

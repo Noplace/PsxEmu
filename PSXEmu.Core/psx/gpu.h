@@ -18,7 +18,10 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include "psx/raster.h"
+
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -26,12 +29,14 @@ namespace emulation {
 namespace psx {
 
 /*
-  Software GPU.
+  The GPU.
 
   Owns the 1 MB of VRAM, executes the GP0 (drawing) and GP1 (display control)
-  command streams, and resolves the visible part of VRAM into a 32-bit
-  framebuffer a front end can present. It has no graphics API dependency, which
-  is what lets the headless harnesses render and checksum frames.
+  command streams, keeps the display timing, charges every draw its time, and
+  resolves the visible part of VRAM into a 32-bit framebuffer a front end can
+  present. What puts a draw's pixels down is a RasterBackend (psx/raster.h) -
+  SoftwareRaster, which has no graphics API dependency, which is what lets the
+  headless harnesses render and checksum frames.
 */
 class Gpu : public GpuCore {
  public:
@@ -44,25 +49,70 @@ class Gpu : public GpuCore {
   uint32_t ReadData();
   uint32_t ReadStatus();
   void WriteData(uint32_t data);
+  // ...with PGXP's shadow of it (psx/pgxp.h), when it matches the word: a polygon's vertex
+  // that arrives with one is drawn where the GTE put it by the hardware rasteriser.
+  void WriteData(uint32_t data, const PreciseVertex* precise);
   void WriteStatus(uint32_t data);
 
   bool Tick(uint32_t cycles);
 
   // Both of these wait for the rasteriser: what it has been handed is part of
   // the picture, and answering before it lands would show a half-drawn frame.
-  const uint16_t* vram() const { SyncRaster(); return vram_; }
+  const uint16_t* vram() const {
+    SyncRaster();
+    if (backend_)
+      backend_->PrepareRead(0, 0, kVramWidth, kVramHeight);
+    return vram_;
+  }
   const uint32_t* framebuffer(int& width, int& height) const {
     width = display_width_;
     height = display_height_;
     return framebuffer_;
   }
+  // What to show: the framebuffer, or - when the hardware rasteriser draws at a higher
+  // resolution - the same display area as it drew it, picture_scale() times the size. The
+  // framebuffer stays the native picture, which is what checksums and screenshots of the
+  // machine's own state measure.
+  //
+  // When the hardware rasteriser was made to leave it on the graphics card, the sharper picture
+  // is shared_picture() instead, and this is the framebuffer - which the front end then does
+  // not keep up to date (set_native_picture).
+  const uint32_t* picture(int& width, int& height) const {
+    if (picture_scale_ <= 1 || shared_picture_)
+      return framebuffer(width, height);
+    width = display_width_ * picture_scale_;
+    height = display_height_ * picture_scale_;
+    return picture_.data();
+  }
+  // This frame's picture on the graphics card, if the rasteriser left it there; empty if not.
+  const SharedPicture& shared_picture() const { return shared_picture_; }
+  int picture_scale() const { return picture_scale_; }
+  // Whether framebuffer() is kept when picture() is sharper than it - on unless a front end that
+  // only shows picture() says otherwise, since keeping it waits for the hardware rasteriser to
+  // finish each frame.
+  void set_native_picture(bool wanted) { native_picture_ = wanted; }
 
   // Watches a VRAM rectangle and records which GP0 command wrote each pixel
   // into it. "What is this region and who made it" is otherwise a question
   // only answerable by staring at a dump.
   void WatchVram(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
     watch_x_ = x; watch_y_ = y; watch_w_ = w; watch_h_ = h;
+    PushWatch();
   }
+
+  // Replaces the rasteriser with the one EmuConfig::gpu_rasteriser asks for, keeping
+  // what is in VRAM. Initialize does this; afterwards it is for a change of the
+  // setting, between frames on the machine thread.
+  void ChooseRasteriser();
+  // Carries on with the software rasteriser when the hardware one says it is lost.
+  void FallBackToSoftware(const char* reason);
+
+  // Whether the hardware rasteriser is drawing, and if it was asked for but is
+  // not, why not. Settled by ChooseRasteriser.
+  bool hardware_raster() const { return hardware_raster_; }
+  const std::string& raster_error() const { return raster_error_; }
+  // The graphics card the hardware rasteriser draws on; empty for the software one.
+  std::string raster_device() const { return backend_ ? backend_->device() : std::string(); }
 
   // Incremented once per completed frame; a cheap way for a harness to wait
   // for a specific frame without knowing anything about timing.
@@ -91,6 +141,10 @@ class Gpu : public GpuCore {
     // serialised by something reading VRAM back, and is not going to be faster
     // for it - see bug 91.
     uint64_t raster_jobs;
+    // PGXP: polygon vertices, and how many of them arrived with a precise position.
+    uint64_t polygon_vertices;
+    uint64_t precise_vertices;
+    uint64_t recalled_vertices;   // ...of which found by value in the GTE's cache (Gte::Recall)
     uint64_t raster_waits;
     uint32_t queue_peak;
     uint64_t queue_overflows;
@@ -295,6 +349,7 @@ class Gpu : public GpuCore {
   // GP0 command assembly. A command is buffered until every word it needs has
   // arrived, then executed in one go.
   uint32_t fifo_[16];
+  PreciseVertex fifo_precise_[16];   // PGXP: each fifo_ word's shadow, if it came with one
   int fifo_count_;
   int fifo_needed_;
 
@@ -363,6 +418,7 @@ class Gpu : public GpuCore {
   static const int kFifoDepth = 16;
   static const int kQueueCapacity = 1024;
   uint32_t queue_[kQueueCapacity];
+  PreciseVertex queue_precise_[kQueueCapacity];   // and each queue_ word's
   int queue_head_, queue_size_;
 
   // GPU clocks already paid to the rasteriser out of time a DMA transfer was
@@ -378,14 +434,14 @@ class Gpu : public GpuCore {
   void ChargeTransfer(int32_t pixels);
 
 
-  void PushQueue(uint32_t word);
-  uint32_t PopQueue();
+  void PushQueue(uint32_t word, const PreciseVertex* precise = nullptr);
+  uint32_t PopQueue(PreciseVertex* precise = nullptr);
   // Hands queued words to the command assembler for as long as the GPU is free
   // to take them. Called after every write and from Tick.
   void DrainQueue();
   // One word into the assembler below, executing the command once its last
   // word has arrived. This is what WriteData used to be.
-  void FeedCommand(uint32_t word);
+  void FeedCommand(uint32_t word, const PreciseVertex& precise);
 
   // Whether the GPU is still rasterising. Everything that reports "busy"
   // derives from this rather than testing the counter directly.
@@ -409,92 +465,47 @@ class Gpu : public GpuCore {
   void CmdLine();
   void CmdRectangle();
   void CmdVramToVramCopy();
+  void AbandonTransfer();
   void CmdCpuToVram();
   void CmdVramToCpu();
 
   // ---- rasterisation -----------------------------------------------------
-  struct Vertex {
-    int32_t x, y;      // already offset, in VRAM space
-    uint8_t r, g, b;
-    uint8_t u, v;
-  };
+  // What puts the pixels down: psx/raster.h. The names below are the ones this
+  // file has always used for the shared types.
+  typedef RasterVertex Vertex;
+  typedef RasterState DrawState;
+  typedef RasterEnv DrawEnv;
 
-  struct DrawState {
-    bool textured;
-    bool raw_texture;    // sample the texture without modulating by the colour
-    bool semi_transparent;
-    bool gouraud;
-    uint32_t clut_x, clut_y;
-    uint32_t texpage_x, texpage_y;
-    uint32_t texpage_colors;
-    uint32_t semi_mode;
-    bool dither;
-    bool flip_x, flip_y;   // textured rectangles only
-  };
+  // The rasteriser, made for this VRAM by Initialize. Draws on the rasteriser's
+  // thread when there is one; everything else about it is called here, on the
+  // machine thread, with nothing being drawn.
+  std::unique_ptr<RasterBackend> backend_;
+  bool hardware_raster_ = false;
+  std::string raster_error_;
+  // The display area as a higher-resolution rasteriser drew it, and at what scale; 1 when
+  // there is none and the framebuffer is what is shown. It is in shared_picture_ instead of
+  // picture_ when the rasteriser left it on the graphics card.
+  std::vector<uint32_t> picture_;
+  SharedPicture shared_picture_;
+  int picture_scale_ = 1;
+  bool native_picture_ = true;
 
-  // Everything a draw needs that is not in its own words: the drawing area it
-  // is clipped to, the texture window, the mask rules and which field is being
-  // displayed. Snapshotted when the command is parsed rather than read as the
-  // pixels go down, so the rasteriser can run behind the machine on the state
-  // the command was issued under and not on state that has since moved on
-  // (phase 7 of Docs/Threading-Plan.md).
-  struct DrawEnv {
-    int32_t area_left, area_top, area_right, area_bottom;
-    uint32_t tw_mask_x, tw_mask_y, tw_offset_x, tw_offset_y;
-    bool force_set_mask, check_mask;
-    bool skip_field;
-    uint32_t active_line_lsb;
-  };
-
-  // One piece of rasterising, parsed and costed but not yet drawn. The machine
-  // thread produces these; the rasteriser consumes them. Fixed size on purpose:
-  // a polyline becomes one job per segment and a quad two triangles, so nothing
-  // here needs a side buffer.
-  struct DrawJob {
-    enum Kind { kTriangle, kLine, kRectangle, kFill, kVramCopy };
-    Kind kind;
-    DrawEnv env;
-    DrawState state;
-    Vertex v[3];                  // triangle: three, line: the first two
-    int32_t x, y, w, h;           // rectangle, fill, copy destination
-    int32_t src_x, src_y;         // copy source
-    uint8_t r, g, b;              // rectangle colour
-    uint8_t base_u, base_v;       // textured rectangle
-    uint16_t fill_colour;
-    uint8_t command;
-  };
-
-
-  // The environment the job being drawn was issued under. Owned by whoever is
-  // rasterising; the members it shadows stay the machine thread's, for costing
-  // and for GPUSTAT readback.
-  DrawEnv raster_env_;
-
-  // The counters the rasteriser owns. Kept apart from Stats so that no member of
-  // it is ever written by two threads: these are added into stats_ at a barrier,
-  // which is the only moment the machine thread can read them. Without this the
-  // pixel counts drifted between an inline run and a threaded one - the picture
-  // was right either way, but a counter that disagrees with itself is a counter
-  // nobody can use to check anything.
-  struct RasterCounters {
-    uint64_t pixels, clipped, field_skipped, mask_rejected, transparent_texels;
-    uint64_t texels_by_depth[4];
-    uint64_t watch_writes;
-    uint32_t watch_writers[256];
-  };
-  mutable RasterCounters raster_counters_;
-  // Adds them into stats_ and clears them. The caller holds jobs_mutex_.
+  // Adds the backend's counters into stats_ and clears them. The caller holds
+  // jobs_mutex_.
   void MergeRasterCounters() const;
 
   // Snapshots the state a draw will need. Machine thread.
   DrawEnv CaptureDrawEnv() const;
   // Hands one piece of rasterising over. Machine thread.
   void SubmitJob(const DrawJob& job);
-  // Draws one job. Whichever thread is rasterising.
-  void ApplyJob(const DrawJob& job);
-  void RasterRectangle(const DrawJob& job);
-  void RasterFill(const DrawJob& job);
-  void RasterVramCopy(const DrawJob& job);
+  // The backend's watch rectangle, from watch_x_ and the rest.
+  void PushWatch() {
+    if (backend_) {
+      RasterWatch watch;
+      watch.x = watch_x_; watch.y = watch_y_; watch.w = watch_w_; watch.h = watch_h_;
+      backend_->set_watch(watch);
+    }
+  }
 
   // ---- the rasteriser's thread (phase 7) ---------------------------------
   // Jobs go into this ring and a thread of its own applies them, so the
@@ -514,7 +525,6 @@ class Gpu : public GpuCore {
   bool raster_busy_ = false;
   bool raster_stop_ = false;
   bool threaded_ = false;
-  uint8_t raster_command_ = 0;
   mutable std::mutex jobs_mutex_;
   mutable std::condition_variable jobs_added_;
   mutable std::condition_variable jobs_drained_;
@@ -544,27 +554,12 @@ class Gpu : public GpuCore {
 
   // Which VRAM row parity the beam is currently showing, which is the one a
   // draw skips. DuckStation's crtc_state.active_line_lsb: the display area's
-  // row in VRAM plus the field being shown, and zero outside 480i.
+  // row in VRAM plus the field being shown, and zero outside 480i. Carried to
+  // the rasteriser in each job's environment (SoftwareRaster::SkipsVramRow).
   uint32_t ActiveLineLsb() const {
     if (!status_.vres || !status_.vertical_interlace)
       return 0;
     return (display_vram_y_ + status_.odd_line) & 1u;
-  }
-
-  // Whether a draw leaves this VRAM row alone. In 480i with drawing to the
-  // display area prohibited, hardware puts down only the field that is not
-  // being shown - which is what bug 88 already charges half for, and bug 89
-  // makes true of the pixels as well.
-  //
-  // Primitives and fills skip; a CPU-to-VRAM transfer and a VRAM-to-VRAM copy
-  // do not, which is also where DuckStation draws the line - neither of its
-  // WriteVRAM or CopyVRAM paths is even told the field.
-  // Answered from the environment the job carries, so a rasteriser running
-  // behind the machine skips the field that was being displayed when the
-  // command was issued, not whatever is on screen by the time it draws.
-  bool SkipsVramRow(int32_t y) const {
-    return raster_env_.skip_field &&
-           (static_cast<uint32_t>(y) & 1u) == raster_env_.active_line_lsb;
   }
 
   // One coordinate held inside the drawing area, for the cost estimates below.
@@ -581,38 +576,12 @@ class Gpu : public GpuCore {
   void RecordSetup(uint32_t command, const DrawState& state,
                    uint32_t raw_page, uint32_t raw_clut);
 
-  void RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
-                      const DrawState& state);
-  void DrawLineSegment(const Vertex& v0, const Vertex& v1,
-                       const DrawState& state);
-  void PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
-                 const DrawState& state, bool from_texture, bool texture_mask);
-  uint16_t SampleTexture(uint32_t u, uint32_t v, const DrawState& state);
-  void BlendSemiTransparent(uint16_t* dst, uint8_t r, uint8_t g, uint8_t b,
-                            uint32_t mode) const;
-
   void ResolveFramebuffer();
   void UpdateDisplaySize();
 
-  // Records a write into the watched rectangle against the command doing it.
-  //
-  // Wrapped to VRAM first, exactly as VramAt does, because that is the cell
-  // actually written: a fill, transfer or copy that runs off the right or
-  // bottom edge comes back round, and passing the unwrapped coordinate here
-  // reported it against a rectangle that does not exist. A write landing
-  // somewhere unexpected is precisely what this is for, so the one class of
-  // write most worth catching was the one it could not see.
-  inline void NoteWatchWrite(uint32_t x, uint32_t y) {
-    if (watch_w_ == 0)
-      return;
-    x &= (kVramWidth - 1);
-    y &= (kVramHeight - 1);
-    if ((x - watch_x_) < watch_w_ && (y - watch_y_) < watch_h_) {
-      ++raster_counters_.watch_writers[raster_command_ & 0xFF];
-      ++raster_counters_.watch_writes;
-    }
-  }
-
+  // Native VRAM, for what the machine thread reads and writes itself: CPU
+  // transfers and the display. The backend is told first (PrepareRead) or after
+  // (Written), and has always finished drawing by then.
   inline uint16_t& VramAt(uint32_t x, uint32_t y) {
     return vram_[((y & (kVramHeight - 1)) * kVramWidth) + (x & (kVramWidth - 1))];
   }

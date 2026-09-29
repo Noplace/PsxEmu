@@ -23,7 +23,13 @@
 #include <string>
 #include <vector>
 
+#include "psx/shared_picture.h"
 #include "ui/overlay/overlay_draw.h"
+
+// The widest picture a multi-pass filter chain is run on. The console's own are at most 640 wide;
+// anything wider has come from the hardware rasteriser already upscaled, and is shown as it is -
+// a chain's passes multiply its size, and 4x of 2560 is past what a texture can be.
+inline constexpr int kFilterChainMaxWidth = 1024;
 
 // One stage of a multi-pass filter chain (see IGraphicsEngine::LoadShaderChain).
 struct ShaderPass {
@@ -45,6 +51,16 @@ class IGraphicsEngine {
  public:
     virtual ~IGraphicsEngine() = default;
 
+    // The graphics card to draw on, by LUID (graphics/adapters.h) and by name - 0 and empty leave
+    // it to the engine, which is what it does with no preference. Called before Initialize. The
+    // Direct3D engines make their device on that card and Vulkan picks it; OpenGL cannot: on
+    // Windows the driver and Windows' own per-app graphics setting decide which card a GL
+    // context lands on, and nothing an application asks changes that.
+    virtual void SetPreferredAdapter(uint64_t luid, const std::string& name) {
+        (void)luid;
+        (void)name;
+    }
+
     // Lifecycle. `width`/`height` are the window's client area at the moment
     // of construction - the caller resolves that once, rather than each
     // implementation calling GetClientRect on its own.
@@ -58,6 +74,18 @@ class IGraphicsEngine {
     virtual void BeginFrame() = 0;
     virtual void RenderFramebuffer(const void* data, int width, int height) = 0;
     virtual void EndFrame() = 0;
+
+    // The hardware rasteriser's picture, left on the graphics card (psx/shared_picture.h), drawn
+    // in RenderFramebuffer's place - filters, overlay and all - once its source says it is ready.
+    // False if this engine cannot open it, and nothing was drawn. An engine that can hands the
+    // picture back to its source (Release) once its own card has finished with it.
+    virtual bool RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
+        (void)picture;
+        return false;
+    }
+    // The graphics adapter, by LUID, whose shared pictures this engine can draw; 0 if it takes
+    // none - and then the hardware rasteriser reads its pictures back for it.
+    virtual uint64_t SharedPictureAdapter() const { return 0; }
 
     // The window was resized; follow the back buffer to the new client area.
     virtual void Resize(int width, int height) = 0;

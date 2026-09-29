@@ -91,6 +91,7 @@
     <ClCompile Include="ui\overlay\overlay_atlas.cpp" />
     <ClCompile Include="ui\debugger_window.cpp" />
     <ClCompile Include="graphics\d3d11_presenter.cpp" />
+    <ClCompile Include="graphics\hw_raster\d3d11_raster.cpp" />
     <ClCompile Include="graphics\d3d12_graphics_engine.cpp" />
     <ClCompile Include="graphics\opengl_engine.cpp" />
     <ClCompile Include="graphics\vulkan_engine.cpp" />
@@ -123,6 +124,8 @@
     <ClInclude Include="ui\debugger_window.h" />
     <ClInclude Include="app\const.h" />
     <ClInclude Include="graphics\d3d11_presenter.h" />
+    <ClInclude Include="graphics\adapters.h" />
+    <ClInclude Include="graphics\hw_raster\d3d11_raster.h" />
     <ClInclude Include="graphics\d3d12_graphics_engine.h" />
     <ClInclude Include="graphics\opengl_engine.h" />
     <ClInclude Include="graphics\gl_functions.h" />

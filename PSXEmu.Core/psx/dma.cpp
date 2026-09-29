@@ -668,6 +668,7 @@ void Dma::Dma2() {
 
   auto gpu = system_->gpu_core();
   auto& ram = system_->io().ram_buffer;
+  Pgxp& pgxp = system_->pgxp();
 
   if (sync == 2) {
     uint32_t address = channels[2].madr & 0x1FFFFF;
@@ -712,7 +713,12 @@ void Dma::Dma2() {
       ChargeWords(count);
       for (uint32_t i = 0; i < count; ++i) {
         const uint32_t word_address = (address + 4 + i * 4) & 0x1FFFFC;
-        gpu->WriteData(ram.u32[word_address >> 2]);
+        // With PGXP on, each word goes with its shadow (psx/pgxp.h): a vertex word still
+        // holding what the GTE projected brings the unrounded position to the GPU.
+        if (pgxp.enabled())
+          system_->gpu().WriteData(ram.u32[word_address >> 2], pgxp.word(word_address));
+        else
+          gpu->WriteData(ram.u32[word_address >> 2]);
       }
 
       address = header & 0xFFFFFF;
@@ -756,7 +762,9 @@ void Dma::Dma2() {
       if (!gpu->ready_for_dma())
         break;
     }
-    if (from_ram)
+    if (from_ram && pgxp.enabled())
+      system_->gpu().WriteData(ram.u32[address >> 2], pgxp.word(address));
+    else if (from_ram)
       gpu->WriteData(ram.u32[address >> 2]);
     else
       {

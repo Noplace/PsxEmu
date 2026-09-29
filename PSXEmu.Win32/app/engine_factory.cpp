@@ -40,7 +40,9 @@ namespace psxemu {
                                                           const RenderWindows& windows,
                                                           int width, int height,
                                                           std::string* active_backend,
-                                                          std::wstring* warning) {
+                                                          std::wstring* warning,
+                                                          uint64_t adapter_luid,
+                                                          const std::string& adapter_name) {
         if (warning != nullptr)
             warning->clear();
         auto try_backend = [&](GraphicsBackend backend) -> std::unique_ptr<IGraphicsEngine> {
@@ -56,6 +58,7 @@ namespace psxemu {
             const HWND target = backend == GraphicsBackend::kOpenGL   ? windows.opengl
                                 : backend == GraphicsBackend::kVulkan ? windows.vulkan
                                                                       : windows.main;
+            engine->SetPreferredAdapter(adapter_luid, adapter_name);
             if (target != nullptr && engine->Initialize(target, width, height))
                 return engine;
             return nullptr;

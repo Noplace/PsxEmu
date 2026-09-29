@@ -56,6 +56,7 @@
 #include "host/machine.h"
 #include "host/video_output.h"
 #include "input/input_thread.h"
+#include "graphics/adapters.h"
 #include "graphics/video_presenter.h"
 
 #include <atomic>
@@ -144,6 +145,25 @@ namespace psxemu {
         void SetVolume(float value);
         void SetFilter(const std::string& key);
         void SetRenderer(const std::string& key);
+        void SetRasteriser(const std::string& key);
+        void SetResolutionScale(int scale);
+        void SetTrueColour(bool on);
+        void RemakeRasteriser(const std::wstring& done);
+        void SetPgxp(bool* setting, bool on, const std::wstring& done);
+        void ReportRasteriser(bool hardware, const std::string& error, bool announce);
+        // The renderer that opened can take the hardware rasteriser's pictures on this adapter
+        // (a LUID), or on none (0): the rasteriser is made again to draw where it should, if it
+        // draws - see UpdateRasteriserCard.
+        // `card` is the card the engine was really asked for - 0 if the one chosen turned out
+        // to be unusable and Windows' pick was used instead.
+        void OnPresenterAdapter(uint64_t adapter, const std::string& renderer, uint64_t card);
+        // Settings > Video > Graphics Card: `index` into adapters_, or -1 for automatic.
+        void SetGraphicsCard(int index);
+        void RefreshGraphicsCardMenu();
+        // Where the hardware rasteriser draws: on the card chosen, or with none chosen the
+        // renderer's, and handing its pictures over when that is the renderer's card as well.
+        // Made again if that changed. Returns nothing to say when it is as it was.
+        void UpdateRasteriserCard();
         void SetControllerType(int port, const std::string& key);
         void SetInputSource(int port, const std::string& key);
         void SetMultitapSource(int port, int player, const std::string& key);
@@ -454,6 +474,20 @@ namespace psxemu {
         std::wstring title_base_ = kWindowTitle;
         emulation::host::MachineReport report_;
         bool have_report_ = false;
+        // Whether the hardware rasteriser is drawing, as last ticked on the menu.
+        bool drawing_hardware_ = false;
+        // The graphics cards, as found at startup (graphics/adapters.h), and the one chosen: its
+        // LUID, 0 for automatic - and also for a saved name that is not among them.
+        std::vector<GraphicsAdapter> adapters_;
+        uint64_t chosen_adapter_ = 0;
+        // The adapter the renderer takes shared pictures on, 0 for none - set on this thread.
+        uint64_t presenter_adapter_ = 0;
+        std::string presenter_renderer_;   // which renderer that is, for saying so
+        // What the hardware rasteriser's factory reads, on the machine's thread, when it makes
+        // one: the card to draw on (0: Windows' default) and whether to hand pictures over on it
+        // (psx/shared_picture.h). Written here, then the machine is told to make it again.
+        std::atomic<uint64_t> raster_adapter_{ 0 };
+        std::atomic<bool> raster_shared_{ false };
         double present_ms_ = 0.0;      // mean, from the video thread's own timing
         double presents_per_second_ = 0.0;
 

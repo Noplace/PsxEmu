@@ -19,6 +19,7 @@
 #include "psx/psx.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace emulation {
@@ -159,6 +160,10 @@ void Gte::Serialise(StateIO& io) {
   io.Plain(zsf3_);
   io.Plain(zsf4_);
   io.Plain(flag_);
+  // PGXP's unrounded positions are not in a state; the FIFO loaded has none.
+  if (!io.saving())
+    for (PreciseVertex& precise : precise_)
+      precise = PreciseVertex();
 }
 
 // ---------------------------------------------------------------------------
@@ -291,11 +296,30 @@ void Gte::SetMacAndIr(int64_t x, int64_t y, int64_t z, bool lm) {
   ir_[3] = SaturateIr(3, mac_[3], lm);
 }
 
-void Gte::PushScreenXy(int32_t x, int32_t y) {
+void Gte::PushScreenXy(int32_t x, int32_t y, const PreciseVertex& precise) {
   sxy_[0][0] = sxy_[1][0];  sxy_[0][1] = sxy_[1][1];
   sxy_[1][0] = sxy_[2][0];  sxy_[1][1] = sxy_[2][1];
   sxy_[2][0] = static_cast<int16_t>(x);
   sxy_[2][1] = static_cast<int16_t>(y);
+  if (pgxp_) {
+    precise_[0] = precise_[1];
+    precise_[1] = precise_[2];
+    precise_[2] = precise;
+  }
+}
+
+PreciseVertex Gte::Precise(uint32_t index) const {
+  index &= 31;
+  if (!pgxp_ || index < 12 || index > 15)
+    return PreciseVertex();
+  const int slot = index == 15 ? 2 : static_cast<int>(index) - 12;
+  PreciseVertex precise = precise_[slot];
+  // The word it belongs to is the register as it reads now: an entry written some other way
+  // since no longer matches it.
+  precise.valid = precise.valid &&
+                  precise.value == ((static_cast<uint16_t>(sxy_[slot][0])) |
+                                    (static_cast<uint32_t>(static_cast<uint16_t>(sxy_[slot][1])) << 16));
+  return precise;
 }
 
 void Gte::PushScreenZ(uint16_t z) {
@@ -396,8 +420,26 @@ void Gte::Rtps(int vector_index, bool compute_ir0) {
   int64_t sy = static_cast<int64_t>(divided) * ir_[2] + ofy_;
   CheckMac0(sx);
   CheckMac0(sy);
-  PushScreenXy(SaturateScreenX(static_cast<int32_t>(sx >> 16)),
-               SaturateScreenY(static_cast<int32_t>(sy >> 16)));
+  const int32_t screen_x = SaturateScreenX(static_cast<int32_t>(sx >> 16));
+  const int32_t screen_y = SaturateScreenY(static_cast<int32_t>(sy >> 16));
+  if (!pgxp_) {
+    PushScreenXy(screen_x, screen_y);
+  }
+  else {
+    // The same sums, 16.16 fixed point, before >> 16 threw the fraction away - clamped as the
+    // whole value is - and the depth SZ3 it was projected from, for texturing in perspective.
+    PreciseVertex precise;
+    precise.value = static_cast<uint16_t>(screen_x) |
+                    (static_cast<uint32_t>(static_cast<uint16_t>(screen_y)) << 16);
+    precise.x = static_cast<float>(std::min(std::max(static_cast<double>(sx) / 65536.0, -1024.0), 1023.0));
+    precise.y = static_cast<float>(std::min(std::max(static_cast<double>(sy) / 65536.0, -1024.0), 1023.0));
+    precise.w = static_cast<float>(sz_[3]);
+    precise.valid = true;
+    PushScreenXy(screen_x, screen_y, precise);
+    const uint32_t slot = CacheSlot(precise.value);
+    cache_[slot] = precise;
+    cache_frame_[slot] = frame_;
+  }
 
   if (compute_ir0) {
     const int64_t depth = static_cast<int64_t>(divided) * dqa_ + dqb_;
@@ -415,13 +457,29 @@ void Gte::Rtpt() {
 }
 
 void Gte::Nclip() {
-  const int64_t area =
+  int64_t area =
       static_cast<int64_t>(sxy_[0][0]) * sxy_[1][1] +
       static_cast<int64_t>(sxy_[1][0]) * sxy_[2][1] +
       static_cast<int64_t>(sxy_[2][0]) * sxy_[0][1] -
       static_cast<int64_t>(sxy_[0][0]) * sxy_[2][1] -
       static_cast<int64_t>(sxy_[1][0]) * sxy_[0][1] -
       static_cast<int64_t>(sxy_[2][0]) * sxy_[1][1];
+  // PGXP's precise culling: the same cross product of the unrounded positions, when all three
+  // are still the ones in the FIFO. Rounded as the sum would be, except that a triangle the
+  // fractions say is not edge-on keeps its sign rather than rounding to zero - the polygons a
+  // game drops as edge-on at whole pixels and draws when it knows better.
+  if (pgxp_culling_) {
+    const PreciseVertex p0 = Precise(12), p1 = Precise(13), p2 = Precise(14);
+    if (p0.valid && p1.valid && p2.valid) {
+      const double precise_area =
+          static_cast<double>(p0.x) * p1.y + static_cast<double>(p1.x) * p2.y +
+          static_cast<double>(p2.x) * p0.y - static_cast<double>(p0.x) * p2.y -
+          static_cast<double>(p1.x) * p0.y - static_cast<double>(p2.x) * p1.y;
+      area = static_cast<int64_t>(std::llround(precise_area));
+      if (area == 0 && precise_area != 0.0)
+        area = precise_area > 0.0 ? 1 : -1;
+    }
+  }
   mac_[0] = CheckMac0(area);
 }
 
@@ -753,7 +811,11 @@ uint32_t Gte::ReadData(uint32_t index) {
   }
 }
 
-void Gte::WriteData(uint32_t index, uint32_t value) {
+void Gte::WriteData(uint32_t index, uint32_t value, const PreciseVertex* precise) {
+  // An SXY register written from a word whose shadow still matches it keeps the unrounded
+  // position; written any other way, it has none.
+  const PreciseVertex kept =
+      (pgxp_ && precise != nullptr && precise->Matches(value)) ? *precise : PreciseVertex();
   switch (index & 31) {
     case 0:  v_[0][0] = static_cast<int16_t>(value);
              v_[0][1] = static_cast<int16_t>(value >> 16); break;
@@ -777,12 +839,14 @@ void Gte::WriteData(uint32_t index, uint32_t value) {
       const int slot = (index & 31) - 12;
       sxy_[slot][0] = static_cast<int16_t>(value);
       sxy_[slot][1] = static_cast<int16_t>(value >> 16);
+      if (pgxp_)
+        precise_[slot] = kept;
       break;
     }
     case 15:
       // Writing SXYP pushes the FIFO rather than writing a register.
       PushScreenXy(static_cast<int16_t>(value),
-                   static_cast<int16_t>(value >> 16));
+                   static_cast<int16_t>(value >> 16), kept);
       break;
     case 16: sz_[0] = static_cast<uint16_t>(value); break;
     case 17: sz_[1] = static_cast<uint16_t>(value); break;

@@ -37,21 +37,8 @@ namespace emulation {
             const uint32_t kScanlinesNtsc = 263;
             const uint32_t kScanlinesPal = 314;
 
-            // Dither matrix, applied to the 8-bit components before they are truncated to
-            // the 5 bits VRAM stores. Without it, Gouraud shading bands visibly.
-            const int8_t kDitherTable[4][4] = {
-              { -4,  0, -3,  1 },
-              {  2, -2,  3, -1 },
-              { -3,  1, -4,  0 },
-              {  3, -1,  2, -2 },
-            };
-
             inline int32_t SignExtend11(uint32_t value) {
                 return static_cast<int32_t>(value << 21) >> 21;
-            }
-
-            inline uint8_t Clamp8(int32_t v) {
-                return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
             }
 
             inline uint16_t To15Bit(uint8_t r, uint8_t g, uint8_t b) {
@@ -62,41 +49,6 @@ namespace emulation {
             // to 0xFF rather than 0xF8 and white stays white.
             inline uint8_t From5Bit(uint32_t c) {
                 return static_cast<uint8_t>((c << 3) | (c >> 2));
-            }
-
-            // Top-left fill rule for a triangle edge, given as (dx, dy) of that edge in
-            // the same a->b->c winding RasterTriangle normalises every triangle to
-            // (positive signed area). Without this, a plain w >= 0 test accepts a pixel
-            // sitting exactly on a shared edge for BOTH triangles that touch it - a
-            // quad's own two halves along their shared diagonal, and any two adjacent
-            // primitives that happen to share a screen-space edge. That is invisible for
-            // opaque draws (the second one repaints the same colour) but for additive
-            // semi-transparent draws it blends twice, leaving a bright seam exactly on
-            // every such edge - which for a surface built from many small quads (the
-            // ground, a creature's segmented body) shows up as a fine diagonal hatching
-            // over the whole thing rather than one obviously-wrong line. Biasing a
-            // non-top-left edge's test by -1 (integer coordinates only, so w is always a
-            // whole number) makes exactly one of the two triangles that share an edge
-            // claim it, matching the rule real GPUs use for the same reason.
-            // Which way round "left" is depends on the winding, and
-            // RasterTriangle normalises every triangle to a positive signed area
-            // with y growing downwards. Under that, work the edge function out for a
-            // vertical edge: an edge running *up* the screen (dy < 0) has the interior
-            // to its right, which is a left edge and is kept; one running down
-            // (dy > 0) is a right edge and is dropped. Horizontal edges are the
-            // familiar way round - a top edge runs right (dx > 0).
-            //
-            // This had the vertical test the wrong way round, so it kept right edges
-            // and dropped left ones. On its own that only moved which of two
-            // neighbours owned a shared column. Once the raster loops became
-            // half-open (`x < right`), though, the left-hand primitive could no
-            // longer draw its rightmost column at all, and the right-hand one was
-            // refusing the same column as "not a left edge" - so a shared column
-            // between two semi-transparent primitives was drawn by neither and came
-            // out as an unblended gap.
-            inline int32_t EdgeBias(int32_t dx, int32_t dy) {
-                const bool top_left = (dy < 0) || (dy == 0 && dx > 0);
-                return top_left ? 0 : -1;
             }
 
         }  // namespace
@@ -122,9 +74,10 @@ namespace emulation {
             prepaid_ticks_ = 0;
             // IOInterface hands this over again at its first batch, from the setting.
             exact_hblank_ = false;
-            memset(&raster_env_, 0, sizeof(raster_env_));
+            // A fresh rasteriser for this VRAM, before the thread that drives it starts.
+            backend_.reset();
+            ChooseRasteriser();
             jobs_head_ = jobs_count_ = 0;
-            raster_command_ = 0;
             threaded_ = system().config().gpu_thread;
             if (threaded_)
                 StartRasterThread();
@@ -135,6 +88,7 @@ namespace emulation {
             read_latch_ = 0;
             current_command_ = 0;
             watch_x_ = watch_y_ = watch_w_ = watch_h_ = 0;
+            PushWatch();
 
             draw_area_left_ = 0;
             draw_area_top_ = 0;
@@ -167,14 +121,73 @@ namespace emulation {
             was_in_vblank_ = false;
             frame_count_ = 0;
             memset(&stats_, 0, sizeof(stats_));
-            memset(&raster_counters_, 0, sizeof(raster_counters_));
 
             UpdateDisplaySize();
             return S_OK;
         }
 
+        // The hardware rasteriser if it is asked for and the front end can make one, and the
+        // software one otherwise - including when making the hardware one fails, which
+        // raster_error() then says why.
+        //
+        // Mid-game it is the path a save state takes: whatever the old rasteriser drew is
+        // brought into native VRAM, and the new one starts from there. Nothing the game can
+        // see changes - every cost was charged when its command was parsed.
+        void Gpu::ChooseRasteriser() {
+            if (vram_ == nullptr)
+                return;   // not initialised; Initialize will choose
+            if (backend_) {
+                SyncRaster();
+                backend_->PrepareRead(0, 0, kVramWidth, kVramHeight);
+            }
+            std::unique_ptr<RasterBackend> next;
+            bool hardware = false;
+            raster_error_.clear();
+            if (system().config().gpu_rasteriser == "hardware") {
+                const RasterFactory& factory = system().hardware_raster();
+                RasterOptions options;
+                options.scale = system().config().resolution_scale;
+                options.true_color = system().config().true_color;
+                if (!factory)
+                    raster_error_ = "no hardware rasteriser in this build";
+                else if ((next = factory(vram_, options, &raster_error_)) != nullptr)
+                    hardware = true;
+            }
+            if (!next)
+                next = std::make_unique<SoftwareRaster>(vram_);
+            {
+                // Nothing is queued, so the rasteriser's thread is not touching it.
+                std::lock_guard<std::mutex> lock(jobs_mutex_);
+                backend_ = std::move(next);
+                hardware_raster_ = hardware;
+            }
+            picture_scale_ = 1;   // until the new one resolves a frame
+            shared_picture_ = SharedPicture();
+            PushWatch();
+        }
+
+        // A rasteriser that can no longer draw - the graphics card reset, or went - is replaced
+        // by the software one, with nothing queued. What it had drawn since native VRAM was last
+        // brought up to date is gone with the card; the game draws it again, usually by the next
+        // frame. Better that than a picture that stops while the game goes on.
+        void Gpu::FallBackToSoftware(const char* reason) {
+            std::string why = reason;
+            {
+                std::lock_guard<std::mutex> lock(jobs_mutex_);
+                backend_ = std::make_unique<SoftwareRaster>(vram_);
+                hardware_raster_ = false;
+            }
+            picture_scale_ = 1;
+            shared_picture_ = SharedPicture();
+            raster_error_ = std::move(why);
+            PushWatch();
+        }
+
         void Gpu::Serialise(StateIO& io) {
             SyncRaster();
+            // Native VRAM is what a state holds, whichever rasteriser drew it.
+            if (io.saving())
+                backend_->PrepareRead(0, 0, kVramWidth, kVramHeight);
             io.Bytes(vram_, sizeof(uint16_t) * kVramWidth * kVramHeight);
             io.Plain(status_.raw);
             io.Plain(fifo_);
@@ -228,12 +241,21 @@ namespace emulation {
             // reads it right after a load (boot_runner --ppm, the front end's next
             // Present) sees the picture the restored VRAM actually holds, not
             // whatever the buffer held before the load.
-            if (!io.saving())
+            if (!io.saving()) {
+                // PGXP's shadows are not in a state: the words loaded come without.
+                for (PreciseVertex& precise : fifo_precise_)
+                    precise.valid = false;
+                for (PreciseVertex& precise : queue_precise_)
+                    precise.valid = false;
+                backend_->Reloaded();
+                PushWatch();
                 ResolveFramebuffer();
+            }
         }
 
         int Gpu::Deinitialize() {
             StopRasterThread();
+            backend_.reset();   // before the VRAM it draws into
             delete[] vram_;
             delete[] framebuffer_;
             vram_ = nullptr;
@@ -290,6 +312,7 @@ namespace emulation {
 
             // Reading VRAM: everything handed to the rasteriser has to be in it first.
             SyncRaster();
+            backend_->PrepareRead(transfer_.x, transfer_.y, transfer_.w, transfer_.h);
 
             // Two 16-bit pixels per 32-bit read, left to right, top to bottom.
             uint32_t result = 0;
@@ -317,7 +340,13 @@ namespace emulation {
             DrainQueue();
         }
 
-        void Gpu::PushQueue(uint32_t word) {
+        void Gpu::WriteData(uint32_t data, const PreciseVertex* precise) {
+            ++stats_.gp0_words;
+            PushQueue(data, precise);
+            DrainQueue();
+        }
+
+        void Gpu::PushQueue(uint32_t word, const PreciseVertex* precise) {
             if (queue_size_ >= kQueueCapacity) {
                 // Nothing here can stall a CPU write, so a game that ignores the ready
                 // bits must not lose words. Catch up by force - drawing time is given
@@ -331,14 +360,22 @@ namespace emulation {
                     return;
                 }
             }
-            queue_[(queue_head_ + queue_size_) % kQueueCapacity] = word;
+            const int slot = (queue_head_ + queue_size_) % kQueueCapacity;
+            queue_[slot] = word;
+            // PGXP's shadow travels beside its word, and only while it is the word's own.
+            if (precise != nullptr && precise->Matches(word))
+                queue_precise_[slot] = *precise;
+            else
+                queue_precise_[slot].valid = false;
             ++queue_size_;
             if (queue_size_ > stats_.queue_peak)
                 stats_.queue_peak = queue_size_;
         }
 
-        uint32_t Gpu::PopQueue() {
+        uint32_t Gpu::PopQueue(PreciseVertex* precise) {
             const uint32_t word = queue_[queue_head_];
+            if (precise != nullptr)
+                *precise = queue_precise_[queue_head_];
             queue_head_ = (queue_head_ + 1) % kQueueCapacity;
             --queue_size_;
             return word;
@@ -356,19 +393,21 @@ namespace emulation {
                 }
                 if (drawing())
                     break;
-                FeedCommand(PopQueue());
+                PreciseVertex precise;
+                const uint32_t word = PopQueue(&precise);
+                FeedCommand(word, precise);
             }
         }
 
         // The command assembler: collects a command's words and runs it once the last
         // one has arrived. This is what WriteData was before the queue went in front
         // of it, unchanged apart from taking its word from the queue.
-        void Gpu::FeedCommand(uint32_t data) {
+        void Gpu::FeedCommand(uint32_t data, const PreciseVertex& precise) {
             if (fifo_count_ == 0) {
                 fifo_needed_ = CommandLength(data >> 24);
                 // A polyline runs until its terminator rather than for a fixed length.
                 if (fifo_needed_ < 0) {
-                    fifo_[fifo_count_++] = data;
+                    { fifo_precise_[fifo_count_] = precise; fifo_[fifo_count_++] = data; }
                     return;
                 }
             }
@@ -387,12 +426,12 @@ namespace emulation {
                     return;
                 }
                 if (fifo_count_ < static_cast<int>(sizeof(fifo_) / sizeof(fifo_[0])))
-                    fifo_[fifo_count_++] = data;
+                    { fifo_precise_[fifo_count_] = precise; fifo_[fifo_count_++] = data; }
                 return;
             }
 
             if (fifo_count_ < static_cast<int>(sizeof(fifo_) / sizeof(fifo_[0])))
-                fifo_[fifo_count_++] = data;
+                { fifo_precise_[fifo_count_] = precise; fifo_[fifo_count_++] = data; }
 
             if (fifo_count_ >= fifo_needed_) {
                 ExecuteCommand();
@@ -518,7 +557,7 @@ namespace emulation {
                 // A reset abandons whatever was being drawn, so nothing is owed.
                 pending_draw_ticks_ = 0;
                 queue_head_ = queue_size_ = 0;
-                transfer_mode_ = kTransferNone;
+                AbandonTransfer();
                 draw_area_left_ = draw_area_top_ = 0;
                 draw_area_right_ = draw_area_bottom_ = 0;
                 draw_offset_x_ = draw_offset_y_ = 0;
@@ -535,7 +574,7 @@ namespace emulation {
             case 0x01:  // reset command buffer
                 fifo_count_ = 0;
                 fifo_needed_ = 0;
-                transfer_mode_ = kTransferNone;
+                AbandonTransfer();
                 break;
 
             case 0x02:  // acknowledge interrupt
@@ -608,7 +647,7 @@ namespace emulation {
                 VramAt(transfer_.x + transfer_.px, transfer_.y + transfer_.py) = pixel;
                 if (transfer_timing_)
                     ChargeTransfer(1);
-                NoteWatchWrite(transfer_.x + transfer_.px, transfer_.y + transfer_.py);
+                backend_->NoteWatchWrite(transfer_.x + transfer_.px, transfer_.y + transfer_.py);
                 if (stats_.transfer_log_count > 0 &&
                     stats_.transfer_log_count <= Stats::kTransferCapacity)
                     ++stats_.transfers[stats_.transfer_log_count - 1].written;
@@ -616,10 +655,21 @@ namespace emulation {
                     transfer_.px = 0;
                     if (++transfer_.py >= transfer_.h) {
                         transfer_mode_ = kTransferNone;
+                        // The whole rectangle is in native VRAM now; a rasteriser drawing
+                        // somewhere else takes it from there.
+                        backend_->Written(transfer_.x, transfer_.y, transfer_.w, transfer_.h);
                         return;
                     }
                 }
             }
+        }
+
+        // A reset ends a transfer where it is. An upload cut short has still written the pixels
+        // it got to, so the rasteriser hears about its rectangle as if it had finished.
+        void Gpu::AbandonTransfer() {
+            if (transfer_mode_ == kTransferToVram)
+                backend_->Written(transfer_.x, transfer_.y, transfer_.w, transfer_.h);
+            transfer_mode_ = kTransferNone;
         }
 
         void Gpu::CmdCpuToVram() {
@@ -639,6 +689,11 @@ namespace emulation {
             transfer_.py = 0;
             transfer_mode_ = kTransferToVram;
             transfer_timing_ = system().config().gpu_transfer_timing;
+            // Native VRAM is about to be written a pixel at a time, and must be the newer copy
+            // of the rectangle while it is: a rasteriser drawing somewhere else would otherwise
+            // hand back what it drew there over the upload - say when a state is saved halfway
+            // through. Nothing for the software rasteriser.
+            backend_->PrepareRead(transfer_.x, transfer_.y, transfer_.w, transfer_.h);
 
             if (stats_.transfer_log_count < Stats::kTransferCapacity) {
                 Stats::Transfer& entry = stats_.transfers[stats_.transfer_log_count++];
@@ -651,7 +706,7 @@ namespace emulation {
         }
 
         void Gpu::CmdVramToCpu() {
-            SyncRaster();
+            SyncRaster();   // ReadData brings the backend's copy up to date as it reads
             transfer_.x = fifo_[1] & 0x3FF;
             transfer_.y = (fifo_[1] >> 16) & 0x1FF;
             transfer_.w = ((fifo_[2] & 0xFFFF) - 1 & 0x3FF) + 1;
@@ -918,9 +973,32 @@ namespace emulation {
                 if (gouraud && i > 0)
                     colour = fifo_[word++] & 0xFFFFFF;
 
+                const PreciseVertex& precise = fifo_precise_[word];
                 const uint32_t position = fifo_[word++];
                 v[i].x = SignExtend11(position & 0x7FF) + draw_offset_x_;
                 v[i].y = SignExtend11((position >> 16) & 0x7FF) + draw_offset_y_;
+                // PGXP (psx/pgxp.h): a vertex word that arrived with its shadow is drawn where
+                // the GTE put it, offset the same way; the depth goes too if textures are to be
+                // mapped in perspective. Only the hardware rasteriser reads these. A word that
+                // arrived without one - moved about by a way the shadows cannot follow, which is
+                // about half of them in Ridge Racer and Spyro 3 - takes the vertex the GTE last
+                // projected to that same word, if it did so this frame or the last: the same
+                // vertex, almost always, and the same fraction wherever else it is drawn, which
+                // keeps the edges it shares from opening up.
+                ++stats_.polygon_vertices;
+                const PreciseVertex* found = precise.valid ? &precise : nullptr;
+                if (found == nullptr && system().pgxp().enabled()) {
+                    found = system().gte().Recall(position);
+                    if (found != nullptr)
+                        ++stats_.recalled_vertices;
+                }
+                v[i].precise = found != nullptr;
+                if (found != nullptr) {
+                    ++stats_.precise_vertices;
+                    v[i].fx = found->x + static_cast<float>(draw_offset_x_);
+                    v[i].fy = found->y + static_cast<float>(draw_offset_y_);
+                    v[i].w = system().config().pgxp_textures ? found->w : 0.0f;
+                }
                 v[i].r = static_cast<uint8_t>(colour);
                 v[i].g = static_cast<uint8_t>(colour >> 8);
                 v[i].b = static_cast<uint8_t>(colour >> 16);
@@ -1123,41 +1201,6 @@ namespace emulation {
             SubmitJob(job);
         }
 
-        // A rectangle's pixels, from the job the command left behind.
-        void Gpu::RasterRectangle(const DrawJob& job) {
-            const DrawState& state = job.state;
-            const int32_t x = job.x, y = job.y, w = job.w, h = job.h;
-            const uint8_t r = job.r, g = job.g, b = job.b;
-            const uint8_t base_u = job.base_u, base_v = job.base_v;
-            for (int32_t row = 0; row < h; ++row) {
-                for (int32_t col = 0; col < w; ++col) {
-                    if (!state.textured) {
-                        PlotPixel(x + col, y + row, r, g, b, state, false, false);
-                        continue;
-                    }
-                    // A flipped rectangle walks its texture backwards from the base.
-                    const int32_t tu = state.flip_x ? (base_u - col) : (base_u + col);
-                    const int32_t tv = state.flip_y ? (base_v - row) : (base_v + row);
-                    const uint16_t texel = SampleTexture(
-                        static_cast<uint8_t>(tu), static_cast<uint8_t>(tv), state);
-                    if (texel == 0) {  // fully transparent texel
-                        ++raster_counters_.transparent_texels;
-                        continue;
-                    }
-                    uint8_t tr = From5Bit(texel & 0x1F);
-                    uint8_t tg = From5Bit((texel >> 5) & 0x1F);
-                    uint8_t tb = From5Bit((texel >> 10) & 0x1F);
-                    if (!state.raw_texture) {
-                        tr = Clamp8((tr * r) >> 7);
-                        tg = Clamp8((tg * g) >> 7);
-                        tb = Clamp8((tb * b) >> 7);
-                    }
-                    PlotPixel(x + col, y + row, tr, tg, tb, state, true,
-                        (texel & 0x8000) != 0);
-                }
-            }
-        }
-
         // ---------------------------------------------------------------------------
         // Handing rasterising over
         //
@@ -1189,8 +1232,9 @@ namespace emulation {
 
         void Gpu::SubmitJob(const DrawJob& job) {
             if (!threaded_) {
-                raster_command_ = static_cast<uint8_t>(current_command_);
-                ApplyJob(job);
+                DrawJob now = job;
+                now.command = static_cast<uint8_t>(current_command_);
+                backend_->Apply(now);
                 return;
             }
             std::unique_lock<std::mutex> lock(jobs_mutex_);
@@ -1240,8 +1284,7 @@ namespace emulation {
                 --jobs_count_;
                 raster_busy_ = true;
                 lock.unlock();
-                raster_command_ = job.command;
-                ApplyJob(job);
+                backend_->Apply(job);
                 lock.lock();
                 raster_busy_ = false;
                 jobs_drained_.notify_all();
@@ -1249,17 +1292,20 @@ namespace emulation {
         }
 
         void Gpu::MergeRasterCounters() const {
-            stats_.pixels += raster_counters_.pixels;
-            stats_.clipped += raster_counters_.clipped;
-            stats_.field_skipped += raster_counters_.field_skipped;
-            stats_.mask_rejected += raster_counters_.mask_rejected;
-            stats_.transparent_texels += raster_counters_.transparent_texels;
+            if (!backend_)
+                return;
+            RasterCounters& counters = backend_->counters();
+            stats_.pixels += counters.pixels;
+            stats_.clipped += counters.clipped;
+            stats_.field_skipped += counters.field_skipped;
+            stats_.mask_rejected += counters.mask_rejected;
+            stats_.transparent_texels += counters.transparent_texels;
             for (int i = 0; i < 4; ++i)
-                stats_.texels_by_depth[i] += raster_counters_.texels_by_depth[i];
-            stats_.watch_writes += raster_counters_.watch_writes;
+                stats_.texels_by_depth[i] += counters.texels_by_depth[i];
+            stats_.watch_writes += counters.watch_writes;
             for (int i = 0; i < 256; ++i)
-                stats_.watch_writers[i] += raster_counters_.watch_writers[i];
-            memset(&raster_counters_, 0, sizeof(raster_counters_));
+                stats_.watch_writers[i] += counters.watch_writers[i];
+            memset(&counters, 0, sizeof(counters));
         }
 
         void Gpu::SyncRaster() const {
@@ -1274,68 +1320,6 @@ namespace emulation {
             // counted is visible here - and merged whether it is threaded or not, since
             // the two paths have to produce the same numbers.
             MergeRasterCounters();
-        }
-
-        void Gpu::ApplyJob(const DrawJob& job) {
-            raster_env_ = job.env;
-            switch (job.kind) {
-            case DrawJob::kTriangle:
-                RasterTriangle(job.v[0], job.v[1], job.v[2], job.state);
-                break;
-            case DrawJob::kLine:
-                DrawLineSegment(job.v[0], job.v[1], job.state);
-                break;
-            case DrawJob::kRectangle:
-                RasterRectangle(job);
-                break;
-            case DrawJob::kFill:
-                RasterFill(job);
-                break;
-            case DrawJob::kVramCopy:
-                RasterVramCopy(job);
-                break;
-            }
-        }
-
-        // A fill's rows. It ignores the drawing area and the mask bits - see
-        // CmdFillRectangle for why it clips at the VRAM edge rather than wrapping -
-        // but it does skip the displayed field.
-        void Gpu::RasterFill(const DrawJob& job) {
-            for (int32_t row = 0; row < job.h; ++row) {
-                const int32_t vy = job.y + row;
-                if (vy >= kVramHeight)
-                    break;
-                if (SkipsVramRow(vy)) {
-                    ++raster_counters_.field_skipped;
-                    continue;
-                }
-                for (int32_t col = 0; col < job.w; ++col) {
-                    const int32_t vx = job.x + col;
-                    if (vx >= kVramWidth)
-                        break;
-                    VramAt(static_cast<uint32_t>(vx), static_cast<uint32_t>(vy)) =
-                        job.fill_colour;
-                    NoteWatchWrite(static_cast<uint32_t>(vx), static_cast<uint32_t>(vy));
-                }
-            }
-        }
-
-        // A VRAM-to-VRAM copy: read a pixel, write it, honouring the mask bits.
-        void Gpu::RasterVramCopy(const DrawJob& job) {
-            for (int32_t row = 0; row < job.h; ++row) {
-                for (int32_t col = 0; col < job.w; ++col) {
-                    const uint32_t sx = static_cast<uint32_t>(job.src_x + col);
-                    const uint32_t sy = static_cast<uint32_t>(job.src_y + row);
-                    const uint32_t dx = static_cast<uint32_t>(job.x + col);
-                    const uint32_t dy = static_cast<uint32_t>(job.y + row);
-                    const uint16_t pixel = VramAt(sx, sy);
-                    if (raster_env_.check_mask && (VramAt(dx, dy) & 0x8000))
-                        continue;
-                    VramAt(dx, dy) =
-                        raster_env_.force_set_mask ? (pixel | 0x8000) : pixel;
-                    NoteWatchWrite(dx, dy);
-                }
-            }
         }
 
         // ---------------------------------------------------------------------------
@@ -1362,263 +1346,6 @@ namespace emulation {
             setup.clut_y = static_cast<uint16_t>(state.clut_y);
             setup.raw_page = static_cast<uint16_t>(raw_page);
             setup.raw_clut = static_cast<uint16_t>(raw_clut);
-        }
-
-        uint16_t Gpu::SampleTexture(uint32_t u, uint32_t v, const DrawState& state) {
-            ++raster_counters_.texels_by_depth[state.texpage_colors & 3];
-
-            // The texture window folds the coordinates before they index the page.
-            u = (u & ~(raster_env_.tw_mask_x * 8)) |
-                ((raster_env_.tw_offset_x & raster_env_.tw_mask_x) * 8);
-            v = (v & ~(raster_env_.tw_mask_y * 8)) |
-                ((raster_env_.tw_offset_y & raster_env_.tw_mask_y) * 8);
-            u &= 0xFF;
-            v &= 0xFF;
-
-            switch (state.texpage_colors) {
-            case 0: {  // 4 bits per texel, via CLUT
-                const uint16_t block = VramAt(state.texpage_x + (u / 4), state.texpage_y + v);
-                const uint32_t index = (block >> ((u & 3) * 4)) & 0x0F;
-                return VramAt(state.clut_x + index, state.clut_y);
-            }
-            case 1: {  // 8 bits per texel, via CLUT
-                const uint16_t block = VramAt(state.texpage_x + (u / 2), state.texpage_y + v);
-                const uint32_t index = (block >> ((u & 1) * 8)) & 0xFF;
-                return VramAt(state.clut_x + index, state.clut_y);
-            }
-            default:   // 15 bits per texel, direct
-                return VramAt(state.texpage_x + u, state.texpage_y + v);
-            }
-        }
-
-        void Gpu::BlendSemiTransparent(uint16_t* dst, uint8_t r, uint8_t g, uint8_t b,
-            uint32_t mode) const {
-            const uint16_t back = *dst;
-            const int32_t br = From5Bit(back & 0x1F);
-            const int32_t bg = From5Bit((back >> 5) & 0x1F);
-            const int32_t bb = From5Bit((back >> 10) & 0x1F);
-
-            int32_t nr, ng, nb;
-            switch (mode) {
-            case 0:  // B/2 + F/2
-                nr = (br + r) / 2; ng = (bg + g) / 2; nb = (bb + b) / 2;
-                break;
-            case 1:  // B + F
-                nr = br + r; ng = bg + g; nb = bb + b;
-                break;
-            case 2:  // B - F
-                nr = br - r; ng = bg - g; nb = bb - b;
-                break;
-            default: // B + F/4
-                nr = br + r / 4; ng = bg + g / 4; nb = bb + b / 4;
-                break;
-            }
-            // The mask bit is not this function's to decide - PlotPixel sets it from the
-            // texel and GP0(E6h) after this returns - so it is left clear here rather
-            // than carried over from the pixel underneath.
-            *dst = To15Bit(Clamp8(nr), Clamp8(ng), Clamp8(nb));
-        }
-
-        void Gpu::PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
-            const DrawState& state, bool from_texture,
-            bool texture_mask) {
-            if (x < raster_env_.area_left || x > raster_env_.area_right ||
-                y < raster_env_.area_top || y > raster_env_.area_bottom) {
-                ++raster_counters_.clipped;
-                return;
-            }
-            // The field being displayed is left alone (bug 89). Every primitive
-            // goes through here, so this is the one place it has to be said.
-            if (SkipsVramRow(y)) {
-                ++raster_counters_.field_skipped;
-                return;
-            }
-
-            uint16_t& target = VramAt(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
-            if (raster_env_.check_mask && (target & 0x8000)) {
-                ++raster_counters_.mask_rejected;
-                return;
-            }
-
-            // A textured pixel is only blended when its own mask bit says so; an
-            // untextured one follows the primitive's semi-transparency flag.
-            const bool blend = state.semi_transparent &&
-                (!from_texture || texture_mask);
-
-            if (blend) {
-                BlendSemiTransparent(&target, r, g, b, state.semi_mode);
-            }
-            else {
-                target = To15Bit(r, g, b);
-            }
-
-            // The mask bit written is GP0(E6h) bit 0: "0=TextureBit15, 1=ForceBit15=1"
-            // (psx-spx). Forced, it is always set; otherwise a *textured* draw hands the
-            // texel's own bit 15 straight through to the framebuffer, and an untextured
-            // one writes zero. It is not the bit that was already there - the pixel is
-            // being replaced, mask bit included.
-            //
-            // Only the forced half of that was modelled, so a texture's bit 15 reached
-            // the blend decision above and then vanished. Silent Hill is what found it:
-            // it draws its scene with textures whose bit 15 is set, which on hardware
-            // marks those pixels, and then lays a flat semi-transparent quad over the
-            // player with mask-checking on. Every pixel it covers should be rejected.
-            // With nothing marked, the quad drew in full - a pale rectangle around the
-            // character, exactly the size of the quad (bug 83).
-            const bool set_mask =
-                raster_env_.force_set_mask || (from_texture && texture_mask);
-            target = static_cast<uint16_t>((target & 0x7FFF) | (set_mask ? 0x8000 : 0));
-
-            ++raster_counters_.pixels;
-
-            NoteWatchWrite(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
-        }
-
-        void Gpu::RasterTriangle(const Vertex& v0, const Vertex& v1, const Vertex& v2,
-            const DrawState& state) {
-            // Hardware rejects any primitive spanning more than 1023x511.
-            const int32_t min_x = std::min(v0.x, std::min(v1.x, v2.x));
-            const int32_t max_x = std::max(v0.x, std::max(v1.x, v2.x));
-            const int32_t min_y = std::min(v0.y, std::min(v1.y, v2.y));
-            const int32_t max_y = std::max(v0.y, std::max(v1.y, v2.y));
-            if (max_x - min_x >= 1024 || max_y - min_y >= 512)
-                return;
-
-            // Two different kinds of bound, and treating them alike loses a column and a row.
-            //
-            // A primitive's own extent is half-open: a quad given x=0 and x=640 covers columns 0 to
-            // 639, which is why max_x and max_y give up their last pixel here rather than in the
-            // loop. The drawing area is not - GP0(E4) states an *inclusive* bottom-right corner,
-            // which is how the per-pixel clip in Plot() has always read it (`x > draw_area_right_`
-            // rejects, so right itself is inside).
-            //
-            // Clipping with an exclusive bound against an inclusive limit threw away the last
-            // column and row of the drawing area whenever a primitive reached them - which the
-            // BIOS's own background does, drawn as (0,0)-(640,480) against an area of 639x479. The
-            // whole of column 639 and row 479 went unpainted, 1,117 pixels of a 640x478 screen.
-            const int32_t left = std::max(min_x, raster_env_.area_left);
-            const int32_t right = std::min(max_x - 1, raster_env_.area_right);
-            const int32_t top = std::max(min_y, raster_env_.area_top);
-            const int32_t bottom = std::min(max_y - 1, raster_env_.area_bottom);
-            if (left > right || top > bottom)
-                return;
-
-            const int32_t area = (v1.x - v0.x) * (v2.y - v0.y) -
-                (v2.x - v0.x) * (v1.y - v0.y);
-            if (area == 0)
-                return;
-
-            // Work in a consistent winding so the edge functions share a sign test.
-            const Vertex& a = v0;
-            const Vertex& b = (area > 0) ? v1 : v2;
-            const Vertex& c = (area > 0) ? v2 : v1;
-            const int32_t double_area = (area > 0) ? area : -area;
-
-            // The fill rule, for every triangle: a pixel exactly on an edge belongs
-            // to the triangle for which that edge is a top or left one, so of two
-            // triangles sharing an edge exactly one draws it, and a triangle alone
-            // leaves its right and bottom edges undrawn. The hardware leaves them
-            // out of every polygon, whatever the blending (psx-spx).
-            //
-            // It used to apply to semi-transparent triangles only (bug 105). Silent
-            // Hill's hatching - an additive blend applied twice on a shared edge -
-            // was where it came in, and applying it to everything put seams through
-            // Wild Arms' field. But the rule was upside down then (bug 59), keeping
-            // right edges and dropping left ones; with it the right way round, the
-            // same field scene shows no seams, and opaque triangles no longer come
-            // out a pixel fatter on their right and bottom diagonals than the
-            // hardware draws them, or depend on draw order for who owns a shared
-            // edge.
-            const int32_t bias0 = EdgeBias(b.x - a.x, b.y - a.y);
-            const int32_t bias1 = EdgeBias(c.x - b.x, c.y - b.y);
-            const int32_t bias2 = EdgeBias(a.x - c.x, a.y - c.y);
-
-            // Inclusive now: `right` and `bottom` are the last pixel to draw, not one past it.
-            for (int32_t y = top; y <= bottom; ++y) {
-                for (int32_t x = left; x <= right; ++x) {
-                    const int32_t w0 = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
-                    const int32_t w1 = (c.x - b.x) * (y - b.y) - (c.y - b.y) * (x - b.x);
-                    const int32_t w2 = (a.x - c.x) * (y - c.y) - (a.y - c.y) * (x - c.x);
-                    if (w0 + bias0 < 0 || w1 + bias1 < 0 || w2 + bias2 < 0)
-                        continue;
-
-                    // Barycentric weights: w1 belongs to a, w2 to b, w0 to c.
-                    uint8_t r, g, bl;
-                    if (state.gouraud) {
-                        r = Clamp8((w1 * a.r + w2 * b.r + w0 * c.r) / double_area);
-                        g = Clamp8((w1 * a.g + w2 * b.g + w0 * c.g) / double_area);
-                        bl = Clamp8((w1 * a.b + w2 * b.b + w0 * c.b) / double_area);
-                    }
-                    else {
-                        r = a.r; g = a.g; bl = a.b;
-                    }
-
-                    if (state.dither) {
-                        const int8_t offset = kDitherTable[y & 3][x & 3];
-                        r = Clamp8(r + offset);
-                        g = Clamp8(g + offset);
-                        bl = Clamp8(bl + offset);
-                    }
-
-                    if (!state.textured) {
-                        PlotPixel(x, y, r, g, bl, state, false, false);
-                        continue;
-                    }
-
-                    const int32_t u = (w1 * a.u + w2 * b.u + w0 * c.u) / double_area;
-                    const int32_t v = (w1 * a.v + w2 * b.v + w0 * c.v) / double_area;
-                    const uint16_t texel = SampleTexture(static_cast<uint32_t>(u),
-                        static_cast<uint32_t>(v), state);
-                    if (texel == 0) {  // fully transparent texel
-                        ++raster_counters_.transparent_texels;
-                        continue;
-                    }
-
-                    uint8_t tr = From5Bit(texel & 0x1F);
-                    uint8_t tg = From5Bit((texel >> 5) & 0x1F);
-                    uint8_t tb = From5Bit((texel >> 10) & 0x1F);
-                    if (!state.raw_texture) {
-                        tr = Clamp8((tr * r) >> 7);
-                        tg = Clamp8((tg * g) >> 7);
-                        tb = Clamp8((tb * bl) >> 7);
-                    }
-                    PlotPixel(x, y, tr, tg, tb, state, true, (texel & 0x8000) != 0);
-                }
-            }
-        }
-
-        void Gpu::DrawLineSegment(const Vertex& v0, const Vertex& v1,
-            const DrawState& state) {
-            int32_t x = v0.x;
-            int32_t y = v0.y;
-            const int32_t dx = std::abs(v1.x - v0.x);
-            const int32_t dy = -std::abs(v1.y - v0.y);
-            const int32_t step_x = (v0.x < v1.x) ? 1 : -1;
-            const int32_t step_y = (v0.y < v1.y) ? 1 : -1;
-            int32_t error = dx + dy;
-            const int32_t steps = std::max(dx, -dy);
-
-            for (int32_t i = 0; ; ++i) {
-                uint8_t r = v0.r, g = v0.g, b = v0.b;
-                if (state.gouraud && steps > 0) {
-                    r = Clamp8(v0.r + ((v1.r - v0.r) * i) / steps);
-                    g = Clamp8(v0.g + ((v1.g - v0.g) * i) / steps);
-                    b = Clamp8(v0.b + ((v1.b - v0.b) * i) / steps);
-                }
-                if (state.dither) {
-                    const int8_t offset = kDitherTable[y & 3][x & 3];
-                    r = Clamp8(r + offset);
-                    g = Clamp8(g + offset);
-                    b = Clamp8(b + offset);
-                }
-                PlotPixel(x, y, r, g, b, state, false, false);
-
-                if (x == v1.x && y == v1.y)
-                    break;
-                const int32_t error2 = 2 * error;
-                if (error2 >= dy) { error += dy; x += step_x; }
-                if (error2 <= dx) { error += dx; y += step_y; }
-            }
         }
 
         // ---------------------------------------------------------------------------
@@ -1694,6 +1421,34 @@ namespace emulation {
 
         void Gpu::ResolveFramebuffer() {
             SyncRaster();
+            // What is shown, when the rasteriser draws sharper than native VRAM: the display
+            // area as it drew it. Not in 24-bit mode, which is films arriving by CPU upload at
+            // native size anyway, and read here byte by byte.
+            picture_scale_ = 1;
+            shared_picture_ = SharedPicture();
+            if (!status_.display_disable && !status_.display_depth) {
+                int scale = 1;
+                if (backend_->ResolveDisplay(display_vram_x_, display_vram_y_,
+                                             static_cast<uint32_t>(display_width_),
+                                             static_cast<uint32_t>(display_height_), &picture_,
+                                             &shared_picture_, &scale))
+                    picture_scale_ = scale;
+            }
+            // framebuffer_ is the native picture, which the checksums and everything else that
+            // measures the machine read. Bringing native VRAM up to date for it waits for the
+            // hardware rasteriser to finish the frame, so when the sharper picture is what is
+            // shown and nobody has asked for the native one - the front end - it is left.
+            if (picture_scale_ > 1 && !native_picture_) {
+                if (const char* reason = backend_->lost())
+                    FallBackToSoftware(reason);
+                return;
+            }
+            // The rows shown, and wide enough for 24-bit mode's three bytes a pixel.
+            backend_->PrepareRead(display_vram_x_, display_vram_y_,
+                                  static_cast<uint32_t>(display_width_) * 3 / 2 + 2,
+                                  static_cast<uint32_t>(display_height_));
+            if (const char* reason = backend_->lost())
+                FallBackToSoftware(reason);
             if (status_.display_disable) {
                 memset(framebuffer_, 0,
                     sizeof(uint32_t) * display_width_ * display_height_);
@@ -1861,6 +1616,7 @@ namespace emulation {
                     SyncThreadWithConfig();
                     ResolveFramebuffer();
                     ++frame_count_;
+                    system().gte().NewFrame();   // PGXP's vertex cache ages a frame
                 }
                 was_in_vblank_ = now_in_vblank;
             }

@@ -18,6 +18,7 @@
 *****************************************************************************************************************/
 #include "graphics/d3d12_graphics_engine.h"
 
+#include "graphics/adapters.h"
 #include "shaders/overlay_shaders.h"
 #include "tools/letterbox.h"
 
@@ -294,9 +295,17 @@ bool D3D12GraphicsEngine::CreateDevice() {
     if (FAILED(CreateDXGIFactory2(dxgi_factory_flags, IID_PPV_ARGS(&factory_))))
         return false;
 
-    if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_)))) {
+    // The card chosen at Settings > Video > Graphics Card if it can be found - and if it cannot
+    // make a device, this fails and the factory tries the next engine on it, rather than
+    // quietly drawing on another card than the one asked for. Otherwise Windows' default.
+    ComPtr<IDXGIAdapter1> chosen = psxemu::OpenAdapter(preferred_luid_);
+    if (FAILED(D3D12CreateDevice(chosen.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_)))) {
         return false;
     }
+    // The card, for the hardware rasteriser to draw on the same one and share its pictures.
+    const LUID luid = device_->GetAdapterLuid();
+    adapter_luid_ = (static_cast<uint64_t>(static_cast<uint32_t>(luid.HighPart)) << 32) |
+                    luid.LowPart;
 
     ComPtr<IDXGIFactory5> factory5;
     if (SUCCEEDED(factory_.As(&factory5))) {
@@ -444,6 +453,9 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
         if (!CreateFramebufferResources(width, height))
             return;
     }
+    if (!EnsureUploadHeaps())
+        return;
+    shown_texture_id_ = 0;   // fb_texture_ holds no shared picture now
 
     ID3D12Resource* const upload_heap = fb_upload_heap_[frame_index_].Get();
     if (!fb_texture_ || !upload_heap)
@@ -479,6 +491,101 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
     command_list_->ResourceBarrier(1, &barrier);
 
+    // A frame of pixels shows no shared picture, so the last one is the rasteriser's again once
+    // this frame is done. Without this a rasteriser that ran out of textures for a moment, and
+    // sent a frame as pixels, would never get one back - nothing releases while no shared
+    // picture is being drawn - and it would read back for good.
+    ReleasePictures(fence_->GetCompletedValue());
+    if (trail_source_ != nullptr) {
+        pending_releases_.push_back({ fence_values_[frame_index_], trail_source_,
+                                      trail_serial_ + 1 });
+        trail_source_.reset();
+    }
+
+    DrawFramebuffer(width, height);
+}
+
+// The hardware rasteriser's picture: copied on the card into fb_texture_ - a few hundred
+// microseconds at 8x, against reading it back and uploading it again - and drawn from there as
+// any frame is. The source has already said it is drawn.
+bool D3D12GraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
+    if (!command_list_ || !render_targets_[frame_index_] || !picture || picture.width <= 0 ||
+        picture.height <= 0 || picture.source->adapter() != adapter_luid_)
+        return false;
+    ReleasePictures(fence_->GetCompletedValue());
+    ID3D12Resource* const shared = OpenSharedPicture(picture);
+    if (shared == nullptr)
+        return false;
+    if (picture.width != fb_width_ || picture.height != fb_height_) {
+        FlushGPU();
+        if (!CreateFramebufferResources(picture.width, picture.height))
+            return false;
+        shown_texture_id_ = 0;
+    }
+
+    // Shown again - under a moving overlay, or after a resize - it is already there.
+    if (picture.texture_id != shown_texture_id_ || picture.serial != shown_serial_) {
+        // The shared texture lives in the common state between devices, and goes back to it.
+        D3D12_RESOURCE_BARRIER barriers[2] = {};
+        barriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barriers[0].Transition.pResource = shared;
+        barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        barriers[0].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barriers[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barriers[1].Transition.pResource = fb_texture_.Get();
+        barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+        barriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        command_list_->ResourceBarrier(2, barriers);
+        command_list_->CopyResource(fb_texture_.Get(), shared);
+        std::swap(barriers[0].Transition.StateBefore, barriers[0].Transition.StateAfter);
+        std::swap(barriers[1].Transition.StateBefore, barriers[1].Transition.StateAfter);
+        command_list_->ResourceBarrier(2, barriers);
+        shown_texture_id_ = picture.texture_id;
+        shown_serial_ = picture.serial;
+    }
+    // Every picture before this one is the rasteriser's again once this frame is done.
+    pending_releases_.push_back({ fence_values_[frame_index_], picture.source, picture.serial });
+    trail_source_ = picture.source;   // see RenderFramebuffer
+    trail_serial_ = picture.serial;
+
+    DrawFramebuffer(picture.width, picture.height);
+    return true;
+}
+
+ID3D12Resource* D3D12GraphicsEngine::OpenSharedPicture(
+    const emulation::psx::SharedPicture& picture) {
+    for (const OpenedPicture& opened : opened_pictures_)
+        if (opened.id == picture.texture_id)
+            return opened.resource.Get();
+    // A new rasteriser's pictures, or a handful of textures already open: what was opened
+    // before is let go of - once the card has finished with it - rather than kept alive.
+    if (!opened_pictures_.empty() &&
+        (opened_source_ != picture.source.get() ||
+         opened_pictures_.size() >= emulation::psx::kMaxOpenedPictures)) {
+        FlushGPU();
+        opened_pictures_.clear();
+    }
+    opened_source_ = picture.source.get();
+    ComPtr<ID3D12Resource> resource;
+    if (FAILED(device_->OpenSharedHandle(static_cast<HANDLE>(picture.texture),
+                                         IID_PPV_ARGS(&resource))))
+        return nullptr;
+    opened_pictures_.push_back({ picture.texture_id, resource });
+    return resource.Get();
+}
+
+void D3D12GraphicsEngine::ReleasePictures(UINT64 completed) {
+    size_t done = 0;
+    while (done < pending_releases_.size() && pending_releases_[done].fence_value <= completed) {
+        pending_releases_[done].source->Release(pending_releases_[done].serial);
+        ++done;
+    }
+    pending_releases_.erase(pending_releases_.begin(), pending_releases_.begin() + done);
+}
+
+void D3D12GraphicsEngine::DrawFramebuffer(int width, int height) {
     command_list_->SetPipelineState(current_pipeline_state_ != nullptr
                                         ? current_pipeline_state_
                                         : default_pipeline_state_.Get());
@@ -495,7 +602,8 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
     // A multi-pass filter takes over from here: it draws every pass itself, the last into the
     // same letterbox rect. If its render targets can't be made it falls through and the frame
     // is drawn by the pass-through below, which SetPixelShader left selected for that case.
-    if (active_chain_ != nullptr && EnsureChainResources(*active_chain_, width, height)) {
+    if (active_chain_ != nullptr && width <= kFilterChainMaxWidth &&
+        EnsureChainResources(*active_chain_, width, height)) {
         RenderChain(rect);
         return;
     }
@@ -633,6 +741,10 @@ void D3D12GraphicsEngine::Resize(int width, int height) {
 
 void D3D12GraphicsEngine::Shutdown() {
     FlushGPU();
+    // Nothing this device drew is still being read.
+    ReleasePictures(UINT64_MAX);
+    trail_source_.reset();
+    opened_pictures_.clear();
 
     if (fence_event_) {
         CloseHandle(fence_event_);
@@ -793,17 +905,9 @@ bool D3D12GraphicsEngine::CreateFramebufferResources(int fb_width, int fb_height
 
     device_->GetCopyableFootprints(&tex_desc, 0, 1, 0, &fb_placed_footprint_, &fb_num_rows_,
                                    &fb_row_size_in_bytes_, &fb_upload_buffer_size_);
-
-    // A separate heap per swap-chain slot - see the member comment in the
-    // header for why one shared heap is a CPU/GPU race.
-    const CD3DX12_HEAP_PROPERTIES upload_heap_props(D3D12_HEAP_TYPE_UPLOAD);
-    const CD3DX12_RESOURCE_DESC upload_desc = CD3DX12_RESOURCE_DESC::Buffer(fb_upload_buffer_size_);
-    for (UINT n = 0; n < kFrameCount; ++n) {
-        if (FAILED(device_->CreateCommittedResource(&upload_heap_props, D3D12_HEAP_FLAG_NONE,
-                                                    &upload_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                    nullptr, IID_PPV_ARGS(&fb_upload_heap_[n]))))
-            return false;
-    }
+    // Made at this size when a frame is first uploaded (EnsureUploadHeaps).
+    for (UINT n = 0; n < kFrameCount; ++n)
+        fb_upload_heap_[n].Reset();
 
     D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
     srv_heap_desc.NumDescriptors = 2;   // the framebuffer twice: t0 and t1 (see the root signature)
@@ -829,6 +933,22 @@ bool D3D12GraphicsEngine::CreateFramebufferResources(int fb_width, int fb_height
     // A chain's descriptors point at the texture just replaced.
     chain_res_valid_ = false;
 
+    return true;
+}
+
+bool D3D12GraphicsEngine::EnsureUploadHeaps() {
+    // A separate heap per swap-chain slot - see the member comment in the
+    // header for why one shared heap is a CPU/GPU race.
+    const CD3DX12_HEAP_PROPERTIES upload_heap_props(D3D12_HEAP_TYPE_UPLOAD);
+    const CD3DX12_RESOURCE_DESC upload_desc = CD3DX12_RESOURCE_DESC::Buffer(fb_upload_buffer_size_);
+    for (UINT n = 0; n < kFrameCount; ++n) {
+        if (fb_upload_heap_[n])
+            continue;
+        if (FAILED(device_->CreateCommittedResource(&upload_heap_props, D3D12_HEAP_FLAG_NONE,
+                                                    &upload_desc, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                    nullptr, IID_PPV_ARGS(&fb_upload_heap_[n]))))
+            return false;
+    }
     return true;
 }
 

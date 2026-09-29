@@ -1287,6 +1287,9 @@ void Cpu::ADDI() {
 
 void Cpu::ADDIU() {
   WriteReg(rt_, context_->gp.reg[rs_] + immediate_32bit_sign_extended_);
+  // PGXP: a register moved to another carries its shadow (psx/pgxp.h).
+  if (immediate_32bit_sign_extended_ == 0 && system_->pgxp().enabled())
+    system_->pgxp().Move(rt_, rs_);
   Tick();
 }
 
@@ -1311,6 +1314,8 @@ void Cpu::ANDI() {
 
 void Cpu::ORI() {
   WriteReg(rt_, context_->gp.reg[rs_] | immediate_);
+  if (immediate_ == 0 && system_->pgxp().enabled())
+    system_->pgxp().Move(rt_, rs_);
   Tick();
 }
 
@@ -1423,12 +1428,16 @@ void Cpu::COP2() {
       // instruction later, not immediately - psx-spx notes Tekken 2's
       // geometry depends on getting this right.
       ArmLoad(rt_, system_->gte().ReadData(rd_));
+      // PGXP: an SXY register's unrounded position comes out with it.
+      if (system_->pgxp().enabled() && rt_ != 0)
+        system_->pgxp().reg(rt_) = system_->gte().Precise(rd_);
       break;
     case 0x02:  // CFC2
       ArmLoad(rt_, system_->gte().ReadControl(rd_));
       break;
     case 0x04:  // MTC2
-      system_->gte().WriteData(rd_, context_->gp.reg[rt_]);
+      system_->gte().WriteData(rd_, context_->gp.reg[rt_],
+                               system_->pgxp().enabled() ? &system_->pgxp().reg(rt_) : nullptr);
       break;
     case 0x06:  // CTC2
       system_->gte().WriteControl(rd_, context_->gp.reg[rt_]);
@@ -1446,13 +1455,23 @@ void Cpu::COP2() {
 void Cpu::LWC2() {
   const uint32_t address =
       context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
-  system_->gte().WriteData(rt_, Load(kM32, address));
+  const uint32_t value = Load(kM32, address);
+  system_->gte().WriteData(rt_, value,
+                           system_->pgxp().enabled()
+                               ? system_->pgxp().word(address & 0x1FFFFFFF) : nullptr);
   Tick();
 }
 
 void Cpu::SWC2() {
   const uint32_t address =
       context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
+  if (system_->pgxp().enabled()) {
+    // The commonest way a vertex reaches a display list: straight out of the SXY FIFO.
+    const PreciseVertex shadow = system_->gte().Precise(rt_);
+    StoreWithShadow(system_->gte().ReadData(rt_), address, address & 0x1FFFFFFF, shadow);
+    Tick();
+    return;
+  }
   Store(kM32, system_->gte().ReadData(rt_), address);
   Tick();
 }
@@ -1518,6 +1537,12 @@ void Cpu::LW() {
   // The value is promised here and delivered one instruction later, which
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>(mem));
+  // PGXP: the word's shadow comes with it. Taken now, though the value lands later: until it
+  // does, the register's old value does not match it (psx/pgxp.h).
+  if (system_->pgxp().enabled() && rt_ != 0) {
+    const PreciseVertex* shadow = system_->pgxp().word(physical_address);
+    system_->pgxp().reg(rt_) = shadow != nullptr ? *shadow : PreciseVertex();
+  }
 }
 
 void Cpu::LBU() {
@@ -1618,8 +1643,26 @@ void Cpu::SWL() {
 void Cpu::SW() {
   uint32_t virtual_address = context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   uint32_t physical_address = AddressTranslation(virtual_address);
+  if (system_->pgxp().enabled()) {
+    StoreWithShadow(context_->gp.reg[rt_], virtual_address, physical_address,
+                    system_->pgxp().reg(rt_));
+    Tick();
+    return;
+  }
   Store(kM32,context_->gp.reg[rt_],virtual_address);
   Tick();
+}
+
+// PGXP: a word stored takes its shadow into RAM or the scratchpad beside it, and a word stored to
+// GP0 hands it to the GPU with the word (psx/pgxp.h).
+void Cpu::StoreWithShadow(uint32_t value, uint32_t virtual_address, uint32_t physical_address,
+                          const PreciseVertex& shadow) {
+  Pgxp& pgxp = system_->pgxp();
+  if (PreciseVertex* word = pgxp.word(physical_address))
+    *word = shadow;
+  pgxp.set_store(&shadow);
+  Store(kM32, value, virtual_address);
+  pgxp.set_store(nullptr);
 }
 
 void Cpu::SWR() {
@@ -1827,6 +1870,12 @@ void Cpu::ADD() {
 
 void Cpu::ADDU() {
   WriteReg(rd_, context_->gp.reg[rs_] + context_->gp.reg[rt_]);
+  if (system_->pgxp().enabled()) {
+    if (rt_ == 0)
+      system_->pgxp().Move(rd_, rs_);
+    else if (rs_ == 0)
+      system_->pgxp().Move(rd_, rt_);
+  }
   Tick();
 }
 
@@ -1854,6 +1903,12 @@ void Cpu::AND() {
 
 void Cpu::OR() {
   WriteReg(rd_, context_->gp.reg[rs_] | context_->gp.reg[rt_]);
+  if (system_->pgxp().enabled()) {
+    if (rt_ == 0)
+      system_->pgxp().Move(rd_, rs_);
+    else if (rs_ == 0)
+      system_->pgxp().Move(rd_, rt_);
+  }
   Tick();
 }
 

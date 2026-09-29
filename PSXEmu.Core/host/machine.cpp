@@ -26,6 +26,9 @@ Machine::Machine(psx::System* system, FrameMailbox* video, SampleRing* audio, Ho
   // What the trim steers for, and what the audio thread catches up to if the
   // ring ever runs far past it.
   audio_->set_target_frames(kAudioTargetFrames);
+  // What is shown is picture() (PublishFrame); the native framebuffer beside a sharper one is
+  // for measuring, and costs a wait for the hardware rasteriser every frame.
+  system_->gpu().set_native_picture(false);
 }
 
 Machine::~Machine() {
@@ -59,7 +62,12 @@ void Machine::ApplyConfig(const psx::EmuConfig& config) {
   psx::EmuConfig& current = system_->config();
   const bool pacing_changed = current.frame_limiter != config.frame_limiter ||
                               current.emulation_speed != config.emulation_speed;
+  const bool rasteriser_changed = current.gpu_rasteriser != config.gpu_rasteriser ||
+                                  current.resolution_scale != config.resolution_scale ||
+                                  current.true_color != config.true_color;
   current = config;
+  if (rasteriser_changed)
+    system_->gpu().ChooseRasteriser();
   if (pacing_changed) {
     ResetPacing();
     // Start the sound at the new setting rather than letting it slide there over
@@ -232,18 +240,36 @@ void Machine::PublishFrame() {
     const uint16_t* vram = system_->gpu().vram();
     frame.vram.assign(vram, vram + static_cast<size_t>(width) * height);
     frame.is_vram = true;
+    frame.shared = psx::SharedPicture();
     frame.width = width;
     frame.height = height;
+  } else if (const psx::SharedPicture& shared = system_->gpu().shared_picture()) {
+    // Left on the graphics card by the hardware rasteriser: nothing to copy.
+    frame.pixels.clear();
+    frame.shared = shared;
+    frame.is_vram = false;
+    frame.width = shared.width;
+    frame.height = shared.height;
   } else {
     int width = 0;
     int height = 0;
-    const uint32_t* pixels = system_->gpu().framebuffer(width, height);
+    // At the hardware rasteriser's resolution, when that is higher than native.
+    const uint32_t* pixels = system_->gpu().picture(width, height);
     frame.pixels.assign(pixels, pixels + static_cast<size_t>(width) * height);
+    frame.shared = psx::SharedPicture();
     frame.is_vram = false;
     frame.width = width;
     frame.height = height;
   }
-  video_->Publish();
+  published_shared_ = static_cast<bool>(frame.shared);
+  // The slot handed back to fill next held either a frame the video thread never took - whose
+  // picture on the card nobody will read, so the rasteriser can draw the next into it at once -
+  // or one it has finished with, whose picture comes back once its card has too (Release).
+  const bool dropped = video_->Publish();
+  VideoFrame& returned = video_->back();
+  if (dropped && returned.shared)
+    returned.shared.source->Dropped(returned.shared.serial);
+  returned.shared = psx::SharedPicture();
 }
 
 // The SPU makes 44,100 samples per *emulated* second and the device drains
@@ -347,6 +373,9 @@ void Machine::Report(bool paused) {
   report.audio_dropped_frames = audio_->dropped_frames();
   report.frames_dropped = video_->dropped();
   report.instructions = instructions_;
+  report.hardware_raster = system_->gpu().hardware_raster();
+  report.raster_error = system_->gpu().raster_error();
+  report.shared_picture = published_shared_;
   if (hooks_.report)
     hooks_.report(report);
 

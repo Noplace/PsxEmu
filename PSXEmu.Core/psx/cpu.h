@@ -710,6 +710,9 @@ class Cpu : public Component {
   void COP2();
   void LWC2();
   void SWC2();
+  // A store that takes PGXP's shadow along (psx/pgxp.h).
+  void StoreWithShadow(uint32_t value, uint32_t virtual_address, uint32_t physical_address,
+                       const PreciseVertex& shadow);
 
   void LB();
   void LH();

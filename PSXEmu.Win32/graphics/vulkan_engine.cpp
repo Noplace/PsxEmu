@@ -89,15 +89,33 @@ namespace psxemu {
         application.pApplicationName = "PSXEmu";
         application.pEngineName = "PSXEmu";
         application.apiVersion = kVkApiVersion10;
-        const char* instance_extensions[] = { kVkSurfaceExtension, kVkWin32SurfaceExtension };
+        // The two instance extensions importing the hardware rasteriser's pictures needs, when
+        // the loader has them: they only add queries, so nothing else changes with them on.
+        std::vector<const char*> instance_extensions = { kVkSurfaceExtension,
+                                                         kVkWin32SurfaceExtension };
+        bool can_share = false;
+        if (vk_.EnumerateInstanceExtensionProperties != nullptr) {
+            uint32_t available_count = 0;
+            vk_.EnumerateInstanceExtensionProperties(nullptr, &available_count, nullptr);
+            std::vector<VkExtensionProperties> available(available_count);
+            vk_.EnumerateInstanceExtensionProperties(nullptr, &available_count, available.data());
+            can_share = HasExtension(available, kVkPhysicalDeviceProperties2Extension) &&
+                        HasExtension(available, kVkExternalMemoryCapabilitiesExtension);
+            if (can_share) {
+                instance_extensions.push_back(kVkPhysicalDeviceProperties2Extension);
+                instance_extensions.push_back(kVkExternalMemoryCapabilitiesExtension);
+            }
+        }
         VkInstanceCreateInfo instance_info = {};
         instance_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
         instance_info.pApplicationInfo = &application;
-        instance_info.enabledExtensionCount = 2;
-        instance_info.ppEnabledExtensionNames = instance_extensions;
+        instance_info.enabledExtensionCount = static_cast<uint32_t>(instance_extensions.size());
+        instance_info.ppEnabledExtensionNames = instance_extensions.data();
         if (vk_.CreateInstance(&instance_info, nullptr, &instance_) != VK_SUCCESS ||
             !vk_.LoadInstance(instance_))
             return false;
+        if (can_share)
+            vk_.LoadOptionalInstance(instance_);
 
         VkWin32SurfaceCreateInfoKHR surface_info = {};
         surface_info.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
@@ -106,13 +124,37 @@ namespace psxemu {
         if (vk_.CreateWin32SurfaceKHR(instance_, &surface_info, nullptr, &surface_) != VK_SUCCESS)
             return false;
 
-        // The GPU: one with a queue that both draws and presents to this window, and the
-        // swap-chain extension - a discrete one over an integrated one if there are both.
+        // A card's LUID, the id Direct3D knows it by - 0 if the driver will not say, or the
+        // instance extension that asks was not there.
+        auto luid_of = [&](VkPhysicalDevice gpu) -> uint64_t {
+            if (!can_share || vk_.GetPhysicalDeviceProperties2KHR == nullptr)
+                return 0;
+            VkPhysicalDeviceIDProperties id = {};
+            id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+            VkPhysicalDeviceProperties2 properties = {};
+            properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+            properties.pNext = &id;
+            vk_.GetPhysicalDeviceProperties2KHR(gpu, &properties);
+            uint64_t luid = 0;
+            if (id.deviceLUIDValid)
+                memcpy(&luid, id.deviceLUID, sizeof(luid));
+            return luid;
+        };
+
+        // The GPU: the one chosen at Settings > Video > Graphics Card if there is one and it can
+        // draw to this window - by LUID, or by name where the driver will not give one - and
+        // otherwise one with a queue that both draws and presents to this window, and the
+        // swap-chain extension: a discrete one over an integrated one if there are both.
         uint32_t count = 0;
         vk_.EnumeratePhysicalDevices(instance_, &count, nullptr);
         std::vector<VkPhysicalDevice> gpus(count);
         if (count == 0 || vk_.EnumeratePhysicalDevices(instance_, &count, gpus.data()) != VK_SUCCESS)
             return false;
+        auto lower = [](std::string text) {
+            for (char& c : text)
+                c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+            return text;
+        };
         int best_score = -1;
         for (VkPhysicalDevice gpu : gpus) {
             uint32_t extension_count = 0;
@@ -133,7 +175,19 @@ namespace psxemu {
                     continue;
                 VkPhysicalDeviceProperties properties = {};
                 vk_.GetPhysicalDeviceProperties(gpu, &properties);
-                const int score = properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2
+                bool chosen = false;
+                if (preferred_luid_ != 0) {
+                    const uint64_t luid = luid_of(gpu);
+                    // Vulkan's names and DXGI's are the same driver string for the cards seen
+                    // here, but not promised to be: hence a match either way round.
+                    const std::string device = lower(properties.deviceName);
+                    const std::string wanted = lower(preferred_name_);
+                    chosen = luid != 0 ? luid == preferred_luid_
+                                       : !wanted.empty() && (device.find(wanted) != std::string::npos ||
+                                                             wanted.find(device) != std::string::npos);
+                }
+                const int score = chosen ? 3
+                                  : properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ? 2
                                   : properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
                                       ? 1
                                       : 0;
@@ -149,23 +203,51 @@ namespace psxemu {
             return false;
         vk_.GetPhysicalDeviceMemoryProperties(gpu_, &memory_);
 
+        // Which card this is, by the LUID Direct3D knows it by - so the hardware rasteriser can
+        // draw on the same one - and whether it can import that rasteriser's textures.
+        uint64_t luid = luid_of(gpu_);
+        std::vector<const char*> device_extensions = { kVkSwapchainExtension };
+        if (luid != 0) {
+            uint32_t extension_count = 0;
+            vk_.EnumerateDeviceExtensionProperties(gpu_, nullptr, &extension_count, nullptr);
+            std::vector<VkExtensionProperties> extensions(extension_count);
+            vk_.EnumerateDeviceExtensionProperties(gpu_, nullptr, &extension_count,
+                                                   extensions.data());
+            const char* const wanted[] = { kVkExternalMemoryExtension,
+                                           kVkExternalMemoryWin32Extension,
+                                           kVkMemoryRequirements2Extension,
+                                           kVkDedicatedAllocationExtension };
+            bool all = true;
+            for (const char* name : wanted)
+                all = all && HasExtension(extensions, name);
+            if (all)
+                device_extensions.insert(device_extensions.end(), std::begin(wanted),
+                                         std::end(wanted));
+            else
+                luid = 0;
+        }
+
         const float priority = 1.0f;
         VkDeviceQueueCreateInfo queue_info = {};
         queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queue_info.queueFamilyIndex = queue_family_;
         queue_info.queueCount = 1;
         queue_info.pQueuePriorities = &priority;
-        const char* device_extensions[] = { kVkSwapchainExtension };
         VkDeviceCreateInfo device_info = {};
         device_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
         device_info.queueCreateInfoCount = 1;
         device_info.pQueueCreateInfos = &queue_info;
-        device_info.enabledExtensionCount = 1;
-        device_info.ppEnabledExtensionNames = device_extensions;
+        device_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.size());
+        device_info.ppEnabledExtensionNames = device_extensions.data();
         if (vk_.CreateDevice(gpu_, &device_info, nullptr, &device_) != VK_SUCCESS ||
             !vk_.LoadDevice(device_))
             return false;
         vk_.GetDeviceQueue(device_, queue_family_, 0, &queue_);
+        if (luid != 0) {
+            vk_.LoadOptionalDevice(device_);
+            if (vk_.GetMemoryWin32HandlePropertiesKHR != nullptr)
+                adapter_luid_ = luid;
+        }
 
         // The swap chain's format, chosen once: plain 8-bit BGRA or RGBA - the same
         // non-sRGB-encoding target the Direct3D engines draw into - and failing both, the first
@@ -868,31 +950,56 @@ namespace psxemu {
     }
 
     void VulkanGraphicsEngine::RenderFramebuffer(const void* data, int width, int height) {
-        if (device_ == nullptr || data == nullptr || width <= 0 || height <= 0)
-            return;
+        if (data != nullptr)
+            DrawFrame(data, nullptr, width, height);
+    }
+
+    bool VulkanGraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
+        if (adapter_luid_ == 0 || !picture || picture.source->adapter() != adapter_luid_)
+            return false;
+        return DrawFrame(nullptr, &picture, picture.width, picture.height);
+    }
+
+    bool VulkanGraphicsEngine::DrawFrame(const void* pixels,
+                                         const emulation::psx::SharedPicture* shared, int width,
+                                         int height) {
+        if (device_ == nullptr || width <= 0 || height <= 0)
+            return false;
         // The last frame has to be finished before its command buffer, its upload buffer or
         // anything it drew with can be touched - and before the swap chain can be rebuilt.
         vk_.WaitForFences(device_, 1, &frame_done_, kVkTrue, kForever);
+        // And so every shared picture before the one it read is the rasteriser's again.
+        if (in_flight_source_ != nullptr) {
+            in_flight_source_->Release(in_flight_serial_);
+            in_flight_source_.reset();
+        }
         if (swapchain_dirty_) {
             vk_.DeviceWaitIdle(device_);
             DestroySwapchain();
             if (!CreateSwapchain())
-                return;
+                return false;
         }
+        const VkImage previous_frame = frame_.image;
         if (swapchain_ == nullptr || !EnsureFrameTexture(width, height))
-            return;
+            return false;
+        if (frame_.image != previous_frame || pixels != nullptr)
+            shown_texture_id_ = 0;   // frame_ holds no shared picture now
+        VkImage shared_image = nullptr;
+        if (shared != nullptr && (shared_image = ImportShared(*shared)) == nullptr)
+            return false;
 
         uint32_t image = 0;
         const VkResult acquired =
             vk_.AcquireNextImageKHR(device_, swapchain_, kForever, acquired_, nullptr, &image);
         if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
             swapchain_dirty_ = true;
-            return;
+            return false;
         }
         if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR)
-            return;
+            return false;
 
-        memcpy(staging_mapped_, data, static_cast<size_t>(width) * height * 4);
+        if (pixels != nullptr)
+            memcpy(staging_mapped_, pixels, static_cast<size_t>(width) * height * 4);
         vk_.ResetCommandBuffer(commands_, 0);
         VkCommandBufferBeginInfo begin = {};
         begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -909,26 +1016,65 @@ namespace psxemu {
         barrier.oldLayout = frame_layout_;
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        vk_.CmdPipelineBarrier(commands_,
-                               frame_layout_ == VK_IMAGE_LAYOUT_UNDEFINED
-                                   ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                                   : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                               VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                               &barrier);
-        VkBufferImageCopy copy = {};
-        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        copy.imageSubresource.layerCount = 1;
-        copy.imageExtent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
-        vk_.CmdCopyBufferToImage(commands_, staging_, frame_.image,
-                                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
-        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-        vk_.CmdPipelineBarrier(commands_, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1,
-                               &barrier);
-        frame_layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        const VkFlags frame_was_read = frame_layout_ == VK_IMAGE_LAYOUT_UNDEFINED
+                                           ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                                           : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        if (pixels != nullptr) {
+            vk_.CmdPipelineBarrier(commands_, frame_was_read, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0,
+                                   nullptr, 0, nullptr, 1, &barrier);
+            VkBufferImageCopy copy = {};
+            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageExtent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+            vk_.CmdCopyBufferToImage(commands_, staging_, frame_.image,
+                                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vk_.CmdPipelineBarrier(commands_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0,
+                                   nullptr, 1, &barrier);
+            frame_layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        } else if (shared->texture_id != shown_texture_id_ || shared->serial != shown_serial_) {
+            // The rasteriser's image, taken over from Direct3D in the general layout it leaves
+            // one in, copied from, and handed back the same way; the frame's own, as for an
+            // upload. A picture shown again - under a moving overlay - is already in frame_.
+            VkImageMemoryBarrier barriers[2] = { barrier, barrier };
+            barriers[1].image = shared_image;
+            barriers[1].srcQueueFamilyIndex = kVkQueueFamilyExternal;
+            barriers[1].dstQueueFamilyIndex = queue_family_;
+            barriers[1].oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[1].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            vk_.CmdPipelineBarrier(commands_, frame_was_read | VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                   VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 2,
+                                   barriers);
+            VkImageCopy copy = {};
+            copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.srcSubresource.layerCount = 1;
+            copy.dstSubresource = copy.srcSubresource;
+            copy.extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height), 1 };
+            vk_.CmdCopyImage(commands_, shared_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             frame_.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+            barriers[0].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barriers[0].newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barriers[0].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barriers[0].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barriers[1].srcQueueFamilyIndex = queue_family_;
+            barriers[1].dstQueueFamilyIndex = kVkQueueFamilyExternal;
+            barriers[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barriers[1].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            barriers[1].srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            barriers[1].dstAccessMask = 0;
+            vk_.CmdPipelineBarrier(commands_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                   0, 0, nullptr, 0, nullptr, 2, barriers);
+            frame_layout_ = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            shown_texture_id_ = shared->texture_id;
+            shown_serial_ = shared->serial;
+        }
 
         // The overlay's uploads, outside any render pass as copies must be.
         const bool draw_overlay = PrepareOverlay(commands_);
@@ -953,7 +1099,8 @@ namespace psxemu {
         VkDescriptorSet last_reads = frame_.reads;
         float in_width = static_cast<float>(width);
         float in_height = static_cast<float>(height);
-        if (active_chain_ != nullptr && EnsureChainTargets(*active_chain_, width, height)) {
+        if (active_chain_ != nullptr && width <= kFilterChainMaxWidth &&
+            EnsureChainTargets(*active_chain_, width, height)) {
             last = &blit_;
             for (size_t i = 0; i < active_chain_->passes.size(); ++i) {
                 const Shader& pass = shaders_[active_chain_->passes[i]];
@@ -1013,9 +1160,107 @@ namespace psxemu {
         submit.pSignalSemaphores = &rendered_[image];
         vk_.ResetFences(device_, 1, &frame_done_);
         if (vk_.QueueSubmit(queue_, 1, &submit, frame_done_) != VK_SUCCESS)
-            return;
+            return false;
         pending_image_ = image;
         pending_present_ = true;
+        if (shared != nullptr) {
+            in_flight_source_ = shared->source;
+            in_flight_serial_ = shared->serial;
+            trail_source_ = shared->source;   // see below
+            trail_serial_ = shared->serial;
+        } else if (trail_source_ != nullptr) {
+            // A frame of pixels shows no shared picture, so the last one is the rasteriser's
+            // again once this frame is done. Without this a rasteriser that ran out of
+            // textures for a moment, and sent a frame as pixels, would never get one back -
+            // nothing releases while no shared picture is being drawn - and would read back for
+            // good.
+            in_flight_source_ = trail_source_;
+            in_flight_serial_ = trail_serial_ + 1;
+            trail_source_.reset();
+        }
+        return true;
+    }
+
+    VkImage VulkanGraphicsEngine::ImportShared(const emulation::psx::SharedPicture& picture) {
+        for (const Imported& imported : imported_)
+            if (imported.id == picture.texture_id)
+                return imported.image;
+        // A new rasteriser's pictures, or a handful already imported: the old ones are let go
+        // of rather than kept alive.
+        if (!imported_.empty() &&
+            (imported_source_ != picture.source.get() ||
+             imported_.size() >= emulation::psx::kMaxOpenedPictures))
+            ForgetImported();
+        imported_source_ = picture.source.get();
+
+        // An image exactly like the Direct3D texture - which is what importing one asks - with
+        // its memory the texture's own, allocated for it alone.
+        VkExternalMemoryImageCreateInfo external = {};
+        external.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+        external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+        VkImageCreateInfo info = {};
+        info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        info.pNext = &external;
+        info.imageType = VK_IMAGE_TYPE_2D;
+        info.format = VK_FORMAT_B8G8R8A8_UNORM;
+        info.extent = { static_cast<uint32_t>(picture.width), static_cast<uint32_t>(picture.height),
+                        1 };
+        info.mipLevels = 1;
+        info.arrayLayers = 1;
+        info.samples = VK_SAMPLE_COUNT_1_BIT;
+        info.tiling = VK_IMAGE_TILING_OPTIMAL;
+        info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        Imported imported;
+        imported.id = picture.texture_id;
+        if (vk_.CreateImage(device_, &info, nullptr, &imported.image) != VK_SUCCESS)
+            return nullptr;
+        VkMemoryRequirements needs = {};
+        vk_.GetImageMemoryRequirements(device_, imported.image, &needs);
+        VkMemoryWin32HandlePropertiesKHR handle = {};
+        handle.sType = VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR;
+        const bool typed =
+            vk_.GetMemoryWin32HandlePropertiesKHR(
+                device_, VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT,
+                static_cast<HANDLE>(picture.texture), &handle) == VK_SUCCESS;
+        const int type = typed ? FindMemory(needs.memoryTypeBits & handle.memoryTypeBits, 0) : -1;
+        VkMemoryDedicatedAllocateInfo dedicated = {};
+        dedicated.sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO;
+        dedicated.image = imported.image;
+        VkImportMemoryWin32HandleInfoKHR import = {};
+        import.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR;
+        import.pNext = &dedicated;
+        import.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+        import.handle = static_cast<HANDLE>(picture.texture);
+        VkMemoryAllocateInfo allocate = {};
+        allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        allocate.pNext = &import;
+        allocate.allocationSize = needs.size;
+        allocate.memoryTypeIndex = static_cast<uint32_t>(type);
+        if (type < 0 ||
+            vk_.AllocateMemory(device_, &allocate, nullptr, &imported.memory) != VK_SUCCESS ||
+            vk_.BindImageMemory(device_, imported.image, imported.memory, 0) != VK_SUCCESS) {
+            if (imported.memory != nullptr)
+                vk_.FreeMemory(device_, imported.memory, nullptr);
+            vk_.DestroyImage(device_, imported.image, nullptr);
+            return nullptr;
+        }
+        imported_.push_back(imported);
+        return imported.image;
+    }
+
+    void VulkanGraphicsEngine::ForgetImported() {
+        if (imported_.empty())
+            return;
+        vk_.DeviceWaitIdle(device_);
+        for (Imported& imported : imported_) {
+            vk_.DestroyImage(device_, imported.image, nullptr);
+            vk_.FreeMemory(device_, imported.memory, nullptr);
+        }
+        imported_.clear();
+        imported_source_ = nullptr;
+        shown_texture_id_ = 0;
     }
 
     void VulkanGraphicsEngine::EndFrame() {
@@ -1403,6 +1648,12 @@ namespace psxemu {
     void VulkanGraphicsEngine::Shutdown() {
         if (device_ != nullptr) {
             vk_.DeviceWaitIdle(device_);
+            if (in_flight_source_ != nullptr) {
+                in_flight_source_->Release(in_flight_serial_);
+                in_flight_source_.reset();
+            }
+            trail_source_.reset();
+            ForgetImported();
             ReleaseOverlay();
             ReleaseChainTargets();
             ReleaseFrameTexture();

@@ -25,6 +25,7 @@
 #include "app/screenshot.h"
 #include "app/win32_dialogs.h"
 #include "app/win32_paths.h"
+#include "graphics/hw_raster/d3d11_raster.h"
 
 #include <shellapi.h>   // ShellExecuteA, to open the BIOS folder from its menu
 
@@ -310,6 +311,25 @@ namespace psxemu {
 
     bool App::CreateMachine() {
         system_ = std::make_unique<System>();
+        // The graphics cards this machine has, and the one the settings name - if it is still
+        // here. A name that is not (an external card, unplugged) stays in the settings, and means
+        // automatic until it comes back.
+        adapters_ = EnumerateGraphicsAdapters();
+        chosen_adapter_ = FindGraphicsAdapter(adapters_, config_.graphics_adapter);
+        raster_adapter_.store(chosen_adapter_);
+        // The hardware rasteriser, for when Settings > Video > Rasteriser asks for it. Its own
+        // Direct3D 11 device, whichever renderer shows the picture: on the card chosen, or with
+        // none chosen the renderer's, handing its pictures over there when that is the renderer's
+        // card too (UpdateRasteriserCard).
+        system_->set_hardware_raster([this](uint16_t* vram,
+                                             const emulation::psx::RasterOptions& options,
+                                             std::string* error)
+                                             -> std::unique_ptr<emulation::psx::RasterBackend> {
+            emulation::psx::RasterOptions shown = options;
+            shown.adapter = raster_adapter_.load(std::memory_order_acquire);
+            shown.shared_picture = raster_shared_.load(std::memory_order_acquire);
+            return D3D11Raster::Create(vram, shown, false, error);
+        });
         if (system_->Initialize(bios_path_.c_str()) != 0) {
             ShowError(window_,
                       L"The BIOS image could not be loaded. It must be exactly "
@@ -323,6 +343,10 @@ namespace psxemu {
     // only thread there is.
     void App::ApplySettings() {
         system_->config() = config_;
+        // The machine was made before the settings were read, so on software.
+        if (config_.gpu_rasteriser != "software")
+            system_->gpu().ChooseRasteriser();
+        ReportRasteriser(system_->gpu().hardware_raster(), system_->gpu().raster_error(), false);
         system_->sio().set_controller_type(0, ParseControllerType(config_.controller_type[0]));
         system_->sio().set_controller_type(1, ParseControllerType(config_.controller_type[1]));
         plugged_type_[0] = config_.controller_type[0];
@@ -341,6 +365,7 @@ namespace psxemu {
         UpdateFilterMenu();
         UpdateRendererMenu();
         UpdateAudioBackendMenu();
+        RefreshGraphicsCardMenu();
     }
 
     void App::SetUpDataDirectories() {
@@ -436,9 +461,13 @@ namespace psxemu {
         const bool start_notifications = overlay_notifications_;
         const bool start_controllers = controllers_always_;
         const OverlayTheme start_theme = overlay_theme_;
+        const uint64_t start_card = chosen_adapter_;
+        const std::string start_card_name = chosen_adapter_ != 0 ? config_.graphics_adapter
+                                                                 : std::string();
         video_ = std::make_unique<VideoOutput>(
             [this, start_renderer, start_filter, start_stats, start_notifications,
-             start_controllers, start_theme]() -> std::unique_ptr<Presenter> {
+             start_controllers, start_theme, start_card,
+             start_card_name]() -> std::unique_ptr<Presenter> {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
                 auto presenter = std::make_unique<D3DPresenter>(
@@ -449,6 +478,7 @@ namespace psxemu {
                 presenter->overlay().SetNotificationsEnabled(start_notifications);
                 presenter->overlay().SetControllersAlwaysVisible(start_controllers);
                 presenter->overlay().SetTheme(start_theme);
+                presenter->SetGraphicsCard(start_card, start_card_name);
                 if (!presenter->Open(start_renderer, start_filter)) {
                     PostToUi([this] {
                         ShowError(window_, L"Could not create a Direct3D device.");
@@ -459,7 +489,9 @@ namespace psxemu {
                 // What actually opened, which is not always what was asked for.
                 const std::string renderer = presenter->renderer();
                 const std::string filter = presenter->filter();
-                PostToUi([this, renderer, filter] {
+                const uint64_t adapter = presenter->shared_adapter();
+                const uint64_t card = presenter->card_luid();
+                PostToUi([this, renderer, filter, adapter, card] {
                     current_backend_ = renderer;
                     current_filter_ = filter;
                     config_.graphics_backend = renderer;
@@ -467,6 +499,7 @@ namespace psxemu {
                     UpdateRendererMenu();
                     UpdateFilterMenu();
                     SaveSettingsIfChanged();
+                    OnPresenterAdapter(adapter, renderer, card);
                 });
                 return presenter;
             });
@@ -605,6 +638,17 @@ namespace psxemu {
         PostToUi([this, report] {
             report_ = report;
             have_report_ = true;
+            // What is drawing changes by itself when a boot makes the machine afresh, and when
+            // the hardware rasteriser loses its graphics card - which is worth saying.
+            if (report.hardware_raster != drawing_hardware_)
+                ReportRasteriser(report.hardware_raster,
+                                 report.hardware_raster ? std::string() : report.raster_error,
+                                 false);
+            else   // a game's own settings may have brought another resolution
+                TickRasteriser(window_, drawing_hardware_, config_.resolution_scale,
+                               config_.true_color);
+            TickPgxp(window_, drawing_hardware_, config_.pgxp_vertices, config_.pgxp_textures,
+                     config_.pgxp_culling);
             if (video_ != nullptr) {
                 uint64_t presents = 0;
                 double total_ms = 0.0;
@@ -634,11 +678,14 @@ namespace psxemu {
             // "idle" is what the frame limiter slept off: the headroom, and what a faster speed
             // setting has to come out of.
             if (config_.show_timings && !report_.paused) {
-                wchar_t timings[192] = {};
+                // "on card": the hardware rasteriser's picture handed to the renderer where it
+                // was drawn, with nothing copied (psx/shared_picture.h).
+                wchar_t timings[208] = {};
                 swprintf(timings, std::size(timings),
-                         L"  |  emulate %.1f  hand-off %.2f  idle %.1f  present %.2f ms"
+                         L"  |  emulate %.1f  hand-off %.2f%s  idle %.1f  present %.2f ms"
                          L"  |  sound %.0f ms",
-                         report_.emulate_ms, report_.handoff_ms, report_.idle_ms, present_ms_,
+                         report_.emulate_ms, report_.handoff_ms,
+                         report_.shared_picture ? L" on card" : L"", report_.idle_ms, present_ms_,
                          report_.audio_queued_frames * 1000.0 / emulation::psx::Spu::kSampleRate);
                 title += timings;
 
@@ -1106,8 +1153,10 @@ namespace psxemu {
             presenter->SetRenderer(key);
             const std::string renderer = presenter->renderer();
             const std::string filter = presenter->filter();
+            const uint64_t adapter = presenter->shared_adapter();
+            const uint64_t card = presenter->card_luid();
             video.PresentAgain();
-            PostToUi([this, renderer, filter] {
+            PostToUi([this, renderer, filter, adapter, card] {
                 current_backend_ = renderer;
                 current_filter_ = filter;
                 if (!renderer.empty())
@@ -1116,11 +1165,194 @@ namespace psxemu {
                 UpdateRendererMenu();
                 UpdateFilterMenu();
                 SaveSettingsIfChanged();
+                OnPresenterAdapter(adapter, renderer, card);
                 if (!renderer.empty())
                     Notify(OverlayIcon::kScreen, ToastKind::kInfo,
                            L"Renderer: " + NameForRenderer(renderer));
             });
         });
+    }
+
+    // Settings > Video > Rasteriser. The machine swaps rasterisers between frames, keeping what
+    // is in VRAM, and says what it ended up with: a hardware one that could not be made leaves
+    // the software one drawing.
+    void App::SetRasteriser(const std::string& key) {
+        if (key == config_.gpu_rasteriser)
+            return;
+        config_.gpu_rasteriser = key;
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+        PostToMachine([this](Machine& machine) {
+            const bool hardware = machine.system().gpu().hardware_raster();
+            const std::string error = machine.system().gpu().raster_error();
+            PostToUi([this, hardware, error] { ReportRasteriser(hardware, error, true); });
+        });
+    }
+
+    // The hardware rasteriser's resolution and true colour. The machine remakes the rasteriser
+    // between frames, keeping what is in VRAM, as it does for a change of rasteriser.
+    void App::SetResolutionScale(int scale) {
+        if (scale == config_.resolution_scale)
+            return;
+        config_.resolution_scale = scale;
+        RemakeRasteriser(L"Internal resolution: " + std::to_wstring(scale) + L"x" +
+                         (scale == 1 ? L" (native)" : L""));
+    }
+
+    void App::SetTrueColour(bool on) {
+        if (on == config_.true_color)
+            return;
+        config_.true_color = on;
+        RemakeRasteriser(on ? L"True colour on" : L"True colour off");
+    }
+
+    // PGXP's three switches. The machine takes them up at its next instruction (System::StepImpl)
+    // without remaking anything; precise vertices take the recompiler's place while on.
+    void App::SetPgxp(bool* setting, bool on, const std::wstring& done) {
+        if (*setting == on)
+            return;
+        *setting = on;
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+        TickPgxp(window_, drawing_hardware_, config_.pgxp_vertices, config_.pgxp_textures,
+                 config_.pgxp_culling);
+        Notify(OverlayIcon::kScreen, ToastKind::kInfo, done);
+    }
+
+    void App::RemakeRasteriser(const std::wstring& done) {
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+        PostToMachine([this, done](Machine& machine) {
+            const bool hardware = machine.system().gpu().hardware_raster();
+            const std::string error = machine.system().gpu().raster_error();
+            PostToUi([this, hardware, error, done] {
+                ReportRasteriser(hardware, error, false);
+                if (error.empty())
+                    Notify(OverlayIcon::kScreen, ToastKind::kInfo, done);
+            });
+        });
+    }
+
+    // A renderer has just opened - at startup, or after a switch of renderer or card. `adapter` is
+    // the card it takes the hardware rasteriser's pictures on (0: it takes none), `renderer` which
+    // one it is, and `card` the card it was actually asked to draw on.
+    void App::OnPresenterAdapter(uint64_t adapter, const std::string& renderer, uint64_t card) {
+        presenter_adapter_ = adapter;
+        presenter_renderer_ = renderer;
+        if (card != chosen_adapter_) {
+            // The card chosen could not be used by any renderer, and Windows' pick was: what is
+            // chosen is automatic for now. The name stays in the settings for another time.
+            chosen_adapter_ = card;
+            RefreshGraphicsCardMenu();
+        }
+        UpdateRasteriserCard();
+
+        // OpenGL is the one renderer that cannot be told a card: Windows and the driver decide,
+        // per program, from Settings > System > Display > Graphics. If that is not the one
+        // chosen, the rasteriser is still put where the person asked, and pictures are copied
+        // across - which is slower, so it is said.
+        if (renderer == "opengl" && chosen_adapter_ != 0 && presenter_adapter_ != 0 &&
+            presenter_adapter_ != chosen_adapter_) {
+            auto name_of = [this](uint64_t luid) {
+                for (const GraphicsAdapter& a : adapters_)
+                    if (a.luid == luid)
+                        return Wide(a.name);
+                return std::wstring(L"another graphics card");
+            };
+            Notify(OverlayIcon::kScreen, ToastKind::kWarning,
+                   L"OpenGL is drawing on " + name_of(presenter_adapter_),
+                   L"Windows decides that for OpenGL (Settings > System > Display > Graphics). "
+                   L"The rasteriser is on " + name_of(chosen_adapter_) + L", and its pictures "
+                   L"are copied across.");
+        }
+    }
+
+    // The hardware rasteriser draws on the card chosen - or, with none chosen, on the renderer's -
+    // and hands its pictures over on the card when that is the renderer's card as well, and
+    // otherwise copies them across through memory. If what that means changed, it is made again:
+    // between frames, keeping VRAM, as any change of rasteriser is.
+    void App::UpdateRasteriserCard() {
+        const uint64_t adapter = chosen_adapter_ != 0 ? chosen_adapter_ : presenter_adapter_;
+        const bool shared = adapter != 0 && adapter == presenter_adapter_;
+        if (adapter == raster_adapter_.load() && shared == raster_shared_.load())
+            return;
+        raster_adapter_.store(adapter, std::memory_order_release);
+        raster_shared_.store(shared, std::memory_order_release);
+        if (config_.gpu_rasteriser != "hardware")
+            return;
+        PostToMachine([this](Machine& machine) {
+            machine.system().gpu().ChooseRasteriser();
+            const bool hardware = machine.system().gpu().hardware_raster();
+            const std::string error = machine.system().gpu().raster_error();
+            PostToUi([this, hardware, error] { ReportRasteriser(hardware, error, false); });
+        });
+    }
+
+    // Settings > Video > Graphics Card. The renderer is made again on the card, which tells us
+    // which card the rasteriser is to follow; a renderer that cannot be told one - OpenGL - is
+    // left alone, and the rasteriser goes where it was asked regardless.
+    void App::SetGraphicsCard(int index) {
+        const bool valid = index >= 0 && index < static_cast<int>(adapters_.size());
+        const std::string name = valid ? adapters_[index].name : std::string();
+        const uint64_t luid = valid ? adapters_[index].luid : 0;
+        if (name == config_.graphics_adapter && luid == chosen_adapter_)
+            return;
+        config_.graphics_adapter = name;
+        chosen_adapter_ = luid;
+        SaveSettingsIfChanged();
+        RefreshGraphicsCardMenu();
+        if (video_ == nullptr)
+            return;
+        video_->Post([this, luid, name](VideoOutput& video) {
+            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            if (presenter == nullptr)
+                return;
+            presenter->SetGraphicsCard(luid, name);
+            const std::string renderer = presenter->renderer();
+            const std::string filter = presenter->filter();
+            const uint64_t adapter = presenter->shared_adapter();
+            const uint64_t card = presenter->card_luid();
+            video.PresentAgain();
+            PostToUi([this, renderer, filter, adapter, card, name] {
+                current_backend_ = renderer;
+                current_filter_ = filter;
+                if (!renderer.empty())
+                    config_.graphics_backend = renderer;
+                config_.video_filter = filter;
+                UpdateRendererMenu();
+                UpdateFilterMenu();
+                SaveSettingsIfChanged();
+                OnPresenterAdapter(adapter, renderer, card);
+                Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+                       name.empty() ? std::wstring(L"Graphics card: automatic")
+                                    : L"Graphics card: " + Wide(name));
+            });
+        });
+    }
+
+    void App::RefreshGraphicsCardMenu() {
+        std::vector<GraphicsCardLabel> labels;
+        int chosen = -1;
+        for (size_t i = 0; i < adapters_.size(); ++i) {
+            labels.push_back({ adapters_[i].name, adapters_[i].video_memory });
+            if (chosen_adapter_ != 0 && adapters_[i].luid == chosen_adapter_)
+                chosen = static_cast<int>(i);
+        }
+        PopulateGraphicsCardMenu(window_, labels, chosen);
+    }
+
+    // The menu ticks what is drawing, not what was asked for; a failure says why.
+    void App::ReportRasteriser(bool hardware, const std::string& error, bool announce) {
+        drawing_hardware_ = hardware;
+        TickRasteriser(window_, hardware, config_.resolution_scale, config_.true_color);
+        TickPgxp(window_, hardware, config_.pgxp_vertices, config_.pgxp_textures,
+                 config_.pgxp_culling);
+        if (!error.empty())
+            Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"Hardware rasteriser unavailable",
+                   Wide(error) + L" - drawing in software");
+        else if (announce)
+            Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+                   hardware ? L"Rasteriser: hardware" : L"Rasteriser: software");
     }
 
     // The Memory Cards items for a multitap's cards B-D are greyed out for a port without one.
@@ -2451,7 +2683,15 @@ namespace psxemu {
 
         video_->Post([this, path](VideoOutput& video) {
             const emulation::host::VideoFrame* frame = video.frames().current();
-            if (frame == nullptr || frame->is_vram || frame->pixels.empty()) {
+            std::vector<uint32_t> pixels;
+            if (frame != nullptr && !frame->is_vram) {
+                // The hardware rasteriser's picture may still be on the card.
+                if (frame->shared)
+                    D3D11Raster::ReadSharedPicture(frame->shared, &pixels);
+                else
+                    pixels = frame->pixels;
+            }
+            if (pixels.empty()) {
                 PostToUi([this, vram = frame != nullptr && frame->is_vram] {
                     Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"No screenshot",
                            vram ? L"Turn off View VRAM to capture the picture"
@@ -2459,7 +2699,6 @@ namespace psxemu {
                 });
                 return;
             }
-            std::vector<uint32_t> pixels = frame->pixels;
             const int width = frame->width;
             const int height = frame->height;
             PostToUi([this, path, pixels = std::move(pixels), width, height] {
@@ -2624,12 +2863,18 @@ namespace psxemu {
         const std::wstring path = Widen(state_path) + L".png";
         video_->Post([this, path](VideoOutput& video) {
             const emulation::host::VideoFrame* frame = video.frames().current();
-            if (frame == nullptr || frame->is_vram || frame->pixels.empty()) {
+            std::vector<uint32_t> pixels;
+            if (frame != nullptr && !frame->is_vram) {
+                if (frame->shared)
+                    D3D11Raster::ReadSharedPicture(frame->shared, &pixels);
+                else
+                    pixels = frame->pixels;
+            }
+            if (pixels.empty()) {
                 // An old picture would be a wrong one.
                 PostToUi([path] { DeleteFileW(path.c_str()); });
                 return;
             }
-            std::vector<uint32_t> pixels = frame->pixels;
             const int width = frame->width;
             const int height = frame->height;
             PostToUi([path, pixels = std::move(pixels), width, height] {
@@ -2877,6 +3122,30 @@ namespace psxemu {
                 ResetMachine();
                 break;
 
+            case kCommandRasteriserSoftware:
+                SetRasteriser("software");
+                break;
+            case kCommandRasteriserHardware:
+                SetRasteriser("hardware");
+                break;
+            case kCommandTrueColour:
+                SetTrueColour(!config_.true_color);
+                break;
+            case kCommandPgxpVertices:
+                SetPgxp(&config_.pgxp_vertices, !config_.pgxp_vertices,
+                        config_.pgxp_vertices ? L"PGXP off" : L"PGXP: precise vertices on");
+                break;
+            case kCommandPgxpTextures:
+                SetPgxp(&config_.pgxp_textures, !config_.pgxp_textures,
+                        config_.pgxp_textures ? L"PGXP: textures affine, as the console"
+                                              : L"PGXP: textures in perspective");
+                break;
+            case kCommandPgxpCulling:
+                SetPgxp(&config_.pgxp_culling, !config_.pgxp_culling,
+                        config_.pgxp_culling ? L"PGXP: culling as the console"
+                                             : L"PGXP: precise culling on");
+                break;
+
             case kCommandPause:
                 SetUserPaused(!paused_by_user_);
                 break;
@@ -2991,6 +3260,15 @@ namespace psxemu {
                            command < kCommandRendererFirst +
                                          static_cast<int>(std::size(kBackendChoices))) {
                     SetRenderer(kBackendChoices[command - kCommandRendererFirst].key);
+                } else if (command == kCommandGraphicsCardAutomatic) {
+                    SetGraphicsCard(-1);
+                } else if (command >= kCommandGraphicsCardFirst &&
+                           command <= kCommandGraphicsCardLast) {
+                    SetGraphicsCard(command - kCommandGraphicsCardFirst);
+                } else if (command >= kCommandResolutionFirst &&
+                           command < kCommandResolutionFirst +
+                                         static_cast<int>(std::size(kResolutionChoices))) {
+                    SetResolutionScale(kResolutionChoices[command - kCommandResolutionFirst].scale);
                 } else if (command >= kCommandFilterFirst &&
                            command <
                                kCommandFilterFirst + static_cast<int>(std::size(kFilterChoices))) {

@@ -34,6 +34,7 @@ lib /nologo /OUT:Temp\tools\thirdparty.lib Temp\tools\obj_thirdparty\*.obj
 if errorlevel 1 exit /b 1
 
 set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp ^
+ PSXEmu.Core\psx\software_raster.cpp ^
  PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\psx\kernel.cpp ^
  PSXEmu.Core\psx\mc.cpp PSXEmu.Core\psx\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
  PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\psx\disc.cpp PSXEmu.Core\psx\sio.cpp PSXEmu.Core\psx\sio1.cpp ^
@@ -46,8 +47,10 @@ set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
  /I PSXEmu.Core\lib\zlib /I PSXEmu.Core\lib\lzma
 set LIBS=/link /SUBSYSTEM:CONSOLE user32.lib psapi.lib Temp\tools\thirdparty.lib
 
-cl %FLAGS% /Fo:Temp\tools\obj_boot\ /Fe:Temp\tools\boot_runner.exe ^
-   PSXEmu.Core\tools\boot_runner.cpp %CORE% %LIBS%
+rem boot_runner alone also has the front end's Direct3D 11 rasteriser, for --hw-raster.
+cl %FLAGS% /DPSXEMU_HW_RASTER /I PSXEmu.Win32 /Fo:Temp\tools\obj_boot\ ^
+   /Fe:Temp\tools\boot_runner.exe PSXEmu.Core\tools\boot_runner.cpp ^
+   PSXEmu.Win32\graphics\hw_raster\d3d11_raster.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_media mkdir Temp\tools\obj_media
@@ -102,8 +105,10 @@ cl %FLAGS% /Fo:Temp\tools\obj_sio\ /Fe:Temp\tools\sio_test.exe ^
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_gpu mkdir Temp\tools\obj_gpu
-cl %FLAGS% /Fo:Temp\tools\obj_gpu\ /Fe:Temp\tools\gpu_test.exe ^
-   PSXEmu.Core\tools\gpu_test.cpp %CORE% %LIBS%
+rem With the hardware rasteriser too, for gpu_test --hw-raster.
+cl %FLAGS% /DPSXEMU_HW_RASTER /I PSXEmu.Win32 /Fo:Temp\tools\obj_gpu\ ^
+   /Fe:Temp\tools\gpu_test.exe PSXEmu.Core\tools\gpu_test.cpp ^
+   PSXEmu.Win32\graphics\hw_raster\d3d11_raster.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_mdec mkdir Temp\tools\obj_mdec
@@ -181,6 +186,19 @@ cl %FLAGS% /Fo:Temp\tools\obj_host\ /Fe:Temp\tools\host_test.exe ^
    PSXEmu.Core\tools\host_test.cpp %HOST% %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
+rem The hardware rasteriser against the software one, scene by scene, on WARP.
+if not exist Temp\tools\obj_hwr mkdir Temp\tools\obj_hwr
+cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_hwr\ /Fe:Temp\tools\hw_raster_test.exe ^
+   PSXEmu.Core\tools\hw_raster_test.cpp PSXEmu.Win32\graphics\hw_raster\d3d11_raster.cpp ^
+   %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
+rem Two of boot_runner's pictures compared, for the hardware rasteriser against the software one.
+if not exist Temp\tools\obj_ppm mkdir Temp\tools\obj_ppm
+cl %FLAGS% /Fo:Temp\tools\obj_ppm\ /Fe:Temp\tools\ppm_diff.exe ^
+   PSXEmu.Core\tools\ppm_diff.cpp
+if errorlevel 1 exit /b 1
+
 echo.
 echo Built Temp\tools\boot_runner.exe
 echo Built Temp\tools\media_test.exe
@@ -190,3 +208,5 @@ echo Built Temp\tools\gte_test.exe
 echo Built Temp\tools\gpu_test.exe
 echo Built Temp\tools\spu_test.exe
 echo Built Temp\tools\host_test.exe
+echo Built Temp\tools\hw_raster_test.exe
+echo Built Temp\tools\ppm_diff.exe

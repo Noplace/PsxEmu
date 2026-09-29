@@ -141,6 +141,13 @@ namespace psxemu {
         VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR = 1000001000,
         VK_STRUCTURE_TYPE_PRESENT_INFO_KHR = 1000001001,
         VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR = 1000009000,
+        // Opening the hardware rasteriser's shared picture (psx/shared_picture.h).
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 = 1000059001,
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES = 1000071004,
+        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO = 1000072001,
+        VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR = 1000073000,
+        VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR = 1000073002,
+        VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO = 1000127001,
     };
 
     enum VkFormat : int32_t {
@@ -176,8 +183,10 @@ namespace psxemu {
 
     enum VkImageLayout : int32_t {
         VK_IMAGE_LAYOUT_UNDEFINED = 0,
+        VK_IMAGE_LAYOUT_GENERAL = 1,
         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL = 2,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL = 5,
+        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL = 6,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL = 7,
         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR = 1000001002,
     };
@@ -230,6 +239,7 @@ namespace psxemu {
     inline constexpr VkFlags VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT = 0x1;
     inline constexpr VkFlags VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT = 0x2;
     inline constexpr VkFlags VK_MEMORY_PROPERTY_HOST_COHERENT_BIT = 0x4;
+    inline constexpr VkFlags VK_IMAGE_USAGE_TRANSFER_SRC_BIT = 0x1;
     inline constexpr VkFlags VK_IMAGE_USAGE_TRANSFER_DST_BIT = 0x2;
     inline constexpr VkFlags VK_IMAGE_USAGE_SAMPLED_BIT = 0x4;
     inline constexpr VkFlags VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT = 0x10;
@@ -241,9 +251,12 @@ namespace psxemu {
     inline constexpr VkFlags VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT = 0x80;
     inline constexpr VkFlags VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT = 0x400;
     inline constexpr VkFlags VK_PIPELINE_STAGE_TRANSFER_BIT = 0x1000;
+    inline constexpr VkFlags VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT = 0x2000;
     inline constexpr VkFlags VK_ACCESS_SHADER_READ_BIT = 0x20;
     inline constexpr VkFlags VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT = 0x100;
+    inline constexpr VkFlags VK_ACCESS_TRANSFER_READ_BIT = 0x800;
     inline constexpr VkFlags VK_ACCESS_TRANSFER_WRITE_BIT = 0x1000;
+    inline constexpr VkFlags VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT = 0x8;
     inline constexpr VkFlags VK_COLOR_COMPONENT_RGBA_BITS = 0xF;
     inline constexpr VkFlags VK_CULL_MODE_NONE = 0;
     inline constexpr VkFlags VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT = 0x2;
@@ -828,6 +841,75 @@ namespace psxemu {
     };
 
     // -------------------------------------------------------------------------------------------
+    // Opening the hardware rasteriser's shared picture (psx/shared_picture.h): a Direct3D 11
+    // texture imported as an image, through VK_KHR_external_memory_win32. Vulkan 1.0 plus the
+    // extensions that became 1.1, so the instance and device stay 1.0 for every other purpose.
+    // -------------------------------------------------------------------------------------------
+
+    inline constexpr uint32_t kVkQueueFamilyExternal = ~1u;
+    inline constexpr uint32_t kVkLuidSize = 8;
+    inline constexpr const char kVkPhysicalDeviceProperties2Extension[] =
+        "VK_KHR_get_physical_device_properties2";
+    inline constexpr const char kVkExternalMemoryCapabilitiesExtension[] =
+        "VK_KHR_external_memory_capabilities";
+    inline constexpr const char kVkExternalMemoryExtension[] = "VK_KHR_external_memory";
+    inline constexpr const char kVkExternalMemoryWin32Extension[] = "VK_KHR_external_memory_win32";
+    inline constexpr const char kVkDedicatedAllocationExtension[] = "VK_KHR_dedicated_allocation";
+    inline constexpr const char kVkMemoryRequirements2Extension[] =
+        "VK_KHR_get_memory_requirements2";
+
+    struct VkPhysicalDeviceProperties2 {
+        VkStructureType sType;
+        void* pNext;
+        VkPhysicalDeviceProperties properties;
+    };
+
+    struct VkPhysicalDeviceIDProperties {
+        VkStructureType sType;
+        void* pNext;
+        uint8_t deviceUUID[kVkUuidSize];
+        uint8_t driverUUID[kVkUuidSize];
+        uint8_t deviceLUID[kVkLuidSize];
+        uint32_t deviceNodeMask;
+        VkBool32 deviceLUIDValid;
+    };
+
+    struct VkExternalMemoryImageCreateInfo {
+        VkStructureType sType;
+        const void* pNext;
+        VkFlags handleTypes;
+    };
+
+    struct VkImportMemoryWin32HandleInfoKHR {
+        VkStructureType sType;
+        const void* pNext;
+        VkFlags handleType;   // a VkExternalMemoryHandleTypeFlagBits
+        HANDLE handle;
+        LPCWSTR name;
+    };
+
+    struct VkMemoryWin32HandlePropertiesKHR {
+        VkStructureType sType;
+        void* pNext;
+        uint32_t memoryTypeBits;
+    };
+
+    struct VkMemoryDedicatedAllocateInfo {
+        VkStructureType sType;
+        const void* pNext;
+        VkImage image;
+        VkBuffer buffer;
+    };
+
+    struct VkImageCopy {
+        VkImageSubresourceLayers srcSubresource;
+        VkOffset3D srcOffset;
+        VkImageSubresourceLayers dstSubresource;
+        VkOffset3D dstOffset;
+        VkExtent3D extent;
+    };
+
+    // -------------------------------------------------------------------------------------------
     // Functions
     // -------------------------------------------------------------------------------------------
 
@@ -937,6 +1019,8 @@ namespace psxemu {
                                  const VkImageMemoryBarrier*))                                     \
     X(void, CmdCopyBufferToImage, (VkCommandBuffer, VkBuffer, VkImage, VkImageLayout, uint32_t,    \
                                    const VkBufferImageCopy*))                                      \
+    X(void, CmdCopyImage, (VkCommandBuffer, VkImage, VkImageLayout, VkImage, VkImageLayout,        \
+                           uint32_t, const VkImageCopy*))                                          \
     X(void, CmdBeginRenderPass,                                                                    \
       (VkCommandBuffer, const VkRenderPassBeginInfo*, VkSubpassContents))                          \
     X(void, CmdEndRenderPass, (VkCommandBuffer))                                                   \
@@ -967,6 +1051,18 @@ namespace psxemu {
         PSXEMU_VK_DEVICE_FUNCTIONS(PSXEMU_VK_DECLARE)
 #undef PSXEMU_VK_DECLARE
 
+        // Extensions', loaded apart from the rest because a machine may not have them: null
+        // until LoadOptional finds them, and then only if the extension was enabled.
+        typedef VkResult(__stdcall* EnumerateInstanceExtensionPropertiesProc)(
+            const char*, uint32_t*, VkExtensionProperties*);
+        typedef void(__stdcall* GetPhysicalDeviceProperties2KHRProc)(VkPhysicalDevice,
+                                                                     VkPhysicalDeviceProperties2*);
+        typedef VkResult(__stdcall* GetMemoryWin32HandlePropertiesKHRProc)(
+            VkDevice, VkFlags, HANDLE, VkMemoryWin32HandlePropertiesKHR*);
+        EnumerateInstanceExtensionPropertiesProc EnumerateInstanceExtensionProperties = nullptr;
+        GetPhysicalDeviceProperties2KHRProc GetPhysicalDeviceProperties2KHR = nullptr;
+        GetMemoryWin32HandlePropertiesKHRProc GetMemoryWin32HandlePropertiesKHR = nullptr;
+
         HMODULE library = nullptr;
 
         // Opens the Vulkan loader. False on a machine without one.
@@ -980,7 +1076,21 @@ namespace psxemu {
                 return false;
             CreateInstance = reinterpret_cast<CreateInstanceProc>(
                 GetInstanceProcAddr(nullptr, "vkCreateInstance"));
+            EnumerateInstanceExtensionProperties =
+                reinterpret_cast<EnumerateInstanceExtensionPropertiesProc>(
+                    GetInstanceProcAddr(nullptr, "vkEnumerateInstanceExtensionProperties"));
             return CreateInstance != nullptr;
+        }
+
+        void LoadOptionalInstance(VkInstance instance) {
+            GetPhysicalDeviceProperties2KHR = reinterpret_cast<GetPhysicalDeviceProperties2KHRProc>(
+                GetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2KHR"));
+        }
+
+        void LoadOptionalDevice(VkDevice device) {
+            GetMemoryWin32HandlePropertiesKHR =
+                reinterpret_cast<GetMemoryWin32HandlePropertiesKHRProc>(
+                    GetDeviceProcAddr(device, "vkGetMemoryWin32HandlePropertiesKHR"));
         }
 
         bool LoadInstance(VkInstance instance) {

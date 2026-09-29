@@ -21,6 +21,7 @@
 #include "graphics/igraphicsengine.h"
 #include "graphics/gl_functions.h"
 
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -58,6 +59,12 @@ namespace psxemu {
         void BeginFrame() override;
         void RenderFramebuffer(const void* data, int width, int height) override;
         void EndFrame() override;
+
+        // The rasteriser's Direct3D 11 texture, its memory opened as a GL memory object
+        // (GL_EXT_memory_object_win32) and drawn on the card into the frame's own texture, from
+        // which everything is drawn as an uploaded frame is.
+        bool RenderSharedPicture(const emulation::psx::SharedPicture& picture) override;
+        uint64_t SharedPictureAdapter() const override { return adapter_luid_; }
         void Resize(int width, int height) override;
 
         void SetVsync(bool enabled) override;
@@ -102,6 +109,16 @@ namespace psxemu {
         };
 
         bool CreateContext();
+        // Whether shared pictures can be opened here (GL_EXT_memory_object_win32), and if so on
+        // which card this context is - or not, and pictures come as pixels.
+        void StartSharing();
+        void StopSharing();
+        // Draws `source` - a texture opened from the rasteriser's, whose memory Direct3D wrote
+        // as BGRA and GL reads as RGBA - into frame_texture_, red and blue put back.
+        void CopyIntoFrame(GLuint source, int width, int height);
+        // Everything after the frame is in frame_texture_: the letterbox, the filter or chain.
+        void DrawFrame(int width, int height);
+        void ReleasePictures(bool all);
         bool Compile(const char* fragment_body, Program* program);
         void DeleteProgram(Program* program);
         bool EnsureFrameTexture(int width, int height);
@@ -146,6 +163,35 @@ namespace psxemu {
         // pixels its viewport and scissor together let it draw, in GL's bottom-up coordinates.
         float rect_x_ = 0.0f, rect_y_ = 0.0f, rect_width_ = 0.0f, rect_height_ = 0.0f;
         int scissor_x_ = 0, scissor_y_ = 0, scissor_width_ = 0, scissor_height_ = 0;
+
+        // Shared pictures (psx/shared_picture.h). Whether they can be opened, and the card this
+        // context is on as its LUID; the rasteriser's textures opened so far - one source's, a
+        // few of them; the program and framebuffer that draw one into frame_texture_; which
+        // picture frame_texture_ holds; and for each frame drawn from one, a sync object that
+        // says when that draw is done, and the picture to hand back then.
+        bool sharing_ = false;
+        uint64_t adapter_luid_ = 0;
+        struct OpenedPicture {
+            uint64_t id = 0;
+            GLuint memory = 0;    // the Direct3D texture's memory, as a GL memory object
+            GLuint texture = 0;   // a texture over it
+        };
+        std::vector<OpenedPicture> opened_pictures_;
+        const emulation::psx::SharedPictureSource* opened_source_ = nullptr;
+        void ForgetOpenedPictures();
+        Program copy_;
+        GLuint copy_framebuffer_ = 0;
+        uint64_t shown_texture_id_ = 0;
+        uint64_t shown_serial_ = 0;
+        struct PendingRelease {
+            GLsync done;
+            std::shared_ptr<emulation::psx::SharedPictureSource> source;
+            uint64_t serial;
+        };
+        std::vector<PendingRelease> pending_releases_;
+        // The last shared picture drawn, until a frame of pixels hands it back.
+        std::shared_ptr<emulation::psx::SharedPictureSource> trail_source_;
+        uint64_t trail_serial_ = 0;
     };
 
 }   // namespace psxemu

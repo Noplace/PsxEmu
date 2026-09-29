@@ -24,6 +24,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <string>
 #include <functional>
 #include <thread>
 #include <vector>
@@ -58,6 +59,13 @@ struct MachineReport {
   uint64_t audio_dropped_frames = 0;   // samples the ring had no room for, ever
   uint64_t frames_dropped = 0;         // frames the video thread never showed, ever
   uint64_t instructions = 0;           // stepped since the thread started
+  // Which rasteriser is drawing, and if the hardware one was asked for and is not - it could
+  // not be made, or its graphics card went - why.
+  bool hardware_raster = false;
+  std::string raster_error;
+  // Whether the last frame's picture was handed over on the graphics card rather than in memory
+  // (psx/shared_picture.h).
+  bool shared_picture = false;
 };
 
 // One frame's worth of timing, as the machine thread measured it - what the front end's
@@ -193,6 +201,7 @@ class Machine {
   std::vector<int16_t> scratch_;     // one read of the SPU's samples
   std::vector<int16_t> resampled_;   // the same, stretched for the speed
   uint64_t frame_number_ = 0;        // frames published
+  bool published_shared_ = false;    // the last one's picture was on the card
   uint64_t instructions_ = 0;
   uint64_t frame_start_instructions_ = 0;   // instructions_ as the last FrameSample left it
   // Instructions into the frame being run. Kept across a debugger halt, which returns from

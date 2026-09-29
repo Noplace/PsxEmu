@@ -78,6 +78,15 @@ struct EmuConfig {
   std::string graphics_backend = "d3d11";
   static const std::array<const char*, 4> kValidGraphicsBackends;
 
+  // Which graphics card draws, by the name Windows gives it ("NVIDIA GeForce RTX 4060 Laptop
+  // GPU"), for a machine with more than one - Settings > Video > Graphics Card. Empty is
+  // automatic: each renderer's own choice, and the hardware rasteriser on whichever one that is.
+  // A name rather than an id because a card's id changes with every restart. One that is not
+  // there (an external card, unplugged) is kept and means automatic until it comes back. Not a
+  // per-game setting: it is about this machine.
+  std::string graphics_adapter = "";
+  static const size_t kMaxGraphicsAdapterLength = 128;
+
   // A pixel-shader filter, by the key it was loaded under - see
   // PSXEmu.Win32/shaders/. Empty means the engine's own built-in
   // pass-through. Only the D3D12 backend honours this; the D3D11 path has no
@@ -199,6 +208,42 @@ struct EmuConfig {
   // for the rasteriser, so a threaded run is byte-identical to an unthreaded
   // one. Read once, when the GPU is initialised.
   bool gpu_thread = true;
+
+  // What puts the GPU's pixels down (Docs/Hardware-Renderer-Plan.md): "software", the
+  // rasteriser every baseline is measured with, or "hardware", Direct3D 11 on the host's
+  // GPU - which only a front end can provide, and which falls back to software when it
+  // cannot be made. The game's timing is the same either way: every draw is charged by the
+  // GPU itself, whichever draws it. Read when the GPU is initialised - a boot or a reset.
+  std::string gpu_rasteriser = "software";
+  static const std::array<const char*, 2> kValidGpuRasterisers;
+
+  // The hardware rasteriser's internal resolution, as a multiple of the console's: 1 is
+  // native, and draws exactly what the software rasteriser draws. At any scale the machine
+  // itself sees the native picture - VRAM as software would have left it - so timing and
+  // anything a game reads back are unchanged; only what is shown is sharper.
+  int resolution_scale = 1;
+  static const std::array<int, 7> kValidResolutionScales;
+
+  // Above 1x: draw without the console's dithering and keep eight bits a channel rather than
+  // five, which at a higher resolution looks better than the 4x4 pattern stretched over it.
+  // Off, an upscaled picture is the console's colours exactly.
+  bool true_color = true;
+
+  // PGXP (Docs/Hardware-Renderer-Plan.md, phase 5): the GTE rounds every vertex it projects
+  // to a whole pixel, which is the wobble of PlayStation 3D. With pgxp_vertices on, the
+  // unrounded position is kept beside each word it ends up in - registers, RAM - and handed to
+  // the hardware rasteriser with the polygon, when the word it arrives in is still the one it
+  // was made for. Only the hardware rasteriser draws with it, and only what is shown changes:
+  // the machine runs exactly as without. It needs the interpreter - the recompiler does not
+  // keep the shadows - so it takes the recompiler's place while it is on.
+  bool pgxp_vertices = false;
+  // ...and with the depth each vertex was projected from, textures mapped in perspective
+  // rather than stretched straight across a polygon.
+  bool pgxp_textures = true;
+  // ...and the GTE's back-face test (NCLIP) worked out from the unrounded positions: some
+  // polygons a game drops as edge-on at the rounded ones come back. It changes what the game
+  // itself decides, unlike the two above, and breaks a few games - off by default.
+  bool pgxp_culling = false;
 
   // Charge the GPU for CPU-to-VRAM and VRAM-to-CPU transfers: one tick per pixel
   // moved, so commands issued after a large upload wait for it the way they
@@ -386,6 +431,11 @@ inline const std::array<const char*, 4>
 
 inline const std::array<const char*, 2>
     EmuConfig::kValidAudioBackends = { "wasapi", "dsound" };
+
+inline const std::array<const char*, 2>
+    EmuConfig::kValidGpuRasterisers = { "software", "hardware" };
+
+inline const std::array<int, 7> EmuConfig::kValidResolutionScales = { 1, 2, 3, 4, 5, 6, 8 };
 
 // Empty string ("None") first, then the nine loaded filters in the same
 // order PSXEmu.Win32's Video > Filter menu offers them.

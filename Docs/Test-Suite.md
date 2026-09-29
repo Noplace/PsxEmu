@@ -441,7 +441,23 @@ What it does not measure:
 | `--cd-mechanical` | Charge the CD-ROM for spin-up, seek distance and rotational latency (`EmuConfig::cdrom_mechanical_timing`). Off by default, exactly as in the front end - every baseline in this document is a flag-off number, and none of them hold with it on |
 | `--load-state <file>` | Resume from a save state instead of booting - skips `--disc`/`--boot-disc`/`--auto-boot`/`--exe` entirely |
 | `--save-state <file>` | Write a save state after the run finishes |
+| `--hw-raster` | Draw with the Direct3D 11 hardware rasteriser rather than the software one (Docs/Hardware-Renderer-Plan.md). Everything the machine does is unchanged; the GPU's pixel, clip and texel counters read zero, since that rasteriser does not keep them, and the report says so. `--watch-vram` is refused with it: which command wrote each pixel is the software rasteriser's own accounting |
+| `--warp` | With `--hw-raster`: on WARP, Windows' own software Direct3D - no graphics card needed, and the same picture every run, inline or threaded |
+| `--scale <n>` | With `--hw-raster`: at n times the console's resolution, 1-8. `--ppm` writes the picture at that size; the checksums and everything else measured stay the native picture's |
+| `--no-true-color` | With `--scale`: the console's colours exactly, dithered - then the checksums at any scale are the software rasteriser's |
+| `--shown-only` | With `--scale`: keep only the sharper picture, as the front end does - for timing that path. The checksums are then of a stale native picture |
+| `--pgxp` | With `--hw-raster`: PGXP's precise vertices (phase 5, bug 125) - polygons drawn from the GTE's unrounded positions, with perspective-correct textures. The machine runs exactly as without it, on the interpreter or with `--recompiler` (phase 6); the report adds how many polygon vertices were drawn precisely, and how many of those were found by value in the GTE's cache rather than arriving with a shadow |
+| `--gpu <name>` | With `--hw-raster`: draw on the graphics card with `<name>` anywhere in its name, any case - what Settings > Video > Graphics Card does (bug 128). The report's `gpu` line names the card. An unknown name is refused with a hint to `--list-gpus` |
+| `--list-gpus` | Print the graphics cards and their LUIDs, and exit. The LUID is spelt as Windows' `\GPU Engine` and `\GPU Process Memory` performance counters spell it, for finding which card a process is really using |
+| `--shared-picture` | With `--scale`: hand the sharper picture over on the graphics card (psx/shared_picture.h, phase 6, bug 127), as to a renderer that can take it there, rather than reading it back - for timing that path. `--ppm` reads the last picture back the way a screenshot does; the report adds how many frames' pictures were shared |
+| `--pgxp-culling` | With `--pgxp`: NCLIP from the unrounded positions too. The one PGXP option the machine can see - a triangle culled or not changes what the game does |
+| `--no-pgxp-textures` | With `--pgxp`: precise positions, textures still affine |
 | `--quiet` | Suppress the per-100-frame progress lines |
+
+**`ppm_diff <a.ppm> <b.ppm> [--out side.ppm]`** compares two of its pictures:
+how many pixels differ, how many by more than one 5-bit step, and the largest
+difference, and with `--out` writes both side by side with a map of where they
+differ. Exit 0 when identical.
 
 Exit code is 0 if anything was drawn, 1 if the final frame was entirely black.
 A run that draws nothing is a failure, not a pass with a boring picture.
@@ -553,7 +569,9 @@ side, with a sequence number in every item.
   sizes, arriving in order with nothing lost, repeated or torn; 200,000 requests
   from four threads, each thread's in its own order; 20,000 frames through the
   mailbox, none of them read half-written, with taken plus dropped accounting
-  for every one published; mouse motion adding up exactly across a racing
+  for every one published, and `Publish` saying when the slot it hands back held
+  a frame nobody took (phase 6: how a shared picture nobody will show goes back
+  to the rasteriser); mouse motion adding up exactly across a racing
   publisher and taker; a doorbell that does not lose a ring that came first.
 - **The machine's thread.** A threaded BIOS boot lands on **boot_runner's own
   instruction count and checksum** - 93,049,815 and `435bad9a6c5e4004` - which
@@ -589,6 +607,53 @@ posted `WM_COMMAND`s and reading the frame rate back out of its title bar - see
 the note in Threading-Plan.md - and the last word on how it feels is still the
 person using it.
 
+## hw_raster_test
+
+    hw_raster_test [--seed n] [--verbose] [--bisect]
+
+The hardware rasteriser against the software one (Docs/Hardware-Renderer-Plan.md,
+bug 122). Two machines with no BIOS, one drawing with `SoftwareRaster` and one
+with the front end's `D3D11Raster` on WARP - Windows' own software Direct3D, so
+it needs no graphics card and gives the same answer every run. Each scene writes
+the same GP0 words to both, thousands of random primitives of one kind from a
+fixed seed, and then compares all of VRAM:
+
+- untextured triangles and quads, opaque, in every blend mode, and large ones
+- textured in every depth, raw and modulated, in every blend mode
+- sampling what was drawn: the drawing area moves between two halves of VRAM
+  and textures come from the other
+- the texture window; the mask rules, set and checked, over everything
+- rectangles of every size, flipped and not, with the mask rules and the window
+- lines and polylines, Gouraud, dithered, in every blend mode
+- fills and VRAM-to-VRAM copies, wrapping at VRAM's edges, with the mask rules
+- VRAM kept in step (bug 123): draws mixed with CPU-to-VRAM uploads into what
+  is being drawn and sampled, VRAM-to-CPU reads compared word by word, and copies
+  onto themselves, which the console smears pixel by pixel
+- 480i with drawing to the displayed field off
+- the graphics card lost: at the next frame the machine is drawing in software,
+  says why, and has lost nothing that had been read back
+- the picture left on the card (phase 6, bug 127): two rasterisers at 2x, one
+  sharing its pictures, the shared one read back as a screenshot reads it and
+  compared with the read-back one; five pictures held make the sixth read back,
+  a dropped frame's texture and one the presenter has moved past are drawn into
+  again and the one on screen is not, and a picture outlives its rasteriser
+
+At native size the two do the same integer arithmetic, so **every pixel must
+match** - 45 checks, two a scene, the lost card's own and six for the shared picture. A scene that does not says how many pixels
+differ and how many by more than one 5-bit step, which tells rounding from a
+wrong texel. `--bisect` compares after every primitive and stops at the first
+one to differ, printing its GP0 words. `--scale n` draws the hardware side at n
+times the resolution (true colour off): native VRAM is downloaded from each
+console pixel's own sub-pixel, so every scene must still match to the pixel -
+and does, at 1x-6x and 8x (bug 124).
+
+No primitive samples a texture from the pixels it is drawing itself: the
+software rasteriser sees its own writes as it goes and the card sees VRAM as it
+was, and the console has a texture cache - there is no right answer to check.
+
+**`gpu_test --hw-raster`** runs gpu_test's own scenes through the hardware
+rasteriser the same way: all 73 checks pass.
+
 ## Baselines
 
 Check these after any change to the CPU, timing, or the renderer - not just the
@@ -611,15 +676,17 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 73 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 378 |
+| `timer_test` | 80 | | `media_test` | 389 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,643 checks, 0 failures**, all ten green. Each harness's own section above
+**1,654 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
-multitap players' types and the GunCon: every setting in `EmuConfig`
-round-trips through the file, and those are settings.)
+multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
+two with PGXP's three options, and three with the graphics card's name:
+every setting in `EmuConfig` round-trips through the file, and those are
+settings.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
@@ -650,10 +717,13 @@ separator, the buttons as the cartridge's own word, C1's delay, slides and
 copies; and DuckStation's and RetroArch's cheat files, the manual-activation and
 non-GameShark cheats left out, written and read back), `timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
-correctness count: it records how far off the timing is) and `host_test` (33 checks, the
-threads and the channels between them - its own section above).
+correctness count: it records how far off the timing is), `host_test` (34 checks, the
+threads and the channels between them - its own section above), and `hw_raster_test` (45
+checks, bugs 122-123 and 127 - the hardware rasteriser against the software one, every pixel of VRAM
+after each scene of random primitives; its own section above, as is `gpu_test --hw-raster`,
+which runs gpu_test's 73 through it).
 
-`rec_test` (460 checks) is not counted either, and for a different reason: it
+`rec_test` (467 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
 `psx/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,
@@ -893,6 +963,68 @@ the current build.
 
 Checksums from this table are a baseline for the Accuracy set in the same way
 as the default ones, and move for the same kinds of change.
+
+**Run with the hardware rasteriser, `--hw-raster --warp`, 2026-09-27: identical
+at all 36 checkpoints.** Docs/Hardware-Renderer-Plan.md, phase 2 (bug 122).
+Every disc gives the same checksum and non-black count at frames 1000, 2000 and
+3000 as the default table above, and every frame-3000 picture is the same to the
+pixel (`ppm_diff`). Every line of every report matches too, but the rasteriser's
+own pixel, clip and texel counters, which read zero because it does not keep
+them: instructions, every CD event, transfer and interrupt.
+
+**Longer, and more discs, 2026-09-28: identical at all 1,560 checkpoints.**
+Phase 3 (bug 123). The twelve discs above and fourteen more, picked for
+translucency, fog, masks, blur and in-engine intros - Silent Hill, Metal Gear
+Solid (cd1), Vagrant Story, Castlevania SOTN, Chrono Cross (cd1), Einhander,
+Spyro 3, Gran Turismo 2 (Arcade), Crash 3, Wipeout, Xenogears (cd1, from its
+`.bin`: the cue names a file spelled differently), Tekken 3, Driver 2 (cd1) and
+Valkyrie Profile (cd1). 6,000 frames each, `--frame-log 100`, software against
+`--hw-raster --warp`: every checkpoint's checksum and sector count the same, and
+every frame-6000 picture the same to the pixel.
+
+The first attempt at this run is the warning: the share went to sleep partway
+through, one group took seventeen hours, and Chrono Cross's software run lost a
+read (`INT5 error`), stopped at 6,954 sectors and froze on its last picture -
+so it "differed" from frame 3800 while the hardware run read on to 12,666. Run
+again with each `boot_runner` under `timeout 1200`, it matched at every
+checkpoint. A difference in a batch like this means nothing until the sector
+counts agree.
+
+**At 4x, 2026-09-28: identical at all 36 checkpoints.** Phase 4 (bug 124): the
+table on the graphics card (a Radeon 780M), `--hw-raster --scale 4
+--no-true-color`. Every checkpoint's checksum, non-black count and sector count
+is the software table's: at any scale the machine sees native VRAM exactly as
+the software rasteriser leaves it, and that holds on real hardware as on WARP.
+
+**With PGXP, 2026-09-28: the same timing at all 36 checkpoints.** Phase 5 (bug
+125). First the table through the software rasteriser again, every report line
+byte-identical to before phase 5 - the shadows cost nothing with PGXP off. Then
+`--hw-raster --scale 2 --pgxp` against `--hw-raster --scale 2`: every
+checkpoint's instruction and sector counts the same. The pictures differ, which
+is the point; what the machine does does not. The report's `pgxp` line gave
+Ridge Racer 2,206,935 of 2,234,938 vertices precise and Wild Arms 2 191,166 of
+196,550; Ace Combat 3 only the BIOS logo's 25,854 of 367,530, since the words it
+draws with are not ones the GTE projected.
+
+**On the card, and under the recompiler again, 2026-09-29: the same at all 36
+checkpoints.** Phase 6 (bugs 126-127). The software table first, every report
+line byte-identical to phase 5's. Then `--hw-raster --scale 4 --no-true-color
+--shared-picture` - the picture handed over as a texture, not read back: every
+checkpoint's checksum, non-black count and sector count the software table's,
+with 582 to 2,879 of each disc's 3,000 frames' pictures shared and the rest
+films or a blank display, which are shown native. And `--recompiler` after
+bug 126's fix to compiled loads: every checkpoint's picture the software
+table's, and the sector counts one off in exactly the three places the
+2026-09-25 run below found. PGXP under the recompiler, on six discs at 2x:
+every checkpoint's instructions, sectors and GP0 words the same as the
+recompiler without it, and the same vertices precise as the interpreter on
+five of the six (Spyro 3 within 0.01%).
+
+At phase 1 (bug 121), with no textures or blending yet, the same run matched
+the software table in everything but the pictures, of which seven - the films
+and uploaded ones - were already identical. The table is a baseline for the
+hardware rasteriser exactly as for the software one: at native size the two
+must not differ anywhere in it.
 
 **Run with `--recompiler`, 2026-09-25: identical at all 36 checkpoints.** Every
 disc gives the same checksum, non-black count and resolution at frames 1000,

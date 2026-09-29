@@ -133,6 +133,23 @@ namespace psxemu {
         kCommandStatePicker,
         // Emulation > Cheats...: the running game's GameShark codes.
         kCommandCheats,
+        // Settings > Video > Rasteriser: what draws the console's pictures - the software
+        // rasteriser, or the hardware one on the graphics card (Docs/Hardware-Renderer-Plan.md).
+        kCommandRasteriserSoftware,
+        kCommandRasteriserHardware,
+        // ...and the hardware one's internal resolution, 1x to 8x, and True Colour.
+        kCommandResolutionFirst,
+        kCommandResolutionLast = kCommandResolutionFirst + 6,   // 1x-6x, 8x
+        kCommandTrueColour,
+        // ...and PGXP: precise vertices, perspective-correct textures, precise culling.
+        kCommandPgxpVertices,
+        kCommandPgxpTextures,
+        kCommandPgxpCulling,
+        // Settings > Video > Graphics Card: automatic, then one id per card the machine has - a
+        // run whose nth id means the nth adapter found at startup, like the BIOS list's.
+        kCommandGraphicsCardAutomatic,
+        kCommandGraphicsCardFirst,
+        kCommandGraphicsCardLast = kCommandGraphicsCardFirst + 7,   // kMaxGraphicsCards
     };
 
     // ---------------------------------------------------------------------------------------------
@@ -234,6 +251,21 @@ namespace psxemu {
         { "scanline",    L"&Scanline (CRT)" },
         { "xbrz",        L"x&BRZ" },
         { "superxbr",    L"Super-&xBR (3 pass)" },
+    };
+
+    // The hardware rasteriser's internal resolutions, in the order Video > Rasteriser lists them
+    // and EmuConfig::kValidResolutionScales holds them. Each is the console's picture that many
+    // times over each way: 4x of a 320x240 game is 1280x960.
+    struct ResolutionChoice { int scale; const wchar_t* label; };
+
+    inline constexpr ResolutionChoice kResolutionChoices[] = {
+        { 1, L"&1x (Native)" },
+        { 2, L"&2x" },
+        { 3, L"&3x" },
+        { 4, L"&4x" },
+        { 5, L"&5x" },
+        { 6, L"&6x" },
+        { 8, L"&8x" },
     };
 
     // What a port can hold - the three real PS1 controllers, a mouse, a multitap, a GunCon, or
@@ -349,6 +381,10 @@ namespace psxemu {
     // File > Recent Discs: the other menu filled at runtime, found the same way.
     inline constexpr ULONG_PTR kRecentDiscsMenuTag = 0x52435344;   // 'RCSD'
     inline constexpr int kMaxRecentDiscs = 8;
+
+    // Settings > Video > Graphics Card: a third, filled once the graphics cards have been listed.
+    inline constexpr ULONG_PTR kGraphicsCardMenuTag = 0x47505543;   // 'GPUC'
+    inline constexpr int kMaxGraphicsCards = 8;
 
     // ---------------------------------------------------------------------------------------------
     // Input

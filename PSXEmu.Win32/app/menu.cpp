@@ -174,8 +174,32 @@ namespace psxemu {
                         kFilterChoices[i].label);
         }
 
+        HMENU rasteriser = CreatePopupMenu();
+        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandRasteriserSoftware),
+                    L"&Software");
+        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandRasteriserHardware),
+                    L"&Hardware (Direct3D 11, experimental)");
+        AppendMenuW(rasteriser, MF_SEPARATOR, 0, nullptr);
+        for (size_t i = 0; i < std::size(kResolutionChoices); ++i) {
+            AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandResolutionFirst + i),
+                        kResolutionChoices[i].label);
+        }
+        AppendMenuW(rasteriser, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandTrueColour),
+                    L"&True Colour (2x and above)");
+        AppendMenuW(rasteriser, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandPgxpVertices),
+                    L"&PGXP: Precise Vertices (no wobble)");
+        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandPgxpTextures),
+                    L"PGXP: Perspective-Correct Te&xtures");
+        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandPgxpCulling),
+                    L"PGXP: Precise &Culling (may break some games)");
+
         HMENU video = CreatePopupMenu();
         AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(renderer), L"&Renderer");
+        // Filled once the graphics cards have been listed (PopulateGraphicsCardMenu).
+        AppendTaggedPopup(video, CreatePopupMenu(), L"Graphics &Card", kGraphicsCardMenuTag);
+        AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(rasteriser), L"R&asteriser");
         AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(filter), L"&Filter");
         AppendMenuW(video, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewVram), L"View &VRAM");
@@ -279,6 +303,56 @@ namespace psxemu {
         if (bar == nullptr)
             bar = static_cast<HMENU>(GetPropW(window, kDetachedMenuProp));
         return bar;
+    }
+
+    void PopulateGraphicsCardMenu(HWND window, const std::vector<GraphicsCardLabel>& cards,
+                                  int chosen) {
+        HMENU bar = MenuBar(window);
+        if (bar == nullptr)
+            return;
+        HMENU menu = FindTaggedPopup(bar, kGraphicsCardMenuTag);
+        if (menu == nullptr)
+            return;
+        while (DeleteMenu(menu, 0, MF_BYPOSITION) != 0) {
+        }
+
+        // A card's name as a menu label: an ampersand in it would be taken for a mnemonic.
+        auto label_of = [](const std::string& name) {
+            std::wstring label = Widen(name);
+            for (size_t at = label.find(L'&'); at != std::wstring::npos;
+                 at = label.find(L'&', at + 2))
+                label.insert(at, 1, L'&');
+            return label;
+        };
+
+        const int count = std::min(static_cast<int>(cards.size()), kMaxGraphicsCards);
+        if (count < 2) {
+            // Nothing to choose between, and saying so is the answer to "where is it".
+            const std::wstring only = count == 1 ? label_of(cards[0].name) : L"none found";
+            const std::wstring text = L"(only one graphics card: " + only + L")";
+            AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, text.c_str());
+            return;
+        }
+        AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(kCommandGraphicsCardAutomatic),
+                    L"&Automatic (each renderer's own choice)");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        for (int i = 0; i < count; ++i) {
+            std::wstring label = label_of(cards[i].name);
+            const uint64_t megabytes = cards[i].video_memory >> 20;
+            if (megabytes >= 1024)
+                label += L"  (" + std::to_wstring((megabytes + 512) / 1024) + L" GB)";
+            else if (megabytes > 0)
+                label += L"  (" + std::to_wstring(megabytes) + L" MB)";
+            AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(kCommandGraphicsCardFirst + i),
+                        label.c_str());
+        }
+        if (static_cast<int>(cards.size()) > count)
+            AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"(more found than can be listed)");
+        CheckMenuItem(menu,
+                      static_cast<UINT>(chosen >= 0 && chosen < count
+                                            ? kCommandGraphicsCardFirst + chosen
+                                            : kCommandGraphicsCardAutomatic),
+                      MF_BYCOMMAND | MF_CHECKED);
     }
 
     void PopulateBiosMenu(HWND window, const std::vector<std::string>& files,
@@ -407,6 +481,47 @@ namespace psxemu {
             CheckMenuItem(bar, static_cast<UINT>(kCommandRendererFirst + i),
                           MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
         }
+    }
+
+    void TickPgxp(HWND window, bool hardware, bool vertices, bool textures, bool culling) {
+        HMENU bar = MenuBar(window);
+        if (bar == nullptr)
+            return;
+        const struct { int id; bool on; bool enabled; } items[] = {
+            { kCommandPgxpVertices, vertices, hardware },
+            { kCommandPgxpTextures, textures, hardware && vertices },
+            { kCommandPgxpCulling, culling, hardware && vertices },
+        };
+        for (const auto& item : items) {
+            CheckMenuItem(bar, static_cast<UINT>(item.id),
+                          MF_BYCOMMAND | (item.on ? MF_CHECKED : MF_UNCHECKED));
+            EnableMenuItem(bar, static_cast<UINT>(item.id),
+                           MF_BYCOMMAND | (item.enabled ? MF_ENABLED : MF_GRAYED));
+        }
+    }
+
+    void TickRasteriser(HWND window, bool hardware, int scale, bool true_color) {
+        HMENU bar = MenuBar(window);
+        if (bar == nullptr)
+            return;
+        CheckMenuItem(bar, static_cast<UINT>(kCommandRasteriserSoftware),
+                      MF_BYCOMMAND | (hardware ? MF_UNCHECKED : MF_CHECKED));
+        CheckMenuItem(bar, static_cast<UINT>(kCommandRasteriserHardware),
+                      MF_BYCOMMAND | (hardware ? MF_CHECKED : MF_UNCHECKED));
+        // The resolution and true colour are the hardware rasteriser's alone: greyed while the
+        // software one draws, and still ticked, so it is plain what switching would give.
+        const UINT enabled = MF_BYCOMMAND | (hardware ? MF_ENABLED : MF_GRAYED);
+        for (size_t i = 0; i < std::size(kResolutionChoices); ++i) {
+            const UINT id = static_cast<UINT>(kCommandResolutionFirst + i);
+            CheckMenuItem(bar, id,
+                          MF_BYCOMMAND | (kResolutionChoices[i].scale == scale ? MF_CHECKED
+                                                                                : MF_UNCHECKED));
+            EnableMenuItem(bar, id, enabled);
+        }
+        CheckMenuItem(bar, static_cast<UINT>(kCommandTrueColour),
+                      MF_BYCOMMAND | (true_color ? MF_CHECKED : MF_UNCHECKED));
+        EnableMenuItem(bar, static_cast<UINT>(kCommandTrueColour),
+                       MF_BYCOMMAND | (hardware && scale > 1 ? MF_ENABLED : MF_GRAYED));
     }
 
     void TickFilter(HWND window, const std::string& backend, const std::string& filter) {

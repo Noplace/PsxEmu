@@ -53,6 +53,18 @@ namespace psxemu {
     inline constexpr GLenum kGlArrayBuffer = 0x8892;
     inline constexpr GLenum kGlElementArrayBuffer = 0x8893;
     inline constexpr GLenum kGlStreamDraw = 0x88E0;
+    // The hardware rasteriser's shared picture (psx/shared_picture.h): a sync object to know when
+    // a frame that read one is done, and GL_EXT_memory_object_win32 to open a Direct3D 11
+    // texture as a GL one. Its values are the Khronos registry's, and were checked against
+    // glad's gl.h, generated from it.
+    inline constexpr GLenum kGlSyncGpuCommandsComplete = 0x9117;
+    inline constexpr GLenum kGlAlreadySignaled = 0x911A;
+    inline constexpr GLenum kGlConditionSatisfied = 0x911C;
+    typedef struct __GLsync* GLsync;
+    inline constexpr GLenum kGlNumExtensions = 0x821D;
+    inline constexpr GLenum kGlHandleTypeD3D11ImageExt = 0x958B;
+    inline constexpr GLenum kGlDeviceLuidExt = 0x9599;
+    inline constexpr size_t kGlLuidSize = 8;
 
     // WGL_ARB_create_context and _profile.
     inline constexpr int kWglContextMajorVersion = 0x2091;
@@ -104,7 +116,10 @@ namespace psxemu {
     X(void, BufferData, (GLenum target, ptrdiff_t size, const void* data, GLenum usage))           \
     X(void, VertexAttribPointer, (GLuint index, GLint size, GLenum type, GLboolean normalized,     \
                                   GLsizei stride, const void* pointer))                            \
-    X(void, EnableVertexAttribArray, (GLuint index))
+    X(void, EnableVertexAttribArray, (GLuint index))                                               \
+    X(GLsync, FenceSync, (GLenum condition, GLbitfield flags))                                     \
+    X(GLenum, ClientWaitSync, (GLsync sync, GLbitfield flags, uint64_t timeout))                   \
+    X(void, DeleteSync, (GLsync sync))
 
     struct GlFunctions {
 #define PSXEMU_GL_DECLARE(ret, name, params)                                                       \
@@ -118,6 +133,70 @@ namespace psxemu {
         typedef BOOL(WINAPI* SwapIntervalProc)(int interval);
         CreateContextAttribsProc CreateContextAttribs = nullptr;
         SwapIntervalProc SwapInterval = nullptr;   // WGL_EXT_swap_control; may be absent
+
+        // GL_EXT_memory_object and GL_EXT_memory_object_win32, for the shared picture: a Direct3D
+        // 11 texture's memory imported into GL and a texture made over it. All null on a driver
+        // without them, and LoadMemoryObjects says so.
+        //
+        // Not WGL_NV_DX_interop, which was used first and does the same: on AMD's driver every
+        // texture registered with it leaves a picture's worth of memory behind for good, however
+        // it is unregistered (about 56 MB per three at 2560x1920, measured with a program of no
+        // more than that), where importing a memory object leaves nothing.
+        typedef const GLubyte*(APIENTRY* GetStringiProc)(GLenum name, GLuint index);
+        typedef void(APIENTRY* CreateMemoryObjectsProc)(GLsizei n, GLuint* memory_objects);
+        typedef void(APIENTRY* DeleteMemoryObjectsProc)(GLsizei n, const GLuint* memory_objects);
+        typedef void(APIENTRY* ImportMemoryWin32HandleProc)(GLuint memory, uint64_t size,
+                                                            GLenum handle_type, void* handle);
+        typedef void(APIENTRY* TexStorageMem2DProc)(GLenum target, GLsizei levels,
+                                                    GLenum internal_format, GLsizei width,
+                                                    GLsizei height, GLuint memory,
+                                                    uint64_t offset);
+        typedef void(APIENTRY* GetUnsignedBytevProc)(GLenum name, GLubyte* data);
+        GetStringiProc GetStringi = nullptr;
+        CreateMemoryObjectsProc CreateMemoryObjects = nullptr;
+        DeleteMemoryObjectsProc DeleteMemoryObjects = nullptr;
+        ImportMemoryWin32HandleProc ImportMemoryWin32Handle = nullptr;
+        TexStorageMem2DProc TexStorageMem2D = nullptr;
+        GetUnsignedBytevProc GetUnsignedBytev = nullptr;
+
+        // Needs a current context. True if the driver lists both extensions and has all the
+        // functions; then the card the context is on, as the LUID Direct3D knows it by, is
+        // in `*luid` - 0 if the driver would not say, in which case nothing can be shared.
+        bool LoadMemoryObjects(uint64_t* luid) {
+            *luid = 0;
+            GetStringi = reinterpret_cast<GetStringiProc>(Find("glGetStringi"));
+            CreateMemoryObjects =
+                reinterpret_cast<CreateMemoryObjectsProc>(Find("glCreateMemoryObjectsEXT"));
+            DeleteMemoryObjects =
+                reinterpret_cast<DeleteMemoryObjectsProc>(Find("glDeleteMemoryObjectsEXT"));
+            ImportMemoryWin32Handle = reinterpret_cast<ImportMemoryWin32HandleProc>(
+                Find("glImportMemoryWin32HandleEXT"));
+            TexStorageMem2D =
+                reinterpret_cast<TexStorageMem2DProc>(Find("glTexStorageMem2DEXT"));
+            GetUnsignedBytev =
+                reinterpret_cast<GetUnsignedBytevProc>(Find("glGetUnsignedBytevEXT"));
+            if (GetStringi == nullptr || CreateMemoryObjects == nullptr ||
+                DeleteMemoryObjects == nullptr || ImportMemoryWin32Handle == nullptr ||
+                TexStorageMem2D == nullptr || GetUnsignedBytev == nullptr)
+                return false;
+            // A core profile lists its extensions one at a time.
+            GLint count = 0;
+            glGetIntegerv(kGlNumExtensions, &count);
+            bool memory_object = false, win32 = false;
+            for (GLint i = 0; i < count; ++i) {
+                const char* name = reinterpret_cast<const char*>(GetStringi(GL_EXTENSIONS, i));
+                if (name == nullptr)
+                    continue;
+                memory_object = memory_object || strcmp(name, "GL_EXT_memory_object") == 0;
+                win32 = win32 || strcmp(name, "GL_EXT_memory_object_win32") == 0;
+            }
+            if (!memory_object || !win32)
+                return false;
+            GLubyte bytes[kGlLuidSize] = {};
+            GetUnsignedBytev(kGlDeviceLuidExt, bytes);
+            memcpy(luid, bytes, sizeof(*luid));
+            return true;
+        }
 
         // Needs a current context. False if any of the GL functions is missing - the driver is
         // older than 3.3, and the engine gives up so the factory can fall back.

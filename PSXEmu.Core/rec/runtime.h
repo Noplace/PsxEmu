@@ -53,6 +53,11 @@ typedef uint32_t (*Load8Fn)(void* context, uint32_t address, uint32_t pc);
 typedef void (*Store32Fn)(void* context, uint32_t address, uint32_t value, uint32_t pc);
 typedef void (*Store16Fn)(void* context, uint32_t address, uint32_t value, uint32_t pc);
 typedef void (*Store8Fn)(void* context, uint32_t address, uint32_t value, uint32_t pc);
+// A register copied to another - `move to, from`, as addu/or with r0 or addiu/ori with 0 - for a
+// host that keeps something beside each register which has to travel with it (the emulator's
+// PGXP). Emitted only while the host asks (Recompiler::set_track_moves), and like the memory
+// callbacks it must not touch the guest register file.
+typedef void (*MoveFn)(void* context, uint32_t to, uint32_t from);
 
 // The layout the emitted code addresses by offset. Field order is load-bearing
 // in the sense that the compiler hard-codes the offsets - keep the two in step,
@@ -101,6 +106,8 @@ struct BlockState {
   // It doubles as the accounting: what the host set, minus what is left, is
   // how many instructions the chain executed.
   int32_t budget = 0;
+
+  MoveFn move = nullptr;
 };
 
 }  // namespace rec

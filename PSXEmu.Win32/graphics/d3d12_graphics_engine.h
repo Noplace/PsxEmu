@@ -58,6 +58,7 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     D3D12GraphicsEngine();
     ~D3D12GraphicsEngine() override;
 
+    void SetPreferredAdapter(uint64_t luid, const std::string&) override { preferred_luid_ = luid; }
     bool Initialize(HWND window_handle, int width, int height) override;
     void Shutdown() override;
 
@@ -65,6 +66,11 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     void RenderFramebuffer(const void* data, int width, int height) override;
     void EndFrame() override;
     void Resize(int width, int height) override;
+
+    // Copied on the card from the rasteriser's texture into the frame's own, which everything
+    // after - filters, chains, the overlay's glass - reads as it reads an uploaded frame.
+    bool RenderSharedPicture(const emulation::psx::SharedPicture& picture) override;
+    uint64_t SharedPictureAdapter() const override { return adapter_luid_; }
 
     void SetVsync(bool enabled) override;
     void SetPixelShader(const std::string& name) override;
@@ -100,6 +106,16 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     bool CreateSyncObjects();
     bool CreateRootSignatureAndPSO();
     bool CreateFramebufferResources(int fb_width, int fb_height);
+    // The upload heaps an uploaded frame needs, made the first time one comes - a frame drawn
+    // from a shared picture needs none, and at 8x they are tens of megabytes each.
+    bool EnsureUploadHeaps();
+    // Draws fb_texture_, which holds a frame width x height, into the window: the letterbox,
+    // the filter or chain, all of it.
+    void DrawFramebuffer(int width, int height);
+    // The rasteriser's texture for `picture`, opened on this device, or null.
+    ID3D12Resource* OpenSharedPicture(const emulation::psx::SharedPicture& picture);
+    // Hands back to their sources the pictures whose frames the card has finished.
+    void ReleasePictures(UINT64 completed);
     bool CreatePipelineState(const void* bytecode, size_t size,
                              ComPtr<ID3D12PipelineState>& out);
 
@@ -197,4 +213,28 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT fb_placed_footprint_{};
     UINT fb_num_rows_ = 0;
     UINT64 fb_row_size_in_bytes_ = 0;
+
+    // Shared pictures (psx/shared_picture.h). The adapter this device is on; the rasteriser's
+    // textures opened here, by their ids - one source's at a time, and a handful at most; which
+    // picture fb_texture_ holds, so one shown again is not copied again; and the pictures each
+    // frame drew from, handed back once the fence passes that frame.
+    uint64_t adapter_luid_ = 0;
+    uint64_t preferred_luid_ = 0;   // the card asked for; 0 leaves it to Windows
+    struct OpenedPicture {
+        uint64_t id;
+        ComPtr<ID3D12Resource> resource;
+    };
+    std::vector<OpenedPicture> opened_pictures_;
+    const emulation::psx::SharedPictureSource* opened_source_ = nullptr;
+    uint64_t shown_texture_id_ = 0;
+    uint64_t shown_serial_ = 0;
+    struct PendingRelease {
+        UINT64 fence_value;
+        std::shared_ptr<emulation::psx::SharedPictureSource> source;
+        uint64_t serial;
+    };
+    std::vector<PendingRelease> pending_releases_;
+    // The last shared picture drawn, until a frame of pixels hands it back.
+    std::shared_ptr<emulation::psx::SharedPictureSource> trail_source_;
+    uint64_t trail_serial_ = 0;
 };

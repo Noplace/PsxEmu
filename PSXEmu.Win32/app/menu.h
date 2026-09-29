@@ -52,6 +52,16 @@ namespace psxemu {
     // Fills in File > Recent Discs, most recent first - the first entry is the last disc played.
     void PopulateRecentDiscsMenu(HWND window, const std::vector<std::string>& discs);
 
+    // Fills in Settings > Video > Graphics Card: Automatic, then each card by name with its video
+    // memory - which is what tells a laptop's two apart - ticking `chosen` (an index, or -1 for
+    // Automatic). With only one card it says so and offers nothing to choose.
+    struct GraphicsCardLabel {
+        std::string name;
+        uint64_t video_memory;
+    };
+    void PopulateGraphicsCardMenu(HWND window, const std::vector<GraphicsCardLabel>& cards,
+                                  int chosen);
+
     // ---------------------------------------------------------------------------------------------
     // Ticks
     // ---------------------------------------------------------------------------------------------
@@ -75,6 +85,11 @@ namespace psxemu {
     // the preferred one can fall back to the other.
     void TickAudioBackend(HWND window, const std::string& backend);
     void TickRenderer(HWND window, const std::string& backend);
+    // Ticks what is actually drawing, which a failed hardware rasteriser leaves as software.
+    void TickRasteriser(HWND window, bool hardware, int scale, bool true_color);
+    // PGXP's three switches, greyed unless the hardware rasteriser draws (and the last two unless
+    // precise vertices are on).
+    void TickPgxp(HWND window, bool hardware, bool vertices, bool textures, bool culling);
 
     // The current filter, and every filter item greyed out when the active renderer does not
     // support them - D3D11Presenter's SetPixelShader is a no-op, and a menu that silently does

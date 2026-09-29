@@ -13,6 +13,7 @@
 #pragma once
 
 #include "host/doorbell.h"
+#include "psx/shared_picture.h"
 
 #include <atomic>
 #include <cstdint>
@@ -25,6 +26,10 @@ struct VideoFrame {
   // The picture as the GPU resolves it - 32-bit 0xAARRGGBB, width x height,
   // Gpu::framebuffer's own format.
   std::vector<uint32_t> pixels;
+
+  // Or the hardware rasteriser's picture, left on the graphics card (psx/shared_picture.h):
+  // width x height, and `pixels` empty. Only for a presenter that said it can take one.
+  psx::SharedPicture shared;
 
   // Or, for Video > View VRAM, all of VRAM as the GPU holds it: 1024x512
   // 16-bit pixels, converted by the video thread, which has the time to spare
@@ -55,15 +60,18 @@ class FrameMailbox {
 
   // Hands the filled slot over and takes the mailbox's old one back to fill
   // next. If that one held a frame the consumer never took, it is overwritten
-  // from here on, and counted as dropped.
-  void Publish() {
+  // from here on, and counted as dropped - and true is returned, since back()
+  // is then a frame nobody saw rather than one the consumer has finished with.
+  bool Publish() {
     const int previous = middle_.exchange(back_ | kFresh, std::memory_order_acq_rel);
     back_ = previous & kSlotMask;
-    if ((previous & kFresh) != 0)
+    const bool dropped = (previous & kFresh) != 0;
+    if (dropped)
       dropped_.fetch_add(1, std::memory_order_relaxed);
     published_.fetch_add(1, std::memory_order_relaxed);
     if (consumer_ != nullptr)
       consumer_->Ring();
+    return dropped;
   }
 
   // ---- The consumer: the video thread ------------------------------------

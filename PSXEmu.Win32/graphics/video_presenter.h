@@ -66,15 +66,31 @@ namespace psxemu {
         // The menu's asks, run as requests on the video thread.
         void SetRenderer(const std::string& key);
         void SetFilter(const std::string& key);
+        // The graphics card to draw on (graphics/adapters.h): before Open, and from Settings >
+        // Video > Graphics Card. 0 and empty leave it to the engine.
+        void SetGraphicsCard(uint64_t luid, const std::string& name);
+        // The card actually asked of the engines - 0 once it turned out no engine would start on
+        // the one chosen, and Windows' pick was used instead.
+        uint64_t card_luid() const { return card_luid_; }
 
         // What is actually running, which is not always what was asked for.
         const std::string& renderer() const { return renderer_; }
         const std::string& filter() const { return filter_; }
+        // The graphics adapter (LUID) whose shared pictures the running engine can draw, or 0 if
+        // it takes none (psx/shared_picture.h) - for the hardware rasteriser to draw there.
+        uint64_t shared_adapter() const {
+            return engine_ != nullptr ? engine_->SharedPictureAdapter() : 0;
+        }
 
      private:
         // Creates an engine for `renderer`, loads the filters it supports, and tells the UI what
         // opened and anything it needs to know.
         bool Create(const std::string& renderer, const std::string& filter);
+        // Closes the engine and makes one for `renderer` on the current card, keeping the filter.
+        void Rebuild(const std::string& renderer);
+
+        uint64_t card_luid_ = 0;
+        std::string card_name_;
 
         HWND window_;
         RenderWindows windows_;
@@ -91,6 +107,11 @@ namespace psxemu {
 
         // Draws `pixels` with the overlay over it.
         void Draw(const uint32_t* pixels, int width, int height);
+        // Draws a picture left on the card, with the overlay over it.
+        void DrawShared(const emulation::psx::SharedPicture& picture);
+        // How long a shared picture is waited for before it is given up on: a frame's drawing
+        // is milliseconds, so this is only reached when the rasteriser's card has gone.
+        static constexpr uint32_t kSharedPictureWaitMs = 250;
         Overlay overlay_;
         FrameStatsRing* stats_ = nullptr;
         // What is shown before the first frame, so the overlay has something to go over.

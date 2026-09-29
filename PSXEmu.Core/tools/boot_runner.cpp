@@ -44,6 +44,21 @@
 //     --load-state <f>   resume from a save state instead of booting - skips
 //                        --disc/--boot-disc/--auto-boot/--exe entirely
 //     --save-state <f>   write a save state after the run finishes
+//     --hw-raster        draw with the Direct3D 11 hardware rasteriser rather than the software
+//                        one (Docs/Hardware-Renderer-Plan.md)
+//     --warp             ...on WARP, Windows' software Direct3D: no graphics card needed, and
+//                        the same pictures every run
+//     --scale <n>        ...at n times the console's resolution (1-8); --ppm writes that
+//                        picture, and everything measured stays the native one
+//     --no-true-color    ...at the console's colours exactly, dithered: then an upscaled run's
+//                        checksums are the software rasteriser's too
+//     --shown-only       ...keeping only the sharper picture, as the front end does - for
+//                        timing that path; the checksums are then of a stale native picture
+//     --shared-picture   ...handing that picture over on the card (psx/shared_picture.h), as
+//                        to a presenter that can take it there, rather than reading it back
+//     --gpu <name>       ...drawing on the graphics card with <name> in its name (any case),
+//                        as Settings > Video > Graphics Card does; the report names the card
+//     --list-gpus        list the graphics cards and their LUIDs, and exit
 //     --quiet            suppress the per-100-frame progress lines
 //     --break <hex>[,<hex>...]  stop before these addresses run (psx/debugger.h), print the
 //                        registers and the code around the pc, and carry on; repeatable
@@ -61,6 +76,10 @@
 #include "psx/psx.h"
 #include "psx/recompiler_bridge.h"
 #include "psx/disasm.h"
+#ifdef PSXEMU_HW_RASTER
+#include "graphics/adapters.h"
+#include "graphics/hw_raster/d3d11_raster.h"
+#endif
 
 #include <cstdio>
 #include <cstring>
@@ -235,6 +254,21 @@ struct Options {
   const char* load_state;
   // Applied once, after the frame loop finishes, alongside --ppm/--vram.
   const char* save_state;
+  // --hw-raster: draw with the Direct3D 11 rasteriser the front end has, on the graphics card
+  // or, with --warp, on WARP - Windows' software Direct3D, which needs no card and gives the
+  // same pictures every run. Only in a build that compiles it in (PSXEMU_HW_RASTER).
+  bool hw_raster;
+  bool warp;
+  // --scale n: its internal resolution; --no-true-color: at it, the console's colours exactly,
+  // dithering and all - which keeps even the upscaled run's checksums the software ones.
+  int scale;
+  bool shown_only;   // --shown-only: the front end's path, for timing it
+  bool shared_picture;   // --shared-picture: the picture left on the card
+  const char* gpu;       // --gpu <part of a card's name>: which card the rasteriser draws on
+  // --pgxp [--pgxp-culling] [--no-pgxp-textures]: PGXP's precise vertices for the hardware
+  // rasteriser (psx/pgxp.h).
+  bool pgxp, pgxp_culling, pgxp_textures;
+  bool true_color;
 };
 
 // FNV-1a over the visible framebuffer. Small, order-sensitive, and good enough
@@ -581,6 +615,16 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->volume = -1.0f;
   options->load_state = nullptr;
   options->save_state = nullptr;
+  options->hw_raster = false;
+  options->warp = false;
+  options->scale = 1;
+  options->shown_only = false;
+  options->shared_picture = false;
+  options->gpu = nullptr;
+  options->pgxp = false;
+  options->pgxp_culling = false;
+  options->pgxp_textures = true;
+  options->true_color = true;
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -656,6 +700,30 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->quiet = true;
     } else if (strcmp(arg, "--gpu-thread") == 0) {
       options->gpu_thread = true;
+    } else if (strcmp(arg, "--hw-raster") == 0) {
+      options->hw_raster = true;
+    } else if (strcmp(arg, "--warp") == 0) {
+      options->warp = true;
+    } else if (strcmp(arg, "--scale") == 0 && i + 1 < argc) {
+      options->scale = atoi(argv[++i]);
+      if (options->scale < 1 || options->scale > 8) {
+        fprintf(stderr, "--scale wants 1 to 8\n");
+        return false;
+      }
+    } else if (strcmp(arg, "--pgxp") == 0) {
+      options->pgxp = true;
+    } else if (strcmp(arg, "--pgxp-culling") == 0) {
+      options->pgxp_culling = true;
+    } else if (strcmp(arg, "--no-pgxp-textures") == 0) {
+      options->pgxp_textures = false;
+    } else if (strcmp(arg, "--shown-only") == 0) {
+      options->shown_only = true;
+    } else if (strcmp(arg, "--shared-picture") == 0) {
+      options->shared_picture = true;
+    } else if (strcmp(arg, "--gpu") == 0 && i + 1 < argc) {
+      options->gpu = argv[++i];
+    } else if (strcmp(arg, "--no-true-color") == 0) {
+      options->true_color = false;
     } else if (strcmp(arg, "--gpu-transfer-timing") == 0) {
       options->gpu_transfer_timing = true;
     } else if (strcmp(arg, "--icache-timing") == 0) {
@@ -982,6 +1050,20 @@ int RunRecompilerDiff(const Options& options) {
 }  // namespace
 
 int main(int argc, char** argv) {
+#ifdef PSXEMU_HW_RASTER
+  // The graphics cards, and the LUID each is known by - which is also how Windows' `\GPU Engine`
+  // and `\GPU Process Memory` counters name them, for seeing which card a process is using.
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "--list-gpus") == 0) {
+      const std::vector<psxemu::GraphicsAdapter> cards = psxemu::EnumerateGraphicsAdapters();
+      for (const psxemu::GraphicsAdapter& card : cards)
+        printf("%-44s luid_%s  %llu MB\n", card.name.c_str(),
+               psxemu::CounterLuid(card.luid).c_str(),
+               static_cast<unsigned long long>(card.video_memory >> 20));
+      return cards.empty() ? 1 : 0;
+    }
+  }
+#endif
   Options options;
   if (!ParseOptions(argc, argv, &options)) {
     fprintf(stderr,
@@ -995,9 +1077,60 @@ int main(int argc, char** argv) {
     return RunRecompilerDiff(options);
 
   System* system = new System();
+  // The rasteriser is made when the GPU is initialised, so it is chosen before.
+  if (options.hw_raster) {
+#ifdef PSXEMU_HW_RASTER
+    const bool warp = options.warp;
+    const bool shared = options.shared_picture;
+    // --gpu: the card to draw on, by part of its name. Sharing wants a presenter on the same
+    // card, which this has none of - it hands pictures over as a presenter that is on it would.
+    uint64_t adapter = 0;
+    if (options.gpu != nullptr) {
+      const std::vector<psxemu::GraphicsAdapter> cards = psxemu::EnumerateGraphicsAdapters();
+      const psxemu::GraphicsAdapter* card =
+          psxemu::FindGraphicsAdapterLike(cards, options.gpu);
+      if (card == nullptr) {
+        fprintf(stderr, "--gpu: no graphics card here has \"%s\" in its name (--list-gpus)\n",
+                options.gpu);
+        return 2;
+      }
+      adapter = card->luid;
+    }
+    system->set_hardware_raster([warp, shared, adapter](uint16_t* vram,
+                                                        const emulation::psx::RasterOptions& raster,
+                                                        std::string* error)
+                                    -> std::unique_ptr<emulation::psx::RasterBackend> {
+      emulation::psx::RasterOptions shown = raster;
+      shown.shared_picture = shared;
+      shown.adapter = adapter;
+      return psxemu::D3D11Raster::Create(vram, shown, warp, error);
+    });
+    system->config().gpu_rasteriser = "hardware";
+    system->config().resolution_scale = options.scale;
+    system->config().true_color = options.true_color;
+    // As the front end does: no native picture beside the sharper one. The checksums are then
+    // of whatever the native picture last was - this is for timing the front end's path.
+    system->gpu().set_native_picture(!options.shown_only);
+    system->config().pgxp_vertices = options.pgxp;
+    system->config().pgxp_culling = options.pgxp_culling;
+    system->config().pgxp_textures = options.pgxp_textures;
+#else
+    fprintf(stderr, "--hw-raster: this build has no hardware rasteriser\n");
+    return 2;
+#endif
+  }
   if (system->Initialize(options.bios) != 0) {
     fprintf(stderr, "failed to initialise the core (bios: %s)\n", options.bios);
     return 1;
+  }
+  if (options.hw_raster) {
+    if (!system->gpu().hardware_raster()) {
+      fprintf(stderr, "--hw-raster: %s\n", system->gpu().raster_error().c_str());
+      return 1;
+    }
+    printf("gpu            hardware rasteriser (Direct3D 11, %s), %dx%s\n",
+           system->gpu().raster_device().c_str(), options.scale,
+           options.scale > 1 && options.true_color ? ", true colour" : "");
   }
 
   // Before the machine executes a single instruction, so the whole run is one
@@ -1122,6 +1255,11 @@ int main(int argc, char** argv) {
   }
 
   if (options.watch != nullptr) {
+    // Which command wrote each pixel is the software rasteriser's own per-pixel accounting.
+    if (system->gpu().hardware_raster()) {
+      fprintf(stderr, "--watch-vram needs the software rasteriser; leave out --hw-raster\n");
+      return 2;
+    }
     unsigned x = 0, y = 0, w = 0, h = 0;
     if (sscanf(options.watch, "%u,%u,%u,%u", &x, &y, &w, &h) == 4) {
       system->WatchVram(x, y, w, h);
@@ -1143,6 +1281,9 @@ int main(int argc, char** argv) {
   const uint64_t first_frame = last_frame;
   int frames = 0;
   uint16_t last_buttons = 0;
+  // --shared-picture: how many frames' pictures were handed over on the card.
+  uint64_t shared_pictures = 0;
+  uint64_t last_shared_serial = 0;
 
   std::unordered_map<uint32_t, uint64_t> pc_counts;
 
@@ -1226,6 +1367,15 @@ int main(int argc, char** argv) {
     if (now != last_frame) {
       last_frame = now;
       ++frames;
+      // --shared-picture: as a presenter that takes each picture the moment it comes and is
+      // done with the one before, which is what frees a texture for the next.
+      if (const emulation::psx::SharedPicture& shared = system->gpu().shared_picture()) {
+        if (shared.serial != last_shared_serial) {
+          ++shared_pictures;
+          last_shared_serial = shared.serial;
+          shared.source->Release(shared.serial);
+        }
+      }
       // Switching CPU under a running machine, which is what the front end's
       // menu does. The setting is all this touches: System::StepInstruction
       // acts on it between instructions, which is the only place it is safe.
@@ -1690,6 +1840,17 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(gpu_stats.texels_by_depth[0]),
          static_cast<unsigned long long>(gpu_stats.texels_by_depth[1]),
          static_cast<unsigned long long>(gpu_stats.texels_by_depth[2]));
+  if (system->gpu().hardware_raster())
+    printf("               (the hardware rasteriser keeps no pixel, clip or texel counts)\n");
+  if (options.pgxp)
+    printf("pgxp           %llu of %llu polygon vertices drawn from the GTE's unrounded positions "
+           "(%llu found by value in its cache)\n",
+           static_cast<unsigned long long>(gpu_stats.precise_vertices),
+           static_cast<unsigned long long>(gpu_stats.polygon_vertices),
+           static_cast<unsigned long long>(gpu_stats.recalled_vertices));
+  if (options.shared_picture)
+    printf("shared         %llu of %d frames' pictures handed over on the card\n",
+           static_cast<unsigned long long>(shared_pictures), frames);
 
   if (gpu_stats.setup_count > 0) {
     printf("\nfirst textured primitives\n");
@@ -1875,7 +2036,24 @@ int main(int argc, char** argv) {
   }
 
   if (options.ppm != nullptr) {
-    if (WriteFrame(options.ppm, pixels, width, height))
+    // What would be shown: above 1x, the hardware rasteriser's own picture of the display
+    // area. Everything measured above is the native one.
+    int shown_width = 0, shown_height = 0;
+    const uint32_t* shown = system->gpu().picture(shown_width, shown_height);
+#ifdef PSXEMU_HW_RASTER
+    // Left on the card, it is read back the way a screenshot is.
+    std::vector<uint32_t> shared_pixels;
+    if (const emulation::psx::SharedPicture& shared = system->gpu().shared_picture()) {
+      if (psxemu::D3D11Raster::ReadSharedPicture(shared, &shared_pixels)) {
+        shown = shared_pixels.data();
+        shown_width = shared.width;
+        shown_height = shared.height;
+      } else {
+        fprintf(stderr, "the shared picture could not be read back\n");
+      }
+    }
+#endif
+    if (WriteFrame(options.ppm, shown, shown_width, shown_height))
       printf("wrote          %s\n", options.ppm);
     else
       fprintf(stderr, "failed to write %s\n", options.ppm);

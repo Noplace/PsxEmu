@@ -79,6 +79,7 @@ class RecompilerBridge {
     host.store32 = &Store32;
     host.store16 = &Store16;
     host.store8 = &Store8;
+    host.move = &Move;
     host.interpret = [this](uint32_t pc) { return Interpret(pc); };
     host.load_in_flight = [this]() { return cpu()->LoadInFlight(); };
 
@@ -115,6 +116,10 @@ class RecompilerBridge {
     // executing, and sits on the instruction to run when one is not - which is
     // the state this is called in.
     const uint32_t pc = context->pc;
+
+    // PGXP's shadows travel with register copies in compiled code only while it is on - the
+    // interpreter's moves carry them the same way (psx/pgxp.h).
+    recompiler_->set_track_moves(system_->pgxp().enabled());
 
     const uint32_t next = recompiler_->Step(pc);
 
@@ -203,19 +208,48 @@ class RecompilerBridge {
     // that access. Compiled code that skips it leaves the flag saying something
     // about a completely different address, and a load eventually reads a stale
     // false and raises a bus error that never happened.
-    processor->AddressTranslation(address);
+    const uint32_t physical = processor->AddressTranslation(address);
 
     const uint64_t before = processor->exceptions_raised();
 
-    uint32_t result = 0;
-    if (store)
-      processor->Store(size, value, address);
-    else
-      result = processor->Load(size, address);
+    // PGXP (psx/pgxp.h): a word loaded or stored carries its shadow, as the interpreter's LW and
+    // SW do. Compiled code passes no register numbers, so they are read from the instruction
+    // itself - the only words compiled to these calls are LW's and SW's.
+    Pgxp& pgxp = system_->pgxp();
+    uint32_t rt = kNoRegister;
+    if (size == kM32 && pgxp.enabled())
+      rt = WordRegister(pc, store);
 
-    if (processor->exceptions_raised() != before)
+    uint32_t result = 0;
+    if (store && rt != kNoRegister) {
+      const PreciseVertex& shadow = pgxp.reg(rt);
+      if (PreciseVertex* word = pgxp.word(physical))
+        *word = shadow;
+      pgxp.set_store(&shadow);
+      processor->Store(size, value, address);
+      pgxp.set_store(nullptr);
+    } else if (store) {
+      processor->Store(size, value, address);
+    } else {
+      result = processor->Load(size, address);
+    }
+
+    if (processor->exceptions_raised() != before) {
       recompiler_->SetFault();
+    } else if (!store && rt != kNoRegister && rt != 0) {
+      const PreciseVertex* shadow = pgxp.word(physical);
+      pgxp.reg(rt) = shadow != nullptr ? *shadow : PreciseVertex();
+    }
     return result;
+  }
+
+  // The register an LW or SW at `pc` loads or stores - kNoRegister if the word there is not one.
+  static const uint32_t kNoRegister = 32;
+  uint32_t WordRegister(uint32_t pc, bool store) {
+    uint32_t word = 0;
+    if (!Fetch(pc, &word) || (word >> 26) != (store ? 0x2Bu : 0x23u))
+      return kNoRegister;
+    return (word >> 16) & 31;
   }
 
   static uint32_t Load32(void* c, uint32_t a, uint32_t pc) {
@@ -235,6 +269,10 @@ class RecompilerBridge {
   }
   static void Store8(void* c, uint32_t a, uint32_t v, uint32_t pc) {
     Of(c)->Access(pc, kM8, a, true, v);
+  }
+
+  static void Move(void* c, uint32_t to, uint32_t from) {
+    Of(c)->system_->pgxp().Move(to, from);
   }
 
   // Everything that writes guest memory, on its way to the block cache: the

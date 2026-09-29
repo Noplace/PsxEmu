@@ -176,6 +176,7 @@ inline bool IsValidChoice(const std::string& value,
 inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetFloat("audio_volume", c.audio_volume);
   f.SetString("graphics_backend", c.graphics_backend);
+  f.SetString("graphics_adapter", c.graphics_adapter);
   f.SetString("audio_backend", c.audio_backend);
   f.SetString("video_filter", c.video_filter);
   f.SetString("controller_type_port1", c.controller_type[0]);
@@ -199,6 +200,12 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   }
   f.SetBool("frame_limiter", c.frame_limiter);
   f.SetBool("gpu_thread", c.gpu_thread);
+  f.SetString("gpu_rasteriser", c.gpu_rasteriser);
+  f.SetInt("resolution_scale", c.resolution_scale);
+  f.SetBool("true_color", c.true_color);
+  f.SetBool("pgxp_vertices", c.pgxp_vertices);
+  f.SetBool("pgxp_textures", c.pgxp_textures);
+  f.SetBool("pgxp_culling", c.pgxp_culling);
   f.SetBool("gpu_transfer_timing", c.gpu_transfer_timing);
   f.SetBool("icache_timing", c.icache_timing);
   f.SetBool("exact_event_timing", c.exact_event_timing);
@@ -229,6 +236,13 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
       f.GetString("graphics_backend", c.graphics_backend);
   if (IsValidChoice(backend, EmuConfig::kValidGraphicsBackends))
     c.graphics_backend = backend;
+
+  // Any name is allowed - it is looked up among the cards the machine has - but not one longer
+  // than a card's name can be, or holding a line break.
+  const std::string adapter = f.GetString("graphics_adapter", c.graphics_adapter);
+  if (adapter.size() <= EmuConfig::kMaxGraphicsAdapterLength &&
+      adapter.find_first_of("\r\n") == std::string::npos)
+    c.graphics_adapter = adapter;
 
   const std::string audio_backend =
       f.GetString("audio_backend", c.audio_backend);
@@ -278,6 +292,17 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
 
   c.frame_limiter = f.GetBool("frame_limiter", c.frame_limiter);
   c.gpu_thread = f.GetBool("gpu_thread", c.gpu_thread);
+  const std::string rasteriser = f.GetString("gpu_rasteriser", c.gpu_rasteriser);
+  if (IsValidChoice(rasteriser, EmuConfig::kValidGpuRasterisers))
+    c.gpu_rasteriser = rasteriser;
+  const int scale = f.GetInt("resolution_scale", c.resolution_scale);
+  for (int valid : EmuConfig::kValidResolutionScales)
+    if (scale == valid)
+      c.resolution_scale = scale;
+  c.true_color = f.GetBool("true_color", c.true_color);
+  c.pgxp_vertices = f.GetBool("pgxp_vertices", c.pgxp_vertices);
+  c.pgxp_textures = f.GetBool("pgxp_textures", c.pgxp_textures);
+  c.pgxp_culling = f.GetBool("pgxp_culling", c.pgxp_culling);
   c.gpu_transfer_timing = f.GetBool("gpu_transfer_timing", c.gpu_transfer_timing);
   c.icache_timing = f.GetBool("icache_timing", c.icache_timing);
   c.exact_event_timing = f.GetBool("exact_event_timing", c.exact_event_timing);
@@ -337,6 +362,10 @@ inline std::vector<std::string> GameSettingKeys() {
       "dma_stops_cpu",      "measured_bus_timing", "write_queue_timing",
       "gpu_thread",         "gpu_transfer_timing", "cdrom_mechanical_timing",
       "skip_bios_intro",    "controller_type_port1", "controller_type_port2",
+      // A game the hardware rasteriser gets wrong can be kept on software, or at its own
+      // resolution (Docs/Hardware-Renderer-Plan.md).
+      "gpu_rasteriser",     "resolution_scale",    "true_color",
+      "pgxp_vertices",      "pgxp_textures",       "pgxp_culling",
   };
   for (int port = 0; port < 2; ++port) {
     for (int player = 0; player < 4; ++player)

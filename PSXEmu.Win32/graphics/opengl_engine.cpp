@@ -29,6 +29,13 @@ namespace psxemu {
 
     namespace {
 
+        // A hardware-rasteriser picture, into the frame texture (CopyIntoFrame). Direct3D wrote
+        // it as B, G, R, A and GL reads the same bytes as R, G, B, A, so red and blue come out
+        // the wrong way round and are swapped back here.
+        const char kGlslCopy[] = R"GLSL(
+void main() { o_color = texture(u_point, v_uv).bgra; }
+)GLSL";
+
         // The same big triangle D3D12GraphicsEngine draws, with uv (0,0) at the top left of the
         // picture, stretched over u_rect - the picture's place in the target, in pixels counted
         // from the top left, fractions and all. D3D takes a fractional viewport; GL's is whole
@@ -145,6 +152,8 @@ void main() {
             ReleaseOverlay();
         gl_.BindVertexArray(vertex_array_);
         SetVsync(vsync_);
+        // An extra, like the overlay: without it the picture comes as pixels.
+        StartSharing();
         // The surface is the UI thread's window, hidden while a Direct3D engine draws. Posted
         // rather than sent: this thread must never wait on that one (Docs/Threading-Plan.md).
         ShowWindowAsync(window_, SW_SHOWNA);
@@ -153,6 +162,8 @@ void main() {
 
     void OpenGLGraphicsEngine::Shutdown() {
         if (context_ != nullptr && wglMakeCurrent(dc_, context_)) {
+            glFinish();
+            StopSharing();
             ReleaseOverlay();
             ReleaseChainTargets();
             for (auto& shader : shaders_)
@@ -166,6 +177,8 @@ void main() {
             if (vertex_array_ != 0)
                 gl_.DeleteVertexArrays(1, &vertex_array_);
         }
+        sharing_ = false;
+        adapter_luid_ = 0;
         shaders_.clear();
         chains_.clear();
         current_ = nullptr;
@@ -454,7 +467,169 @@ void main() {
         glBindTexture(GL_TEXTURE_2D, frame_texture_);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, kGlBgra, GL_UNSIGNED_BYTE, data);
+        shown_texture_id_ = 0;   // frame_texture_ holds no shared picture now
+        // A frame of pixels shows no shared picture, so the last one is the rasteriser's again
+        // once this frame is done. Without this a rasteriser that ran out of textures for a
+        // moment, and sent a frame as pixels, would never get one back - nothing releases while
+        // no shared picture is being drawn - and it would read back for good.
+        if (sharing_) {
+            ReleasePictures(false);
+            if (trail_source_ != nullptr) {
+                if (GLsync done = gl_.FenceSync(kGlSyncGpuCommandsComplete, 0))
+                    pending_releases_.push_back({ done, trail_source_, trail_serial_ + 1 });
+                trail_source_.reset();
+            }
+        }
+        DrawFrame(width, height);
+    }
 
+    // The hardware rasteriser's picture: the Direct3D texture's memory opened here as a memory
+    // object, a texture over it, and that drawn into frame_texture_ - with red and blue put back,
+    // since Direct3D wrote the texture as BGRA and GL reads the same bytes as RGBA - which then
+    // goes through the letterbox, the filter or the chain as any frame does. The source has
+    // already said it is drawn, and nothing here can be running on the rasteriser's card behind
+    // that: the wait was on the CPU.
+    bool OpenGLGraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
+        if (context_ == nullptr || !sharing_ || !picture || picture.width <= 0 ||
+            picture.height <= 0 || picture.source->adapter() != adapter_luid_)
+            return false;
+        ReleasePictures(false);
+
+        OpenedPicture* opened = nullptr;
+        for (OpenedPicture& candidate : opened_pictures_)
+            if (candidate.id == picture.texture_id)
+                opened = &candidate;
+        if (opened == nullptr) {
+            // A new rasteriser's pictures, or a handful already open: the old ones are let go of
+            // rather than kept alive.
+            if (opened_source_ != picture.source.get() ||
+                opened_pictures_.size() >= emulation::psx::kMaxOpenedPictures)
+                ForgetOpenedPictures();
+            opened_source_ = picture.source.get();
+            OpenedPicture fresh;
+            fresh.id = picture.texture_id;
+            while (glGetError() != GL_NO_ERROR) {
+            }
+            gl_.CreateMemoryObjects(1, &fresh.memory);
+            gl_.ImportMemoryWin32Handle(fresh.memory, 0, kGlHandleTypeD3D11ImageExt,
+                                        picture.texture);
+            glGenTextures(1, &fresh.texture);
+            glBindTexture(GL_TEXTURE_2D, fresh.texture);
+            gl_.TexStorageMem2D(GL_TEXTURE_2D, 1, GL_RGBA8, picture.width, picture.height,
+                                fresh.memory, 0);
+            if (glGetError() != GL_NO_ERROR) {
+                // The driver would not open it: no picture from this one, and the frame goes
+                // unshown. The rasteriser is not told any different, so this is only for a
+                // driver that lists the extension and then cannot do it.
+                glDeleteTextures(1, &fresh.texture);
+                gl_.DeleteMemoryObjects(1, &fresh.memory);
+                return false;
+            }
+            opened_pictures_.push_back(fresh);
+            opened = &opened_pictures_.back();
+        }
+        if (picture.width != frame_width_ || picture.height != frame_height_)
+            shown_texture_id_ = 0;   // the frame texture is about to be made again
+        if (!EnsureFrameTexture(picture.width, picture.height))
+            return false;
+
+        // Shown again - under a moving overlay, or after a resize - it is already there.
+        if (picture.texture_id != shown_texture_id_ || picture.serial != shown_serial_) {
+            CopyIntoFrame(opened->texture, picture.width, picture.height);
+            shown_texture_id_ = picture.texture_id;
+            shown_serial_ = picture.serial;
+        }
+        // Every picture before this one is the rasteriser's again once the card has done this.
+        if (GLsync done = gl_.FenceSync(kGlSyncGpuCommandsComplete, 0))
+            pending_releases_.push_back({ done, picture.source, picture.serial });
+        trail_source_ = picture.source;   // see RenderFramebuffer
+        trail_serial_ = picture.serial;
+
+        DrawFrame(picture.width, picture.height);
+        return true;
+    }
+
+    // One full-screen draw of `source` into frame_texture_, as a chain pass draws into its target:
+    // the same uniforms and the same flip, so the picture ends up stored as an upload stores it.
+    void OpenGLGraphicsEngine::CopyIntoFrame(GLuint source, int width, int height) {
+        if (copy_framebuffer_ == 0)
+            gl_.GenFramebuffers(1, &copy_framebuffer_);
+        gl_.BindFramebuffer(kGlFramebuffer, copy_framebuffer_);
+        gl_.FramebufferTexture2D(kGlFramebuffer, kGlColorAttachment0, GL_TEXTURE_2D, frame_texture_,
+                                 0);
+        glViewport(0, 0, width, height);
+        glDisable(GL_SCISSOR_TEST);
+        gl_.UseProgram(copy_.id);
+        for (int unit = 0; unit < 4; ++unit) {
+            gl_.ActiveTexture(kGlTexture0 + unit);
+            glBindTexture(GL_TEXTURE_2D, source);
+        }
+        // The frame texture is what is drawn into, so it is not also bound to be read.
+        gl_.ActiveTexture(kGlTexture0 + kOriginalUnit);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        const float w = static_cast<float>(width);
+        const float h = static_cast<float>(height);
+        gl_.Uniform4f(copy_.params, w, h, w, h);
+        gl_.Uniform1f(copy_.flip_y, -1.0f);
+        gl_.Uniform2f(copy_.target, w, h);
+        gl_.Uniform4f(copy_.rect, 0.0f, 0.0f, w, h);
+        gl_.Uniform2f(copy_.frag_y, 0.0f, 1.0f);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        gl_.BindFramebuffer(kGlFramebuffer, 0);
+    }
+
+    void OpenGLGraphicsEngine::ReleasePictures(bool all) {
+        size_t finished = 0;
+        while (finished < pending_releases_.size()) {
+            PendingRelease& pending = pending_releases_[finished];
+            if (!all) {
+                const GLenum state = gl_.ClientWaitSync(pending.done, 0, 0);
+                if (state != kGlAlreadySignaled && state != kGlConditionSatisfied)
+                    break;
+            }
+            pending.source->Release(pending.serial);
+            gl_.DeleteSync(pending.done);
+            ++finished;
+        }
+        pending_releases_.erase(pending_releases_.begin(), pending_releases_.begin() + finished);
+    }
+
+    void OpenGLGraphicsEngine::ForgetOpenedPictures() {
+        if (!opened_pictures_.empty())
+            glFinish();   // nothing queued may still read one
+        for (OpenedPicture& opened : opened_pictures_) {
+            glDeleteTextures(1, &opened.texture);
+            gl_.DeleteMemoryObjects(1, &opened.memory);
+        }
+        opened_pictures_.clear();
+        opened_source_ = nullptr;
+        shown_texture_id_ = 0;
+    }
+
+    // Whether this context can open the rasteriser's pictures, and the card it is on. Without
+    // GL_EXT_memory_object_win32, or a LUID to match against the rasteriser's card, pictures come
+    // as pixels.
+    void OpenGLGraphicsEngine::StartSharing() {
+        uint64_t luid = 0;
+        if (!gl_.LoadMemoryObjects(&luid) || luid == 0 || !Compile(kGlslCopy, &copy_))
+            return;
+        adapter_luid_ = luid;
+        sharing_ = true;
+    }
+
+    void OpenGLGraphicsEngine::StopSharing() {
+        ReleasePictures(true);
+        trail_source_.reset();
+        ForgetOpenedPictures();
+        if (copy_framebuffer_ != 0)
+            gl_.DeleteFramebuffers(1, &copy_framebuffer_);
+        copy_framebuffer_ = 0;
+        DeleteProgram(&copy_);
+        sharing_ = false;
+        adapter_luid_ = 0;
+    }
+
+    void OpenGLGraphicsEngine::DrawFrame(int width, int height) {
         // A fixed 4:3, as both Direct3D engines draw it (bug 47), placed exactly where D3D12 puts
         // it. Its viewport is the letterbox, fractions and all, so it draws the pixels whose
         // centres fall inside; its scissor is the letterbox cut down to whole pixels. The pixels
@@ -483,7 +658,8 @@ void main() {
 
         // A chain draws every pass itself, the last into the letterbox. If its targets cannot be
         // made, the frame is drawn plain instead, as D3D12 does.
-        if (active_chain_ != nullptr && EnsureChainTargets(*active_chain_, width, height)) {
+        if (active_chain_ != nullptr && width <= kFilterChainMaxWidth &&
+            EnsureChainTargets(*active_chain_, width, height)) {
             GLuint input = frame_texture_;
             float in_w = frame_w;
             float in_h = frame_h;

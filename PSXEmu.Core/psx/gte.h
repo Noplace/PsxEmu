@@ -52,7 +52,31 @@ class Gte : public Component {
 
   // The four register-move instructions, and the command word.
   uint32_t ReadData(uint32_t index);                  // MFC2
-  void WriteData(uint32_t index, uint32_t value);     // MTC2
+  // MTC2. `precise` is PGXP's shadow of the word written, when there is one: an SXY register
+  // written from a word that still holds a projected vertex keeps its unrounded position.
+  void WriteData(uint32_t index, uint32_t value, const PreciseVertex* precise = nullptr);
+
+  // PGXP (psx/pgxp.h): keep each projected vertex's unrounded position beside the SXY FIFO,
+  // and - `culling` - work NCLIP out from them. Set by System from the settings.
+  void set_pgxp(bool on, bool culling) {
+    pgxp_ = on;
+    pgxp_culling_ = on && culling;
+  }
+  // The unrounded position behind data register `index` (12-15, the SXY FIFO and SXYP), for
+  // MFC2 and SWC2 to carry along; not valid for any other register, or none kept.
+  PreciseVertex Precise(uint32_t index) const;
+
+  // PGXP's vertex cache: the last vertex the GTE projected to each whole-pixel SXY word, for a
+  // word that reaches the GPU by a way the shadows cannot follow - a game storing x and y as two
+  // halfwords, say. Only one projected this frame or the last, so a vertex long gone cannot
+  // lend its fraction to something else that happens to sit on the same pixel. Null if none.
+  const PreciseVertex* Recall(uint32_t value) const {
+    const uint32_t slot = CacheSlot(value);
+    const PreciseVertex& remembered = cache_[slot];
+    return remembered.Matches(value) && frame_ - cache_frame_[slot] <= 1 ? &remembered : nullptr;
+  }
+  // A frame has been shown: what the cache holds gets a frame older.
+  void NewFrame() { ++frame_; }
   uint32_t ReadControl(uint32_t index);               // CFC2
   void WriteControl(uint32_t index, uint32_t value);  // CTC2
   // Returns the command's cycle cost, so the caller can charge real GTE
@@ -85,6 +109,16 @@ class Gte : public Component {
   uint16_t otz_;
   int16_t ir_[4];          // IR0, IR1, IR2, IR3
   int16_t sxy_[3][2];      // the screen-coordinate FIFO, oldest first
+  // PGXP: each SXY entry before rounding, when kept. Not state the console has, and not saved.
+  PreciseVertex precise_[3];
+  bool pgxp_ = false;
+  bool pgxp_culling_ = false;
+  static uint32_t CacheSlot(uint32_t value) {
+    return ((value ^ (value >> 13)) * 0x9E3779B1u) >> 16;
+  }
+  std::vector<PreciseVertex> cache_ = std::vector<PreciseVertex>(65536);
+  std::vector<uint32_t> cache_frame_ = std::vector<uint32_t>(65536);   // when each was put there
+  uint32_t frame_ = 0;
   uint16_t sz_[4];         // the depth FIFO, oldest first
   uint8_t rgb_fifo_[3][4]; // the colour FIFO, oldest first
   uint32_t res1_;
@@ -130,7 +164,7 @@ class Gte : public Component {
   int64_t TranslatedDot(int index, int32_t translation, const int16_t row[3],
                         const int16_t vector[3]);
   void SetMacAndIr(int64_t x, int64_t y, int64_t z, bool lm);
-  void PushScreenXy(int32_t x, int32_t y);
+  void PushScreenXy(int32_t x, int32_t y, const PreciseVertex& precise = PreciseVertex());
   void PushScreenZ(uint16_t z);
   void PushColour(uint8_t r, uint8_t g, uint8_t b);
   void PushColourFromMac();

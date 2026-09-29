@@ -7582,3 +7582,495 @@ its own, so DuckStation's cheat files load as they are.
 - **All nineteen harnesses green, 2,433 checks.**
 
 Every state and card the test made under Documents was deleted afterwards.
+
+## 121. The hardware rasteriser, phase 1: Direct3D 11 at native size
+
+`PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `psx/gpu.cpp` (`ChooseRasteriser`,
+`AbandonTransfer`), `host/machine.cpp`, `app/app.cpp` (`SetRasteriser`), `tools/boot_runner.cpp`,
+`tools/ppm_diff.cpp`
+
+Not a bug: phase 1 of [Hardware-Renderer-Plan.md](Hardware-Renderer-Plan.md),
+which the user asked for. The plan's "Phase 1, as built" has the whole of it.
+
+**What it is.** A second `RasterBackend` that draws the GPU's jobs on the
+graphics card with Direct3D 11, into a copy of VRAM kept there, and brings
+native VRAM up to date in 32x32 tiles only when something is about to read it.
+At native size it draws untextured triangles, rectangles and lines exactly as
+the software rasteriser does, fills, and VRAM-to-VRAM copies. Textured
+primitives come out as their shapes in flat colour until phase 2.
+
+**Choosing it.** Settings > Video > Rasteriser: Software, or "Hardware
+(Direct3D 11, experimental)". It switches mid-game, through the path a save
+state takes - what the old one drew is brought into native VRAM, and the new one
+starts from it. If the device cannot be made, the software rasteriser carries on
+and a notification says why. `gpu_rasteriser` in `psxemu.ini`.
+
+**Two changes to `Gpu` that the software rasteriser cannot see:**
+- **A CPU-to-VRAM transfer makes its rectangle current first.** Native VRAM is
+  written a pixel at a time during one, so it has to be the newer copy while it
+  is; otherwise a state saved halfway through would take what the card had
+  drawn there over the upload.
+- **A transfer a GP1 reset cuts short is reported as written,** so the pixels it
+  did write reach the card.
+
+**Verified.**
+- **The machine is untouched by it.** All twelve discs, 3,000 frames, on WARP:
+  every line of every report matches the software run - instructions, CD
+  events, transfers, interrupts, command counts - except the checksums,
+  non-black counts and the rasteriser's own counters.
+- **Pictures:** seven of the twelve frame-3000 pictures identical to the pixel,
+  the other five textured scenes as flat shapes. The BIOS's Gouraud logo is
+  identical at frames 120 and 200; the menu background at frame 600 is one
+  5-bit step off in 80 pixels, where WARP rounds a Gouraud value the other way.
+- **Threaded and inline** hardware runs are identical, and save states cross
+  between the rasterisers both ways with identical instruction counts.
+- **The software rasteriser** is still byte-identical to phase 0 on all twelve
+  discs, inline.
+- **In the scratch front end, on the throwaway test disc:** hardware from the
+  settings file at startup, then switched to software and back while running,
+  the menu tick and `psxemu.ini` following each time, at 59.3 fps throughout.
+- **All nineteen harnesses green, 2,433 checks** (host_test's known real-time
+  flake once in the sweep; four clean runs after).
+
+## 122. The hardware rasteriser, phase 2: everything, to the pixel
+
+`PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `tools/hw_raster_test.cpp` (new),
+`tools/gpu_test.cpp` (`--hw-raster`), `tools/media_test.cpp`
+
+Not a bug: phase 2 of [Hardware-Renderer-Plan.md](Hardware-Renderer-Plan.md),
+which the user asked for. The plan's "Phase 2, as built" has the whole of it.
+
+**What it draws now.** Everything the software rasteriser does: textures in
+every depth through their CLUTs, the texture window, raw and modulated,
+semi-transparency in all four modes with bit 15 deciding per texel, the mask
+bit set and checked, dithering, flipped rectangles, lines, fills, copies, and
+480i's displayed field left alone. At native size it is identical to the
+software rasteriser to the pixel on every scene and disc checked - more than
+the plan's "within tolerance".
+
+**How it got there.** The first version was the plan's: the output merger's
+blending (dual-source, and a reverse subtraction for B-F), a stencil for the
+mask check, colours and texture coordinates interpolated by the card. A new
+harness measured it at one 5-bit step off in 12% of blended pixels and the
+neighbouring texel in about 0.2% of textured ones:
+- **A blend stored in the target is not a 5-bit value.** The next blend on top
+  reads the unrounded result as its background, where the console reads five
+  bits widened.
+- **An interpolated coordinate lands a hair either side of a whole number,**
+  and no epsilon both catches the exact whole numbers and misses the near ones.
+- **A few edge pixels** belonged to the other triangle of a shared edge.
+
+So the pixel shader became the software rasteriser's arithmetic in integers:
+- **Coverage:** a triangle is drawn as its bounding box, and the shader decides
+  each pixel with the same edge functions and fill rule.
+- **Interpolation:** each pixel's colour and texture coordinates come from the
+  same integer division by twice the area. Every vertex carries the whole
+  triangle for it.
+- **Blending and the mask check** read the pixel underneath from a copy of VRAM
+  and do the integer blend.
+
+**The read copy.** Direct3D cannot read a texture it is drawing into, so what
+the shader reads - texture pages, CLUTs, and the pixels under a blend or a mask
+check - comes from a second texture of VRAM. It is refreshed from the target in
+16x16 tiles, only where something has drawn since and only when a primitive is
+about to read there. A batch ends only when what it drew is what the next
+primitive reads; drawing into a texture and then using it comes out right.
+
+**The harness.** `hw_raster_test` (new, 26 checks) feeds two machines, one per
+rasteriser, the same random GP0 words scene by scene and compares all of VRAM.
+`--bisect` stops at the first primitive to differ. Written first, it found the
+problems above in its first run; its own first bisect found only primitives
+sampling the very pixels they were drawing, through a page or CLUT wrapping off
+VRAM's right edge back into the drawing area. That has no right answer - the
+software rasteriser sees its own writes as it goes, the card sees VRAM as it
+was, and the console has a texture cache - so the harness no longer makes them.
+
+**Found on the way:**
+- `pass` is reserved in HLSL; the shader failed to compile, and the machine
+  fell back to software saying so, as designed.
+- `far`, like `small` before it, is a Windows macro.
+- `media_test` never round-tripped `gpu_rasteriser`, the setting phase 1 added:
+  three checks now, the default, the round trip, and an unknown name refused.
+
+**Verified.**
+- **`hw_raster_test`:** every scene identical to the pixel on thirteen seeds -
+  about half a million random primitives. `--bisect` finds nothing.
+- **`gpu_test --hw-raster`:** 73 of 73.
+- **All twelve discs, 3,000 frames on WARP:** all 36 checkpoint checksums and
+  every frame-3000 picture identical to software, and every line of every report
+  but the rasteriser's own pixel, clip and texel counters.
+- **On the graphics card, in the scratch front end:** the test disc's Sony logo
+  drawn in full, textures and all, at 59.3 fps.
+- **All twenty harnesses green, 2,462 checks,** and gpu_test's 73 again through
+  the hardware rasteriser.
+
+**What it costs.** On this machine's graphics card, 3,000 frames with the
+rasteriser's thread, it is 2-10% slower than software at native size: Ridge
+Racer 1.14x real time against 1.27x, Wild Arms 2 1.23x against 1.26x, Captain
+Tsubasa J 1.26x against 1.29x. At 1x the software rasteriser has little to do,
+and the card costs a read-back every frame that waits for it to finish. It is
+there for upscaling (phase 4); the read-back goes in phase 6.
+
+## 123. The hardware rasteriser, phase 3: VRAM kept in step, and a lost card
+
+`PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `psx/raster.h` (`lost`), `psx/gpu.cpp`
+(`FallBackToSoftware`), `host/machine.*` (the report), `app/app.cpp`, `tools/boot_runner.cpp`,
+`tools/hw_raster_test.cpp`
+
+Not a bug: phase 3 of [Hardware-Renderer-Plan.md](Hardware-Renderer-Plan.md),
+which the user asked for. The plan's "Phase 3, as built" has the whole of it.
+
+**What was left of VRAM coherence** after phases 1 and 2, which had built the
+dirty tiles, the downloads, the read copy and save states through native VRAM:
+- **A copy onto itself.** The console copies VRAM to VRAM pixel by pixel, so a
+  copy whose source and destination overlap - shifted right or down - reads what
+  it has just written and smears. The card read the whole source first and did
+  not. Such a copy is now done as the software rasteriser does it, on native
+  VRAM brought up to date, and handed back to the card.
+- **A VRAM-to-CPU transfer asks for its rectangle again at every word.** Cheap
+  for the software rasteriser, which does nothing; for the card, a look at every
+  tile of it each time. It now answers at once when nothing has been drawn since
+  it last made that rectangle current.
+
+**A lost graphics card.** A driver reset, an update, or a card that goes fails
+every Direct3D call from then on: downloads stop, so the picture would stop
+while the game went on. `D3D11Raster` notices when a map fails and the device
+says it has been removed; `Gpu` looks once a frame and carries on with the
+software rasteriser from native VRAM as it was last read back, which loses at
+most what was drawn since - the game draws it again. The machine's report tells
+the front end, which says so and ticks Software. The same report keeps the menu
+right after a boot or reset remakes the machine.
+
+**`boot_runner`** refuses `--watch-vram` with `--hw-raster` - which command wrote
+each pixel is the software rasteriser's own accounting - and its report says the
+hardware rasteriser keeps no pixel counts, rather than printing zeroes.
+
+**Verified.**
+- **Framebuffer effects, 26 discs:** the twelve of the table and fourteen more
+  picked for translucency, fog, masks, blur and in-engine intros, 6,000 frames
+  each with a checksum every 100, software against hardware on WARP. All 1,560
+  checkpoints identical, CD sectors included, and every frame-6000 picture the
+  same to the pixel.
+- **The run that found the share asleep.** The first attempt at that batch sat
+  seventeen hours in one group, and Chrono Cross's software run lost a read
+  (`INT5 error`) and froze from frame 3800 while the hardware one read on. Run
+  again with every `boot_runner` under a twenty-minute `timeout`, it matched
+  throughout. Nothing to do with the rasteriser, but a difference in a batch
+  like this means nothing until the sector counts agree.
+- **Save states cross:** Legend of Mana saved at frame 3000 under each
+  rasteriser and loaded under the other: 600 more frames identical at every
+  checkpoint, to the instruction and the pixel. The two states differ only in
+  68 bytes that also differ between two software runs, which look like struct
+  padding written raw - flagged as a task of its own.
+- **`hw_raster_test`, 39 checks:** draws, uploads and VRAM-to-CPU reads
+  interleaved with copies onto themselves - 619 reads, every word the same - and
+  the lost card, handing over at the next frame with nothing lost that had been
+  read back. Its first version of that scene "lost" pixels: commands were still
+  queued when the card went, and were drawn on it, then lost with it - which is
+  what should happen, so the scene now drains first.
+- **The front end, on the graphics card:** View VRAM under the hardware
+  rasteriser, and a reset that keeps the menu ticking Hardware.
+- **All twenty harnesses green, 2,475 checks,** and gpu_test's 73 again through
+  the hardware rasteriser.
+
+## 124. The hardware rasteriser, phase 4: 1x to 8x, and true colour
+
+`PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `psx/raster.h` (`RasterOptions`,
+`ResolveDisplay`), `psx/gpu.*` (`picture`, `set_native_picture`), `psx/emuconfig.h`,
+`psx/settings.h`, `host/machine.cpp`, `app/app.cpp`, `app/menu.cpp`, `app/const.h`, the three
+presenters' filter chains, `tools/boot_runner.cpp`, `tools/hw_raster_test.cpp`,
+`tools/media_test.cpp`
+
+Not a bug: phase 4 of [Hardware-Renderer-Plan.md](Hardware-Renderer-Plan.md),
+which the user asked for. The plan's "Phase 4, as built" has the whole of it.
+
+**What it is.** Settings > Video > Rasteriser: 1x (Native) to 8x, and True
+Colour, for the hardware rasteriser; per game, too. A 320x240 game at 4x is drawn
+at 1280x960 - polygon edges, Gouraud shading and anything drawn into a texture at
+that resolution - and shown so. True colour, on by default above 1x, drops the
+console's dithering and keeps eight bits a channel.
+
+**The machine sees the same at every scale.** A console pixel's top-left
+sub-pixel is its own sample point: there the edge functions are the software
+rasteriser's times the scale squared, exactly, so that sub-pixel gets the
+software rasteriser's integer arithmetic, and native VRAM is taken from those
+sub-pixels alone. Timing, save states, and anything a game reads back of VRAM
+are unchanged by the scale; only what is shown is sharper. With true colour
+off, even the checksums are the software rasteriser's.
+
+**Showing it** meant a second picture beside the native one: `Gpu::picture()`,
+which the front end publishes, read back from the card a frame behind so it
+never waits. The native framebuffer stays for everything that measures; the
+front end, which never shows it, turns it off and spares another wait. Filter
+chains are skipped for pictures wider than 1024, which only these are - a
+chain's passes multiply the size.
+
+**Found on the way:**
+- **Which graphics card.** Asking DXGI for the high-performance card put the
+  rasteriser on this laptop's RTX 4060 instead of its Radeon 780M - and Ridge
+  Racer at 4x fell from 1.29x real time to 0.57x, every picture crossing PCIe to
+  come back. It stays on Windows' default, the card driving the screen, and
+  `boot_runner` now names it.
+- **What the read-back costs.** 8x ran at 0.83x real time with the picture read
+  back and 1.30x without: the read-back is what above 4x costs, and phase 6's
+  shared texture is what removes it. Converting pixels on the card rather than
+  the CPU, and reading a frame behind, bought little on their own.
+
+**Verified.**
+- **`hw_raster_test --scale n`**, true colour off: every scene identical to the
+  software rasteriser's VRAM at 1x-6x and 8x, and on four seeds at 2x-4x.
+- **The twelve-disc table at 4x on the graphics card:** all 36 checkpoint
+  checksums, non-black counts and sector counts identical to software's.
+- **Pictures reviewed** side by side at 1x and 4x: Ridge Racer, Spyro 3 and Metal
+  Gear Solid sharp, with no seams or cracks between polygons; pre-drawn 2D and
+  films the same as at 1x, as they should be.
+- **The front end:** each resolution and True Colour from the menu, the ticks and
+  `psxemu.ini` following, and back to 1x at full speed.
+- **Speed** on the 780M, Ridge Racer 3,000 frames, measured together: software
+  1.25x real time, 2x 1.20x, 4x 1.02x, 6x 0.84x, 8x 0.72x - 4x holds full speed
+  on this laptop's integrated graphics; above it waits for phase 6.
+- **All twenty harnesses green, 2,478 checks,** and gpu_test's 73 again through
+  the hardware rasteriser.
+
+## 125. The hardware rasteriser, phase 5: PGXP
+
+`psx/pgxp.h` (new), `psx/gte.*` (`Precise`, `Recall`), `psx/cpu.*`
+(`StoreWithShadow`), `psx/dma.cpp`, `psx/io_interface.cpp`, `psx/gpu.*`,
+`psx/raster.h`, `psx/system.*`, `psx/emuconfig.h`, `psx/settings.h`,
+`PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `app/app.*`, `app/menu.*`,
+`app/const.h`, `tools/boot_runner.cpp`, `tools/media_test.cpp`
+
+Not a bug: phase 5 of [Hardware-Renderer-Plan.md](Hardware-Renderer-Plan.md),
+which the user asked for. The plan's "Phase 5, as built" has the whole of it.
+
+**What it is.** Settings > Video > Rasteriser > PGXP: Precise Vertices,
+Perspective-Correct Textures and Precise Culling, for the hardware rasteriser;
+per game, too. The GTE rounds every projected vertex to a whole pixel, which is
+why PlayStation polygons wobble as the camera moves and seams open between them;
+and the GPU maps textures linearly across the screen, which is why they bend
+across big polygons. With PGXP the vertex is drawn where the GTE really put it,
+and its depth makes the texture's mapping perspective-correct.
+
+**How the precise position gets from the GTE to the GPU.** Beside every CPU
+register and every word of RAM and the scratchpad sits a shadow: the unrounded
+x and y, the depth, and the 32-bit word it was made for. A shadow counts only
+while its word still holds that value, so only the instructions that move a word
+- MFC2, SWC2, LW, SW, register moves - carry shadows along, and every other
+write makes the shadow stale by changing the value, at no cost. GP0 stores and
+DMA channel 2 hand each word's shadow to the GPU with it. The machine never sees
+any of it - precise culling aside - so with PGXP on every disc runs the same
+instructions and reads the same sectors as with it off.
+
+**Found on the way:**
+- **Half the vertices had no shadow.** Ridge Racer and Spyro 3 move many of the
+  GTE's words by ways a whole-word shadow cannot follow. The GTE now also
+  remembers the last vertex it projected to each word, and a vertex without a
+  shadow takes that one if it was projected this frame or the last. Ridge
+  Racer's coverage went from 48% to 98.7%.
+- **Horizontal streaks across Ridge Racer's road.** Far off, a strip of road
+  thinner than a pixel rounds flat, and the rasteriser dropped a triangle with
+  no area at whole pixels. Drawn where they really are, its neighbours left its
+  band open. A triangle with precise vertices is no longer judged by its rounded
+  area.
+- **Shared edges made watertight.** Each triangle worked out its edges in its
+  own vertex order, so in floating point the two sides of a shared edge could
+  round differently, leaving a pixel on it drawn by neither or by both. Each
+  edge is now worked out from its ends in one fixed order, so the triangle
+  across it gets exactly the opposite value.
+
+**What is left:** a few one-pixel specks near Ridge Racer's horizon, where a
+precise triangle meets one drawn at whole pixels because its vertices arrived
+by a route PGXP cannot follow - its known limit. Ace Combat 3 gets nothing:
+the words it draws with are not ones the GTE projected. And the recompiler keeps
+no shadows, so PGXP runs the interpreter; phase 6 is where that changes.
+
+**Verified.**
+- **Off:** the twelve-disc table through the software rasteriser, every report
+  line byte-identical to before phase 5.
+- **On:** the twelve discs at 2x with `--pgxp`, every checkpoint's instruction
+  and sector counts the same as without.
+- **Coverage** (`boot_runner --pgxp`): Ridge Racer 98.7% of polygon vertices
+  drawn precisely, Wild Arms 2 97%, Spyro 3 89%, Metal Gear Solid 58%.
+- **A/B** at 4x, PGXP off and on: Ridge Racer's road edge, a zigzag of snapped
+  vertices without it, a straight line with it, and the kerb's joins straight.
+  Spyro 3 and Metal Gear Solid reviewed with it on: no cracks, streaks or
+  misplaced polygons.
+- **Speed**, Ridge Racer 3,000 frames on the 780M, measured together: 4x 0.97x
+  real time, 4x with PGXP 1.00x - no measurable cost beyond running the
+  interpreter.
+- **The front end:** the three PGXP items tick, grey out under the software
+  rasteriser, and follow `psxemu.ini`.
+- **All twenty harnesses green, 2,480 checks** (`media_test` two more, for
+  PGXP's options).
+
+## 126. A compiled load told its callback the wrong instruction
+
+`rec/block_compiler.h` (`EmitCall`), `tools/rec_test.cpp`
+
+**Symptom.** None anyone had seen. Found by phase 6 of
+[Hardware-Renderer-Plan.md](Hardware-Renderer-Plan.md): PGXP under the recompiler lost 18% of
+Ridge Racer's precise vertices, and the word loads it carries shadows through were being handed
+addresses like `0x398C0FC0` and `0xFFFFFFFC` for the instruction making them.
+
+**Cause.** Compiled code calls out for every load and store, and each callback's last argument
+is the guest pc of the instruction making the access - the host needs it to point an exception
+at the right instruction. A load's callback is `(context, address, pc)` and a store's
+`(context, address, value, pc)`, so the pc is the third argument of one and the fourth of the
+other. `EmitCall` always put it in the fourth, R9. Stores were right; a load read R8 - whatever
+was left there - as its pc.
+
+**What it did.** `RecompilerBridge::Access` sets the CPU's `prev_pc` from it before the access,
+and `prev_pc` is where an exception points. So a compiled load that faulted - an unaligned
+address, or one nothing answers at - would have raised its exception with EPC somewhere
+arbitrary, and the handler's return gone there. Games do not usually make those loads, which is
+why the twelve-disc table under the recompiler never showed it. The debugger's read
+watchpoints, which name the instruction that read, named garbage for compiled loads too.
+
+**Fix.** `EmitCall` takes the register the pc goes in: `kArg3` for a load, `kArg4` for a store.
+Nothing about timing reads the load's pc, so the recompiler's twelve-disc table is unchanged.
+
+**Why no test caught it.** `rec_test`'s fake memory ignored the pc. It now records it, and
+"every access tells the host which instruction made it" checks each width of load and store
+against its own address, with the allocator on and off.
+
+## 127. The hardware rasteriser, phase 6: the picture on the card, and PGXP under the recompiler
+
+`psx/shared_picture.h` (new), `psx/raster.h`, `psx/gpu.*`, `host/frame_mailbox.h`,
+`host/machine.*`, `psx/recompiler_bridge.h`, `psx/system.cpp`, `rec/runtime.h`,
+`rec/recompiler.h`, `rec/block_compiler.h`, `PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`,
+the four engines (`d3d11_presenter.*`, `d3d12_graphics_engine.*`, `vulkan_engine.*`,
+`opengl_engine.*`), `vk_functions.h`, `gl_functions.h`, `igraphicsengine.h`,
+`video_presenter.*`, `app/app.*`, `tools/boot_runner.cpp`, `tools/hw_raster_test.cpp`,
+`tools/host_test.cpp`, `tools/rec_test.cpp`
+
+Not a bug: phase 6 of [Hardware-Renderer-Plan.md](Hardware-Renderer-Plan.md), the last,
+which the user asked for. The plan's "Phase 6, as built" has the whole of it.
+
+**The picture on the card.** Above 1x the hardware rasteriser's picture used to come back
+through system memory every frame - read back on the machine's thread, copied into the frame,
+and uploaded again by the renderer. Now it is drawn into a texture the renderer's own device
+opens, on the same card, and handed over as a handle: Direct3D 11 and 12 open it directly,
+Vulkan imports it (`VK_KHR_external_memory_win32`) and OpenGL imports its memory
+(`GL_EXT_memory_object_win32`; bug 129 says why not the interop it started with). The
+rasteriser is made on whichever card the renderer draws on, and a
+renderer that cannot take the picture is sent pixels, as before. Emulation > Show Timings says
+`on card` while it is in use.
+
+What made it more than a handle: a texture must not be drawn into while anything still reads
+it. The rasteriser keeps five; one comes back when the renderer's card has finished the frame
+that read an older picture, or when the frame carrying it was replaced before the video thread
+took it - which `FrameMailbox::Publish` now reports. With all five in use, the picture is read
+back that frame. And the renderer waits for each picture on its own thread, on the CPU with a
+time limit, so neither card can ever wait on the other.
+
+**PGXP under the recompiler.** The recompiler compiles no GTE instruction, so what compiled code
+missed was only word loads and stores and register copies. The loads and stores already call
+out for every access, with their pc: the bridge reads the instruction there and carries the
+shadow as the interpreter does. Copies call a new `BlockState::move`, emitted only while PGXP is
+on. PGXP no longer turns the recompiler off.
+
+**Found on the way:** bug 126 - a compiled load handed its callback the wrong pc.
+
+**Verified.**
+- **The picture:** Ridge Racer at 4x, the shared picture pixel-identical to the read-back one;
+  `hw_raster_test`'s new scene, the same and its textures recycled as they should be.
+- **The front end:** the test disc on all four renderers, switched to live, at 1x to 8x, with a
+  filter chain on too - every picture right, and F12 screenshots from Vulkan (on the RTX 4060)
+  and Direct3D 12 (on the Radeon 780M) byte-identical.
+- **Speed**, Ridge Racer 3,000 frames through the front end's path: 4x from 1.17x real time
+  read back to 1.38x on the card, 8x from 0.61x to 1.34x (software 1.57x).
+- **PGXP under the recompiler**, six discs: the machine exactly as without PGXP, and precise
+  vertices the interpreter's on five and within 0.01% on Spyro 3. What it costs, Ridge Racer at
+  4x: the recompiler 4.19x real time, with PGXP 3.98x. At 8x with PGXP - this user's settings -
+  0.83x under phase 5, which ran the interpreter and read the picture back, and 2.75x now.
+- **The twelve-disc table**: through the software rasteriser, every report line as before;
+  under the recompiler, every checkpoint's picture the software table's and its sector counts
+  as on 2026-09-25; at 4x on the card, every checkpoint's picture and sector count the software
+  table's.
+- **All twenty harnesses green, 2,494 checks.**
+
+## 128. Choosing the graphics card
+
+`graphics/adapters.h` (new), `graphics/igraphicsengine.h`, `graphics/d3d11_presenter.*`,
+`graphics/d3d12_graphics_engine.*`, `graphics/vulkan_engine.*`, `graphics/video_presenter.*`,
+`graphics/hw_raster/d3d11_raster.cpp`, `app/engine_factory.*`, `app/app.*`, `app/menu.*`,
+`app/const.h`, `psx/emuconfig.h`, `psx/settings.h`, `tools/boot_runner.cpp`,
+`tools/media_test.cpp`
+
+Not a bug: a request - "let the user choose which GPU to use, for any of the engines and the
+Direct3D 11 rasteriser". [Hardware-Renderer-Plan.md](Hardware-Renderer-Plan.md), "After phase 6",
+has the whole of it.
+
+**What it is.** Settings > Video > Graphics Card: Automatic, then each card by name and video
+memory (one card: a line saying so). Saved as `graphics_adapter`, the card's name - a LUID changes
+every restart - and a name that is not there means Automatic until it is. Direct3D 11 and 12 make
+their device on the card, Vulkan picks it (by LUID, or by name where the driver will not give
+one), and the hardware rasteriser draws on it, handing its pictures over on the card only when
+that is the renderer's card too and reading them back otherwise. It applies live: the renderer,
+then the rasteriser, are made again keeping VRAM.
+
+**OpenGL cannot be told.** Windows and the driver decide which card a GL context lands on, per
+program; nothing an application asks changes that. The engine says which card it landed on (the
+extension's own LUID), the rasteriser still goes where it was asked, and a notice explains the
+slower copy across when they differ.
+
+**Verified**, by Windows' own counters naming the card a process really allocated on, at 8x:
+Direct3D 11, 12 and Vulkan on each card chosen and on Automatic (Vulkan's Automatic being the
+discrete card, as it always was), OpenGL on the Radeon, and OpenGL with the 4060 chosen putting
+the rasteriser there and the picture across, at 28 fps; switching live between the cards and
+Automatic from the menu, each written to `psxemu.ini`; `boot_runner --gpu` drawing Ridge Racer
+on each card by name. Those runs were made before the RTX 4060 dropped out of the machine (bug
+129's testing note).
+
+## 129. Shared pictures, found by testing 128: a livelock, an undersized pool, and a real leak in AMD's OpenGL interop
+
+`graphics/d3d11_presenter.*`, `graphics/d3d12_graphics_engine.*`, `graphics/vulkan_engine.*`,
+`graphics/opengl_engine.*`, `graphics/gl_functions.h`, `graphics/hw_raster/d3d11_raster.*`,
+`psx/shared_picture.h`
+
+**A livelock (phase 6).** The rasteriser rotates its pictures through a fixed set of textures
+and a presenter hands one back only while it is drawing shared pictures. When the set was
+briefly full - the first frames after start - a frame went out as pixels, and after that nothing
+was ever handed back: every frame was read back for good, 20-29 fps at 8x, in about half the
+Direct3D 11 starts tried. Every presenter now hands the last picture back from a frame of
+pixels too. Six starts in a row then ran at full speed on the card.
+
+**Too few textures.** Five; the presenter releases a few frames behind, and five ran out in 3 to
+36 of the first 300 frames. Eight (`kSharedTextureCount`) ran out in none of six starts. The
+presenters' caches of opened textures were resized with it (`kMaxOpenedPictures`): left at six,
+they would have closed and reopened textures constantly.
+
+**A real leak in AMD's `WGL_NV_DX_interop`.** OpenGL's first way of taking a picture registered
+each shared texture with the interop and blitted it. Each switch to OpenGL then cost about 550
+handles and 18 threads, and about 300 MB of RAM at 8x (75 MB at 4x - one picture's worth per
+registration): over six cycles free RAM fell 45.0 → 43.5 GB and committed memory rose 21.9 →
+23.5 GB. The driver does it: a scratch program with none of the emulator in it loses 56 MB per
+three textures registered at 2560x1920, however they are unregistered, and the Direct3D device
+they were registered on keeps its ~550 handles. Reusing one device for the whole process stopped
+the handles and not the memory. OpenGL now imports the texture's memory as a memory object
+(`GL_EXT_memory_object_win32`) and draws it into the frame texture with red and blue swapped
+back - Direct3D writes BGRA, GL reads the bytes as RGBA - and gets the card from the extension's
+LUID query, so it makes no Direct3D device at all. The same program leaks nothing that way, and
+in the emulator six OpenGL sessions at 8x leave free RAM, committed memory and handles flat (the
+baseline is 550 handles lower). A probe that has the rasteriser redraw its pictures over and over
+and reads each back through GL against Direct3D's own read of the texture - all eight textures in
+turn, 792 of 800 reads of textures already opened and rewritten, only the fence between them -
+found none wrong.
+
+**Not a leak: Windows' per-process GPU memory counters.** The figures Task Manager shows per
+process climb when a second device opens shared textures and never fall - about 840 MB for
+each there-and-back between two renderers at 8x - while free RAM, committed memory, what the card holds across all
+processes and the process's own `QueryVideoMemoryInfo` stay flat, and a rasteriser made and
+destroyed in a loop returns every one of them to zero. It was chased as a leak for an
+afternoon; it is bookkeeping.
+
+**A testing note.** The test laptop restarted in the middle of a run (bugcheck 0x9F, a driver
+blocked on a power request), after dozens of runs creating and destroying devices on its
+discrete card, and the RTX 4060 has not been listed by DXGI since. The dump could not be read.
+MSI Afterburner with RivaTuner was running, and was closed afterward; the OpenGL findings above
+were reproduced with neither, and none of the tests since touch the 4060.
+
+**Verified.** `hw_raster_test` 45 checks; OpenGL, Direct3D 11 and 12 and Vulkan each showing the
+test disc's picture on the card with the right colours, and the BIOS's, on the Radeon. **All
+twenty harnesses green, 2,497 checks** - `media_test` three more (389: the card's name
+round-tripping, and a name too long to be one being ignored), the rest as in bug 127.

@@ -51,7 +51,24 @@ namespace psxemu {
         const GraphicsBackend preferred = ParseGraphicsBackend(renderer);
         std::wstring warning;
         std::string opened;
-        engine_ = CreateGraphicsEngine(preferred, windows_, width_, height_, &opened, &warning);
+        engine_ = CreateGraphicsEngine(preferred, windows_, width_, height_, &opened, &warning,
+                                       card_luid_, card_name_);
+        if (engine_ == nullptr && card_luid_ != 0) {
+            // No engine would start on the card chosen. Better a picture on the one Windows
+            // picks than none, with the reason - the card is dropped from here on, so the menu
+            // and the rasteriser are told what really happened (card_luid()).
+            card_luid_ = 0;
+            std::string reason = card_name_;
+            card_name_.clear();
+            engine_ = CreateGraphicsEngine(preferred, windows_, width_, height_, &opened,
+                                           &warning);
+            if (engine_ != nullptr) {
+                std::wstring text = L"No renderer would start on " +
+                                    std::wstring(reason.begin(), reason.end()) +
+                                    L"; using the graphics card Windows chose instead.";
+                warning = warning.empty() ? text : text + L"\n" + warning;
+            }
+        }
         if (engine_ == nullptr) {
             renderer_.clear();
             filter_.clear();
@@ -78,6 +95,18 @@ namespace psxemu {
     void D3DPresenter::Present(const VideoFrame& frame) {
         if (engine_ == nullptr)
             return;
+
+        // The hardware rasteriser's picture, left on the card. One this engine cannot open - the
+        // renderer just switched to one that cannot, and the rasteriser has not heard yet - is
+        // not shown; the frames after it come as pixels. One never finished - the rasteriser's
+        // card lost - is not shown either.
+        if (frame.shared) {
+            if (engine_->SharedPictureAdapter() != frame.shared.source->adapter() ||
+                !frame.shared.source->WaitReady(frame.shared.serial, kSharedPictureWaitMs))
+                return;
+            DrawShared(frame.shared);
+            return;
+        }
 
         const uint32_t* pixels = frame.pixels.data();
         int width = frame.width;
@@ -117,6 +146,21 @@ namespace psxemu {
             std::chrono::duration<double, std::milli>(Overlay::Clock::now() - start).count());
     }
 
+    void D3DPresenter::DrawShared(const emulation::psx::SharedPicture& picture) {
+        const auto start = Overlay::Clock::now();
+        if (stats_ != nullptr)
+            stats_->Drain([this](const emulation::host::FrameSample& s) { overlay_.AddSample(s); });
+        const OverlayDrawData& overlay =
+            overlay_.Build(width_, height_, picture.width, picture.height, start);
+        engine_->SetOverlay(&overlay);
+        engine_->BeginFrame();
+        engine_->RenderSharedPicture(picture);
+        engine_->EndFrame();
+        engine_->SetOverlay(nullptr);
+        overlay_.NotePresent(
+            std::chrono::duration<double, std::milli>(Overlay::Clock::now() - start).count());
+    }
+
     bool D3DPresenter::WantsRefresh() {
         return engine_ != nullptr && overlay_.NeedsRedraw(Overlay::Clock::now());
     }
@@ -148,6 +192,21 @@ namespace psxemu {
     void D3DPresenter::SetRenderer(const std::string& key) {
         if (key == renderer_)
             return;
+        Rebuild(key);
+    }
+
+    // Settings > Video > Graphics Card. The engine is made again on the new card - unless it is
+    // OpenGL, which no card can be asked of, so there is nothing to make again.
+    void D3DPresenter::SetGraphicsCard(uint64_t luid, const std::string& name) {
+        if (luid == card_luid_ && name == card_name_)
+            return;
+        card_luid_ = luid;
+        card_name_ = name;
+        if (engine_ != nullptr && renderer_ != "opengl")
+            Rebuild(renderer_);
+    }
+
+    void D3DPresenter::Rebuild(const std::string& key) {
         const std::string keep_filter = filter_;
         if (engine_ != nullptr)
             engine_->Shutdown();

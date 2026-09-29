@@ -188,6 +188,7 @@
     </ClCompile>
     <ClCompile Include="psx\dma.cpp" />
     <ClCompile Include="psx\gpu.cpp" />
+    <ClCompile Include="psx\software_raster.cpp" />
     <ClCompile Include="psx\gte.cpp" />
     <ClCompile Include="psx\io_interface.cpp" />
     <ClCompile Include="psx\iso9660.cpp" />
@@ -234,7 +235,11 @@
     <ClInclude Include="psx\dma.h" />
     <ClInclude Include="psx\gpu.h" />
     <ClInclude Include="psx\gpu_core.h" />
+    <ClInclude Include="psx\raster.h" />
+    <ClInclude Include="psx\shared_picture.h" />
+    <ClInclude Include="psx\software_raster.h" />
     <ClInclude Include="psx\gte.h" />
+    <ClInclude Include="psx\pgxp.h" />
     <ClInclude Include="psx\io_interface.h" />
     <ClInclude Include="psx\kernel.h" />
     <ClInclude Include="psx\iso9660.h" />

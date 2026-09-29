@@ -586,23 +586,47 @@ class FakeBus {
   // told to stop where it is.
   emulation::rec::Recompiler* faults_on_unaligned = nullptr;
 
-  static uint32_t Load32(void* c, uint32_t a, uint32_t) {
+  // The guest pc every call was handed, in order: the instruction making the access.
+  std::vector<uint32_t> pcs;
+
+  static uint32_t Load32(void* c, uint32_t a, uint32_t pc) {
     Bus(c)->NoteStackAlignment(_AddressOfReturnAddress());
     FakeBus* bus = Bus(c);
+    bus->pcs.push_back(pc);
     if (bus->faults_on_unaligned != nullptr && (a & 3) != 0) {
       bus->faults_on_unaligned->SetFault();
       return 0;
     }
     return bus->DoRead(a, 4);
   }
-  static uint32_t Load16(void* c, uint32_t a, uint32_t) { return Bus(c)->DoRead(a, 2); }
-  static uint32_t Load8(void* c, uint32_t a, uint32_t) { return Bus(c)->DoRead(a, 1); }
-  static void Store32(void* c, uint32_t a, uint32_t v, uint32_t) {
+  static uint32_t Load16(void* c, uint32_t a, uint32_t pc) {
+    Bus(c)->pcs.push_back(pc);
+    return Bus(c)->DoRead(a, 2);
+  }
+  static uint32_t Load8(void* c, uint32_t a, uint32_t pc) {
+    Bus(c)->pcs.push_back(pc);
+    return Bus(c)->DoRead(a, 1);
+  }
+  static void Store32(void* c, uint32_t a, uint32_t v, uint32_t pc) {
     Bus(c)->NoteStackAlignment(_AddressOfReturnAddress());
+    Bus(c)->pcs.push_back(pc);
     Bus(c)->DoWrite(a, 4, v);
   }
-  static void Store16(void* c, uint32_t a, uint32_t v, uint32_t) { Bus(c)->DoWrite(a, 2, v); }
-  static void Store8(void* c, uint32_t a, uint32_t v, uint32_t) { Bus(c)->DoWrite(a, 1, v); }
+  static void Store16(void* c, uint32_t a, uint32_t v, uint32_t pc) {
+    Bus(c)->pcs.push_back(pc);
+    Bus(c)->DoWrite(a, 2, v);
+  }
+  static void Store8(void* c, uint32_t a, uint32_t v, uint32_t pc) {
+    Bus(c)->pcs.push_back(pc);
+    Bus(c)->DoWrite(a, 1, v);
+  }
+
+  // Register copies reported to the host (BlockState::move), as {to, from}.
+  std::vector<std::pair<uint32_t, uint32_t>> moves;
+  static void Move(void* c, uint32_t to, uint32_t from) {
+    Bus(c)->NoteStackAlignment(_AddressOfReturnAddress());
+    Bus(c)->moves.push_back({ to, from });
+  }
 
  private:
   static FakeBus* Bus(void* context) { return static_cast<FakeBus*>(context); }
@@ -632,6 +656,7 @@ emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
   state.store32 = &FakeBus::Store32;
   state.store16 = &FakeBus::Store16;
   state.store8 = &FakeBus::Store8;
+  state.move = &FakeBus::Move;
   return state;
 }
 
@@ -2230,6 +2255,101 @@ void TestTheAllocatorAllocates() {
 
 }  // namespace
 
+// Compiles `program` at kProgramBase with the allocator on or off and the moves reported or not,
+// and runs it once over a fresh bus: what the host's callbacks were told.
+void CompileAndRun(const std::vector<uint32_t>& program, bool allocate, bool track_moves,
+                   const uint32_t initial[32], FakeBus* bus, uint32_t* compiled_count) {
+  FakeMemory memory;
+  memory.Write(kProgramBase, program);
+  BlockDecoder decoder(memory.Fetch());
+  const DecodedBlock decoded =
+      decoder.Decode(kProgramBase, static_cast<uint32_t>(program.size()));
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+  compiler.set_allocate_registers(allocate);
+  compiler.set_track_moves(track_moves);
+  const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
+  uint32_t regs[32];
+  for (int i = 0; i < 32; ++i)
+    regs[i] = initial[i];
+  emulation::rec::BlockState state = MakeState(regs, bus);
+  RunBlock(code, &state);
+  *compiled_count = compiled.compiled;
+  emitter.destroy_block(code);
+}
+
+void TestEveryAccessIsToldItsOwnPc() {
+  printf("every access tells the host which instruction made it\n");
+
+  // A load's callback is (context, address, pc) and a store's (context, address, value, pc), so
+  // the pc is the third argument of one and the fourth of the other. Every access used to put it
+  // in the fourth, and a load was handed whatever R8 held: an exception it raised pointed at
+  // nowhere, and PGXP could not tell which register a word loaded into (bug 126).
+  uint32_t initial[32] = {};
+  initial[1] = kBusBase;
+  initial[2] = 0x11223344;
+  const std::vector<uint32_t> program = {
+      LW(4, 1, 0), NOP(), LB(5, 1, 0), NOP(), LBU(6, 1, 0), NOP(),
+      LH(7, 1, 0), NOP(), LHU(8, 1, 0), NOP(),
+      SW(2, 1, 16), SB(2, 1, 20), SH(2, 1, 24),
+  };
+  const std::vector<uint32_t> expected = {
+      kProgramBase + 0,  kProgramBase + 8,  kProgramBase + 16, kProgramBase + 24,
+      kProgramBase + 32, kProgramBase + 40, kProgramBase + 44, kProgramBase + 48,
+  };
+  for (int allocate = 0; allocate < 2; ++allocate) {
+    FakeBus bus;
+    uint32_t compiled = 0;
+    CompileAndRun(program, allocate != 0, false, initial, &bus, &compiled);
+    Check(compiled == program.size() && bus.pcs == expected && bus.alignment_ok,
+          allocate ? "each access's own pc, the allocator on"
+                   : "each access's own pc, the allocator off");
+  }
+}
+
+void TestRegisterCopiesAreReportedWhenAsked() {
+  printf("register copies are reported to the host only when it asks\n");
+
+  // What the emulator's PGXP keeps beside each register travels with it on a copy, which the
+  // interpreter reports from its ADDU, OR, ADDIU and ORI; compiled code does the same through
+  // BlockState::move, and only then - off, not a byte of it is emitted.
+  uint32_t initial[32] = {};
+  initial[2] = 0x1234;
+  initial[3] = 0x5678;
+  const std::vector<uint32_t> program = {
+      ADDU(4, 2, 0),     // move 4, 2
+      ADDU(5, 0, 3),     // move 5, 3 - r0 first
+      OR_(6, 3, 0),      // move 6, 3
+      OR_(7, 0, 2),      // move 7, 2
+      ADDIU(8, 2, 0),    // move 8, 2
+      ORI_(9, 3, 0),     // move 9, 3
+      ADDU(10, 2, 3),    // arithmetic, not a copy
+      ADDIU(11, 2, 1),   // nor this
+      ORI_(12, 3, 1),    // nor this
+      ADDU(0, 2, 0),     // a copy into r0 goes nowhere
+  };
+  const std::vector<std::pair<uint32_t, uint32_t>> expected = {
+      { 4, 2 }, { 5, 3 }, { 6, 3 }, { 7, 2 }, { 8, 2 }, { 9, 3 },
+  };
+  for (int allocate = 0; allocate < 2; ++allocate) {
+    FakeBus tracked, untracked;
+    uint32_t compiled_tracked = 0, compiled_untracked = 0;
+    CompileAndRun(program, allocate != 0, true, initial, &tracked, &compiled_tracked);
+    CompileAndRun(program, allocate != 0, false, initial, &untracked, &compiled_untracked);
+    Check(compiled_tracked == program.size() && tracked.moves == expected &&
+              tracked.alignment_ok,
+          allocate ? "the copies, and only they, the allocator on"
+                   : "the copies, and only they, the allocator off");
+    Check(compiled_untracked == program.size() && untracked.moves.empty(),
+          allocate ? "none when not asked, the allocator on"
+                   : "none when not asked, the allocator off");
+  }
+  // And the copies themselves still copy: the arithmetic is the same either way.
+  Check(RunBothWays(program, initial, "copies, tracked or not", false),
+        "the copies compute what the interpreter computes");
+}
+
 int main() {
   printf("rec_test - emitter, block cache, decoder, compiler, engine\n");
   printf("           (Docs/Recompiler-Plan.md steps 1 to 6)\n\n");
@@ -2265,6 +2385,8 @@ int main() {
   TestTheBudgetBoundsAChain();
   TestAStoreBreaksTheLinksIntoABlock();
   TestAFaultingAccessStopsTheBlock();
+  TestEveryAccessIsToldItsOwnPc();
+  TestRegisterCopiesAreReportedWhenAsked();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

@@ -296,12 +296,17 @@ void FrameMailboxChecks() {
           "a frame is taken once, and stays current until the next");
 
     mailbox.back().number = 2;
-    mailbox.Publish();
+    // The slot handed back is one no frame was waiting in.
+    const bool second = !mailbox.Publish();
     mailbox.back().number = 3;
-    mailbox.Publish();
+    // Frame 2 was never taken: the slot handed back to fill is its, and Publish says so - which
+    // is how the machine gives a picture nobody will show back to the hardware rasteriser.
+    const bool replaced = mailbox.Publish() && mailbox.back().number == 2;
     const VideoFrame* newest = mailbox.TakeNew();
     Check(newest != nullptr && newest->number == 3 && mailbox.dropped() == 1,
           "the consumer gets the newest; the one it missed is counted as dropped");
+    Check(second && replaced,
+          "Publish says when the slot it hands back held a frame nobody took");
   }
 
   // Every pixel of a frame carries the frame's number, so a frame read while

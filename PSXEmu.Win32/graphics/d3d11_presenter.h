@@ -22,7 +22,9 @@
 
 #include <d3d11.h>
 #include <cstdint>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace psxemu {
 
@@ -50,12 +52,19 @@ namespace psxemu {
         D3D11Presenter();
         ~D3D11Presenter() override;
 
+        void SetPreferredAdapter(uint64_t luid, const std::string&) override {
+            preferred_luid_ = luid;
+        }
         bool Initialize(HWND window, int width, int height) override;
         void Shutdown() override;
 
         void BeginFrame() override;
         void RenderFramebuffer(const void* data, int width, int height) override;
         void EndFrame() override;
+
+        // Drawn straight from the rasteriser's texture, opened on this device.
+        bool RenderSharedPicture(const emulation::psx::SharedPicture& picture) override;
+        uint64_t SharedPictureAdapter() const override { return adapter_luid_; }
 
         // Called when the window is resized; the back buffer follows the client area.
         void Resize(int width, int height) override;
@@ -117,6 +126,42 @@ namespace psxemu {
         bool CreateRenderTarget();
         void ReleaseRenderTarget();
         bool EnsureFrameTexture(int width, int height);
+        // Draws `view` - this frame's picture - letterboxed into the window.
+        void DrawFrame(ID3D11ShaderResourceView* view);
+
+        // What this frame shows, for the overlay's glass to read: frame_view_, or a shared
+        // picture's view. Not owned.
+        ID3D11ShaderResourceView* shown_view_ = nullptr;
+
+        // Shared pictures (psx/shared_picture.h): the adapter this device is on; the
+        // rasteriser's textures opened here, by their ids - one source's at a time, a handful at
+        // most; and for each frame drawn from one, a query that says when the card is done with
+        // it, and the picture to hand back then.
+        uint64_t adapter_luid_ = 0;
+        uint64_t preferred_luid_ = 0;   // the card asked for; 0 leaves it to Windows
+        struct OpenedPicture {
+            uint64_t id;
+            ID3D11Texture2D* texture;
+            ID3D11ShaderResourceView* view;
+        };
+        std::vector<OpenedPicture> opened_pictures_;
+        const emulation::psx::SharedPictureSource* opened_source_ = nullptr;
+        struct PendingRelease {
+            ID3D11Query* done;
+            std::shared_ptr<emulation::psx::SharedPictureSource> source;
+            uint64_t serial;
+        };
+        std::vector<PendingRelease> pending_releases_;
+        // The last shared picture drawn, until a frame of pixels hands it back (HandBackTrail).
+        std::shared_ptr<emulation::psx::SharedPictureSource> trail_source_;
+        uint64_t trail_serial_ = 0;
+        void HandBack(const std::shared_ptr<emulation::psx::SharedPictureSource>& source,
+                      uint64_t serial);
+        void HandBackTrail();
+        std::vector<ID3D11Query*> spare_queries_;
+        void ForgetOpenedPictures();
+        // Hands back the pictures whose frames the card has finished - all of them if `all`.
+        void ReleasePictures(bool all);
     };
 
 }   // namespace psxemu

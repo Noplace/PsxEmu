@@ -113,6 +113,9 @@ class System {
   // count it.
   Debugger& debugger() { return debugger_; }
   GTE& gte() { return gte_; };
+  // PGXP's shadows (psx/pgxp.h): on while EmuConfig::pgxp_vertices is and the hardware
+  // rasteriser draws.
+  Pgxp& pgxp() { return pgxp_; }
   // The user-facing settings. Read rather than cached, so a change takes
   // effect without anything needing to be told about it.
   EmuConfig& config() { return config_; }
@@ -140,6 +143,11 @@ class System {
   uint8_t* bios() { return io_.bios_buffer.u8; }
   double base_freq_hz() { return base_freq_hz_; }
   void set_base_freq_hz(double base_freq_hz) { base_freq_hz_ = base_freq_hz; }
+  // The hardware rasteriser a front end can make, for EmuConfig::gpu_rasteriser =
+  // "hardware". Set before Initialize; the GPU asks for one each time it is initialised.
+  void set_hardware_raster(RasterFactory factory) { hardware_raster_ = std::move(factory); }
+  const RasterFactory& hardware_raster() const { return hardware_raster_; }
+
   // The core owns the GPU and the framebuffer; a front end only reads them.
   Gpu& gpu() { return gpu_; }
   GpuCore* gpu_core() { return &gpu_; }
@@ -219,6 +227,7 @@ class System {
   uint64_t interrupts_blocked_im_;
   uint64_t interrupts_after_gte_command_ = 0;
   uint64_t instructions_with_ie_;
+  RasterFactory hardware_raster_;   // declared before gpu_, which asks for it
   Gpu gpu_;
   CpuContext cpu_context_;
   Cpu cpu_;
@@ -229,6 +238,7 @@ class System {
   Kernel kernel_;
   Debugger debugger_{this};
   GTE gte_;
+  Pgxp pgxp_;
   Iso9660 iso_;
   EmuConfig config_;
 };

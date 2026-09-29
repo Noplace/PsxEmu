@@ -39,8 +39,12 @@ PsxEmu/
       cpu_context.h            register file
       recompiler_bridge.h      the one file that knows both cpu.h and rec/
       gte.h/.cpp               geometry coprocessor: all 22 commands
+      pgxp.h                   PGXP's shadows: each register's and RAM word's unrounded vertex
       gpu_core.h               the interface the core talks to the GPU through
-      gpu.h/.cpp               software GPU: VRAM, GP0/GP1, rasteriser
+      gpu.h/.cpp               the GPU: VRAM, GP0/GP1, GPUSTAT, the queue, display timing, draw costs
+      raster.h                 DrawJob and RasterBackend - what puts a draw's pixels down
+      shared_picture.h         a picture left on the graphics card, for a renderer to open there
+      software_raster.h/.cpp   the software rasteriser: every DrawJob into native VRAM
       cdrom.h/.cpp             CD-ROM controller: FIFOs, all 28 commands, CD-DA and XA-ADPCM
       disc.h/.cpp              disc images: cue, chd, mds/mdf, ccd/img, bin, iso, physical drive
       iso9660.h/.cpp           the filesystem: volume descriptor, directories, file lookup
@@ -78,7 +82,11 @@ PsxEmu/
       lean/hash_table.h
     tools/                     headless harnesses, built by a .bat, not the solution
       build_tools.bat
-      boot_runner.cpp          boots a BIOS or disc, reports everything; the checksum baselines
+      boot_runner.cpp          boots a BIOS or disc, reports everything; the checksum baselines.
+                               Also links the hardware rasteriser, for --hw-raster [--warp]
+      ppm_diff.cpp             two of boot_runner's pictures compared, and shown side by side
+      hw_raster_test.cpp       the hardware rasteriser against the software one, pixel for
+                               pixel, scene by scene on WARP
       cpu_test.cpp  gte_test.cpp  gpu_test.cpp  mdec_test.cpp
       timer_test.cpp  sio_test.cpp  spu_test.cpp  media_test.cpp  mc_test.cpp  debug_test.cpp
                                the ten emulation harnesses (Docs/Test-Suite.md)
@@ -109,6 +117,8 @@ PsxEmu/
       app_icon.h               the application icon, for every window class
     graphics/                  the renderers, all behind one interface
       igraphicsengine.h        what a presenter has to be able to do
+      adapters.h               the graphics cards by name and LUID, and picking one
+                               (Settings > Video > Graphics Card); header-only, the tools use it too
       video_presenter.h/.cpp   what the video thread draws with, and the menus' asks of it
       d3d11_presenter.h/.cpp   uploads the core framebuffer and draws it; no filters
       d3d12_graphics_engine.h/.cpp   the same, plus the ported pixel-shader filters
@@ -118,6 +128,9 @@ PsxEmu/
       vulkan_engine.h/.cpp     the same again in Vulkan 1.0, on a child window of its own
       vk_functions.h           the Vulkan the engine uses, declared here; vulkan-1.dll is loaded
                                at run time, nothing is linked
+      hw_raster/               the hardware rasteriser (Docs/Hardware-Renderer-Plan.md)
+        d3d11_raster.h/.cpp    DrawJobs drawn on the graphics card with Direct3D 11, into a copy
+                               of VRAM kept there; native VRAM brought up to date in 32x32 tiles
     input/                     the host's devices, and what they press
       input_thread.h/.cpp      the input thread: pads, keyboard, raw mouse at 1 kHz
       sony_pads.h/.cpp         DualShock 4 and DualSense pads over HID, in the Gamepad slots XInput leaves
