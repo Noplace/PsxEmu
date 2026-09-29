@@ -28,6 +28,7 @@
 // takes a lock.
 
 #include "host/machine.h"
+#include "ui/overlay/memory_usage.h"
 #include "ui/overlay/overlay_atlas.h"
 #include "ui/overlay/overlay_draw.h"
 
@@ -160,6 +161,8 @@ namespace psxemu {
         void DrawControllers(float width, Clock::time_point now);
         void DrawStats(float width, float height, int frame_width, int frame_height);
         void DrawCompactStats(float x, float y);
+        // Reads the process's memory use, at most once a second and only while a stats panel is up.
+        void SampleMemory(Clock::time_point now);
         void DrawFastForward(float width);
         void DrawStatePicker(float width, float height);
         // A line graph of `values` over a box, `low`..`high` bottom to top, with an optional
@@ -197,6 +200,11 @@ namespace psxemu {
         std::vector<StatePickerSlot> picker_slots_;
         std::string renderer_, filter_;
         uint64_t frames_dropped_ = 0, audio_short_ = 0, audio_dropped_ = 0;
+
+        // The process's memory, as last read (SampleMemory).
+        MemoryMonitor memory_monitor_;
+        MemoryUsage memory_;
+        Clock::time_point memory_at_{};
 
         // The last few seconds, frame by frame.
         static const size_t kRecentFrames = 300;

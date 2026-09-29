@@ -83,6 +83,12 @@ namespace psxemu {
         std::wstring Widen(const std::string& text) {
             return std::wstring(text.begin(), text.end());
         }
+        // 640 MB, 1.42 GB: megabytes until there are a thousand of them.
+        std::wstring Bytes(uint64_t bytes) {
+            const double megabytes = static_cast<double>(bytes) / (1024.0 * 1024.0);
+            return megabytes >= 1024.0 ? Format(L"%.2f GB", megabytes / 1024.0)
+                                       : Format(L"%.0f MB", megabytes);
+        }
 
     }   // namespace
 
@@ -316,6 +322,17 @@ namespace psxemu {
             dirty_ = true;
     }
 
+    // Once a second, and only while a stats panel is showing: a few system calls and a walk over the
+    // graphics cards, nothing to do every frame.
+    void Overlay::SampleMemory(Clock::time_point now) {
+        if (stats_mode_ == StatsMode::kOff)
+            return;
+        if (memory_at_ != Clock::time_point{} && now - memory_at_ < std::chrono::seconds(1))
+            return;
+        memory_ = memory_monitor_.Sample();
+        memory_at_ = now;
+    }
+
     void Overlay::NotePresent(double milliseconds) {
         presents_.push_back(static_cast<float>(milliseconds));
         while (presents_.size() > kRecentFrames)
@@ -388,6 +405,7 @@ namespace psxemu {
         frame_y_ = picture.y;
         frame_w_ = picture.width > 0.0f ? picture.width : 1.0f;
         frame_h_ = picture.height > 0.0f ? picture.height : 1.0f;
+        SampleMemory(now);
         if (stats_mode_ == StatsMode::kFull)
             DrawStats(w, h, frame_width, frame_height);
         else if (stats_mode_ == StatsMode::kCompact)
@@ -771,7 +789,7 @@ namespace psxemu {
                 heights[slot.port] = card_h + tap_h;
         }
         const float panel_right = stats_mode_ == StatsMode::kFull      ? margin + 392.0f * s_
-                                  : stats_mode_ == StatsMode::kCompact ? margin + 260.0f * s_
+                                  : stats_mode_ == StatsMode::kCompact ? margin + 300.0f * s_
                                                                        : 0.0f;
         const bool stack = width - margin - 2.0f * card_w - gap < panel_right + gap;
         float right = width - margin;
@@ -849,16 +867,26 @@ namespace psxemu {
         const float graph_w = 110.0f * s_;
         const float graph_h = 22.0f * s_;
         const OverlayAtlas::Font& bold = atlas_.font(OverlayFont::kBold);
+        const OverlayAtlas::Font& small = atlas_.font(OverlayFont::kSmall);
         const float fps = buckets_.empty() ? 0.0f : buckets_.back().fps;
         const float refresh = last_refresh_hz_ > 0.0f ? last_refresh_hz_ : 60.0f;
         std::wstring label = paused_ ? std::wstring(L"Paused")
                                      : Format(L"%.1f FPS", fps) +
                                            Format(L"  %.0f%%", fps / refresh * 100.0f);
-        const float text_w = (std::max)(atlas_.Measure(OverlayFont::kBold, label), 96.0f * s_);
+        // Under it, the memory: RAM the process holds and what it has on the graphics cards.
+        std::wstring memory = L"RAM " + Bytes(memory_.working_set);
+        if (memory_.has_gpu)
+            memory += L"   GPU " + Bytes(memory_.gpu_dedicated);
+        const float text_w = (std::max)((std::max)(atlas_.Measure(OverlayFont::kBold, label),
+                                                   atlas_.Measure(OverlayFont::kSmall, memory)),
+                                        96.0f * s_);
         const float w = pad + text_w + pad + graph_w + pad;
-        const float h = (std::max)(bold.line_height, graph_h) + 2.0f * pad;
+        const float text_h = bold.line_height + small.line_height;
+        const float h = (std::max)(text_h, graph_h) + 2.0f * pad;
         Panel(x, y, w, h, 8.0f * s_, 1.0f);
-        Text(OverlayFont::kBold, x + pad, y + (h - bold.line_height) * 0.5f, label, kTextMain);
+        Text(OverlayFont::kBold, x + pad, y + (h - text_h) * 0.5f, label, kTextMain);
+        Text(OverlayFont::kSmall, x + pad, y + (h - text_h) * 0.5f + bold.line_height, memory,
+             kTextDim);
         std::vector<float> values;
         const size_t take = (std::min)(buckets_.size(), static_cast<size_t>(20));
         for (size_t i = buckets_.size() - take; i < buckets_.size(); ++i)
@@ -904,7 +932,7 @@ namespace psxemu {
                         small.line_height + 3.0f * s_ + graph_frames + 6.0f * s_ +
                         small.line_height + 10.0f * s_ +                           // legend
                         small.line_height + 3.0f * s_ + graph_audio + 10.0f * s_ +   // audio
-                        regular.line_height + small.line_height + pad;             // footer
+                        2.0f * regular.line_height + 2.0f * small.line_height + pad;   // footer
         Panel(x, y0, w, h, 12.0f * s_, 1.0f);
         if (theme_ == OverlayTheme::kClassic)
             RoundRect(x, y0, w, 2.0f * s_, 1.0f * s_, kPanelEdge);
@@ -1057,6 +1085,21 @@ namespace psxemu {
                                             static_cast<double>(frames_dropped_));
             Text(OverlayFont::kRegular, x + pad, y, cpu, kTextMain);
             y += regular.line_height;
+
+            // Memory: the RAM the process holds, and what it has on the graphics cards; under it
+            // what is committed (which is what a leak grows) and the cards' use of system memory.
+            std::wstring memory = L"RAM " + Bytes(memory_.working_set);
+            std::wstring detail = L"Committed " + Bytes(memory_.commit);
+            if (memory_.has_gpu) {
+                memory += L"   GPU " + Bytes(memory_.gpu_dedicated);
+                detail += L" \x00B7 GPU shared " + Bytes(memory_.gpu_shared);
+            }
+            Text(OverlayFont::kRegular, x + pad, y, Fit(OverlayFont::kRegular, memory, inner),
+                 kTextMain);
+            y += regular.line_height;
+            Text(OverlayFont::kSmall, x + pad, y, Fit(OverlayFont::kSmall, detail, inner), kTextDim);
+            y += small.line_height;
+
             std::wstring engine = Widen(renderer_);
             for (wchar_t& c : engine)
                 c = static_cast<wchar_t>(towupper(c));

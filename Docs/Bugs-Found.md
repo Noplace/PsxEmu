@@ -8133,3 +8133,89 @@ state's rows are consistent and the logo is drawn whole.
   through (bug 89's `field_skipped` figure) and the discs that use 480i themselves - Ace Combat 3,
   Final Fantasy VIII, Wild Arms - are the ones expected to move, and the ones to re-check when the
   share is back, comparing pictures by eye at the logo fades rather than by checksum.
+
+## 131. Tomb Raider froze on Start or Select: a CloneCD dump with no pregaps between its music tracks
+
+`psx/disc.cpp`, `psx/disc.h`, `psx/cdrom.cpp`, `tools/media_test.cpp`
+
+Reported: loading the first save slot of Tomb Raider (`SLUS-00152.Tomb Raider.ccd`) and pressing Start
+or Select froze the game. The same game as a `.cue` (the v1.1 Redump set) did not, nor did Tomb Raider
+2 as a `.ccd` - which turned out to be stuck the same way without anyone pressing anything.
+
+**What it was doing.** From the save, with Start pressed at frame 60: the picture and the GP0 word
+count stopped dead at frame 80, the CPU ran flat out, and the only CD command in 400 frames was GetlocP,
+once a frame. 93% of the instructions were the 12-instruction wait loop inside PsyQ's `VSync`. The call
+stack (`--track-calls`) read `VSync < 8005F560 < 800597A4 < 80058174`: the game's main loop had called
+the music player's blocking wait, which spins until a state variable reaches 5. That variable belongs to
+the game's CD-audio state machine, whose states (jump table at `80014774`) are:
+1. set up the track and `SeekP` to the position in a table of the tracks' starts;
+2. wait for the seek to complete (`CdSync`);
+3. **poll GetlocP until the track it reports is the one asked for, and its index is 0**, ten times in a
+   row - then `Play` and go to state 4, which waits for the index to become 1.
+
+Index 0 means the head is in the track's pregap. The table holds each track's start from GetTD, which
+gives the minute and second only, so it is up to 74 sectors *before* the track: the game relies on landing
+in the pregap, as it did for track 2 in bug 110. Here it wanted track 5 and the drive, at 35:41:00,
+answered track 4, index 1 - for ever.
+
+**Why the drive said that.** The `.ccd` lists no `INDEX 0`, and its `.sub` has a real pregap for track 2
+(after the data) and *none* for any music track after another: track 4's Q runs straight to 35:41:58 and
+track 5 index 1 starts at 35:41:59, and so at every boundary I read (tracks 3 to 12). Yet the layout is
+the Redump v1.1 one, whose every music track has `INDEX 00` at 00:00:00 and `INDEX 01` at 00:02:00: each
+track's distance from the next in the `.ccd` equals that track's file size in the cue, sector for sector
+(track 2 14,743, track 3 4,798). The music tracks have their two seconds; the dump's subchannel does not
+say so, and the drive was answering from it (bug 110).
+
+**Fix.** `Disc::AssumeStandardPregaps`, for a `.ccd`: where a disc has music following music and records
+*none* of those pregaps - no `INDEX 0` for any, and the `.sub`, if there is one, has the track before running
+straight into the next at every one - each gets the standard two seconds (`Track::pregap_assumed`). One
+recorded anywhere means the dump kept what the disc has, and nothing is assumed. The first music track,
+after the data, is never guessed at (bug 110's rule, and the `.sub` has that one). `Cdrom::GetPosition`
+does not believe the `.sub` inside an assumed pregap, since it is the very thing that left it out; the
+position is worked out as for a cue sheet - the next track, index 0, counting down. No sector moves, and
+nothing is saved in a state.
+
+**Verified.**
+- Tomb Raider from the user's save 1, plain and with their timing options and the recompiler: Start now
+  gives the "Paused" screen and Select the inventory ring. The game sends Play and, at the next change,
+  Pause; the GP0 stream carries on. Before, 0 GP0 words after frame 80.
+- Tomb Raider 2's `.ccd` save was waiting in the same state without a button pressed (400 GetlocP in 400
+  frames): it now sends Play and 53 audio reports arrive.
+- The `.cue` Tomb Raider, Thousand Arms and Final Fantasy VIII saves: identical pictures at frame 300-400.
+  Area 51's save is version 6 and does not load.
+- `media_test` 389 -> 412: a `.sub` that runs music into music (pregaps assumed, the first music track
+  left alone, GetlocP at the game's landing point is track 3 index 0 with 59 to go, the sector before the
+  pregap is still track 2); a `.sub` that records a pregap (none assumed, answered from it); an `INDEX 0` in
+  the `.ccd` (taken as named, none assumed for the rest); a `.ccd` with no `.sub`. Seven of the 23 fail with
+  the assumption switched off.
+
+**Not done.** A cue sheet that lacks `INDEX 00` has the same hole and the same hang; it is not guessed at
+here, since cue sheets without INDEX 00 are common and some discs really have none. If one turns up, the
+same rule can be applied there.
+
+All twenty harnesses green after bug 131, 2,527 checks (`media_test` 412, `gpu_test` 80 and again through the
+hardware rasteriser, the rest as in bug 130).
+
+## 132. Memory in the F9 panel
+
+`ui/overlay/memory_usage.h/.cpp` (new), `ui/overlay/overlay.h/.cpp`, `PSXEmu.Win32.vcxproj`
+
+Not a bug: a request - "show memory usage in the F9 stats". Both panels now say what the process is using,
+read once a second and only while a panel is up:
+- **Compact:** `RAM 327 MB   GPU 209 MB` under the frame rate.
+- **Full:** `RAM 480 MB   GPU 1.26 GB` under the CPU line, and under it `Committed 458 MB · GPU shared 0 MB`.
+
+**What the figures are.** RAM is the working set (what Task Manager calls the process's memory) and Committed
+is the private commit, which is what a leak grows - the figure the OpenGL interop leak of bug 129 showed up in.
+The card figures are DXGI's own per-process ones, `IDXGIAdapter3::QueryVideoMemoryInfo`, summed over the
+hardware cards (WARP left out): the local segment is "GPU", the non-local one "GPU shared". Windows' memory
+manager charges these whichever API asked - Direct3D 12, OpenGL and Vulkan at 4x each read a plausible
+209-289 MB here, Direct3D 12 at 8x with the hardware rasteriser 1.26 GB - and unlike Task Manager's `\GPU
+Process Memory` counters they do not climb when a second device opens shared textures (bug 129).
+
+**Checked** on the scratch front end with the BIOS running: the RAM and Committed figures equal what Windows
+gives for the process (78 MB and 59 MB on Direct3D 11 at native resolution, with 17 MB of GPU).
+
+**A lesson from the build.** The first version was header-only, like `graphics/adapters.h`, and included
+`windows.h` from `overlay.h` - which turned every `small` in `overlay.cpp` into `char`. The Windows code is
+in `memory_usage.cpp` behind a pointer now, and the header has none.

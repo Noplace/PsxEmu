@@ -66,6 +66,11 @@ class Disc {
     // the previous track's `length`: where they are is the image's business,
     // which track they belong to is this.
     uint32_t pregap = 0;
+    // True where `pregap` is the standard two seconds assumed rather than read from
+    // anything - see Disc::AssumeStandardPregaps. The image's subchannel, if it has
+    // one, is not believed about those sectors: it is the very thing that left the
+    // pregap out.
+    bool pregap_assumed = false;
   };
 
   Disc();
@@ -108,6 +113,9 @@ class Disc {
   // ReadSector.
   bool ReadSubchannelQ(uint32_t lba, uint8_t* q) const;
   bool has_subchannel() const { return sub_file_ != nullptr; }
+  // Whether `lba` is in a pregap that was assumed, not recorded (Track::pregap_assumed):
+  // there the image's subchannel is not what a drive would read.
+  bool InAssumedPregap(uint32_t lba) const;
 
   // Total length including the lead-in, which is what the controller reports
   // as the end of the disc.
@@ -222,6 +230,11 @@ class Disc {
   // a media descriptor states how long a track is; both say where each one
   // begins and leave the rest to arithmetic.
   void FinishTrackLayout();
+
+  // For a CloneCD image: gives each music track that follows another the standard two
+  // seconds of pregap where the descriptor lists no INDEX 0 for it and the subchannel
+  // (if the dump has one) shows the track before it running straight into it.
+  void AssumeStandardPregaps();
 
   // Fills in sync, header and mode for a sector that was not stored raw.
   static void SynthesiseSectorHeader(uint8_t* sector, uint32_t lba,

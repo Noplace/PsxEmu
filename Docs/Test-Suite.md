@@ -153,7 +153,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 378 checks, 0 failures.**
+**Current: 412 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -683,17 +683,18 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 80 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 389 |
+| `timer_test` | 80 | | `media_test` | 412 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,661 checks, 0 failures**, all ten green. Each harness's own section above
+**1,684 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
 two with PGXP's three options, and three with the graphics card's name:
 every setting in `EmuConfig` round-trips through the file, and those are
-settings.)
+settings. It gained twenty-three more with the pregaps of a music track that
+follows music on a CloneCD dump that did not keep them, bug 131.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12

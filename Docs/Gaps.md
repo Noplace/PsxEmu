@@ -600,6 +600,9 @@ by all four renderers through one small pass each:
   - FPS over the last minute, with min, average and 1% low
   - frame time over the last 5 seconds, split into emulate, hand-off and idle
   - the audio buffer, and CPU MIPS
+  - memory: the RAM the process holds and what it has on the graphics cards (the compact
+    panel shows both under the frame rate), with the committed memory and the cards' use
+    of system memory under them (bug 132)
 
 It has two looks: Classic, flat and dark, and Glass, whose panels frost the
 picture behind them. Tab held fast-forwards, with a badge at the top middle,

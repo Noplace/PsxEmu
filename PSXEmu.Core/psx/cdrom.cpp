@@ -558,7 +558,9 @@ uint32_t Cdrom::CyclesToNextEvent() const {
 // times, as the disc was read.
 void Cdrom::GetPosition(uint8_t* data) {
   uint8_t q[12];
-  if (disc_.ReadSubchannelQ(read_lba_, q) && (q[0] & 0x0F) == 1) {
+  // Not in a pregap that was only assumed: the subchannel is what left it out.
+  if (!disc_.InAssumedPregap(read_lba_) && disc_.ReadSubchannelQ(read_lba_, q) &&
+      (q[0] & 0x0F) == 1) {
     // ADR 1 is a position. The other kinds (the catalogue number, an ISRC)
     // turn up now and then instead; for those the position is worked out, as
     // for an image without a subchannel.

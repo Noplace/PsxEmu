@@ -87,6 +87,7 @@
     <ClCompile Include="ui\controller_bindings_window.cpp" />
     <ClCompile Include="ui\emulation_settings_window.cpp" />
     <ClCompile Include="ui\cheats_window.cpp" />
+    <ClCompile Include="ui\overlay\memory_usage.cpp" />
     <ClCompile Include="ui\overlay\overlay.cpp" />
     <ClCompile Include="ui\overlay\overlay_atlas.cpp" />
     <ClCompile Include="ui\debugger_window.cpp" />
@@ -117,6 +118,7 @@
     <ClInclude Include="ui\emulation_settings_window.h" />
     <ClInclude Include="ui\cheats_window.h" />
     <ClInclude Include="ui\game_scope.h" />
+    <ClInclude Include="ui\overlay\memory_usage.h" />
     <ClInclude Include="ui\overlay\overlay.h" />
     <ClInclude Include="ui\overlay\overlay_atlas.h" />
     <ClInclude Include="ui\overlay\overlay_draw.h" />

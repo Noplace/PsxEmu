@@ -873,7 +873,62 @@ bool Disc::OpenCcd(const char* path, bool* scrambled_out) {
       }
     }
   }
+  AssumeStandardPregaps();
   return true;
+}
+
+// Music tracks on a game disc are mastered with two seconds of pregap in front of each,
+// and a game may lean on it: Tomb Raider seeks to the minute and second of a track's
+// start - up to 74 sectors early - and waits for the drive to say it is in that track,
+// index 0, before it presses Play. A CloneCD dump does not always keep them. Track 2 of
+// the user's Tomb Raider .ccd has its pregap in the .sub, but the music tracks after it
+// run straight into one another there, and the .ccd lists no INDEX 0 - yet the track
+// lengths match a Redump cue of the same game, whose every music track has INDEX 00
+// and INDEX 01 two seconds later. Believing that .sub, the game waited for track 5 with
+// the head in track 4, for ever.
+//
+// So where a disc has music following music and records not one of those pregaps - the
+// descriptor names no INDEX 0 for any of them, and the subchannel, if there is one, has
+// the track before running straight into the next at every one - the standard two
+// seconds are assumed for all of them. One that is recorded anywhere - an INDEX 0, or a
+// Q that says index 0 - means the dump kept what the disc has, and nothing is assumed.
+// Only the position the drive reports changes: no sector is moved, and nothing here is
+// saved in a state.
+void Disc::AssumeStandardPregaps() {
+  std::vector<size_t> unrecorded;
+  for (size_t i = 1; i < tracks_.size(); ++i) {
+    const Track& track = tracks_[i];
+    const Track& before = tracks_[i - 1];
+    if (track.type != kTrackAudio || before.type != kTrackAudio)
+      continue;
+    // A pregap has to fit inside the track before it, index 1 of which is ahead of it.
+    if (track.start_lba < before.start_lba + kLeadInSectors + 1)
+      continue;
+    if (track.pregap != 0)
+      return;                       // named by the descriptor: the dump records them
+
+    uint8_t q[12];
+    if (ReadSubchannelQ(track.start_lba - 1, q) && (q[0] & 0x0F) == 1) {
+      // Recorded if the sector before index 1 is this track's index 0, or this track
+      // at all; only the track before running on is a pregap left out.
+      if (q[1] != ToBcd(static_cast<uint8_t>(before.number)) || q[2] == 0x00)
+        return;
+    }
+    unrecorded.push_back(i);
+  }
+  for (size_t i : unrecorded) {
+    tracks_[i].pregap = kLeadInSectors;
+    tracks_[i].pregap_assumed = true;
+  }
+}
+
+bool Disc::InAssumedPregap(uint32_t lba) const {
+  for (const Track& track : tracks_) {
+    if (track.pregap_assumed && lba < track.start_lba &&
+        lba + track.pregap >= track.start_lba)
+      return true;
+  }
+  return false;
 }
 
 // A CHD: MAME's compressed disc image. libchdr does the container and the

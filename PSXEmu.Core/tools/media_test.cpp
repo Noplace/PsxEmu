@@ -961,6 +961,169 @@ void TestPregapPosition(emulation::psx::System* system, const std::string& direc
   RemoveImage(img);
 }
 
+// Music tracks that follow music tracks, on a CloneCD dump that did not keep their pregaps
+// (bug 131). Tomb Raider seeks to the minute and second of a track's start, up to 74
+// sectors early, and waits for GetlocP to say it is in that track, index 0, before it
+// presses Play; the user's .ccd/.sub had track 2's pregap and none of the tracks after it,
+// so the game waited for track 5 with the head in track 4, for ever - and pressing Start
+// or Select in the game brought it on.
+void TestAssumedPregaps(emulation::psx::System* system, const std::string& directory) {
+  printf("a music track that follows music gets the standard pregap when the dump has none\n");
+
+  // 100 sectors of data, then music tracks 2, 3 and 4 with index 1 at 100, 400 and 700,
+  // and 100 sectors of the last.
+  const uint32_t kData = 100, kTrack3 = 400, kTrack4 = 700, kEnd = 800;
+  const std::string img = directory + "media_assumed.img";
+  const std::string ccd = directory + "media_assumed.ccd";
+  const std::string sub = directory + "media_assumed.sub";
+  if (!WriteMixedImage(img, kData, kEnd - kData)) {
+    Check(false, "could not write the image");
+    return;
+  }
+  auto ccd_text = [&](const char* index0_of_track3) {
+    char text[4096];
+    snprintf(text, sizeof(text),
+             "[CloneCD]\r\nVersion=3\r\n\r\n[Disc]\r\nTocEntries=7\r\nSessions=1\r\n"
+             "DataTracksScrambled=0\r\nCDTextLength=0\r\n\r\n[Session 1]\r\nPreGapMode=2\r\n\r\n"
+             "[Entry 0]\r\nSession=1\r\nPoint=0xa0\r\nADR=0x01\r\nControl=0x04\r\nPLBA=6750\r\n\r\n"
+             "[Entry 1]\r\nSession=1\r\nPoint=0xa1\r\nADR=0x01\r\nControl=0x00\r\nPLBA=8850\r\n\r\n"
+             "[Entry 2]\r\nSession=1\r\nPoint=0xa2\r\nADR=0x01\r\nControl=0x00\r\nPLBA=%u\r\n\r\n"
+             "[Entry 3]\r\nSession=1\r\nPoint=0x01\r\nADR=0x01\r\nControl=0x04\r\nPLBA=0\r\n\r\n"
+             "[Entry 4]\r\nSession=1\r\nPoint=0x02\r\nADR=0x01\r\nControl=0x00\r\nPLBA=%u\r\n\r\n"
+             "[Entry 5]\r\nSession=1\r\nPoint=0x03\r\nADR=0x01\r\nControl=0x00\r\nPLBA=%u\r\n\r\n"
+             "[Entry 6]\r\nSession=1\r\nPoint=0x04\r\nADR=0x01\r\nControl=0x00\r\nPLBA=%u\r\n\r\n"
+             "[TRACK 1]\r\nMODE=2\r\nINDEX 1=0\r\n\r\n"
+             "[TRACK 2]\r\nMODE=0\r\nINDEX 1=%u\r\n\r\n"
+             "[TRACK 3]\r\nMODE=0\r\n%sINDEX 1=%u\r\n\r\n"
+             "[TRACK 4]\r\nMODE=0\r\nINDEX 1=%u\r\n",
+             kEnd, kData, kTrack3, kTrack4, kData, index0_of_track3, kTrack3, kTrack4);
+    return std::string(text);
+  };
+  // The subchannel as a drive reads it: `recorded` puts track 3's pregap (250-399) in as
+  // index 0 counting down, as a real dump of a disc with one would; otherwise each track
+  // runs straight into the next.
+  auto write_sub = [&](bool recorded) {
+    std::vector<uint8_t> channels(kEnd * 96, 0);
+    for (uint32_t s = 0; s < kEnd; ++s) {
+      uint32_t track = s < kData ? 1 : (s < kTrack3 ? 2 : (s < kTrack4 ? 3 : 4));
+      const uint32_t starts[5] = { 0, 0, kData, kTrack3, kTrack4 };
+      uint32_t index = 1, relative = s - starts[track];
+      if (recorded && s >= kTrack3 - 150 && s < kTrack3) {
+        track = 3;
+        index = 0;
+        relative = kTrack3 - s;
+      }
+      uint8_t am, as, af, rm, rs, rf;
+      Disc::LbaToMsf(Disc::kLeadInSectors + s, &am, &as, &af);
+      Disc::LbaToMsf(relative, &rm, &rs, &rf);
+      uint8_t* q = &channels[s * 96 + 12];
+      q[0] = track == 1 ? 0x41 : 0x01;
+      q[1] = Disc::ToBcd(static_cast<uint8_t>(track));
+      q[2] = Disc::ToBcd(static_cast<uint8_t>(index));
+      q[3] = rm; q[4] = rs; q[5] = rf;
+      q[7] = am; q[8] = as; q[9] = af;
+    }
+    FILE* fp = fopen(sub.c_str(), "wb");
+    if (fp != nullptr) {
+      fwrite(channels.data(), 1, channels.size(), fp);
+      fclose(fp);
+    }
+  };
+
+  ControllerHarness cd(system);
+  uint8_t response[16];
+  int length = 0;
+  auto position_at = [&](uint32_t file_sector, uint8_t* out) {
+    uint8_t minute, second, frame;
+    Disc::LbaToMsf(Disc::kLeadInSectors + file_sector, &minute, &second, &frame);
+    const uint8_t msf[3] = { minute, second, frame };
+    cd.Command(0x02, msf, 3);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.Command(0x16, nullptr, 0);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.Command(0x11, nullptr, 0);
+    cd.WaitForInterrupt(out, &length, 16);
+    return length == 8;
+  };
+
+  uint8_t at[16];
+  BeginTest("a .sub that runs music into music");
+  WriteText(ccd, ccd_text("").c_str());
+  write_sub(false);
+  {
+    Disc disc;
+    Check(disc.Open(ccd.c_str()) && disc.has_subchannel(), "open, with its .sub");
+    Check(disc.track(1).pregap == 0 && !disc.track(1).pregap_assumed,
+          "the first music track, after data, is not guessed at");
+    Check(disc.track(2).pregap == 150 && disc.track(2).pregap_assumed,
+          "the second gets two seconds, marked as assumed");
+    Check(disc.track(3).pregap == 150 && disc.track(3).pregap_assumed, "and the third");
+    Check(disc.InAssumedPregap(Disc::kLeadInSectors + kTrack3 - 1) &&
+          !disc.InAssumedPregap(Disc::kLeadInSectors + kTrack3 - 151) &&
+          !disc.InAssumedPregap(Disc::kLeadInSectors + kTrack3),
+          "which is the 150 sectors before its index 1");
+  }
+  system->EjectDisc();
+  Check(system->LoadDisc(ccd.c_str()), "mount it");
+  // Where Tomb Raider's seek lands: 59 sectors before track 3's index 1.
+  Check(position_at(kTrack3 - 59, at) && at[0] == 0x03 && at[1] == 0x00 &&
+        at[2] == 0x00 && at[3] == 0x00 && at[4] == 0x59,
+        "GetlocP there is track 3, index 0, 59 to go - not track 2, which the .sub says");
+  Check(position_at(kTrack3 - 150, at) && at[0] == 0x03 && at[1] == 0x00 && at[3] == 0x02 &&
+        at[4] == 0x00, "the pregap's first sector is 00:02:00 before index 1");
+  Check(position_at(kTrack3 - 151, at) && at[0] == 0x02 && at[1] == 0x01,
+        "the sector before it is still track 2");
+  Check(position_at(kTrack3, at) && at[0] == 0x03 && at[1] == 0x01 && at[4] == 0x00,
+        "and index 1 is track 3 at 00:00:00");
+  Check(position_at(kData - 59, at) && at[0] == 0x01 && at[1] == 0x01,
+        "the last of the data is still track 1: no pregap is guessed for the first music track");
+  system->EjectDisc();
+
+  BeginTest("a .sub that records a pregap");
+  write_sub(true);
+  {
+    Disc disc;
+    Check(disc.Open(ccd.c_str()), "open");
+    Check(!disc.track(2).pregap_assumed, "a pregap the subchannel has is not assumed over");
+    Check(!disc.track(3).pregap_assumed,
+          "and one recorded anywhere means the dump kept them: none is assumed for the rest");
+  }
+  Check(system->LoadDisc(ccd.c_str()), "mount it");
+  Check(position_at(kTrack3 - 59, at) && at[0] == 0x03 && at[1] == 0x00 && at[4] == 0x59,
+        "and is answered from the subchannel as before");
+  system->EjectDisc();
+
+  BeginTest("INDEX 0 in the .ccd");
+  WriteText(ccd, ccd_text("INDEX 0=300\r\n").c_str());
+  write_sub(false);
+  {
+    Disc disc;
+    Check(disc.Open(ccd.c_str()), "open");
+    Check(disc.track(2).pregap == 100 && !disc.track(2).pregap_assumed,
+          "a pregap the descriptor names is taken as named");
+    Check(!disc.track(3).pregap_assumed, "and with one named, none is assumed for the rest");
+  }
+
+  BeginTest("a .ccd with no .sub");
+  remove(sub.c_str());
+  WriteText(ccd, ccd_text("").c_str());
+  {
+    Disc disc;
+    Check(disc.Open(ccd.c_str()) && !disc.has_subchannel(), "open, with no subchannel");
+    Check(disc.track(2).pregap_assumed && disc.track(3).pregap_assumed,
+          "the same two seconds are assumed");
+  }
+  Check(system->LoadDisc(ccd.c_str()), "mount it");
+  Check(position_at(kTrack3 - 59, at) && at[0] == 0x03 && at[1] == 0x00 && at[4] == 0x59,
+        "and worked out the same way");
+  system->EjectDisc();
+
+  remove(ccd.c_str());
+  remove(sub.c_str());
+  RemoveImage(img);
+}
+
 // A DMA channel's busy bit and completion interrupt, driven directly through
 // the registers a game reaches them through - 0x1F80108x for channel 0
 // (MDEC-in, used here only because it needs no device to be in any
@@ -2356,6 +2519,7 @@ int main(int argc, char** argv) {
   TestControllerWithDisc(system, directory);
   TestCdAudioControl(system, directory);
   TestPregapPosition(system, directory);
+  TestAssumedPregaps(system, directory);
   TestCdExtraCommands(system, directory);
   TestDmaBusyBit(system);
   TestDmaChannel2RefusesWhileBusy(system);

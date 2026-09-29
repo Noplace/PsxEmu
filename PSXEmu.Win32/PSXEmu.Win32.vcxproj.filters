@@ -45,6 +45,9 @@
     <ClCompile Include="ui\cheats_window.cpp">
       <Filter>ui</Filter>
     </ClCompile>
+    <ClCompile Include="ui\overlay\memory_usage.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
     <ClCompile Include="ui\overlay\overlay.cpp">
       <Filter>ui</Filter>
     </ClCompile>
@@ -129,6 +132,9 @@
       <Filter>ui</Filter>
     </ClInclude>
     <ClInclude Include="ui\game_scope.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\overlay\memory_usage.h">
       <Filter>ui</Filter>
     </ClInclude>
     <ClInclude Include="ui\overlay\overlay.h">

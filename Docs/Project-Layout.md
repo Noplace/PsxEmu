@@ -150,6 +150,10 @@ PsxEmu/
       memcard_editor.h/.cpp    File > Memory Cards > Memory Card Editor, both slots side by side
       console_window.h/.cpp    Emulation > BIOS Console: the BIOS's putchar/puts/printf output
       debugger_window.h/.cpp   Emulation > Debugger: disassembly, registers, breakpoints, stepping
+      overlay/                 what is drawn over the picture: notifications, the controllers, F9's panel
+        overlay.h/.cpp         builds the triangles every renderer draws, on the video thread
+        memory_usage.h/.cpp    the process's RAM and its video memory on each card, for the F9 panel;
+                               the Windows headers stay in the .cpp, as `small` is a macro in them
     Resource/                  the filters' HLSL, the icon, and psxemu.rc + resource.h, which
                                compile the icon into the exe
     shaders/                   filter shaders, compiled into headers by the build, and
