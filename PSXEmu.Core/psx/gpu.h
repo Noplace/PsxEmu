@@ -436,9 +436,15 @@ class Gpu : public GpuCore {
 
   void PushQueue(uint32_t word, const PreciseVertex* precise = nullptr);
   uint32_t PopQueue(PreciseVertex* precise = nullptr);
-  // Hands queued words to the command assembler for as long as the GPU is free
-  // to take them. Called after every write and from Tick.
-  void DrainQueue();
+  // How far DrainQueue goes. Each draw it runs charges the rasteriser and so makes the
+  // GPU busy again, which is what stops the ordinary drain after one primitive - and
+  // why the two forced ones ignore it rather than merely zeroing the debt first.
+  enum class Drain {
+    WhenIdle,      // for as long as the GPU is free to take words: after every write, and from Tick
+    ForReadback,   // everything up to the start of a VRAM read, which has to see what was drawn
+    Everything,    // all of it, when the queue is out of room
+  };
+  void DrainQueue(Drain how = Drain::WhenIdle);
   // One word into the assembler below, executing the command once its last
   // word has arrived. This is what WriteData used to be.
   void FeedCommand(uint32_t word, const PreciseVertex& precise);
@@ -552,14 +558,23 @@ class Gpu : public GpuCore {
            !status_.draw_to_display;
   }
 
-  // Which VRAM row parity the beam is currently showing, which is the one a
-  // draw skips. DuckStation's crtc_state.active_line_lsb: the display area's
-  // row in VRAM plus the field being shown, and zero outside 480i. Carried to
-  // the rasteriser in each job's environment (SoftwareRaster::SkipsVramRow).
+  // Which VRAM row parity the beam is showing, which is the one a draw skips.
+  // DuckStation's crtc_state.active_line_lsb: the display area's row in VRAM plus the
+  // field being shown, and zero outside 480i. Carried to the rasteriser in each job's
+  // environment (SoftwareRaster::SkipsVramRow).
+  //
+  // The field is the one *about to be shown* once vblank has begun, not the one that
+  // was: a game draws its next frame from the vblank interrupt on, and GPUSTAT's
+  // bit 31 flips only when the frame wraps, well into that. Skipping by the bit meant
+  // a frame whose drawing ran on past the flip put its first primitives on one
+  // field's rows and its last on the other's - Silent Hill's Konami logo came out as
+  // alternate lines of two different pictures for a hundred frames (bug 130). Flipping
+  // at the start of vblank, as DuckStation does for this reason, keeps a frame's
+  // drawing on one field however long it takes.
   uint32_t ActiveLineLsb() const {
     if (!status_.vres || !status_.vertical_interlace)
       return 0;
-    return (display_vram_y_ + status_.odd_line) & 1u;
+    return (display_vram_y_ + status_.odd_line + (in_vblank() ? 1u : 0u)) & 1u;
   }
 
   // One coordinate held inside the drawing area, for the cost estimates below.

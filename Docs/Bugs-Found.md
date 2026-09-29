@@ -8074,3 +8074,62 @@ were reproduced with neither, and none of the tests since touch the 4060.
 test disc's picture on the card with the right colours, and the BIOS's, on the Radeon. **All
 twenty harnesses green, 2,497 checks** - `media_test` three more (389: the card's name
 round-tripping, and a name too long to be one being ignored), the rest as in bug 127.
+
+## 130. Two regressions from 2026-09-23 that the software rasteriser carried unnoticed: a read that did not wait for the queue, and a field that flipped at the wrong moment
+
+`psx/gpu.cpp`, `psx/gpu.h`, `tools/gpu_test.cpp`
+
+Reported by the user from the front end, on the software rasteriser with the recompiler and PGXP on
+and every timing option set: the BIOS menu's background spheres cut off along a vertical edge with a
+dark crescent beside them ("a texture offset"), and Silent Hill's Konami logo drawn as alternate lines
+of two different pictures. Neither was part of the hardware-renderer work - `boot_runner` from the
+commit before it (0a95cf5) draws both wrongly, and so did every build back to 2026-09-23 - so they
+are two bugs of 09-23 that no test had looked at. Bisected on the scratchpad's old `boot_runner`
+builds: the BIOS menu was right at 09-22 22:33 and wrong at 09-23 19:52 (bugs 86 and 87, the GP0
+queue and the drawing time); the Konami logo was right at 19:52 and wrong at 20:32 (bug 89, the
+rasteriser skipping the displayed field).
+
+**The spheres.** The BIOS draws each sphere's shading into VRAM, reads it straight back with a
+DMA to RAM, and uses that copy as a texture. `Gpu::ReadData` is meant to run everything queued
+ahead of a read before answering - its own comment says drawing time is given away rather than
+answering with a stale latch - but it did it by zeroing the drawing debt and calling `DrainQueue`,
+which stops as soon as `drawing()` is true, and every primitive it runs charges the rasteriser and
+makes the GPU busy again. So the drain ran the fill and stopped, and every word read before the
+read command had been reached came back as `read_latch_`, one command per word. The first ~17
+pixels of each row were the wrong ones: the copy arrived shifted, with the sphere's right edge
+cut off where the shift pushed it past the copy's width. The same "forced" drain in `PushQueue`,
+for a queue out of room, would have dropped words for the same reason. `DrainQueue` now takes how
+far to go - `WhenIdle` (the old behaviour, after every write and from `Tick`), `ForReadback`
+(everything up to the start of the VRAM read, whatever the busy state) and `Everything` - and the
+two callers that meant "force" say so. Localised by making `drawing()` always false in a scratch
+copy (round spheres), diffing the executed GP0 streams of the two builds (identical, so not a data
+error in the commands), and finding the shifted sphere already in the read-back copy.
+
+**The Konami lines.** Bug 89 skips the rows of the field being displayed, in 480i with drawing to
+the display area prohibited. Which field that is comes from GPUSTAT bit 31, which flips when the
+frame wraps - 1.4 ms or more after the vblank interrupt the game draws from. A frame whose drawing
+runs past that (the queue and the drawing time make it do so, especially with the transfer and DMA
+timing options on) put its first primitives, the clear, on one field's rows and its last, the
+logo, on the other's, and every frame did the same: the picture was alternate lines of white and
+the logo, adjacent rows differing by 200 of 255 for the ~100 frames of the fade. DuckStation switches
+the field it skips *at the start of vblank* - "switch fields early. this is needed so we draw to the
+correct one" - which keeps a frame's drawing on one field however long it takes; `ActiveLineLsb()` now
+does the same (bit 31 itself, which software reads, still flips at the wrap). With it, the same save
+state's rows are consistent and the logo is drawn whole.
+
+**Verified.**
+- The BIOS menu at frame 1500: round spheres, and everything but the animated splash colours (which
+  depend on timing and always did) identical to a build in which the GPU is never busy; with the
+  user's own timing options and the recompiler and PGXP on, the cut spheres of their screenshot become
+  round.
+- Silent Hill's Konami logo from the user's save 4, with their timing options: adjacent-row difference
+  200 to 8 or under across frames 1-400; the logo whole at frames 20, 60 and 200.
+- Silent Hill's other two saves, 60 and 300 frames on, pixel-identical before and after.
+- `gpu_test` 73 -> 80: the field a draw skips flips at the start of vblank and not at the wrap and
+  alternates by frame (5), and a read behind a busy triangle sees the fill (2); four of the seven fail
+  without the change. The bug 89 test now reads the field the way the code does. **All twenty
+  harnesses green, 2,504 checks**, and gpu_test's 80 again through the hardware rasteriser.
+- **Not done: the twelve-disc table.** The share was offline. The interlaced boot phase every disc goes
+  through (bug 89's `field_skipped` figure) and the discs that use 480i themselves - Ace Combat 3,
+  Final Fantasy VIII, Wild Arms - are the ones expected to move, and the ones to re-check when the
+  share is back, comparing pictures by eye at the logo fades rather than by checksum.

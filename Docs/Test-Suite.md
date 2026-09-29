@@ -92,7 +92,7 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 73 checks, 0 failures.**
+**Current: 80 checks, 0 failures.**
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
@@ -137,6 +137,13 @@ sent and the channel is not left busy; set to CPU-to-GP0, the same write sends
 an upload and its pixels land in VRAM. Channel 3 written the same way with no
 sector in the CD-ROM's data FIFO leaves RAM alone. With the old
 trigger-only rule put back, the two "the pixels arrive" checks fail.
+
+And two of bug 130's: the field a draw skips in 480i is the next one from the first line
+of vblank and does not change at the frame's wrap, alternating from one frame to the next
+(five checks - measured by drawing a rectangle in vblank, after the wrap and a frame
+later, and seeing which parity of its rows stayed clear); and a VRAM read sees a fill
+queued behind a large triangle, where it used to read the stale latch (two checks). Four
+of the seven fail on the code before the fix.
 
 ## media_test
 
@@ -652,7 +659,7 @@ software rasteriser sees its own writes as it goes and the card sees VRAM as it
 was, and the console has a texture cache - there is no right answer to check.
 
 **`gpu_test --hw-raster`** runs gpu_test's own scenes through the hardware
-rasteriser the same way: all 73 checks pass.
+rasteriser the same way: all 80 checks pass.
 
 ## Baselines
 
@@ -674,13 +681,13 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 297 | | `gpu_test` | 73 |
+| `cpu_test` | 297 | | `gpu_test` | 80 |
 | `gte_test` | 106 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 389 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,654 checks, 0 failures**, all ten green. Each harness's own section above
+**1,661 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -721,7 +728,7 @@ correctness count: it records how far off the timing is), `host_test` (34 checks
 threads and the channels between them - its own section above), and `hw_raster_test` (45
 checks, bugs 122-123 and 127 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives; its own section above, as is `gpu_test --hw-raster`,
-which runs gpu_test's 73 through it).
+which runs gpu_test's 80 through it).
 
 `rec_test` (467 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter

@@ -348,10 +348,12 @@ void TestInterlacedSkipsDisplayedField(System* system) {
   // once a frame - so each stage below drains the GPU first, then reads the
   // field, then writes a command that runs as its last word arrives. Running
   // the machine between the read and the draw would move the field under it,
-  // which is what the first version of this test did.
+  // which is what the first version of this test did. From the start of vblank the
+  // field a draw skips is already the next one (bug 130), so bit 31 is flipped
+  // while the beam is in vblank.
   auto field_now = [&]() -> uint32_t {
     RunGpu(system);
-    return (system->gpu().ReadStatus() >> 31) & 1u;
+    return ((system->gpu().ReadStatus() >> 31) ^ (system->gpu().in_vblank() ? 1u : 0u)) & 1u;
   };
   auto rows_match = [&](int32_t y0, int32_t x, uint32_t field,
                         bool* shown_clear, bool* others_written) {
@@ -419,6 +421,103 @@ void TestInterlacedSkipsDisplayedField(System* system) {
   // Back to progressive for whatever runs after this.
   system->gpu().WriteStatus(0x08000000);
   system->gpu().WriteData(0xE1000000);
+  RunGpu(system);
+}
+
+// The field a draw leaves alone is the next one to be shown from the moment vblank
+// begins, not from the moment the frame wraps (bug 130). A game draws its next frame
+// from the vblank interrupt on, and a frame that takes a while to draw straddles the
+// wrap: skipping by GPUSTAT bit 31, which flips there, put the start of it on one
+// field's rows and the end on the other's - Silent Hill's Konami logo, alternate lines
+// of two different pictures for a hundred frames.
+void TestSkippedFieldFlipsAtTheStartOfVblank(System* system) {
+  printf("the field a draw skips changes at the start of vblank, not at the frame's wrap\n");
+
+  system->gpu().WriteStatus(0x08000004 | (1u << 5));
+  system->gpu().WriteData(0xE1000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (511u << 10) | 1023u);
+  system->gpu().WriteStatus(0x05000000);            // display area at (0,0)
+  RunGpu(system);
+
+  const VramView vram{system};
+  auto tick_until = [&](bool want_vblank) {
+    for (int i = 0; i < 40000 && system->gpu().in_vblank() != want_vblank; ++i)
+      system->gpu().Tick(100);
+  };
+  // Draws a 4x4 white rectangle at (x, 300) and says which parity of its rows was left
+  // clear: 0 or 1, or -1 if that is not one clean parity.
+  auto draw_and_find_skipped = [&](int32_t x) -> int {
+    system->gpu().WriteData(0x60FFFFFF);
+    system->gpu().WriteData((300u << 16) | static_cast<uint32_t>(x));
+    system->gpu().WriteData((4u << 16) | 4u);
+    const bool even_clear = vram[300 * 1024 + x] == 0;
+    const bool odd_clear = vram[301 * 1024 + x] == 0;
+    if (even_clear && !odd_clear)
+      return 0;
+    if (odd_clear && !even_clear)
+      return 1;
+    return -1;
+  };
+
+  tick_until(false);
+  tick_until(true);                                  // the first line of vblank
+  Check(system->gpu().in_vblank(), "the run reached vblank");
+  const uint32_t bit31 = (system->gpu().ReadStatus() >> 31) & 1u;
+  const int in_vblank = draw_and_find_skipped(700);
+  CheckEqual(static_cast<uint32_t>(in_vblank), bit31 ^ 1u,
+             "in vblank a draw already skips the field that comes next");
+
+  tick_until(false);                                 // the frame wraps; bit 31 flips
+  Check(!system->gpu().in_vblank(), "and the run reached the next frame");
+  const int after_wrap = draw_and_find_skipped(720);
+  CheckEqual(static_cast<uint32_t>(after_wrap), static_cast<uint32_t>(in_vblank),
+             "the wrap does not change which field a draw skips");
+
+  tick_until(true);                                  // the next frame's vblank
+  const int next_frame = draw_and_find_skipped(740);
+  Check(next_frame >= 0 && next_frame != after_wrap,
+        "and the field alternates from one frame to the next");
+
+  // Back to progressive for whatever runs after this.
+  system->gpu().WriteStatus(0x08000000);
+  system->gpu().WriteData(0xE1000000);
+  RunGpu(system);
+}
+
+// A VRAM read is served after everything queued ahead of it has run (bug 130). The
+// queue only drains while the GPU is not drawing, and each primitive makes it busy
+// again - so the drain a read did stopped after one, and the words read before the
+// read command had been reached came back as the last word latched. The BIOS menu
+// draws its spheres, reads them straight back and draws from the copy: the copy arrived
+// shifted by the number of words read early.
+void TestReadBackWaitsForQueuedDrawing(System* system) {
+  printf("a VRAM read sees the drawing queued ahead of it\n");
+
+  system->gpu().WriteStatus(0x08000000);             // progressive, so no field is skipped
+  system->gpu().WriteData(0xE1000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (511u << 10) | 1023u);
+  RunGpu(system);
+
+  // A large triangle keeps the rasteriser busy for a long while; the fill and the read
+  // behind it wait in the queue.
+  system->gpu().WriteData(0x20000000 | 0x808080);
+  system->gpu().WriteData((300u << 16) | 900u);
+  system->gpu().WriteData((500u << 16) | 900u);
+  system->gpu().WriteData((300u << 16) | 1000u);
+  system->gpu().WriteData(0x02FFFFFF);               // fill 16x2 white at (800, 100)
+  system->gpu().WriteData((100u << 16) | 800u);
+  system->gpu().WriteData((2u << 16) | 16u);
+  system->gpu().WriteData(0xC0000000);               // read 4x1 from there: two words
+  system->gpu().WriteData((100u << 16) | 800u);
+  system->gpu().WriteData((1u << 16) | 4u);
+
+  const uint32_t first = system->gpu().ReadData();
+  const uint32_t second = system->gpu().ReadData();
+  CheckEqual(first, 0x7FFF7FFFu, "the first word read is the fill, not the stale latch");
+  CheckEqual(second, 0x7FFF7FFFu, "and so is the second");
+
   RunGpu(system);
 }
 
@@ -879,6 +978,8 @@ int main(int argc, char** argv) {
   TestDrawingCostIsClipped(system);
   TestInterlacedDrawingCostsHalf(system);
   TestInterlacedSkipsDisplayedField(system);
+  TestSkippedFieldFlipsAtTheStartOfVblank(system);
+  TestReadBackWaitsForQueuedDrawing(system);
   TestGp0QueueFillsAndDrains(system);
   TestTextureBit15BecomesTheMaskBit(system);
   TestPolylineTerminatorIsNotAVertex(system);

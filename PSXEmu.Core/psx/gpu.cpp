@@ -300,11 +300,14 @@ namespace emulation {
             // hardware it would have waited for that itself. Anything still queued is
             // run first - drawing time is given away rather than answering with a
             // stale latch, which is the one way the queue could turn into a wrong
-            // picture instead of a slower one.
+            // picture instead of a slower one. All of it, up to the read's own command:
+            // an ordinary drain stops after the first primitive, since that makes the
+            // GPU busy again, and every word read before the read command had run came
+            // back as the latch - the BIOS menu's spheres, drawn and read straight back,
+            // arrived in RAM shifted by the words it had gone through (bug 130).
             if (queue_size_ > 0 && transfer_mode_ != kTransferFromVram) {
                 const int32_t owed = pending_draw_ticks_;
-                pending_draw_ticks_ = 0;
-                DrainQueue();
+                DrainQueue(Drain::ForReadback);
                 pending_draw_ticks_ = owed;
             }
             if (transfer_mode_ != kTransferFromVram)
@@ -352,8 +355,7 @@ namespace emulation {
                 // bits must not lose words. Catch up by force - drawing time is given
                 // away rather than data - and only then give up.
                 const int32_t owed = pending_draw_ticks_;
-                pending_draw_ticks_ = 0;
-                DrainQueue();
+                DrainQueue(Drain::Everything);
                 pending_draw_ticks_ = (queue_size_ >= kQueueCapacity) ? 0 : owed;
                 if (queue_size_ >= kQueueCapacity) {
                     ++stats_.queue_overflows;
@@ -385,13 +387,17 @@ namespace emulation {
         // data keeps flowing whatever the rasteriser is doing: the blitter is a separate
         // piece of the chip, and holding its words back behind a draw would deadlock a
         // game that uploads a texture between two primitives.
-        void Gpu::DrainQueue() {
+        void Gpu::DrainQueue(Drain how) {
             while (queue_size_ > 0) {
                 if (transfer_mode_ == kTransferToVram) {
                     StepTransfer(PopQueue());
                     continue;
                 }
-                if (drawing())
+                // A read is served from the point its command has run: what is queued
+                // behind it is for after the read.
+                if (how == Drain::ForReadback && transfer_mode_ == kTransferFromVram)
+                    break;
+                if (how == Drain::WhenIdle && drawing())
                     break;
                 PreciseVertex precise;
                 const uint32_t word = PopQueue(&precise);
