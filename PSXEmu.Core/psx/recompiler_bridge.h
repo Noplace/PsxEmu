@@ -239,6 +239,7 @@ class RecompilerBridge {
     } else if (!store && rt != kNoRegister && rt != 0) {
       const PreciseVertex* shadow = pgxp.word(physical);
       pgxp.reg(rt) = shadow != nullptr ? *shadow : PreciseVertex();
+      pgxp.set_source(rt, result, physical);
     }
     return result;
   }

@@ -60,6 +60,14 @@
 //                        motion - and handing it over with a shared picture (Docs/DLSS-Plan.md)
 //     --view depth|motion  ...showing that plane in place of the picture, as Video > View Depth
 //                        and View Motion do: above 1x, --ppm writes it
+//     --motion           ...with the plane kept, the warp check: each new picture compared with
+//                        the last one moved by its motion and left still (Docs/DLSS-Plan.md,
+//                        phase 2) - slow, since it reads each picture back; with --pgxp
+//     --motion-key model|order|address  ...what the GTE finds a vertex in the last picture by
+//                        - its model's coordinates (the default), its place in the picture, or
+//                        where in RAM it was loaded from
+//     --motion-log       ...a line for each new picture: vertices found, and whether afresh
+//     --motion-reach n   ...how far, in screen pixels, a vertex may move and still be found
 //     --gpu <name>       ...drawing on the graphics card with <name> in its name (any case),
 //                        as Settings > Video > Graphics Card does; the report names the card
 //     --list-gpus        list the graphics cards and their LUIDs, and exit
@@ -276,6 +284,11 @@ struct Options {
   // --planes: the plane beside VRAM kept; --view: shown in place of the picture.
   bool planes;
   emulation::psx::PlaneView view;
+  // --motion: the warp check; --motion-log: a line per new picture; --motion-key: how the GTE
+  // finds a vertex in the last picture.
+  bool motion, motion_log;
+  emulation::psx::Gte::MotionKey motion_key;
+  float motion_reach;   // --motion-reach: VertexMotion's, in screen pixels; 0 leaves it
 };
 
 // FNV-1a over the visible framebuffer. Small, order-sensitive, and good enough
@@ -634,6 +647,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->true_color = true;
   options->planes = false;
   options->view = emulation::psx::PlaneView::kPicture;
+  options->motion = false;
+  options->motion_log = false;
+  options->motion_key = emulation::psx::Gte::MotionKey::kModel;
+  options->motion_reach = 0.0f;
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -731,6 +748,26 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->shared_picture = true;
     } else if (strcmp(arg, "--planes") == 0) {
       options->planes = true;
+    } else if (strcmp(arg, "--motion") == 0) {
+      options->motion = true;
+      options->planes = true;
+    } else if (strcmp(arg, "--motion-log") == 0) {
+      options->motion_log = true;
+      options->planes = true;
+    } else if (strcmp(arg, "--motion-reach") == 0 && i + 1 < argc) {
+      options->motion_reach = static_cast<float>(atof(argv[++i]));
+    } else if (strcmp(arg, "--motion-key") == 0 && i + 1 < argc) {
+      const char* key = argv[++i];
+      if (strcmp(key, "model") == 0) {
+        options->motion_key = emulation::psx::Gte::MotionKey::kModel;
+      } else if (strcmp(key, "order") == 0) {
+        options->motion_key = emulation::psx::Gte::MotionKey::kOrder;
+      } else if (strcmp(key, "address") == 0) {
+        options->motion_key = emulation::psx::Gte::MotionKey::kAddress;
+      } else {
+        fprintf(stderr, "--motion-key wants model, order or address\n");
+        return false;
+      }
     } else if (strcmp(arg, "--view") == 0 && i + 1 < argc) {
       const char* view = argv[++i];
       if (strcmp(view, "depth") == 0) {
@@ -1153,7 +1190,11 @@ int main(int argc, char** argv) {
            system->gpu().raster_device().c_str(), options.scale,
            options.scale > 1 && options.true_color ? ", true colour" : "");
     if (options.planes || options.view != emulation::psx::PlaneView::kPicture) {
+      system->gte().set_motion_key(options.motion_key);
+      if (options.motion_reach > 0.0f)
+        system->gte().vertex_motion().set_reach(options.motion_reach);
       system->gpu().SetPlanes(options.planes, options.view);
+      system->gpu().SetMotionCheck(options.motion);
       printf("gpu            the plane beside VRAM kept%s\n",
              options.view == emulation::psx::PlaneView::kDepth    ? ", its depth shown"
              : options.view == emulation::psx::PlaneView::kMotion ? ", its motion shown"
@@ -1317,6 +1358,7 @@ int main(int argc, char** argv) {
   uint64_t shared_pictures = 0;
   uint64_t shared_planes = 0;
   uint64_t last_shared_serial = 0;
+  uint64_t last_pictures = 0;   // --motion-log
 
   std::unordered_map<uint32_t, uint64_t> pc_counts;
 
@@ -1410,6 +1452,16 @@ int main(int argc, char** argv) {
           last_shared_serial = shared.serial;
           shared.source->Release(shared.serial);
         }
+      }
+      // --motion-log: a line for each new picture.
+      if (options.motion_log && system->gpu().stats().pictures != last_pictures) {
+        last_pictures = system->gpu().stats().pictures;
+        const auto& picture = system->gpu().last_picture_motion();
+        printf("picture        frame %llu: %llu of %llu vertices found%s\n",
+               static_cast<unsigned long long>(now),
+               static_cast<unsigned long long>(picture.found),
+               static_cast<unsigned long long>(picture.looked),
+               picture.reset ? ", afresh" : "");
       }
       // Switching CPU under a running machine, which is what the front end's
       // menu does. The setting is all this touches: System::StepInstruction
@@ -1889,6 +1941,39 @@ int main(int argc, char** argv) {
   if (options.shared_picture && options.planes)
     printf("planes         %llu of them with the plane beside\n",
            static_cast<unsigned long long>(shared_planes));
+  if (options.planes) {
+    auto percent = [](uint64_t part, uint64_t whole) {
+      return whole == 0 ? 0.0 : 100.0 * static_cast<double>(part) / static_cast<double>(whole);
+    };
+    printf("motion         %llu new pictures, %llu starting afresh; vertices found in the last "
+           "picture %llu of %llu (%.1f%%, by %s), 2D primitives %llu of %llu (%.1f%%)\n",
+           static_cast<unsigned long long>(gpu_stats.pictures),
+           static_cast<unsigned long long>(gpu_stats.picture_resets),
+           static_cast<unsigned long long>(gpu_stats.motion_vertices_found),
+           static_cast<unsigned long long>(gpu_stats.motion_vertices),
+           percent(gpu_stats.motion_vertices_found, gpu_stats.motion_vertices),
+           options.motion_key == emulation::psx::Gte::MotionKey::kOrder     ? "order"
+           : options.motion_key == emulation::psx::Gte::MotionKey::kAddress ? "address"
+                                                                         : "model",
+           static_cast<unsigned long long>(gpu_stats.motion_sprites_found),
+           static_cast<unsigned long long>(gpu_stats.motion_sprites),
+           percent(gpu_stats.motion_sprites_found, gpu_stats.motion_sprites));
+  }
+  if (options.motion) {
+    // Per pixel and channel, in 8-bit steps: how far each new picture was from the last one
+    // moved by its motion, and left still. Below 1.0 the motion helps.
+    const double samples = static_cast<double>(gpu_stats.warp_pixels) * 3.0;
+    const double moved = samples > 0 ? gpu_stats.warp_error_moved / samples : 0.0;
+    const double still = samples > 0 ? gpu_stats.warp_error_still / samples : 0.0;
+    printf("warp           %llu pictures: moved by their motion %.3f from the next, left still "
+           "%.3f, ratio %.3f; motion known for %.1f%% of pixels\n",
+           static_cast<unsigned long long>(gpu_stats.warp_pictures), moved, still,
+           still > 0.0 ? moved / still : 0.0,
+           gpu_stats.warp_pixels == 0
+               ? 0.0
+               : 100.0 * static_cast<double>(gpu_stats.warp_moved_pixels) /
+                     static_cast<double>(gpu_stats.warp_pixels));
+  }
 
   if (gpu_stats.setup_count > 0) {
     printf("\nfirst textured primitives\n");

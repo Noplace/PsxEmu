@@ -40,6 +40,7 @@ PsxEmu/
       recompiler_bridge.h      the one file that knows both cpu.h and rec/
       gte.h/.cpp               geometry coprocessor: all 22 commands
       pgxp.h                   PGXP's shadows: each register's and RAM word's unrounded vertex
+      vertex_motion.h          where things were in the last picture, by key - motion for DLSS
       gpu_core.h               the interface the core talks to the GPU through
       gpu.h/.cpp               the GPU: VRAM, GP0/GP1, GPUSTAT, the queue, display timing, draw costs
       raster.h                 DrawJob and RasterBackend - what puts a draw's pixels down

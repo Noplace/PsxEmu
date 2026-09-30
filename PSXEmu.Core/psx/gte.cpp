@@ -127,6 +127,9 @@ int Gte::Initialize() {
   dqb_ = 0;
   zsf3_ = zsf4_ = 0;
   flag_ = 0;
+  vertex_motion_.Forget();
+  projected_in_picture_ = projected_before_ = 0;
+  order_steady_ = false;
 
   lm_ = false;
   sf_ = 0;
@@ -160,10 +163,13 @@ void Gte::Serialise(StateIO& io) {
   io.Plain(zsf3_);
   io.Plain(zsf4_);
   io.Plain(flag_);
-  // PGXP's unrounded positions are not in a state; the FIFO loaded has none.
-  if (!io.saving())
+  // PGXP's unrounded positions are not in a state; the FIFO loaded has none. Nor is motion:
+  // nothing projected before the load is anything projected after it.
+  if (!io.saving()) {
     for (PreciseVertex& precise : precise_)
       precise = PreciseVertex();
+    vertex_motion_.Forget();
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +441,47 @@ void Gte::Rtps(int vector_index, bool compute_ir0) {
     precise.y = static_cast<float>(std::min(std::max(static_cast<double>(sy) / 65536.0, -1024.0), 1023.0));
     precise.w = static_cast<float>(sz_[3]);
     precise.valid = true;
+    if (motion_) {
+      // Where it was in the last picture (psx/vertex_motion.h). Its position is taken from the
+      // projection's centre, OFX and OFY, which some games move with the buffer they draw into.
+      const uint64_t model = static_cast<uint64_t>(static_cast<uint16_t>(v[0])) |
+                             (static_cast<uint64_t>(static_cast<uint16_t>(v[1])) << 16) |
+                             (static_cast<uint64_t>(static_cast<uint16_t>(v[2])) << 32);
+      const uint64_t order = (1ull << 62) | projected_in_picture_;
+      ++projected_in_picture_;
+      // Where its x and y were loaded from, if known - with its coordinates too from the
+      // scratchpad, which one model after another is copied through.
+      uint64_t address = 0;
+      if (const uint32_t source = v_source_[vector_index]) {
+        address = (2ull << 62) | source;
+        if ((source & 0x1FFFFC00u) == 0x1F800000u)
+          address ^= model * 0x9E3779B97F4A7C15ull;
+      }
+      uint64_t key = model;
+      if (motion_key_ == MotionKey::kOrder)
+        key = order;
+      else if (motion_key_ == MotionKey::kAddress && address != 0)
+        key = address;
+      const float cx = precise.x - static_cast<float>(ofx_) / 65536.0f;
+      const float cy = precise.y - static_cast<float>(ofy_) / 65536.0f;
+      bool found = vertex_motion_.Find(key, cx, cy, &precise.mx, &precise.my);
+      // Not found by its key: by the other of its coordinates and where it was loaded from - a
+      // model animated by rewriting its coordinates in the same place each frame keeps the
+      // place - and then, in a picture projecting the same list as the last two did, by its place
+      // in the list, if near: a mesh the CPU works out itself, Ridge Racer's waving flag.
+      const uint64_t other = key == model ? address : key == address ? model : 0;
+      if (!found && other != 0)
+        found = vertex_motion_.Find(other, cx, cy, &precise.mx, &precise.my);
+      if (!found && order_steady_ && key != order)
+        found = vertex_motion_.Find(order, cx, cy, &precise.mx, &precise.my, kOrderReach);
+      vertex_motion_.Count(found);
+      precise.moved = found;
+      vertex_motion_.Remember(key, cx, cy);
+      if (other != 0)
+        vertex_motion_.Remember(other, cx, cy);
+      if (key != order)
+        vertex_motion_.Remember(order, cx, cy);
+    }
     PushScreenXy(screen_x, screen_y, precise);
     const uint32_t slot = CacheSlot(precise.value);
     cache_[slot] = precise;
@@ -811,20 +858,24 @@ uint32_t Gte::ReadData(uint32_t index) {
   }
 }
 
-void Gte::WriteData(uint32_t index, uint32_t value, const PreciseVertex* precise) {
+void Gte::WriteData(uint32_t index, uint32_t value, const PreciseVertex* precise,
+                    uint32_t source) {
   // An SXY register written from a word whose shadow still matches it keeps the unrounded
   // position; written any other way, it has none.
   const PreciseVertex kept =
       (pgxp_ && precise != nullptr && precise->Matches(value)) ? *precise : PreciseVertex();
   switch (index & 31) {
     case 0:  v_[0][0] = static_cast<int16_t>(value);
-             v_[0][1] = static_cast<int16_t>(value >> 16); break;
+             v_[0][1] = static_cast<int16_t>(value >> 16);
+             v_source_[0] = source; break;
     case 1:  v_[0][2] = static_cast<int16_t>(value); break;
     case 2:  v_[1][0] = static_cast<int16_t>(value);
-             v_[1][1] = static_cast<int16_t>(value >> 16); break;
+             v_[1][1] = static_cast<int16_t>(value >> 16);
+             v_source_[1] = source; break;
     case 3:  v_[1][2] = static_cast<int16_t>(value); break;
     case 4:  v_[2][0] = static_cast<int16_t>(value);
-             v_[2][1] = static_cast<int16_t>(value >> 16); break;
+             v_[2][1] = static_cast<int16_t>(value >> 16);
+             v_source_[2] = source; break;
     case 5:  v_[2][2] = static_cast<int16_t>(value); break;
     case 6:  rgbc_[0] = static_cast<uint8_t>(value);
              rgbc_[1] = static_cast<uint8_t>(value >> 8);

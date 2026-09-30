@@ -57,6 +57,12 @@ namespace psx {
     // x and y, always.
     bool precise = false;
     float fx = 0.0f, fy = 0.0f, w = 0.0f;
+    // Motion for DLSS (Docs/DLSS-Plan.md, phase 2): where this vertex was in the last picture
+    // minus where it is, in the console's pixels, when that is known - from the GTE for a
+    // precise vertex, or from matching a 2D primitive with the last picture's. Only the plane
+    // beside VRAM takes it.
+    bool moved = false;
+    float mx = 0.0f, my = 0.0f;
   };
 
   // How a primitive is drawn: its texture, if any, and how it blends.
@@ -101,6 +107,10 @@ namespace psx {
     uint8_t base_u, base_v;       // textured rectangle
     uint16_t fill_colour;
     uint8_t command;              // the GP0 command byte, for attributing writes
+    // A rectangle's motion, as a vertex's (RasterVertex::moved): where it was in the last
+    // picture minus where it is, in the console's pixels.
+    bool moved = false;
+    float mx = 0.0f, my = 0.0f;
   };
 
   // What the backend counts as it draws. Kept apart from `Gpu::Stats` so that no member of it is
@@ -111,6 +121,12 @@ namespace psx {
     uint64_t texels_by_depth[4];
     uint64_t watch_writes;
     uint32_t watch_writers[256];
+    // The warp check (RasterBackend::set_motion_check): pictures compared with the one before,
+    // their pixels, how many had motion known, and how far each picture was from the last one
+    // moved by its motion and left still - the sums of every pixel's difference, in 8-bit steps
+    // over three channels.
+    uint64_t warp_pictures, warp_pixels, warp_moved_pixels;
+    double warp_error_moved, warp_error_still;
   };
 
   // What is shown of the plane beside VRAM (psx/shared_picture.h), in place of the picture:
@@ -167,6 +183,13 @@ namespace psx {
     // in place of the picture or not - which keeps it too. Nothing to the software rasteriser.
     // What the machine sees is the same either way: the plane is never read back.
     virtual void SetPlanes(bool keep, PlaneView view) { (void)keep; (void)view; }
+    // A new picture is about to be shown - `reset` if it has nothing to do with the last one
+    // (Gpu::NewPicture). Called at vblank, before ResolveDisplay.
+    virtual void NewPicture(bool reset) { (void)reset; }
+    // The warp check (Docs/DLSS-Plan.md, phase 2): each new picture compared with the last one,
+    // moved by the plane's motion and left still, into the counters. For boot_runner --motion;
+    // it reads the picture back, so it is slow.
+    virtual void set_motion_check(bool on) { (void)on; }
 
     // The counters since the last call, which `Gpu` merges into its stats and clears.
     virtual RasterCounters& counters() = 0;

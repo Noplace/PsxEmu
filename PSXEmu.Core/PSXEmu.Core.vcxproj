@@ -240,6 +240,7 @@
     <ClInclude Include="psx\software_raster.h" />
     <ClInclude Include="psx\gte.h" />
     <ClInclude Include="psx\pgxp.h" />
+    <ClInclude Include="psx\vertex_motion.h" />
     <ClInclude Include="psx\io_interface.h" />
     <ClInclude Include="psx\kernel.h" />
     <ClInclude Include="psx\iso9660.h" />

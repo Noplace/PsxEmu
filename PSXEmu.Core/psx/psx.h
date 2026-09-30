@@ -42,6 +42,7 @@
 #include "psx/debug.h"
 #include "psx/component.h"
 #include "psx/pgxp.h"
+#include "psx/vertex_motion.h"
 #include "psx/cpu_context.h"
 #include "psx/cpu.h"
 #include "psx/gte.h"

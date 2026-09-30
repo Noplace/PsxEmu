@@ -1,8 +1,10 @@
 # NVIDIA DLSS 4.5 and DLSS 5
 
-**Status: phase 1 done (2026-09-30) - the plane beside VRAM, with depth from PGXP, handed over
-beside each shared picture and shown by Video > View Depth and View Motion; the machine runs
-exactly as without it. Phase 2, motion vectors, next. DLSS 4.5 Super Resolution, DLAA and 2x
+**Status: phases 1 and 2 done (2026-09-30) - the plane beside VRAM, with depth from PGXP and
+motion from the GTE and 2D matching, handed over beside each shared picture with whether it is new
+or starts afresh, and shown by Video > View Depth and View Motion. On the 26 discs, motion never
+does worse than none, and halves the warp error where 3D moves; the machine runs exactly as
+without it. Phase 3, jitter, next. DLSS 4.5 Super Resolution, DLAA and 2x
 Frame Generation are possible on this laptop's RTX 4060 once it is back (it has shown as "Unknown"
 since the 0x9F restart). DLSS 5 is not possible yet: there is no public SDK for it, and it runs on
 RTX 50 cards only until an RTX 40 update NVIDIA has promised for "later this fall".**
@@ -280,7 +282,7 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 |---|---|---|---|---|
 | 0 | The SDK read, the licence confirmed for shipping the DLLs, `sl_probe` (one run: each card's LUID, `slIsFeatureSupported` for DLSS and Frame Generation, GPU scheduling, driver) | the 4060 back and reporting both features | 4060, once | 1 |
 | 1 (**done**) | The plane beside VRAM: second target, the rules per kind of job, carried in the shared picture, depth from `w`, View Depth, `--ppm-depth`; zero motion | the twelve-disc table's instruction and sector counts identical with it on; all harnesses green; depth reviewed on five discs | Radeon, WARP | 2 |
-| 2 | Motion vectors: picture boundaries, the GTE's two tables, the identity keys measured, sprite matching, flags, resets, `--motion`, the warp check | the warp check beats zero motion on every 3D disc of the 26; the keys chosen by numbers | Radeon, WARP | 3-5 |
+| 2 (**done**) | Motion vectors: picture boundaries, the GTE's two tables, the identity keys measured, sprite matching, flags, resets, `--motion`, the warp check | the warp check beats zero motion on every 3D disc of the 26; the keys chosen by numbers | Radeon, WARP | 3-5 |
 | 3 | Jitter | the table identical in the machine's terms; the warp check unchanged with the jitter taken out | Radeon, WARP | 1-2 |
 | 4 | Super Resolution and DLAA in the Direct3D 12 renderer through Streamline; the menus; per-game keys | pictures reviewed at the table's checkpoints; ghosting no worse than without on the 26 discs; the cost measured | 4060 | 2-3 |
 | 5 | Frame Generation: the swap chain, Reflex on both threads, new-picture presents, the overlay as UI, our pacing kept; the RTX 50 modes in the menu | 30 to 60 and 60 to 120 even (PresentMon); latency measured (Reflex's own stats); the overlay clean | 4060 | 3-4 |
@@ -403,6 +405,127 @@ because the blur is drawn translucent over them.
 **What it shows for phase 2:** depth is only where PGXP followed every vertex of a polygon. Spyro
 himself is the plainest case. Motion will ride on the same tracking, so the vertices phase 2 teaches
 PGXP to follow - halfword stores, most likely - are depth gained as well.
+
+### Phase 2, as built
+
+**Where things were.**
+
+- **`psx/vertex_motion.h`**: two tables, this picture's and the last's. Things are remembered under
+  a key with where they were. The last picture's nearest under the same key wins, within a reach -
+  128 screen pixels by default.
+- **The GTE**, with PGXP on, looks each vertex it projects up in the last picture:
+  - The position is taken from OFX and OFY, which some games move with the buffer they draw into.
+  - First by the vertex's **model coordinates**, V0-V2's x, y and z.
+  - Then by **where its x and y were loaded from**, when known. PGXP's register shadows now keep
+    the word a register was loaded from, by LW and register moves (and in the recompiler's
+    bridge), and MTC2 and LWC2 hand it to the GTE.
+  - Then, if the last two pictures projected lists of the same length, by its **place in the
+    list**, within 32 pixels. That is for a mesh the CPU works out itself.
+  - `--motion-key` puts the address or the place first instead.
+- **`PreciseVertex`** carries the motion found. So the registers, RAM, DMA and the GTE's value cache
+  carry it, as they carry the unrounded position, and the GPU copies it into each vertex.
+- **The GPU** matches 2D primitives with the last picture's:
+  - rectangles by texture, CLUT, texel, size and flips, or colour and size untextured
+  - polygons with no precise vertex by texture and texture coordinates, or colour and shape
+    untextured, nearest by their middle
+  - each moved whole
+- **New pictures and fresh starts** (`Gpu::NextPicture`, at vblank):
+  - A picture is new when the display moves to another buffer, or at every vblank for a game that
+    has not moved it for six.
+  - It starts afresh at a cut, when under a quarter of 64 or more vertices were found. That resets
+    this picture and the next, since the work is shown now by a single-buffered game and a flip
+    later by a double-buffered one.
+  - It also starts afresh on a change of display size or depth, on a load, reset or new
+    rasteriser, and at every 480-line interlaced picture: half new lines and half the last field's,
+    which no motion describes.
+  - `SharedPicture` says both, `new_picture` and `reset`, for phase 4. The rasteriser is told
+    (`RasterBackend::NewPicture`).
+- **The rasteriser** takes each corner's motion in four more words a vertex, in 64ths of a pixel,
+  and writes it into the plane in sub-pixels:
+  - interpolated in perspective where there is depth, as a texture is
+  - unknown if any corner's is
+  - a rectangle's whole
+  - a 15-bit texel's own motion carried when the primitive has none
+- **Changes nothing the machine does**, and none of it is saved: a load starts afresh.
+
+**The warp check** (`boot_runner --motion`) scores motion with no DLSS and no NVIDIA card:
+
+- At each new picture the rasteriser reads back its colour and plane, moves the last new picture by
+  the motion (nearest pixel) and compares, against the last new picture left still.
+- A ratio below 1 is motion helping. Pictures that start afresh are not compared.
+- Also: `--motion-log`, a line per new picture; `--motion-key`; `--motion-reach`.
+- It first blended between pixels. That scored the right motion of Ridge Racer's waving flag, all
+  under a pixel, as worse than none (1.071): the blend blurs sharp edges more than the motion
+  saves. Nearest pixel scores it 1.026, which is what motion that small can show.
+
+**Choosing the keys, by the numbers:**
+
+- **Model coordinates against the place in the list**, Ridge Racer's first 3,000 frames: warp ratio
+  0.546 against 0.993. The place finds as many vertices but the wrong ones wherever the list
+  changes.
+- **Reach 128 against 64**, on Ridge Racer's fast attract-mode camera swing, from a saved state:
+  90% of vertices found against 83%, 86% of pixels with motion against 72%, fresh starts 9
+  against 20, ratio 0.496 against 0.518.
+- **The address against the coordinates**, the same swing: 0.503 against 0.496. Kept second in
+  line, where it costs nothing. It does not find Crash 3's animated models (65.5% of vertices
+  either way) - their coordinates are worked out in registers, not loaded.
+- **The steady list**, for Ridge Racer's waving title flag: its coordinates change every frame and
+  come from nowhere in RAM. 5.1% of its vertices found without it, 99.4% with, and a trace shows
+  each match exact.
+- **A polygon's shape in the 2D key**, tried to keep out 3D that Air Combat and Ace Combat 3 draw
+  from their own arithmetic, and taken out again:
+  - it changed nothing there - their trouble was interlacing, below
+  - it lost Spyro 3 the matches for Spyro himself, drawn from words PGXP cannot follow: 0.889 to
+    0.958
+
+**Verified:**
+
+- **The 26 discs, 6,000 frames each at 2x on the Radeon** (`--pgxp --shared-picture --motion`):
+
+  | Disc | Warp ratio | Pixels with motion |
+  |---|---|---|
+  | Wild Arms 2 | 0.290 | 99% |
+  | Valkyrie Profile | 0.299 | 100% |
+  | Ridge Racer | 0.467 | 84% |
+  | Vandal Hearts | 0.533 | 100% |
+  | Crash 3 | 0.779 | 91% |
+  | Captain Tsubasa J | 0.841 | 100% |
+  | Spyro 3 | 0.852 | 83% |
+  | Metal Gear Solid | 0.890 | 73% |
+  | Einhander | 0.986 | 100% |
+
+  - **1.000**, pictures standing still - menus, title screens, 2D not moving: Legend of Mana,
+    Bomberman, Area 51, Final Fantasy VII, Ace Combat 3, Silent Hill, Vagrant Story, Castlevania
+    SOTN, Chrono Cross, Wipeout and Xenogears.
+  - **No picture to compare**, all films or 480i in their first 6,000 frames: Air Combat, Wild Arms,
+    Final Fantasy VIII, Gran Turismo 2, Tekken 3 and Driver 2.
+  - **None worse than no motion.** The first run had Air Combat at 1.047 and Ace Combat 3 at 1.012:
+    their compared pictures were 480i (the BIOS intro, 640x480 title screens), which now start
+    afresh.
+  - Xenogears mounts by its .bin: its cue names one that has been renamed.
+- **The machine, unchanged.** The twelve-disc table on the Radeon, every line of every report the
+  same, bar wall-clock speed, the barrier count and the new `motion` line:
+  - this build without the plane against phase 1's
+  - with the plane and motion against phase 1's
+  - under the recompiler, with motion against without
+
+  The software rasteriser's table is the recorded one, bar the Ridge Racer checkpoint already known
+  to be stale.
+- **Every harness green**: `gte_test` 114 (+8, a `motion` group), `hw_raster_test` 67 (+6, motion
+  in the plane), and 67 again at 4x with the plane kept.
+- **Cost**, Ridge Racer 3,000 frames with the app's path, one run at a time:
+  - 4x: 1.64-1.65x real time without the plane, 1.59x with it and motion
+  - 2x: 1.58-1.65x without, 1.59x with
+
+  About 3-4%: the lookups on the machine's thread, and four more words a vertex.
+
+**What is left for later:**
+
+- **Animated models the CPU works out in registers** - Crash 3's characters. A vertex's place
+  within its own model, rather than in the whole picture's list, is the next key to try.
+- **Pixels with no motion at all** - Ridge Racer's nearest stretch of road, whose vertices are made
+  afresh each frame. Filling them from neighbours of the same depth is DLSS's own job, and phase 4
+  will see how well it does it.
 
 ---
 

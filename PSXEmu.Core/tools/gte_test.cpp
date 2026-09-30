@@ -728,6 +728,75 @@ struct Group {
   void (*run)(Machine&);
 };
 
+// ---------------------------------------------------------------------------
+// Motion for DLSS (psx/vertex_motion.h, Docs/DLSS-Plan.md, phase 2)
+// ---------------------------------------------------------------------------
+
+// Projects the vertex at model (x, y, z), 1000 from the eye with H 1000, moved by TRX `tx`, and
+// returns PGXP's record of it.
+emulation::psx::PreciseVertex Project(Machine& m, int16_t x, int16_t y, int16_t z, int32_t tx) {
+  m.SetControl(TRX, static_cast<uint32_t>(tx));
+  m.SetData(VXY0, Pack16(x, y));
+  m.SetData(VZ0, static_cast<uint16_t>(z));
+  m.Run(Command(0x01, true));
+  return m.gte().Precise(SXY2);
+}
+
+bool Close(float value, float expected) { return value > expected - 0.01f && value < expected + 0.01f; }
+
+void TestMotion(Machine& m) {
+  m.Reset();
+  m.SetIdentityRotation();
+  m.SetControl(H, 1000);
+  Gte& gte = m.gte();
+  gte.set_pgxp(true, false);
+  gte.set_motion(true);
+  gte.set_motion_key(Gte::MotionKey::kModel);
+
+  BeginTest("motion: the first picture knows nothing");
+  Check(!Project(m, 100, 50, 1000, 0).moved, "a vertex not seen before has no motion");
+
+  BeginTest("motion: the same vertex in the next picture, moved");
+  gte.NewPicture();
+  const emulation::psx::PreciseVertex moved = Project(m, 100, 50, 1000, 10);
+  Check(moved.moved, "found in the last picture by its model's coordinates");
+  Check(Close(moved.mx, -10.0f) && Close(moved.my, 0.0f),
+        "where it was minus where it is: (-10, 0)");
+  Check(!Project(m, 7, 8, 1000, 10).moved, "another vertex is not found under its key");
+
+  BeginTest("motion: two of the same vertex, the nearer taken");
+  gte.NewPicture();
+  Project(m, 20, 20, 1000, 0);
+  Project(m, 20, 20, 1000, 100);
+  gte.NewPicture();
+  const emulation::psx::PreciseVertex nearer = Project(m, 20, 20, 1000, 95);
+  Check(nearer.moved && Close(nearer.mx, 5.0f), "the instance 5 away, not the one 95 away");
+
+  BeginTest("motion: too far to be the same");
+  gte.NewPicture();
+  Project(m, 30, 30, 1000, 0);
+  gte.NewPicture();
+  Check(!Project(m, 30, 30, 1000, 300).moved, "300 pixels is not the same vertex moved");
+
+  BeginTest("motion: a model the CPU moves itself, found by its place in a steady list");
+  gte.ForgetMotion();
+  for (int picture = 0; picture < 3; ++picture) {
+    Project(m, 40, static_cast<int16_t>(40 + picture), 1000, 0);
+    Project(m, 60, static_cast<int16_t>(40 + picture), 1000, 0);
+    gte.NewPicture();
+  }
+  const emulation::psx::PreciseVertex waved = Project(m, 40, 43, 1000, 0);
+  Check(waved.moved && Close(waved.mx, 0.0f) && Close(waved.my, -1.0f),
+        "its coordinates changed, its place did not: found, (0, -1)");
+
+  BeginTest("motion: forgotten");
+  gte.ForgetMotion();
+  Check(!Project(m, 100, 50, 1000, 10).moved, "nothing projected before is found after");
+
+  gte.set_motion(false);
+  gte.set_pgxp(false, false);
+}
+
 const Group kGroups[] = {
   { "registers",  TestRegisters },
   { "flags",      TestFlags },
@@ -739,6 +808,7 @@ const Group kGroups[] = {
   { "colour",     TestColour },
   { "opcode",     TestOpcode },
   { "unknown",    TestUnknown },
+  { "motion",     TestMotion },
 };
 
 }  // namespace

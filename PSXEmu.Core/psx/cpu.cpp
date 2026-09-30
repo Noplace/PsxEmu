@@ -1436,8 +1436,14 @@ void Cpu::COP2() {
       ArmLoad(rt_, system_->gte().ReadControl(rd_));
       break;
     case 0x04:  // MTC2
-      system_->gte().WriteData(rd_, context_->gp.reg[rt_],
-                               system_->pgxp().enabled() ? &system_->pgxp().reg(rt_) : nullptr);
+      if (system_->pgxp().enabled()) {
+        const uint32_t value = context_->gp.reg[rt_];
+        system_->gte().WriteData(rd_, value, &system_->pgxp().reg(rt_),
+                                 system_->pgxp().source(rt_, value));
+      }
+      else {
+        system_->gte().WriteData(rd_, context_->gp.reg[rt_]);
+      }
       break;
     case 0x06:  // CTC2
       system_->gte().WriteControl(rd_, context_->gp.reg[rt_]);
@@ -1456,9 +1462,11 @@ void Cpu::LWC2() {
   const uint32_t address =
       context_->gp.reg[rs_] + immediate_32bit_sign_extended_;
   const uint32_t value = Load(kM32, address);
-  system_->gte().WriteData(rt_, value,
-                           system_->pgxp().enabled()
-                               ? system_->pgxp().word(address & 0x1FFFFFFF) : nullptr);
+  if (system_->pgxp().enabled())
+    system_->gte().WriteData(rt_, value, system_->pgxp().word(address & 0x1FFFFFFF),
+                             (address & 0x1FFFFFFF) | 1u);
+  else
+    system_->gte().WriteData(rt_, value);
   Tick();
 }
 
@@ -1542,6 +1550,7 @@ void Cpu::LW() {
   if (system_->pgxp().enabled() && rt_ != 0) {
     const PreciseVertex* shadow = system_->pgxp().word(physical_address);
     system_->pgxp().reg(rt_) = shadow != nullptr ? *shadow : PreciseVertex();
+    system_->pgxp().set_source(rt_, mem, physical_address);
   }
 }
 

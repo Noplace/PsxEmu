@@ -98,6 +98,8 @@ namespace psxemu {
         void Written(uint32_t x, uint32_t y, uint32_t w, uint32_t h) override;
         void Reloaded() override;
         void SetPlanes(bool keep, emulation::psx::PlaneView view) override;
+        void NewPicture(bool reset) override;
+        void set_motion_check(bool on) override { motion_check_ = on; }
 
         // Whether the plane beside VRAM is being drawn (psx/shared_picture.h).
         bool planes() const {
@@ -122,11 +124,15 @@ namespace psxemu {
         static uint16_t FromCard(uint32_t rgba);
 
      private:
+        // Words a vertex carries for the pixel shader: 16 for the primitive, and 4 for its
+        // motion, which only the plane takes (Docs/DLSS-Plan.md, phase 2).
+        static constexpr int kPayload = 20;
+
         // A corner of what is drawn, and - the same at every corner - what the pixel shader
         // needs to work out each pixel of the primitive: see the layout in d3d11_raster.cpp.
         struct Vertex {
             float x, y;
-            uint32_t p[16];
+            uint32_t p[kPayload];
         };
 
         // What the pixel shaders are told, per batch. The layout is the HLSL cbuffer's.
@@ -189,7 +195,7 @@ namespace psxemu {
         // Batches a rectangle of pixels - right and bottom exclusive - as two triangles carrying
         // `payload`, and marks it drawn.
         void AddBox(int32_t left, int32_t top, int32_t right, int32_t bottom,
-                    const uint32_t (&payload)[16]);
+                    const uint32_t (&payload)[kPayload]);
         static uint32_t Attributes(const emulation::psx::RasterState& state, uint32_t kind,
                                    bool textured, bool dither);
 
@@ -298,6 +304,17 @@ namespace psxemu {
         Microsoft::WRL::ComPtr<ID3D11DeviceContext1> context1_;   // ClearView, for ForgetPlanes
         // Beside each shared picture, the same area of the plane, while it is kept.
         Microsoft::WRL::ComPtr<ID3D11Texture2D> picture_planes_[kPictureSlots];
+
+        // The warp check (RasterBackend::set_motion_check): a new picture's display area and
+        // plane read back, and the last new picture moved by its motion compared with it -
+        // against the last new picture left still - into the counters.
+        void WarpCheck(uint32_t x, uint32_t y, UINT width, UINT height);
+        bool motion_check_ = false;
+        bool picture_new_ = false;     // NewPicture since the last ResolveDisplay
+        bool picture_reset_ = false;
+        std::vector<uint8_t> warp_last_;   // the last new picture, RGBA, warp_width_ wide
+        UINT warp_width_ = 0, warp_height_ = 0;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> warp_colour_, warp_plane_;   // staging
 
         std::vector<Vertex> batch_;
         BatchKey batch_key_ = {};

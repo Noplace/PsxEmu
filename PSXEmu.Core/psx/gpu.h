@@ -109,7 +109,18 @@ class Gpu : public GpuCore {
   // Keeps the plane beside VRAM that DLSS needs, and shows it in place of the picture or not
   // (psx/shared_picture.h, Docs/DLSS-Plan.md). The hardware rasteriser's alone, and kept across a
   // change of rasteriser; nothing the machine sees changes. Machine thread, between frames.
+  // Keeping it works out motion too (phase 2): the GTE's, with PGXP on, and 2D primitives'.
   void SetPlanes(bool keep, PlaneView view);
+  // The warp check (RasterBackend::set_motion_check), for boot_runner --motion: slow.
+  void SetMotionCheck(bool on);
+  // The last new picture's motion, for boot_runner --motion-log: the vertices the GTE looked
+  // for in the picture before it since the one before that, how many it found, and whether it
+  // started afresh.
+  struct PictureMotion {
+    uint64_t looked, found;
+    bool reset;
+  };
+  const PictureMotion& last_picture_motion() const { return last_picture_motion_; }
 
   // Whether the hardware rasteriser is drawing, and if it was asked for but is
   // not, why not. Settled by ChooseRasteriser.
@@ -149,6 +160,15 @@ class Gpu : public GpuCore {
     uint64_t polygon_vertices;
     uint64_t precise_vertices;
     uint64_t recalled_vertices;   // ...of which found by value in the GTE's cache (Gte::Recall)
+    // Motion for DLSS (Docs/DLSS-Plan.md, phase 2), while it is kept: new pictures shown, and of
+    // them how many had nothing to do with the last; vertices the GTE looked for in the last
+    // picture, and found; 2D primitives likewise (sprite matching); and the warp check's sums
+    // (RasterCounters).
+    uint64_t pictures, picture_resets;
+    uint64_t motion_vertices, motion_vertices_found;
+    uint64_t motion_sprites, motion_sprites_found;
+    uint64_t warp_pictures, warp_pixels, warp_moved_pixels;
+    double warp_error_moved, warp_error_still;
     uint64_t raster_waits;
     uint32_t queue_peak;
     uint64_t queue_overflows;
@@ -502,6 +522,33 @@ class Gpu : public GpuCore {
   // SetPlanes', handed to each rasteriser as it is made.
   bool planes_keep_ = false;
   PlaneView plane_view_ = PlaneView::kPicture;
+  // Motion for DLSS (Docs/DLSS-Plan.md, phase 2): worked out while the hardware rasteriser keeps
+  // the plane (UpdateMotion). What is about to be shown is a new picture when the display moves
+  // to another buffer, or - for a game that has not moved it for kSingleBuffered vblanks - at
+  // every vblank (NextPicture). 2D primitives are matched with the last picture's here; the GTE
+  // matches vertices.
+  static constexpr uint32_t kSingleBuffered = 6;
+  // A new picture for which fewer than a quarter of at least this many vertices were found in
+  // the last one is a cut.
+  static constexpr uint64_t kCutVertices = 64;
+  bool motion_ = false;
+  bool motion_check_ = false;   // SetMotionCheck's
+  VertexMotion sprite_motion_;
+  uint32_t shown_x_ = 0, shown_y_ = 0;   // the display's start at the last vblank
+  uint32_t vblanks_since_flip_ = 0;
+  int shown_width_ = 0, shown_height_ = 0;
+  bool shown_depth_ = false;
+  bool cut_before_ = false;     // the new picture before this one was a cut
+  bool motion_fresh_ = true;    // nothing before this is anything after: the next picture resets
+  PictureMotion last_picture_motion_ = {};
+  // Turns motion on or off to match the planes and the rasteriser.
+  void UpdateMotion();
+  // At vblank, with the rasteriser idle: whether what is about to be shown is a new picture,
+  // and whether it has nothing to do with the last - and if new, ages the motion tables.
+  void NextPicture(bool* is_new, bool* reset);
+  // A 2D primitive's motion: the same one in the last picture, by `key`, nearest to (x, y) -
+  // taken from the drawing offset, which moves with the buffer drawn into.
+  bool FindSprite(uint64_t key, float x, float y, float* dx, float* dy);
 
   // Adds the backend's counters into stats_ and clears them. The caller holds
   // jobs_mutex_.

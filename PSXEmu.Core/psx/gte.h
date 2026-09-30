@@ -54,7 +54,9 @@ class Gte : public Component {
   uint32_t ReadData(uint32_t index);                  // MFC2
   // MTC2. `precise` is PGXP's shadow of the word written, when there is one: an SXY register
   // written from a word that still holds a projected vertex keeps its unrounded position.
-  void WriteData(uint32_t index, uint32_t value, const PreciseVertex* precise = nullptr);
+  // `source` is where the word was loaded from (Pgxp::source), for motion's address key.
+  void WriteData(uint32_t index, uint32_t value, const PreciseVertex* precise = nullptr,
+                 uint32_t source = 0);
 
   // PGXP (psx/pgxp.h): keep each projected vertex's unrounded position beside the SXY FIFO,
   // and - `culling` - work NCLIP out from them. Set by System from the settings.
@@ -77,6 +79,35 @@ class Gte : public Component {
   }
   // A frame has been shown: what the cache holds gets a frame older.
   void NewFrame() { ++frame_; }
+
+  // Motion for DLSS (psx/vertex_motion.h, Docs/DLSS-Plan.md, phase 2): with PGXP on, each vertex
+  // projected is looked for among the last picture's by a key, and its unrounded position carries
+  // where it was. Set by Gpu while the hardware rasteriser keeps the plane motion goes into.
+  // Changes nothing the machine sees.
+  enum class MotionKey {
+    kModel,     // the vertex as its model holds it: V0-V2's x, y and z
+    kOrder,     // the how-many-th vertex projected in the picture
+    kAddress,   // where in RAM its x and y were loaded from, else as kModel
+  };
+  void set_motion(bool on) {
+    if (on != motion_)
+      vertex_motion_.Forget();
+    motion_ = on;
+  }
+  bool motion() const { return motion_; }
+  void set_motion_key(MotionKey key) { motion_key_ = key; }
+  // A picture has ended - Gpu decides when: the vertices projected for it are what the next
+  // picture's are looked for among. If it projected as many as the one before, the list is
+  // likely the same list, and a vertex's place in it can stand in for its key (Rtps).
+  void NewPicture() {
+    vertex_motion_.NewPicture();
+    order_steady_ = projected_in_picture_ != 0 && projected_in_picture_ == projected_before_;
+    projected_before_ = projected_in_picture_;
+    projected_in_picture_ = 0;
+  }
+  // Nothing projected before is anything projected after: a state loaded, a reset.
+  void ForgetMotion() { vertex_motion_.Forget(); }
+  VertexMotion& vertex_motion() { return vertex_motion_; }
   uint32_t ReadControl(uint32_t index);               // CFC2
   void WriteControl(uint32_t index, uint32_t value);  // CTC2
   // Returns the command's cycle cost, so the caller can charge real GTE
@@ -119,6 +150,18 @@ class Gte : public Component {
   std::vector<PreciseVertex> cache_ = std::vector<PreciseVertex>(65536);
   std::vector<uint32_t> cache_frame_ = std::vector<uint32_t>(65536);   // when each was put there
   uint32_t frame_ = 0;
+  // Motion (set_motion): the last picture's vertices and this one's, and the key they go by.
+  bool motion_ = false;
+  MotionKey motion_key_ = MotionKey::kModel;
+  VertexMotion vertex_motion_;
+  uint32_t projected_in_picture_ = 0;
+  uint32_t projected_before_ = 0;   // ...in the picture before
+  bool order_steady_ = false;       // the last two pictures projected as many
+  // How near a vertex found by its place in the list must be: closer than by its key, since a
+  // place is a weaker sign of the same vertex.
+  static constexpr float kOrderReach = 32.0f;
+  // Where each of V0-V2's x and y words was loaded from (WriteData's `source`), 0 if not known.
+  uint32_t v_source_[3] = {};
   uint16_t sz_[4];         // the depth FIFO, oldest first
   uint8_t rgb_fifo_[3][4]; // the colour FIFO, oldest first
   uint32_t res1_;

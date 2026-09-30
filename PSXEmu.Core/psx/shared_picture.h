@@ -93,6 +93,11 @@ struct SharedPicture {
   // Drawn with the picture, so the same fence says both are ready.
   void* planes = nullptr;
   uint64_t planes_id = 0;
+  // Whether this is a new picture, not the last one shown again - a game at 30 frames a second
+  // shows each twice - and whether it has nothing to do with the one before: a cut, a film, the
+  // display changed. What DLSS needs to know of the picture as a whole (Gpu::NewPicture).
+  bool new_picture = false;
+  bool reset = false;
 
   explicit operator bool() const { return source != nullptr; }
 };

@@ -69,6 +69,12 @@ namespace psxemu {
         //   a copy (PsCopy):
         //     p[0]    where this piece of the destination starts
         //     p[1]    where its source starts
+        //
+        // and for any triangle or rectangle, its motion, which only the plane beside VRAM takes
+        // (Docs/DLSS-Plan.md, phase 2) - where each corner was in the last picture minus where it
+        // is, in 64ths of a console pixel, x and y 16 bits apiece:
+        //   p[16-18]  corners a, b, c's (a rectangle's whole motion in p[16])
+        //   p[19]     which of them is known, bits 0-2
         enum Kind : uint32_t { kKindTriangle = 0, kKindRectangle = 1, kKindFlat = 2, kKindPrecise = 3 };
 
         // Everything the rasteriser draws with, compiled when it is made - for its scale, which
@@ -130,6 +136,7 @@ namespace psxemu {
             "  uint4 p1 : P1;\n"
             "  uint4 p2 : P2;\n"
             "  uint4 p3 : P3;\n"
+            "  uint4 p4 : P4;\n"
             "};\n"
             "struct VsOut {\n"
             "  float4 position : SV_POSITION;\n"
@@ -137,6 +144,7 @@ namespace psxemu {
             "  nointerpolation uint4 p1 : P1;\n"
             "  nointerpolation uint4 p2 : P2;\n"
             "  nointerpolation uint4 p3 : P3;\n"
+            "  nointerpolation uint4 p4 : P4;\n"
             "};\n"
             "\n"
             "// Positions are in the console's pixels, whatever the viewport's size.\n"
@@ -148,6 +156,7 @@ namespace psxemu {
             "  output.p1 = input.p1;\n"
             "  output.p2 = input.p2;\n"
             "  output.p3 = input.p3;\n"
+            "  output.p4 = input.p4;\n"
             "  return output;\n"
             "}\n"
             "\n"
@@ -155,6 +164,11 @@ namespace psxemu {
             "                                 -3, 1, -4, 0,  3, -1, 2, -2 };\n"
             "\n"
             "int2 XY(uint w) { return int2(asint(w << 16) >> 16, asint(w) >> 16); }\n"
+            "// A corner's motion (p[16-18]), in console pixels; and three of them weighted.\n"
+            "float2 Motion(uint w) { return float2(XY(w)) / 64.0; }\n"
+            "float2 Weigh(float3 l, uint4 m) {\n"
+            "  return l.x * Motion(m.x) + l.y * Motion(m.y) + l.z * Motion(m.z);\n"
+            "}\n"
             "uint3 RGB(uint w) { return uint3(w & 255u, (w >> 8) & 255u, (w >> 16) & 255u); }\n"
             "int Widen8(int c5) { return (c5 << 3) | (c5 >> 2); }\n"
             "int3 Widen(int pixel) {\n"
@@ -198,6 +212,10 @@ namespace psxemu {
             "  float inverse_depth = 0.0;   // 1 / the depth here, where PGXP gave every vertex one\n"
             "  bool direct = false;         // a 15-bit texel, read from here in the target:\n"
             "  int2 direct_at = int2(0, 0); // what may be a picture the game drew, and its plane\n"
+            "  // Where this was in the last picture minus where it is, in console pixels, when\n"
+            "  // every corner's is known (p[16-19]).\n"
+            "  bool motion_known = (input.p4.w & 7u) == 7u;\n"
+            "  float2 motion = float2(0.0, 0.0);\n"
             "  if (skip_field != 0 && (pixel.y & 1) == active_line_lsb)\n"
             "    discard;\n"
             "  uint a0 = input.p2.x;\n"
@@ -217,6 +235,9 @@ namespace psxemu {
             "        w2 - (int)((rule >> 2) & 1u) < 0)\n"
             "      discard;\n"
             "    // Barycentric weights: w1 belongs to a, w2 to b, w0 to c.\n"
+            "    if (motion_known)\n"
+            "      motion = Weigh(float3(w1, w2, w0) / ((float)input.p1.w * (float)(scale * scale)),\n"
+            "                     input.p4);\n"
             "    uint3 ca = RGB(input.p0.w), cb = RGB(input.p1.x), cc = RGB(input.p1.y);\n"
             "    uint3 us = uint3(input.p0.w >> 24, input.p1.x >> 24, input.p1.y >> 24);\n"
             "    uint vw = input.p1.z;\n"
@@ -267,6 +288,11 @@ namespace psxemu {
             "    // with the screen's weights.\n"
             "    if (depth.x > 0.0 && depth.y > 0.0 && depth.z > 0.0)\n"
             "      inverse_depth = dot(l, 1.0 / depth);\n"
+            "    // Motion goes across a polygon as a texture does: in perspective, with a depth.\n"
+            "    if (motion_known) {\n"
+            "      float3 q = inverse_depth > 0.0 ? l / depth : l;\n"
+            "      motion = Weigh(q / (q.x + q.y + q.z), input.p4);\n"
+            "    }\n"
             "    uint3 ca = RGB(input.p0.w), cb = RGB(input.p1.x), cc = RGB(input.p1.y);\n"
             "    c = (a0 & 0x20000000u) != 0\n"
             "        ? int3(min(floor(l.x * float3(ca) + l.y * float3(cb) + l.z * float3(cc) + 0.002), 255.0))\n"
@@ -295,8 +321,11 @@ namespace psxemu {
             "    v = flip_y ? base_v - offset.y : base_v + offset.y;\n"
             "    fine_texel = int2(flip_x ? scale - 1 - sub.x : sub.x, flip_y ? scale - 1 - sub.y : sub.y);\n"
             "    c = int3(RGB(input.p0.w));\n"
+            "    if (motion_known)\n"
+            "      motion = Motion(input.p4.x);\n"
             "  } else {\n"
             "    c = int3(RGB(input.p0.w));\n"
+            "    motion_known = false;   // a line's pixel, or a fill\n"
             "  }\n"
             "  if (exact)\n"
             "    fine_texel = int2(0, 0);\n"
@@ -360,17 +389,21 @@ namespace psxemu {
             "  float3 colour = fine ? float3(c) / 255.0 : float3(Cut(c.r), Cut(c.g), Cut(c.b));\n"
             "  float4 result = float4(colour, (force_mask != 0 || texel_mask) ? 1.0 : 0.0);\n"
             "#if PLANES\n"
-            "  // A fill is a background standing still. Nothing else's motion is known yet.\n"
-            "  // A 15-bit texel brings its own plane along, as a copy does - a game drawing a\n"
-            "  // picture it drew itself back onto the screen, a blur or a wipe - with the\n"
-            "  // primitive's own depth first where it has one. Translucent, alpha 0 keeps what\n"
-            "  // is under it (the target's blend) and says so.\n"
+            "  // A fill is a background standing still; motion otherwise as worked out above, in\n"
+            "  // sub-pixels. A 15-bit texel brings its own plane along, as a copy does - a game\n"
+            "  // drawing a picture it drew itself back onto the screen, a blur or a wipe - with the\n"
+            "  // primitive's own motion and depth first where it has them. Translucent, alpha 0\n"
+            "  // keeps what is under it (the target's blend) and says so.\n"
             "  bool fill = kind == 2u && input.p3.w != 0u;\n"
-            "  float4 plane = float4(fill ? 0.0 : unknown_motion, fill ? 0.0 : unknown_motion,\n"
-            "                        depth_scale * inverse_depth, 1.0);\n"
+            "  float4 plane = float4(unknown_motion, unknown_motion, depth_scale * inverse_depth, 1.0);\n"
+            "  if (fill)\n"
+            "    plane.rg = float2(0.0, 0.0);\n"
+            "  else if (motion_known)\n"
+            "    plane.rg = motion * scale;\n"
             "  if (direct) {\n"
             "    float4 carried = plane_source.Load(int3(direct_at, 0));\n"
-            "    plane.rg = carried.rg;\n"
+            "    if (!motion_known)\n"
+            "      plane.rg = carried.rg;\n"
             "    if (inverse_depth == 0.0)\n"
             "      plane.b = carried.b;\n"
             "  }\n"
@@ -489,6 +522,24 @@ namespace psxemu {
 
         inline uint8_t Clamp8(int32_t v) {
             return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v));
+        }
+
+        // A motion for p[16-18]: 64ths of a console pixel, x and y 16 bits apiece.
+        inline uint32_t PackMotion(float mx, float my) {
+            auto part = [](float value) {
+                const float steps = std::min(std::max(std::round(value * 64.0f), -32768.0f), 32767.0f);
+                return static_cast<uint32_t>(static_cast<int32_t>(steps)) & 0xFFFFu;
+            };
+            return part(mx) | (part(my) << 16);
+        }
+
+        // Three corners' motion into p[16-19].
+        inline void PutMotion(uint32_t* payload, const RasterVertex& a, const RasterVertex& b,
+                              const RasterVertex& c) {
+            payload[16] = PackMotion(a.mx, a.my);
+            payload[17] = PackMotion(b.mx, b.my);
+            payload[18] = PackMotion(c.mx, c.my);
+            payload[19] = (a.moved ? 1u : 0u) | (b.moved ? 2u : 0u) | (c.moved ? 4u : 0u);
         }
 
         // Whether the fill rule leaves an edge out - the software rasteriser's EdgeBias: in the
@@ -888,6 +939,8 @@ namespace psxemu {
               D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "P", 3, DXGI_FORMAT_R32G32B32A32_UINT, 0, offsetof(Vertex, p) + 48,
               D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "P", 4, DXGI_FORMAT_R32G32B32A32_UINT, 0, offsetof(Vertex, p) + 64,
+              D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
         bool made = SUCCEEDED(device_->CreateVertexShader(vertex_blob->GetBufferPointer(),
                                                           vertex_blob->GetBufferSize(), nullptr,
@@ -1068,6 +1121,102 @@ namespace psxemu {
         context1_->ClearView(plane_target_view_.Get(), unknown, &rect, 1);
     }
 
+    void D3D11Raster::NewPicture(bool reset) {
+        picture_new_ = true;
+        picture_reset_ = reset;
+    }
+
+    void D3D11Raster::WarpCheck(uint32_t x, uint32_t y, UINT width, UINT height) {
+        if (!warp_colour_ || warp_width_ != width || warp_height_ != height) {
+            warp_colour_.Reset();
+            warp_plane_.Reset();
+            warp_last_.clear();
+            D3D11_TEXTURE2D_DESC texture = {};
+            texture.Width = width;
+            texture.Height = height;
+            texture.MipLevels = 1;
+            texture.ArraySize = 1;
+            texture.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            texture.SampleDesc.Count = 1;
+            texture.Usage = D3D11_USAGE_STAGING;
+            texture.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if (FAILED(device_->CreateTexture2D(&texture, nullptr, &warp_colour_)))
+                return;
+            texture.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            if (FAILED(device_->CreateTexture2D(&texture, nullptr, &warp_plane_))) {
+                warp_colour_.Reset();
+                return;
+            }
+            warp_width_ = width;
+            warp_height_ = height;
+        }
+        const D3D11_BOX box = { x * scale_, y * scale_, 0, x * scale_ + width, y * scale_ + height, 1 };
+        context_->CopySubresourceRegion(warp_colour_.Get(), 0, 0, 0, 0, target_.Get(), 0, &box);
+        context_->CopySubresourceRegion(warp_plane_.Get(), 0, 0, 0, 0, plane_target_.Get(), 0, &box);
+        D3D11_MAPPED_SUBRESOURCE colour, plane;
+        if (FAILED(context_->Map(warp_colour_.Get(), 0, D3D11_MAP_READ, 0, &colour))) {
+            CheckDevice();
+            return;
+        }
+        if (FAILED(context_->Map(warp_plane_.Get(), 0, D3D11_MAP_READ, 0, &plane))) {
+            context_->Unmap(warp_colour_.Get(), 0);
+            CheckDevice();
+            return;
+        }
+        std::vector<uint8_t> now(static_cast<size_t>(width) * height * 4);
+        for (UINT row = 0; row < height; ++row)
+            memcpy(now.data() + static_cast<size_t>(row) * width * 4,
+                   static_cast<const uint8_t*>(colour.pData) + row * colour.RowPitch, width * 4);
+
+        // The last new picture at (fx, fy) - the nearest pixel, held to its edges. Not blended
+        // between pixels: that blurs sharp edges, and on motion under a pixel, as a waving flag's,
+        // the blur costs more than the motion saves - the check would count right motion wrong.
+        auto sample = [&](float fx, float fy, float* rgb) {
+            const float x = std::min(std::max(std::floor(fx + 0.5f), 0.0f), static_cast<float>(width - 1));
+            const float y = std::min(std::max(std::floor(fy + 0.5f), 0.0f), static_cast<float>(height - 1));
+            const uint8_t* p = &warp_last_[(static_cast<size_t>(y) * width + static_cast<size_t>(x)) * 4];
+            for (int c = 0; c < 3; ++c)
+                rgb[c] = p[c];
+        };
+        if (!warp_last_.empty() && !picture_reset_) {
+            double moved_error = 0.0, still_error = 0.0;
+            uint64_t moved_pixels = 0;
+            const float unknown = emulation::psx::kUnknownMotion * 0.5f;
+            for (UINT row = 0; row < height; ++row) {
+                const uint16_t* motion = reinterpret_cast<const uint16_t*>(
+                    static_cast<const uint8_t*>(plane.pData) + row * plane.RowPitch);
+                for (UINT col = 0; col < width; ++col) {
+                    const uint8_t* here = &now[(static_cast<size_t>(row) * width + col) * 4];
+                    const uint8_t* there = &warp_last_[(static_cast<size_t>(row) * width + col) * 4];
+                    float still = 0.0f;
+                    for (int c = 0; c < 3; ++c)
+                        still += std::abs(static_cast<float>(here[c]) - static_cast<float>(there[c]));
+                    const float mx = HalfToFloat(motion[col * 4]);
+                    const float my = HalfToFloat(motion[col * 4 + 1]);
+                    float moved = still;
+                    if (mx < unknown && my < unknown) {
+                        ++moved_pixels;
+                        float rgb[3];
+                        sample(static_cast<float>(col) + mx, static_cast<float>(row) + my, rgb);
+                        moved = 0.0f;
+                        for (int c = 0; c < 3; ++c)
+                            moved += std::abs(static_cast<float>(here[c]) - rgb[c]);
+                    }
+                    moved_error += moved;
+                    still_error += still;
+                }
+            }
+            ++counters_.warp_pictures;
+            counters_.warp_pixels += static_cast<uint64_t>(width) * height;
+            counters_.warp_moved_pixels += moved_pixels;
+            counters_.warp_error_moved += moved_error;
+            counters_.warp_error_still += still_error;
+        }
+        context_->Unmap(warp_plane_.Get(), 0);
+        context_->Unmap(warp_colour_.Get(), 0);
+        warp_last_.swap(now);
+    }
+
     bool D3D11Raster::ReadPlanes(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                                  std::vector<float>* rgba) {
         if (!planes() || w == 0 || h == 0 || x + w > kWidth || y + h > kHeight)
@@ -1214,7 +1363,7 @@ namespace psxemu {
     }
 
     void D3D11Raster::AddBox(int32_t left, int32_t top, int32_t right, int32_t bottom,
-                             const uint32_t (&payload)[16]) {
+                             const uint32_t (&payload)[kPayload]) {
         const float l = static_cast<float>(left), t = static_cast<float>(top);
         const float r = static_cast<float>(right), b = static_cast<float>(bottom);
         const float corners[6][2] = { { l, t }, { r, t }, { l, b }, { r, t }, { r, b }, { l, b } };
@@ -1284,7 +1433,7 @@ namespace psxemu {
         const uint32_t rule = (EdgeLeftOut(b.x - a.x, b.y - a.y) ? 1u : 0u) |
                               (EdgeLeftOut(c.x - b.x, c.y - b.y) ? 2u : 0u) |
                               (EdgeLeftOut(a.x - c.x, a.y - c.y) ? 4u : 0u);
-        uint32_t payload[16] = {};
+        uint32_t payload[kPayload] = {};
         payload[0] = PackXy(a.x, a.y);
         payload[1] = PackXy(b.x, b.y);
         payload[2] = PackXy(c.x, c.y);
@@ -1296,6 +1445,7 @@ namespace psxemu {
         payload[7] = static_cast<uint32_t>(area > 0 ? area : -area);
         payload[8] = Attributes(state, kKindTriangle, state.textured, state.dither);
         payload[9] = (state.clut_x & 1023) | ((state.clut_y & 511) << 10);
+        PutMotion(payload, a, b, c);
         Begin(key, 6);
         AddBox(left, top, right, bottom, payload);
     }
@@ -1359,7 +1509,7 @@ namespace psxemu {
             return word;
         };
         const bool perspective = a.w > 0.0f && b.w > 0.0f && c.w > 0.0f;
-        uint32_t payload[16] = {};
+        uint32_t payload[kPayload] = {};
         payload[0] = bits(a.x);
         payload[1] = bits(a.y);
         payload[2] = bits(b.x);
@@ -1379,6 +1529,7 @@ namespace psxemu {
         payload[13] = perspective ? bits(b.w) : 0;
         payload[14] = perspective ? bits(c.w) : 0;
         payload[15] = rule;
+        PutMotion(payload, va, vb, vc);
         Begin(key, 6);
         AddBox(left, top, right, bottom, payload);
     }
@@ -1407,13 +1558,17 @@ namespace psxemu {
                     state.flip_y ? base_v - last_row : base_v + first_row,
                     state.flip_y ? base_v - first_row : base_v + last_row);
 
-        uint32_t payload[16] = {};
+        uint32_t payload[kPayload] = {};
         payload[0] = PackXy(job.x, job.y);
         payload[3] = PackColor(job.r, job.g, job.b) | (static_cast<uint32_t>(base_u) << 24);
         payload[6] = static_cast<uint32_t>(base_v) | (state.flip_x ? 0x100u : 0) |
                      (state.flip_y ? 0x200u : 0);
         payload[8] = Attributes(state, kKindRectangle, state.textured, false);   // never dithered
         payload[9] = (state.clut_x & 1023) | ((state.clut_y & 511) << 10);
+        if (job.moved) {
+            payload[16] = PackMotion(job.mx, job.my);
+            payload[19] = 7;
+        }
         Begin(key, 6);
         AddBox(left, top, right, bottom, payload);
     }
@@ -1495,7 +1650,7 @@ namespace psxemu {
         key.shader = kShaderDraw;
         key.constants.skip_field = job.env.skip_field ? 1 : 0;
         key.constants.active_line_lsb = static_cast<int32_t>(job.env.active_line_lsb & 1);
-        uint32_t payload[16] = {};
+        uint32_t payload[kPayload] = {};
         payload[3] = ToCard(job.fill_colour) & 0x00FFFFFF;
         payload[8] = kKindFlat << 27;
         payload[15] = 1;   // a fill, not a line's pixel: to the plane, a background standing still
@@ -1537,7 +1692,7 @@ namespace psxemu {
         Begin(key, 24);
         ForEachPiece(job.x, job.y, job.w, job.h,
                      [&](int32_t x, int32_t y, int32_t w, int32_t h, int32_t col, int32_t row) {
-            uint32_t payload[16] = {};
+            uint32_t payload[kPayload] = {};
             payload[0] = PackXy(x, y);
             payload[1] = PackXy(job.src_x + col, job.src_y + row);
             AddBox(x, y, x + w, y + h, payload);
@@ -2032,6 +2187,11 @@ namespace psxemu {
             return false;
         Flush();
         const UINT width = w * scale_, height = h * scale_;
+        if (picture_new_) {
+            if (motion_check_ && planes())
+                WarpCheck(x, y, width, height);
+            picture_new_ = false;
+        }
 
         if (pictures_ && ShareDisplay(x, y, width, height, shared)) {
             // A read-back after this one has no picture of its own behind it to hand over.

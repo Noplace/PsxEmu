@@ -49,6 +49,10 @@ namespace psx {
     uint32_t value = 0;   // the SXY word this describes
     float x = 0.0f, y = 0.0f;   // screen position, unrounded
     float w = 0.0f;       // the depth it was projected from (SZ3); 0 when unknown
+    // Where it was in the last picture minus where it is, in screen pixels, when the GTE found
+    // it there (psx/vertex_motion.h, Docs/DLSS-Plan.md) - it goes wherever the position goes.
+    float mx = 0.0f, my = 0.0f;
+    bool moved = false;
     bool valid = false;
 
     bool Matches(uint32_t word) const { return valid && value == word; }
@@ -90,8 +94,25 @@ namespace psx {
 
     // A register moved to another - ADDU/OR with $zero, ADDIU/ORI with 0 - takes its shadow.
     void Move(uint32_t to, uint32_t from) {
-      if (to != 0)
+      if (to != 0) {
         registers_[to] = registers_[from];
+        sources_[to] = sources_[from];
+      }
+    }
+
+    // Where a register's word was loaded from, for motion's address key (psx/vertex_motion.h,
+    // Gte::MotionKey::kAddress): a vertex's place in its model's list stays put while its
+    // coordinates are worked out afresh each frame. Kept by LW and register moves, and good
+    // only while the register still holds the word loaded - checked by value, as shadows are.
+    void set_source(uint32_t index, uint32_t value, uint32_t physical) {
+      if (index != 0)
+        sources_[index & 31] = { value, physical | 1u };
+    }
+    // The physical address, with bit 0 set, that `value` in register `index` was loaded from;
+    // 0 if it was not.
+    uint32_t source(uint32_t index, uint32_t value) const {
+      const Source& source = sources_[index & 31];
+      return source.value == value ? source.address : 0;
     }
 
     // A store to the GPU's GP0 port hands its shadow over this way: the CPU sets it before the
@@ -102,8 +123,14 @@ namespace psx {
    private:
     static const uint32_t kRamWords = 0x200000 / 4;
 
+    struct Source {
+      uint32_t value = 0;
+      uint32_t address = 0;   // bit 0 set when known
+    };
+
     bool enabled_ = false;
     PreciseVertex registers_[32];
+    Source sources_[32];
     std::vector<PreciseVertex> ram_;   // 8 MB while on, nothing while off
     PreciseVertex scratchpad_[256];
     const PreciseVertex* store_ = nullptr;

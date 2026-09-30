@@ -56,7 +56,7 @@ Unit tests for the geometry coprocessor. No BIOS, no window. Registers are
 loaded, a command word is executed, and the results are checked - the same path
 a game takes, through the same MFC2/MTC2/CFC2/CTC2 semantics.
 
-**Current: 106 checks, 0 failures.**
+**Current: 114 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -70,6 +70,7 @@ a game takes, through the same MFC2/MTC2/CFC2/CTC2 semantics.
 | `colour` | the lighting chain, CODE passing through the colour FIFO untouched, the FIFO shifting, and component saturation |
 | `opcode` | what amidog's OPCODE group caught (bug 79): a translated product checking the 44-bit accumulator after *each* partial sum, in MVMVA, RTPS and the lighting chain's background step, and RTPS taking IR0 from the full depth-cue sum rather than from wrapped MAC0 |
 | `unknown` | an unrecognised command being counted rather than silently ignored |
+| `motion` | motion for DLSS (Docs/DLSS-Plan.md, phase 2), with PGXP: nothing known in the first picture; a vertex found in the next by its model's coordinates, moved by exactly what the translation moved it; another vertex not found under its key; of two of the same vertex, the nearer taken; one too far away not taken; a vertex the CPU moves itself found by its place in a list that stayed the same; nothing found after being forgotten |
 
 Expected values are derived from the hardware description, not from this
 implementation, so a failure means the code is wrong rather than that it
@@ -459,6 +460,10 @@ What it does not measure:
 | `--shared-picture` | With `--scale`: hand the sharper picture over on the graphics card (psx/shared_picture.h, phase 6, bug 127), as to a renderer that can take it there, rather than reading it back - for timing that path. `--ppm` reads the last picture back the way a screenshot does; the report adds how many frames' pictures were shared |
 | `--planes` | With `--hw-raster`: keep the plane beside VRAM that DLSS will use - depth and motion per sub-pixel (Docs/DLSS-Plan.md, phase 1) - and with `--shared-picture` hand it over beside each picture; the report adds how many were. The machine runs exactly as without it, and not a pixel of the picture changes |
 | `--view depth\|motion` | With `--hw-raster` above 1x: the plane shown in place of the picture, as Video > View Depth and View Motion do, so `--ppm` writes it. Depth is brighter nearer, dark blue where there is none; motion's hue is its direction, dim purple where it is not known |
+| `--motion` | With `--hw-raster` above 1x, and `--pgxp` for 3D: keep the plane, and run the warp check (Docs/DLSS-Plan.md, phase 2) - each new picture compared with the last one moved by its motion and left still. The report's `warp` line gives both, per pixel and channel in 8-bit steps, and their ratio: below 1 the motion helps. Slow, since it reads every new picture back. The `motion` line says how many new pictures there were and how many started afresh, and how many vertices and 2D primitives were found in the picture before |
+| `--motion-log` | A `picture` line for each new picture: its frame, vertices found of those looked for, and whether it started afresh |
+| `--motion-key model\|order\|address` | What the GTE finds a vertex in the last picture by first: its model's coordinates (the default, chosen by measuring), its place in the picture's list, or the RAM address it was loaded from. Not found, it tries the other of coordinates and address, and then - when the last two pictures' lists were the same length - its place |
+| `--motion-reach n` | How far, in screen pixels, a vertex may move between pictures and still be found; 128 by default |
 | `--pgxp-culling` | With `--pgxp`: NCLIP from the unrounded positions too. The one PGXP option the machine can see - a triangle culled or not changes what the game does |
 | `--no-pgxp-textures` | With `--pgxp`: precise positions, textures still affine |
 | `--quiet` | Suppress the per-100-frame progress lines |
@@ -658,9 +663,14 @@ fixed seed, and then compares all of VRAM:
   forgetting it; handed over beside the shared picture while kept, and shown in
   its place, not beside it, when only shown; let go and asked for again, it
   starts over
+- motion in the plane (Docs/DLSS-Plan.md, phase 2): a triangle moved the same at
+  every corner the same in every sub-pixel; corners moved differently, at
+  different depths, interpolated in perspective; one corner not known leaving
+  the triangle not known; a 2D triangle and a rectangle moved whole; a 15-bit
+  sprite taking its own motion, or else its texels'
 
 At native size the two do the same integer arithmetic, so **every pixel must
-match** - 61 checks, two a scene, the lost card's own, six for the shared picture and sixteen for the plane. A scene that does not says how many pixels
+match** - 67 checks, two a scene, the lost card's own, six for the shared picture, sixteen for the plane and six for its motion. A scene that does not says how many pixels
 differ and how many by more than one 5-bit step, which tells rounding from a
 wrong texel. `--bisect` compares after every primitive and stops at the first
 one to differ, printing its GP0 words. `--scale n` draws the hardware side at n
@@ -697,12 +707,12 @@ the most likely answer is the network share rather than the emulator.
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 80 |
-| `gte_test` | 106 | | `mdec_test` | 85 |
+| `gte_test` | 114 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 412 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,684 checks, 0 failures**, all ten green. Each harness's own section above
+**1,692 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -741,7 +751,7 @@ copies; and DuckStation's and RetroArch's cheat files, the manual-activation and
 non-GameShark cheats left out, written and read back), `timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is), `host_test` (34 checks, the
-threads and the channels between them - its own section above), and `hw_raster_test` (61
+threads and the channels between them - its own section above), and `hw_raster_test` (67
 checks, bugs 122-123 and 127 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
 which runs gpu_test's 80 through it).
@@ -1028,6 +1038,17 @@ is the point; what the machine does does not. The report's `pgxp` line gave
 Ridge Racer 2,206,935 of 2,234,938 vertices precise and Wild Arms 2 191,166 of
 196,550; Ace Combat 3 only the BIOS logo's 25,854 of 367,530, since the words it
 draws with are not ones the GTE projected.
+
+**With DLSS's plane and motion, 2026-09-30: the same at all 36 checkpoints.**
+Docs/DLSS-Plan.md, phases 1 and 2. `--hw-raster --scale 2 --pgxp
+--shared-picture`, without the plane and with `--planes` - which works out
+motion too - against phase 1's run without: every line of every report the
+same, bar the wall-clock speed, the rasteriser thread's barrier count and the
+new `motion` line; and the same under `--recompiler`, with motion against
+without. The software rasteriser's table is the one above, bar Ridge Racer's
+frame 3000, which a build from before any of it (6d89f81) gives as
+`f8a515e892619e84` too - that entry was already stale. `boot_runner --motion`'s
+warp check on 26 discs is recorded in the plan.
 
 **On the card, and under the recompiler again, 2026-09-29: the same at all 36
 checkpoints.** Phase 6 (bugs 126-127). The software table first, every report

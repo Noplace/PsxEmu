@@ -711,6 +711,93 @@ void ScenePlanes() {
             psxemu::D3D11Raster::ReadSharedPicture(shown, &depth) && depth != picture,
         "only shown, it is the picture instead - and not handed over beside it");
 
+  // Motion (phase 2): where each corner was in the last picture minus where it is, in console
+  // pixels, into the plane in sub-pixels - here twice as many.
+  raster->SetPlanes(true, PlaneView::kPicture);
+  auto moved = [](emulation::psx::RasterVertex v, float mx, float my) {
+    v.moved = true;
+    v.mx = mx;
+    v.my = my;
+    return v;
+  };
+  DrawJob drifting = Job(DrawJob::kTriangle);
+  drifting.v[0] = moved(Precise(100.0f, 300.0f, 300.0f), 2.0f, -1.0f);
+  drifting.v[1] = moved(Precise(200.0f, 300.0f, 300.0f), 2.0f, -1.0f);
+  drifting.v[2] = moved(Precise(100.0f, 400.0f, 300.0f), 2.0f, -1.0f);
+  raster->Apply(drifting);
+  bool steady = false;
+  const PlaneTexel drift = PlaneAt(*raster, 120, 320, &steady);
+  Check(drift.r == 4.0f && drift.g == -2.0f && steady,
+        "a triangle all moved by (2, -1): (4, -2) sub-pixels in every one");
+
+  // Corners moved differently, at different depths: interpolated as a texture is, in
+  // perspective. At (420, 330) the screen weights are 0.5, 0.2, 0.3.
+  DrawJob turning = Job(DrawJob::kTriangle);
+  turning.v[0] = moved(Precise(400.0f, 300.0f, 200.0f), 1.0f, 0.0f);
+  turning.v[1] = moved(Precise(500.0f, 300.0f, 800.0f), 0.0f, 2.0f);
+  turning.v[2] = moved(Precise(400.0f, 400.0f, 400.0f), -1.0f, -1.0f);
+  raster->Apply(turning);
+  const float qa = 0.5f / 200.0f, qb = 0.2f / 800.0f, qc = 0.3f / 400.0f, qs = qa + qb + qc;
+  const float turn_x = 2.0f * (qa * 1.0f + qc * -1.0f) / qs;
+  const float turn_y = 2.0f * (qb * 2.0f + qc * -1.0f) / qs;
+  const PlaneTexel turn = PlaneAt(*raster, 420, 330);
+  Check(Near(turn.r, turn_x) && Near(turn.g, turn_y),
+        "corners moved differently: motion in perspective, (" + std::to_string(turn_x) + ", " +
+            std::to_string(turn_y) + ")");
+
+  // One corner's motion not known: none of the triangle's is.
+  DrawJob partly = drifting;
+  partly.v[1].moved = false;
+  partly.v[0].fx = partly.v[2].fx = 250.0f;
+  partly.v[1].fx = 350.0f;
+  raster->Apply(partly);
+  Check(PlaneAt(*raster, 270, 320).r == kUnknownMotion,
+        "one corner's motion not known: the triangle's is not");
+
+  // A 2D triangle and a rectangle matched with the last picture's: moved the whole way.
+  DrawJob flat2d = Job(DrawJob::kTriangle);
+  flat2d.v[0] = moved(Corner(100, 420), 3.0f, -2.0f);
+  flat2d.v[1] = moved(Corner(180, 420), 3.0f, -2.0f);
+  flat2d.v[2] = moved(Corner(100, 500), 3.0f, -2.0f);
+  raster->Apply(flat2d);
+  const PlaneTexel slid = PlaneAt(*raster, 110, 430);
+  Check(slid.r == 6.0f && slid.g == -4.0f, "a 2D triangle moved by (3, -2): (6, -4)");
+  DrawJob box = Job(DrawJob::kRectangle);
+  box.x = 200;
+  box.y = 420;
+  box.w = 40;
+  box.h = 40;
+  box.r = box.g = box.b = 200;
+  box.moved = true;
+  box.mx = -1.5f;
+  box.my = 0.25f;
+  raster->Apply(box);
+  bool whole = false;
+  const PlaneTexel boxed = PlaneAt(*raster, 220, 440, &whole);
+  Check(boxed.r == -3.0f && boxed.g == 0.5f && whole, "a rectangle moved by (-1.5, 0.25)");
+
+  // A 15-bit sprite takes its own motion first, and its texels' when it has none: drawn from the
+  // drifting triangle, once moved and once not.
+  DrawJob own = sprite;
+  own.x = 260;
+  own.y = 420;
+  own.state.texpage_x = 64;
+  own.state.texpage_y = 256;
+  own.base_u = 120 - 64;
+  own.base_v = 320 - 256;
+  own.moved = true;
+  own.mx = 0.5f;
+  own.my = 0.5f;
+  raster->Apply(own);
+  DrawJob carried = own;
+  carried.x = 300;
+  carried.moved = false;
+  raster->Apply(carried);
+  const PlaneTexel mine = PlaneAt(*raster, 260, 420);
+  const PlaneTexel theirs = PlaneAt(*raster, 300, 420);
+  Check(mine.r == 1.0f && mine.g == 1.0f && theirs.r == 4.0f && theirs.g == -2.0f,
+        "a 15-bit sprite: its own motion, or else its texels'");
+
   // Let go and asked for again, it starts over.
   raster->SetPlanes(false, PlaneView::kPicture);
   Check(!raster->planes(), "let go, the plane is not drawn");

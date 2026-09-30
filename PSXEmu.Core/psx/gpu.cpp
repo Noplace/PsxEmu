@@ -51,6 +51,17 @@ namespace emulation {
                 return static_cast<uint8_t>((c << 3) | (c >> 2));
             }
 
+            // Motion's keys (psx/vertex_motion.h): `value` folded into `key`.
+            inline uint64_t MixKey(uint64_t key, uint64_t value) {
+                key ^= value + 0x9E3779B97F4A7C15ull + (key << 6) + (key >> 2);
+                key ^= key >> 31;
+                return key * 0xBF58476D1CE4E5B9ull;
+            }
+
+            inline uint32_t PackColour(const RasterVertex& v) {
+                return v.r | (static_cast<uint32_t>(v.g) << 8) | (static_cast<uint32_t>(v.b) << 16);
+            }
+
         }  // namespace
 
         Gpu::Gpu() : vram_(nullptr), framebuffer_(nullptr) {}
@@ -165,6 +176,9 @@ namespace emulation {
             shared_picture_ = SharedPicture();
             PushWatch();
             backend_->SetPlanes(planes_keep_, plane_view_);
+            backend_->set_motion_check(motion_check_);
+            UpdateMotion();
+            motion_fresh_ = true;   // the new rasteriser's plane knows nothing of the old
         }
 
         void Gpu::SetPlanes(bool keep, PlaneView view) {
@@ -174,6 +188,73 @@ namespace emulation {
                 return;   // not initialised; ChooseRasteriser will hand them over
             SyncRaster();
             backend_->SetPlanes(keep, view);
+            UpdateMotion();
+        }
+
+        void Gpu::SetMotionCheck(bool on) {
+            motion_check_ = on;
+            if (!backend_)
+                return;
+            SyncRaster();
+            backend_->set_motion_check(on);
+        }
+
+        void Gpu::UpdateMotion() {
+            const bool on = hardware_raster_ && (planes_keep_ || plane_view_ != PlaneView::kPicture);
+            if (on != motion_) {
+                sprite_motion_.Forget();
+                motion_fresh_ = true;
+            }
+            motion_ = on;
+            system().gte().set_motion(on);
+        }
+
+        void Gpu::NextPicture(bool* is_new, bool* reset) {
+            const bool flipped = display_vram_x_ != shown_x_ || display_vram_y_ != shown_y_;
+            shown_x_ = display_vram_x_;
+            shown_y_ = display_vram_y_;
+            vblanks_since_flip_ = flipped ? 0 : vblanks_since_flip_ + 1;
+            if (!flipped && vblanks_since_flip_ <= kSingleBuffered)
+                return;
+            *is_new = true;
+            // A cut: few of the vertices projected since the last new picture were found in the
+            // one before. That work is shown now by a game drawing into the buffer on screen, and
+            // a flip from now by one drawing into the other - so a cut resets two pictures.
+            VertexMotion& vertices = system().gte().vertex_motion();
+            const uint64_t looked = vertices.looked(), found = vertices.found();
+            vertices.ClearCounts();
+            stats_.motion_vertices += looked;
+            stats_.motion_vertices_found += found;
+            const bool cut = looked >= kCutVertices && found * 4 < looked;
+            const bool changed = display_width_ != shown_width_ ||
+                                 display_height_ != shown_height_ ||
+                                 (status_.display_depth != 0) != shown_depth_;
+            // 480 lines interlaced: each picture is half new lines and half the last field's,
+            // which no motion describes - Air Combat's title screen, 640x480. Every one starts
+            // afresh; DLSS leaves them as they are (Docs/DLSS-Plan.md).
+            const bool interlaced = status_.vres && status_.vertical_interlace;
+            *reset = cut || cut_before_ || changed || interlaced || motion_fresh_;
+            cut_before_ = cut;
+            motion_fresh_ = false;
+            shown_width_ = display_width_;
+            shown_height_ = display_height_;
+            shown_depth_ = status_.display_depth != 0;
+            ++stats_.pictures;
+            if (*reset)
+                ++stats_.picture_resets;
+            last_picture_motion_ = { looked, found, *reset };
+            system().gte().NewPicture();
+            sprite_motion_.NewPicture();
+            backend_->NewPicture(*reset);
+        }
+
+        bool Gpu::FindSprite(uint64_t key, float x, float y, float* dx, float* dy) {
+            ++stats_.motion_sprites;
+            if (!sprite_motion_.FindAndRemember(key, x - static_cast<float>(draw_offset_x_),
+                                                y - static_cast<float>(draw_offset_y_), dx, dy))
+                return false;
+            ++stats_.motion_sprites_found;
+            return true;
         }
 
         // A rasteriser that can no longer draw - the graphics card reset, or went - is replaced
@@ -191,6 +272,7 @@ namespace emulation {
             shared_picture_ = SharedPicture();
             raster_error_ = std::move(why);
             PushWatch();
+            UpdateMotion();
         }
 
         void Gpu::Serialise(StateIO& io) {
@@ -257,6 +339,9 @@ namespace emulation {
                     precise.valid = false;
                 for (PreciseVertex& precise : queue_precise_)
                     precise.valid = false;
+                // Nor is motion: nothing drawn before the load is anything drawn after it.
+                sprite_motion_.Forget();
+                motion_fresh_ = true;
                 backend_->Reloaded();
                 PushWatch();
                 ResolveFramebuffer();
@@ -1014,6 +1099,10 @@ namespace emulation {
                     v[i].fx = found->x + static_cast<float>(draw_offset_x_);
                     v[i].fy = found->y + static_cast<float>(draw_offset_y_);
                     v[i].w = system().config().pgxp_textures ? found->w : 0.0f;
+                    // And where the GTE found it in the last picture (Docs/DLSS-Plan.md).
+                    v[i].moved = found->moved;
+                    v[i].mx = found->mx;
+                    v[i].my = found->my;
                 }
                 v[i].r = static_cast<uint8_t>(colour);
                 v[i].g = static_cast<uint8_t>(colour >> 8);
@@ -1059,6 +1148,45 @@ namespace emulation {
             }
 
             RecordSetup(command, state, raw_page, raw_clut);
+
+            // Motion for a polygon the GTE did not project - 2D, drawn from whole pixels: the
+            // same one in the last picture, by its texture and texture coordinates, or its colour
+            // and shape untextured, nearest by its middle. The whole of it moved the same way.
+            // Not by a textured one's shape: Spyro 3 draws Spyro himself from words PGXP cannot
+            // follow, and matched by texture his polygons moved near enough right - warp ratio
+            // 0.889 - where, with their shape changing as he turns, they were lost (0.958).
+            if (motion_) {
+                bool any_precise = false;
+                for (int i = 0; i < verts; ++i)
+                    any_precise = any_precise || v[i].precise;
+                if (!any_precise) {
+                    uint64_t key = MixKey(0x2D, (static_cast<uint64_t>(verts) << 1) |
+                                                    (state.textured ? 1u : 0u));
+                    float mid_x = 0.0f, mid_y = 0.0f;
+                    for (int i = 0; i < verts; ++i) {
+                        mid_x += static_cast<float>(v[i].x);
+                        mid_y += static_cast<float>(v[i].y);
+                        if (state.textured) {
+                            key = MixKey(key, v[i].u | (static_cast<uint32_t>(v[i].v) << 8));
+                        }
+                        else {
+                            key = MixKey(key, PackColour(v[i]));
+                            key = MixKey(key, (static_cast<uint32_t>(v[i].x - v[0].x) & 0xFFFF) |
+                                                  (static_cast<uint32_t>(v[i].y - v[0].y) << 16));
+                        }
+                    }
+                    if (state.textured)
+                        key = MixKey(key, raw_page | (static_cast<uint64_t>(raw_clut) << 16));
+                    float dx = 0.0f, dy = 0.0f;
+                    if (FindSprite(key, mid_x / verts, mid_y / verts, &dx, &dy)) {
+                        for (int i = 0; i < verts; ++i) {
+                            v[i].moved = true;
+                            v[i].mx = dx;
+                            v[i].my = dy;
+                        }
+                    }
+                }
+            }
 
             AddDrawTicks(PolygonSetupTicks(quad, gouraud, state.textured));
             AddDrawTicks(TriangleDrawTicks(v[0], v[1], v[2], state));
@@ -1214,6 +1342,26 @@ namespace emulation {
             job.x = x; job.y = y; job.w = w; job.h = h;
             job.r = r; job.g = g; job.b = b;
             job.base_u = base_u; job.base_v = base_v;
+            // Motion (Docs/DLSS-Plan.md, phase 2): the same sprite in the last picture - its
+            // texture, CLUT, texel and size, or its colour and size untextured - nearest to here.
+            if (motion_) {
+                uint64_t key = MixKey(0x5B, static_cast<uint32_t>(w) |
+                                                (static_cast<uint32_t>(h) << 10) |
+                                                (state.textured ? 1u << 20 : 0u) |
+                                                (state.flip_x ? 1u << 21 : 0u) |
+                                                (state.flip_y ? 1u << 22 : 0u));
+                if (state.textured)
+                    key = MixKey(key, base_u | (static_cast<uint64_t>(base_v) << 8) |
+                                          (static_cast<uint64_t>(state.clut_x) << 16) |
+                                          (static_cast<uint64_t>(state.clut_y) << 26) |
+                                          (static_cast<uint64_t>(state.texpage_x) << 36) |
+                                          (static_cast<uint64_t>(state.texpage_y) << 46) |
+                                          (static_cast<uint64_t>(state.texpage_colors) << 56));
+                else
+                    key = MixKey(key, colour);
+                job.moved = FindSprite(key, static_cast<float>(x), static_cast<float>(y), &job.mx,
+                                       &job.my);
+            }
             SubmitJob(job);
         }
 
@@ -1321,6 +1469,11 @@ namespace emulation {
             stats_.watch_writes += counters.watch_writes;
             for (int i = 0; i < 256; ++i)
                 stats_.watch_writers[i] += counters.watch_writers[i];
+            stats_.warp_pictures += counters.warp_pictures;
+            stats_.warp_pixels += counters.warp_pixels;
+            stats_.warp_moved_pixels += counters.warp_moved_pixels;
+            stats_.warp_error_moved += counters.warp_error_moved;
+            stats_.warp_error_still += counters.warp_error_still;
             memset(&counters, 0, sizeof(counters));
         }
 
@@ -1442,6 +1595,11 @@ namespace emulation {
             // native size anyway, and read here byte by byte.
             picture_scale_ = 1;
             shared_picture_ = SharedPicture();
+            // Motion (Docs/DLSS-Plan.md, phase 2): whether this is a new picture, and a fresh
+            // start, for DLSS - worked out before the rasteriser resolves it, which it tells.
+            bool new_picture = false, reset = false;
+            if (motion_)
+                NextPicture(&new_picture, &reset);
             if (!status_.display_disable && !status_.display_depth) {
                 int scale = 1;
                 if (backend_->ResolveDisplay(display_vram_x_, display_vram_y_,
@@ -1450,6 +1608,8 @@ namespace emulation {
                                              &shared_picture_, &scale))
                     picture_scale_ = scale;
             }
+            shared_picture_.new_picture = new_picture;
+            shared_picture_.reset = reset;
             // framebuffer_ is the native picture, which the checksums and everything else that
             // measures the machine read. Bringing native VRAM up to date for it waits for the
             // hardware rasteriser to finish the frame, so when the sharper picture is what is
