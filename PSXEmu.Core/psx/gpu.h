@@ -113,6 +113,11 @@ class Gpu : public GpuCore {
   void SetPlanes(bool keep, PlaneView view);
   // The warp check (RasterBackend::set_motion_check), for boot_runner --motion: slow.
   void SetMotionCheck(bool on);
+  // Jitter for DLSS (RasterBackend::SetJitter, Docs/DLSS-Plan.md, phase 3): `phases` of the
+  // sequence, 0 for none. It moves on at each new picture, which needs the plane kept. Kept
+  // across a change of rasteriser. Only native VRAM's exact sub-pixel changes: nothing the
+  // machine does.
+  void SetJitter(int phases);
   // The last new picture's motion, for boot_runner --motion-log: the vertices the GTE looked
   // for in the picture before it since the one before that, how many it found, and whether it
   // started afresh.
@@ -533,6 +538,7 @@ class Gpu : public GpuCore {
   static constexpr uint64_t kCutVertices = 64;
   bool motion_ = false;
   bool motion_check_ = false;   // SetMotionCheck's
+  int jitter_phases_ = 0;       // SetJitter's
   VertexMotion sprite_motion_;
   uint32_t shown_x_ = 0, shown_y_ = 0;   // the display's start at the last vblank
   uint32_t vblanks_since_flip_ = 0;

@@ -190,6 +190,11 @@ namespace psx {
     // moved by the plane's motion and left still, into the counters. For boot_runner --motion;
     // it reads the picture back, so it is slow.
     virtual void set_motion_check(bool on) { (void)on; }
+    // Jitter for DLSS (Docs/DLSS-Plan.md, phase 3): triangles sampled at an offset within each
+    // sub-pixel that moves on at every new picture, through the first `phases` of a Halton
+    // (2, 3) sequence - 0 for none. The picture carries the offset it was drawn with
+    // (SharedPicture::jitter_x). It gives up the exact sub-pixel native VRAM is taken from.
+    virtual void SetJitter(int phases) { (void)phases; }
 
     // The counters since the last call, which `Gpu` merges into its stats and clears.
     virtual RasterCounters& counters() = 0;

@@ -1,10 +1,11 @@
 # NVIDIA DLSS 4.5 and DLSS 5
 
-**Status: phases 1 and 2 done (2026-09-30) - the plane beside VRAM, with depth from PGXP and
-motion from the GTE and 2D matching, handed over beside each shared picture with whether it is new
-or starts afresh, and shown by Video > View Depth and View Motion. On the 26 discs, motion never
-does worse than none, and halves the warp error where 3D moves; the machine runs exactly as
-without it. Phase 3, jitter, next. DLSS 4.5 Super Resolution, DLAA and 2x
+**Status: phases 1-3 done (2026-09-30) - everything DLSS needs from the PlayStation. The plane beside
+VRAM carries depth from PGXP and motion from the GTE and 2D matching. It is handed over beside each
+shared picture, with whether the picture is new or starts afresh and the jitter it was drawn with,
+and shown by Video > View Depth and View Motion. On the 26 discs, motion never does worse than
+none, and halves the warp error where 3D moves. Jittering leaves it as it was, and the machine
+runs exactly as without any of it. Phase 4, DLSS itself on the RTX 4060, next. DLSS 4.5 Super Resolution, DLAA and 2x
 Frame Generation are possible on this laptop's RTX 4060 once it is back (it has shown as "Unknown"
 since the 0x9F restart). DLSS 5 is not possible yet: there is no public SDK for it, and it runs on
 RTX 50 cards only until an RTX 40 update NVIDIA has promised for "later this fall".**
@@ -283,7 +284,7 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 | 0 | The SDK read, the licence confirmed for shipping the DLLs, `sl_probe` (one run: each card's LUID, `slIsFeatureSupported` for DLSS and Frame Generation, GPU scheduling, driver) | the 4060 back and reporting both features | 4060, once | 1 |
 | 1 (**done**) | The plane beside VRAM: second target, the rules per kind of job, carried in the shared picture, depth from `w`, View Depth, `--ppm-depth`; zero motion | the twelve-disc table's instruction and sector counts identical with it on; all harnesses green; depth reviewed on five discs | Radeon, WARP | 2 |
 | 2 (**done**) | Motion vectors: picture boundaries, the GTE's two tables, the identity keys measured, sprite matching, flags, resets, `--motion`, the warp check | the warp check beats zero motion on every 3D disc of the 26; the keys chosen by numbers | Radeon, WARP | 3-5 |
-| 3 | Jitter | the table identical in the machine's terms; the warp check unchanged with the jitter taken out | Radeon, WARP | 1-2 |
+| 3 (**done**) | Jitter | the table identical in the machine's terms; the warp check unchanged with the jitter taken out | Radeon, WARP | 1-2 |
 | 4 | Super Resolution and DLAA in the Direct3D 12 renderer through Streamline; the menus; per-game keys | pictures reviewed at the table's checkpoints; ghosting no worse than without on the 26 discs; the cost measured | 4060 | 2-3 |
 | 5 | Frame Generation: the swap chain, Reflex on both threads, new-picture presents, the overlay as UI, our pacing kept; the RTX 50 modes in the menu | 30 to 60 and 60 to 120 even (PresentMon); latency measured (Reflex's own stats); the overlay clean | 4060 | 3-4 |
 | 6 | DLSS 5 | the gate above | RTX 50, or RTX 40 after its update | unknown |
@@ -526,6 +527,93 @@ PGXP to follow - halfword stores, most likely - are depth gained as well.
 - **Pixels with no motion at all** - Ridge Racer's nearest stretch of road, whose vertices are made
   afresh each frame. Filling them from neighbours of the same depth is DLSS's own job, and phase 4
   will see how well it does it.
+
+### Phase 3, as built
+
+**Jitter.** DLSS rebuilds detail from pictures sampled at different places within each pixel.
+
+- **`RasterBackend::SetJitter(phases)`**: triangles are sampled at an offset within each sub-pixel.
+  - The offset comes from a Halton (2, 3) sequence, less a half, so it lies in [-0.5, 0.5) each
+    way.
+  - It moves on one step at every new picture (`NewPicture`, which phase 2 made) and goes round
+    after `phases`.
+  - 0 is off, and nothing changes.
+  - Phase 4 sets the length from DLSS's ratio, which NVIDIA wants at least 8 x (output / input)^2.
+- **`Gpu::SetJitter`** keeps the request across boots and changes of rasteriser, as the plane's.
+  The sequence needs the plane kept, since only then are new pictures told apart.
+- **The picture carries the offset it was drawn with**: `SharedPicture::jitter_x` and `jitter_y`, in
+  its own pixels.
+  - That is the offset set at the new picture *before* the one showing it, since a picture is drawn
+    between the two.
+  - Its sign is where the sample point moved: a pixel shows what is at itself plus the offset.
+    DLSS's own convention is checked in phase 4, by eye.
+
+**In the rasteriser:**
+
+- **The offset rides in every batch's constants** (`Begin`). So a batch mixing triangles and
+  rectangles is not broken up, and one drawn before a new picture keeps its own.
+- **Precise triangles** are decided and interpolated at `(sub-pixel + offset) / scale`. Colour,
+  texture, depth and motion all follow.
+- **Triangles at whole pixels** are drawn through the same float path while jittering, since the
+  integer arithmetic cannot sample off the grid. That gives up the exact sub-pixel, as true colour
+  and PGXP already do.
+- **A jittered triangle's box grows a pixel each way**, so no sample the offset carries inside it
+  falls outside what is drawn.
+- **Rectangles, lines, fills and copies are not jittered.** 2D stays on its grid.
+
+**`boot_runner --jitter n`**, with the plane. `hw_raster_test` has six checks for it:
+
+- the sequence
+- an edge a sample misses without jitter and takes with it
+- a rectangle left alone
+- the picture carrying its own offset
+- off, none
+
+**Verified:**
+
+- **The machine, unchanged**: the twelve-disc table with `--planes --jitter 8` against `--planes`,
+  every line the same on all twelve discs, the motion line included. The exceptions are the
+  checkpoints' checksums and non-black counts, which are of the jittered pictures now, and the
+  wall-clock speed.
+- **Motion, not disturbed**, from the warp check on the nine discs where motion shows.
+  - **Jittered through 8 offsets**, each picture is sampled a fraction of a sub-pixel from the last.
+    That difference lands on moved and still alike, along triangles' edges, so the ratio drifts
+    towards 1: Wild Arms 2 0.290 to 0.291, Vandal Hearts 0.533 to 0.820.
+  - **What motion saves - still less moved - is mostly kept**:
+
+    | Disc | Without jitter | Jittered through 8 |
+    |---|---|---|
+    | Wild Arms 2 | 3.204 | 3.204 |
+    | Valkyrie Profile | 1.870 | 1.826 |
+    | Ridge Racer | 5.105 | 4.475 |
+    | Crash 3 | 1.071 | 0.988 |
+    | Vandal Hearts | 0.743 | 0.632 |
+    | Spyro 3 | 0.135 | 0.123 |
+    | Metal Gear Solid | 0.123 | 0.099 |
+
+  - **Taking the jitter out by looking a jitter's difference further into the last picture** was
+    tried first, and is wrong at the nearest pixel. Half a sub-pixel or more moves every pixel a
+    whole one, sprites that were never jittered included. Valkyrie Profile went from 0.80 to 5.29
+    moved.
+  - **With the jitter taken out properly** - `--jitter 1`, one offset held still - every triangle is
+    drawn through the jittered path, but no two pictures differ by it. The warp check is the one
+    without jitter, to the third decimal, on all nine discs:
+    - Wild Arms 2 0.290
+    - Valkyrie Profile 0.299
+    - Ridge Racer 0.467
+    - Vandal Hearts 0.534 against 0.533
+    - Crash 3 0.779
+    - Captain Tsubasa J 0.841
+    - Spyro 3 0.852
+    - Metal Gear Solid 0.890
+    - Einhander 0.986
+
+    Jittered drawing leaves motion as it was. What changes with eight offsets is only the jitter's
+    own difference, which is the thing DLSS is there to use.
+- **Cost**: none measurable. Ridge Racer, 3,000 frames at 4x with the plane, one run at a time: 0.87x
+  and 0.91x real time without jitter either side of 0.89x with it. That was on battery, which
+  halves this laptop's speed, so the three are only comparable with each other.
+- **Every harness green**; `hw_raster_test` 73 (+6), plain and with the plane kept at 2x and 4x.
 
 ---
 

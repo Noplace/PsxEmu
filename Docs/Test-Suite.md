@@ -464,6 +464,7 @@ What it does not measure:
 | `--motion-log` | A `picture` line for each new picture: its frame, vertices found of those looked for, and whether it started afresh |
 | `--motion-key model\|order\|address` | What the GTE finds a vertex in the last picture by first: its model's coordinates (the default, chosen by measuring), its place in the picture's list, or the RAM address it was loaded from. Not found, it tries the other of coordinates and address, and then - when the last two pictures' lists were the same length - its place |
 | `--motion-reach n` | How far, in screen pixels, a vertex may move between pictures and still be found; 128 by default |
+| `--jitter n` | With `--hw-raster`, and the plane kept: triangles sampled at an offset within each sub-pixel that moves on through `n` of a Halton (2, 3) sequence at every new picture, as DLSS wants (Docs/DLSS-Plan.md, phase 3). The machine runs the same; its native VRAM, and so the checkpoints' checksums, are of the jittered pictures. `--motion`'s warp check takes the jitter out |
 | `--pgxp-culling` | With `--pgxp`: NCLIP from the unrounded positions too. The one PGXP option the machine can see - a triangle culled or not changes what the game does |
 | `--no-pgxp-textures` | With `--pgxp`: precise positions, textures still affine |
 | `--quiet` | Suppress the per-100-frame progress lines |
@@ -668,9 +669,14 @@ fixed seed, and then compares all of VRAM:
   different depths, interpolated in perspective; one corner not known leaving
   the triangle not known; a 2D triangle and a rectangle moved whole; a 15-bit
   sprite taking its own motion, or else its texels'
+- jitter (Docs/DLSS-Plan.md, phase 3), at 2x: the sequence - eight offsets of
+  Halton (2, 3) inside the sub-pixel, then round again; a sample just left of a
+  triangle's edge left out without jitter and taken in with it; a rectangle not
+  jittered; the picture carrying the offset it was drawn with, not the next; and
+  with jitter off, nothing jittered
 
 At native size the two do the same integer arithmetic, so **every pixel must
-match** - 67 checks, two a scene, the lost card's own, six for the shared picture, sixteen for the plane and six for its motion. A scene that does not says how many pixels
+match** - 73 checks, two a scene, the lost card's own, six for the shared picture, sixteen for the plane, six for its motion and six for jitter. A scene that does not says how many pixels
 differ and how many by more than one 5-bit step, which tells rounding from a
 wrong texel. `--bisect` compares after every primitive and stops at the first
 one to differ, printing its GP0 words. `--scale n` draws the hardware side at n
@@ -751,7 +757,7 @@ copies; and DuckStation's and RetroArch's cheat files, the manual-activation and
 non-GameShark cheats left out, written and read back), `timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is), `host_test` (34 checks, the
-threads and the channels between them - its own section above), and `hw_raster_test` (67
+threads and the channels between them - its own section above), and `hw_raster_test` (73
 checks, bugs 122-123 and 127 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
 which runs gpu_test's 80 through it).
@@ -1048,7 +1054,10 @@ new `motion` line; and the same under `--recompiler`, with motion against
 without. The software rasteriser's table is the one above, bar Ridge Racer's
 frame 3000, which a build from before any of it (6d89f81) gives as
 `f8a515e892619e84` too - that entry was already stale. `boot_runner --motion`'s
-warp check on 26 discs is recorded in the plan.
+warp check on 26 discs is recorded in the plan. With `--jitter 8` too (phase
+3), every line the same again in the machine's terms - instructions, sectors,
+GP0 words, the motion line - with only the checkpoints' checksums and non-black
+counts moved, since native VRAM is then taken from jittered pictures.
 
 **On the card, and under the recompiler again, 2026-09-29: the same at all 36
 checkpoints.** Phase 6 (bugs 126-127). The software table first, every report

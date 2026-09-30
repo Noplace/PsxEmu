@@ -100,6 +100,11 @@ namespace psxemu {
         void SetPlanes(bool keep, emulation::psx::PlaneView view) override;
         void NewPicture(bool reset) override;
         void set_motion_check(bool on) override { motion_check_ = on; }
+        void SetJitter(int phases) override;
+        // The jitter being drawn with now, and the one the picture last handed over was drawn
+        // with: in the target's pixels. For hw_raster_test.
+        float jitter_x() const { return jitter_x_; }
+        float jitter_y() const { return jitter_y_; }
 
         // Whether the plane beside VRAM is being drawn (psx/shared_picture.h).
         bool planes() const {
@@ -142,6 +147,8 @@ namespace psxemu {
             int32_t force_mask;        // GP0(E6h) bit 0
             int32_t check_mask;        // GP0(E6h) bit 1
             int32_t tw_mask_x, tw_mask_y, tw_offset_x, tw_offset_y;   // the texture window
+            float jitter_x, jitter_y;  // a triangle's sample point within its sub-pixel (Begin)
+            int32_t pad[2];
         };
 
         enum Shader {
@@ -314,6 +321,14 @@ namespace psxemu {
         bool picture_reset_ = false;
         std::vector<uint8_t> warp_last_;   // the last new picture, RGBA, warp_width_ wide
         UINT warp_width_ = 0, warp_height_ = 0;
+
+        // Jitter (RasterBackend::SetJitter, Docs/DLSS-Plan.md, phase 3): the sequence's length,
+        // 0 when off; where in it; the offset triangles are sampled at now, in the target's
+        // pixels; and the offset the picture being shown was drawn with.
+        int jitter_phases_ = 0;
+        uint32_t jitter_index_ = 1;
+        float jitter_x_ = 0.0f, jitter_y_ = 0.0f;
+        float shown_jitter_x_ = 0.0f, shown_jitter_y_ = 0.0f;
         Microsoft::WRL::ComPtr<ID3D11Texture2D> warp_colour_, warp_plane_;   // staging
 
         std::vector<Vertex> batch_;

@@ -805,6 +805,114 @@ void ScenePlanes() {
   Check(Unknown(PlaneAt(*raster, 210, 115)), "asked for again, it starts out knowing nothing");
 }
 
+// ---- Jitter (Docs/DLSS-Plan.md, phase 3) --------------------------------------------------------
+
+float HaltonExpected(uint32_t index, uint32_t base) {
+  float value = 0.0f, fraction = 1.0f;
+  for (; index > 0; index /= base) {
+    fraction /= static_cast<float>(base);
+    value += fraction * static_cast<float>(index % base);
+  }
+  return value;
+}
+
+// Native VRAM's pixel (x, y) - each console pixel's own sub-pixel - brought up to date.
+uint16_t NativeAt(psxemu::D3D11Raster& raster, const std::vector<uint16_t>& vram, uint32_t x,
+                  uint32_t y) {
+  raster.PrepareRead(x, y, 1, 1);
+  return vram[y * 1024 + x];
+}
+
+// A triangle sampled at the jitter's offset within each sub-pixel, a rectangle not, the sequence
+// itself, and the picture carrying the offset it was drawn with - one rasteriser at 2x.
+void SceneJitter() {
+  printf("jitter\n");
+  std::vector<uint16_t> vram(1024 * 512, 0);
+  emulation::psx::RasterOptions options;
+  options.scale = 2;
+  options.shared_picture = true;
+  std::string error;
+  std::unique_ptr<psxemu::D3D11Raster> raster =
+      psxemu::D3D11Raster::Create(vram.data(), options, true, &error);
+  if (!raster) {
+    Check(false, "WARP makes a rasteriser at 2x: " + error);
+    return;
+  }
+  raster->Written(0, 0, 1024, 512);
+  raster->SetPlanes(true, PlaneView::kPicture);
+
+  // The sequence: Halton (2, 3), less a half, from its first - eight different offsets inside
+  // the sub-pixel, and the ninth the first again.
+  raster->SetJitter(8);
+  std::vector<std::pair<float, float>> offsets;
+  for (int i = 0; i < 9; ++i) {
+    offsets.push_back({ raster->jitter_x(), raster->jitter_y() });
+    raster->NewPicture(false);
+  }
+  bool inside = true, distinct = true, halton = true;
+  for (int i = 0; i < 8; ++i) {
+    inside = inside && offsets[i].first >= -0.5f && offsets[i].first < 0.5f &&
+             offsets[i].second >= -0.5f && offsets[i].second < 0.5f;
+    halton = halton && offsets[i].first == HaltonExpected(i + 1, 2) - 0.5f &&
+             offsets[i].second == HaltonExpected(i + 1, 3) - 0.5f;
+    for (int j = 0; j < i; ++j)
+      distinct = distinct && offsets[i] != offsets[j];
+  }
+  Check(inside && distinct && halton && offsets[8] == offsets[0],
+        "eight offsets of Halton (2, 3) inside the sub-pixel, then round again");
+
+  // A triangle whose left edge is at x = 100.1: console pixel 100's own sub-pixel, at 2x, is
+  // sampled at 100.0 without jitter - outside - and at 100.125 with the third offset's 0.25.
+  auto edge = [](float x) {
+    DrawJob job = Job(DrawJob::kTriangle);
+    job.v[0] = Precise(x, 100.0f, 0.0f);
+    job.v[1] = Precise(x + 60.0f, 100.0f, 0.0f);
+    job.v[2] = Precise(x, 160.0f, 0.0f);
+    job.v[0].precise = job.v[1].precise = job.v[2].precise = true;
+    return job;
+  };
+  raster->SetJitter(0);
+  raster->Apply(edge(100.1f));
+  Check(NativeAt(*raster, vram, 100, 120) == 0, "not jittered, a sample left of the edge is left out");
+  raster->SetJitter(8);
+  raster->NewPicture(false);
+  raster->NewPicture(false);   // the third offset: (0.25, -0.39)
+  raster->Apply(edge(300.1f));
+  Check(NativeAt(*raster, vram, 300, 120) != 0, "jittered right by a quarter, the same sample is in");
+
+  // A rectangle stays on its grid: its first pixel in, the one before it out.
+  DrawJob box = Job(DrawJob::kRectangle);
+  box.x = 500;
+  box.y = 100;
+  box.w = 10;
+  box.h = 10;
+  box.r = box.g = box.b = 200;
+  raster->Apply(box);
+  Check(NativeAt(*raster, vram, 500, 100) != 0 && NativeAt(*raster, vram, 499, 100) == 0 &&
+            NativeAt(*raster, vram, 500, 99) == 0,
+        "a rectangle is not jittered");
+
+  // The picture carries the offset it was drawn with, not the next one's.
+  const float drawn_x = raster->jitter_x(), drawn_y = raster->jitter_y();
+  raster->NewPicture(false);
+  std::vector<uint32_t> pixels;
+  emulation::psx::SharedPicture shared;
+  int scale = 0;
+  raster->ResolveDisplay(0, 0, 640, 480, &pixels, &shared, &scale);
+  Check(shared && shared.jitter_x == drawn_x && shared.jitter_y == drawn_y &&
+            raster->jitter_x() != drawn_x,
+        "the picture carries the jitter it was drawn with");
+  shared.source->Release(shared.serial + 1);
+
+  // Off, nothing is jittered and a picture says so.
+  raster->SetJitter(0);
+  raster->NewPicture(false);
+  emulation::psx::SharedPicture plain;
+  raster->ResolveDisplay(0, 0, 640, 480, &pixels, &plain, &scale);
+  Check(plain && plain.jitter_x == 0.0f && plain.jitter_y == 0.0f && raster->jitter_x() == 0.0f,
+        "not jittering, nothing is");
+}
+
 int main(int argc, char** argv) {
   uint32_t seed = 1;
   int scale = 1;
@@ -933,6 +1041,7 @@ int main(int argc, char** argv) {
 
   SceneSharedPicture(random);
   ScenePlanes();
+  SceneJitter();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete m.hardware;

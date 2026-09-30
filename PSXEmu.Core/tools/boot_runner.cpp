@@ -68,6 +68,9 @@
 //                        where in RAM it was loaded from
 //     --motion-log       ...a line for each new picture: vertices found, and whether afresh
 //     --motion-reach n   ...how far, in screen pixels, a vertex may move and still be found
+//     --jitter n         ...with the plane kept, triangles jittered through n offsets of a
+//                        Halton sequence, a new one each new picture (Docs/DLSS-Plan.md,
+//                        phase 3); the report's pictures and checksums are then jittered too
 //     --gpu <name>       ...drawing on the graphics card with <name> in its name (any case),
 //                        as Settings > Video > Graphics Card does; the report names the card
 //     --list-gpus        list the graphics cards and their LUIDs, and exit
@@ -289,6 +292,7 @@ struct Options {
   bool motion, motion_log;
   emulation::psx::Gte::MotionKey motion_key;
   float motion_reach;   // --motion-reach: VertexMotion's, in screen pixels; 0 leaves it
+  int jitter;           // --jitter: the sequence's length, 0 for none
 };
 
 // FNV-1a over the visible framebuffer. Small, order-sensitive, and good enough
@@ -651,6 +655,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->motion_log = false;
   options->motion_key = emulation::psx::Gte::MotionKey::kModel;
   options->motion_reach = 0.0f;
+  options->jitter = 0;
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -756,6 +761,13 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->planes = true;
     } else if (strcmp(arg, "--motion-reach") == 0 && i + 1 < argc) {
       options->motion_reach = static_cast<float>(atof(argv[++i]));
+    } else if (strcmp(arg, "--jitter") == 0 && i + 1 < argc) {
+      options->jitter = atoi(argv[++i]);
+      options->planes = true;
+      if (options->jitter < 1) {
+        fprintf(stderr, "--jitter wants the sequence's length, 1 or more\n");
+        return false;
+      }
     } else if (strcmp(arg, "--motion-key") == 0 && i + 1 < argc) {
       const char* key = argv[++i];
       if (strcmp(key, "model") == 0) {
@@ -1195,6 +1207,9 @@ int main(int argc, char** argv) {
         system->gte().vertex_motion().set_reach(options.motion_reach);
       system->gpu().SetPlanes(options.planes, options.view);
       system->gpu().SetMotionCheck(options.motion);
+      system->gpu().SetJitter(options.jitter);
+      if (options.jitter > 0)
+        printf("gpu            triangles jittered through %d offsets\n", options.jitter);
       printf("gpu            the plane beside VRAM kept%s\n",
              options.view == emulation::psx::PlaneView::kDepth    ? ", its depth shown"
              : options.view == emulation::psx::PlaneView::kMotion ? ", its motion shown"

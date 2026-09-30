@@ -116,6 +116,9 @@ namespace psxemu {
             "  int tw_mask_y;\n"
             "  int tw_offset_x;\n"
             "  int tw_offset_y;\n"
+            "  // Where a triangle is sampled within each sub-pixel, for DLSS (Docs/DLSS-Plan.md,\n"
+            "  // phase 3): 0 but while jittering.\n"
+            "  float2 jitter;\n"
             "};\n"
             "// The read copy, for drawing and copies; the target or native VRAM's copy on the\n"
             "// card for a download or an upload; the plane, to show it.\n"
@@ -275,7 +278,7 @@ namespace psxemu {
             "    float2 C = asfloat(uint2(input.p2.z, input.p2.w));\n"
             "    float3 depth = asfloat(input.p3.xyz);\n"
             "    uint rule = input.p3.w;\n"
-            "    float2 p = float2(at) / scale;\n"
+            "    float2 p = (float2(at) + jitter) / scale;\n"
             "    float e0 = Edge(A, B, p), e1 = Edge(B, C, p), e2 = Edge(C, A, p);\n"
             "    if (e0 < 0.0 || e1 < 0.0 || e2 < 0.0 || (e0 == 0.0 && (rule & 1u) != 0) ||\n"
             "        (e1 == 0.0 && (rule & 2u) != 0) || (e2 == 0.0 && (rule & 4u) != 0))\n"
@@ -574,6 +577,19 @@ namespace psxemu {
         // Every texture any rasteriser shares gets its own number, so a presenter's cache of what
         // it opened cannot mistake a new one for an old one made at the same handle.
         std::atomic<uint64_t> next_texture_id{ 1 };
+
+        // The Halton sequence's `index`th number in `base`: the radical inverse, in [0, 1). Its
+        // first few in bases 2 and 3 spread over the square more evenly than any random ones -
+        // what DLSS asks of a jitter sequence (Docs/DLSS-Plan.md, phase 3).
+        float Halton(uint32_t index, uint32_t base) {
+            float value = 0.0f, fraction = 1.0f;
+            while (index > 0) {
+                fraction /= static_cast<float>(base);
+                value += fraction * static_cast<float>(index % base);
+                index /= base;
+            }
+            return value;
+        }
 
         // A 16-bit float, as the plane keeps its values, widened.
         float HalfToFloat(uint16_t half) {
@@ -1124,6 +1140,23 @@ namespace psxemu {
     void D3D11Raster::NewPicture(bool reset) {
         picture_new_ = true;
         picture_reset_ = reset;
+        // The picture about to be shown was drawn since the last new picture, with the jitter
+        // set then; what is drawn from here, the next, with the next in the sequence.
+        if (jitter_phases_ > 0) {
+            shown_jitter_x_ = jitter_x_;
+            shown_jitter_y_ = jitter_y_;
+            jitter_index_ = jitter_index_ % static_cast<uint32_t>(jitter_phases_) + 1;
+            jitter_x_ = Halton(jitter_index_, 2) - 0.5f;
+            jitter_y_ = Halton(jitter_index_, 3) - 0.5f;
+        }
+    }
+
+    void D3D11Raster::SetJitter(int phases) {
+        jitter_phases_ = std::max(phases, 0);
+        jitter_index_ = 1;
+        jitter_x_ = jitter_phases_ > 0 ? Halton(1, 2) - 0.5f : 0.0f;
+        jitter_y_ = jitter_phases_ > 0 ? Halton(1, 3) - 0.5f : 0.0f;
+        shown_jitter_x_ = shown_jitter_y_ = 0.0f;
     }
 
     void D3D11Raster::WarpCheck(uint32_t x, uint32_t y, UINT width, UINT height) {
@@ -1178,6 +1211,12 @@ namespace psxemu {
             for (int c = 0; c < 3; ++c)
                 rgb[c] = p[c];
         };
+        // Jittered, the two pictures were sampled up to a sub-pixel apart. That is not taken out by
+        // looking a jitter's difference further on: at the nearest pixel, a difference of half a
+        // sub-pixel or more moves every pixel a whole one - 2D that was never jittered included -
+        // and Valkyrie Profile, all sprites, went from 0.80 to 5.29 moved and 2.67 to 6.36 still.
+        // So moved and still are both left with the jitter's own difference along triangles'
+        // edges, the same in each.
         if (!warp_last_.empty() && !picture_reset_) {
             double moved_error = 0.0, still_error = 0.0;
             uint64_t moved_pixels = 0;
@@ -1187,10 +1226,11 @@ namespace psxemu {
                     static_cast<const uint8_t*>(plane.pData) + row * plane.RowPitch);
                 for (UINT col = 0; col < width; ++col) {
                     const uint8_t* here = &now[(static_cast<size_t>(row) * width + col) * 4];
-                    const uint8_t* there = &warp_last_[(static_cast<size_t>(row) * width + col) * 4];
+                    float there[3];
+                    sample(static_cast<float>(col), static_cast<float>(row), there);
                     float still = 0.0f;
                     for (int c = 0; c < 3; ++c)
-                        still += std::abs(static_cast<float>(here[c]) - static_cast<float>(there[c]));
+                        still += std::abs(static_cast<float>(here[c]) - there[c]);
                     const float mx = HalfToFloat(motion[col * 4]);
                     const float my = HalfToFloat(motion[col * 4 + 1]);
                     float moved = still;
@@ -1322,11 +1362,16 @@ namespace psxemu {
     }
 
     void D3D11Raster::Begin(const BatchKey& key, size_t count) {
+        // Every batch carries the jitter, which only triangles use: so a batch mixing them with
+        // rectangles is not broken up, and one drawn before a new picture's jitter keeps its own.
+        BatchKey keyed = key;
+        keyed.constants.jitter_x = jitter_x_;
+        keyed.constants.jitter_y = jitter_y_;
         if (!batch_.empty() &&
-            (memcmp(&key, &batch_key_, sizeof(BatchKey)) != 0 ||
+            (memcmp(&keyed, &batch_key_, sizeof(BatchKey)) != 0 ||
              batch_.size() + count > kBatchVertices))
             Flush();
-        batch_key_ = key;
+        batch_key_ = keyed;
     }
 
     bool D3D11Raster::KeyFor(const DrawJob& job, D3D11_PRIMITIVE_TOPOLOGY topology,
@@ -1406,7 +1451,10 @@ namespace psxemu {
         BatchKey key;
         if (!KeyFor(job, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST, &key))
             return;
-        if (precise) {
+        // Jittered (Docs/DLSS-Plan.md, phase 3), a triangle at whole pixels is drawn as a precise
+        // one is: sampled where the jitter puts each sub-pixel, which the integer arithmetic
+        // cannot do. It gives up the exact sub-pixel, as true colour does.
+        if (precise || jitter_phases_ > 0) {
             AddPreciseTriangle(job, key);
             return;
         }
@@ -1480,15 +1528,20 @@ namespace psxemu {
                               (left_out(c.x - b.x, c.y - b.y) ? 2u : 0u) |
                               (left_out(a.x - c.x, a.y - c.y) ? 4u : 0u);
 
+        // Jittered, a sub-pixel just beyond the triangle's own pixels can be sampled inside it:
+        // a pixel more each way.
+        const int32_t margin = jitter_phases_ > 0 ? 1 : 0;
         const int32_t left = std::max<int32_t>(
-            static_cast<int32_t>(std::floor(std::min(a.x, std::min(b.x, c.x)))), key.scissor.left);
+            static_cast<int32_t>(std::floor(std::min(a.x, std::min(b.x, c.x)))) - margin,
+            key.scissor.left);
         const int32_t right = std::min<int32_t>(
-            static_cast<int32_t>(std::floor(std::max(a.x, std::max(b.x, c.x)))) + 1,
+            static_cast<int32_t>(std::floor(std::max(a.x, std::max(b.x, c.x)))) + 1 + margin,
             key.scissor.right);
         const int32_t top = std::max<int32_t>(
-            static_cast<int32_t>(std::floor(std::min(a.y, std::min(b.y, c.y)))), key.scissor.top);
+            static_cast<int32_t>(std::floor(std::min(a.y, std::min(b.y, c.y)))) - margin,
+            key.scissor.top);
         const int32_t bottom = std::min<int32_t>(
-            static_cast<int32_t>(std::floor(std::max(a.y, std::max(b.y, c.y)))) + 1,
+            static_cast<int32_t>(std::floor(std::max(a.y, std::max(b.y, c.y)))) + 1 + margin,
             key.scissor.bottom);
         if (left >= right || top >= bottom)
             return;
@@ -2174,6 +2227,8 @@ namespace psxemu {
         shared->height = static_cast<int>(height);
         shared->planes = with_planes ? chosen.planes : nullptr;
         shared->planes_id = with_planes ? chosen.planes_id : 0;
+        shared->jitter_x = jitter_phases_ > 0 ? shown_jitter_x_ : 0.0f;
+        shared->jitter_y = jitter_phases_ > 0 ? shown_jitter_y_ : 0.0f;
         return true;
     }
 

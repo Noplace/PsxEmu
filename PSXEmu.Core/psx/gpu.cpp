@@ -177,6 +177,7 @@ namespace emulation {
             PushWatch();
             backend_->SetPlanes(planes_keep_, plane_view_);
             backend_->set_motion_check(motion_check_);
+            backend_->SetJitter(jitter_phases_);
             UpdateMotion();
             motion_fresh_ = true;   // the new rasteriser's plane knows nothing of the old
         }
@@ -197,6 +198,14 @@ namespace emulation {
                 return;
             SyncRaster();
             backend_->set_motion_check(on);
+        }
+
+        void Gpu::SetJitter(int phases) {
+            jitter_phases_ = phases;
+            if (!backend_)
+                return;
+            SyncRaster();
+            backend_->SetJitter(phases);
         }
 
         void Gpu::UpdateMotion() {
