@@ -56,6 +56,10 @@
 //                        timing that path; the checksums are then of a stale native picture
 //     --shared-picture   ...handing that picture over on the card (psx/shared_picture.h), as
 //                        to a presenter that can take it there, rather than reading it back
+//     --planes           ...keeping the plane beside VRAM that DLSS will use - depth and
+//                        motion - and handing it over with a shared picture (Docs/DLSS-Plan.md)
+//     --view depth|motion  ...showing that plane in place of the picture, as Video > View Depth
+//                        and View Motion do: above 1x, --ppm writes it
 //     --gpu <name>       ...drawing on the graphics card with <name> in its name (any case),
 //                        as Settings > Video > Graphics Card does; the report names the card
 //     --list-gpus        list the graphics cards and their LUIDs, and exit
@@ -269,6 +273,9 @@ struct Options {
   // rasteriser (psx/pgxp.h).
   bool pgxp, pgxp_culling, pgxp_textures;
   bool true_color;
+  // --planes: the plane beside VRAM kept; --view: shown in place of the picture.
+  bool planes;
+  emulation::psx::PlaneView view;
 };
 
 // FNV-1a over the visible framebuffer. Small, order-sensitive, and good enough
@@ -625,6 +632,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->pgxp_culling = false;
   options->pgxp_textures = true;
   options->true_color = true;
+  options->planes = false;
+  options->view = emulation::psx::PlaneView::kPicture;
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -720,6 +729,18 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->shown_only = true;
     } else if (strcmp(arg, "--shared-picture") == 0) {
       options->shared_picture = true;
+    } else if (strcmp(arg, "--planes") == 0) {
+      options->planes = true;
+    } else if (strcmp(arg, "--view") == 0 && i + 1 < argc) {
+      const char* view = argv[++i];
+      if (strcmp(view, "depth") == 0) {
+        options->view = emulation::psx::PlaneView::kDepth;
+      } else if (strcmp(view, "motion") == 0) {
+        options->view = emulation::psx::PlaneView::kMotion;
+      } else {
+        fprintf(stderr, "--view wants depth or motion\n");
+        return false;
+      }
     } else if (strcmp(arg, "--gpu") == 0 && i + 1 < argc) {
       options->gpu = argv[++i];
     } else if (strcmp(arg, "--no-true-color") == 0) {
@@ -1131,6 +1152,16 @@ int main(int argc, char** argv) {
     printf("gpu            hardware rasteriser (Direct3D 11, %s), %dx%s\n",
            system->gpu().raster_device().c_str(), options.scale,
            options.scale > 1 && options.true_color ? ", true colour" : "");
+    if (options.planes || options.view != emulation::psx::PlaneView::kPicture) {
+      system->gpu().SetPlanes(options.planes, options.view);
+      printf("gpu            the plane beside VRAM kept%s\n",
+             options.view == emulation::psx::PlaneView::kDepth    ? ", its depth shown"
+             : options.view == emulation::psx::PlaneView::kMotion ? ", its motion shown"
+                                                                  : "");
+    }
+  } else if (options.planes || options.view != emulation::psx::PlaneView::kPicture) {
+    fprintf(stderr, "--planes and --view are the hardware rasteriser's (--hw-raster)\n");
+    return 2;
   }
 
   // Before the machine executes a single instruction, so the whole run is one
@@ -1281,8 +1312,10 @@ int main(int argc, char** argv) {
   const uint64_t first_frame = last_frame;
   int frames = 0;
   uint16_t last_buttons = 0;
-  // --shared-picture: how many frames' pictures were handed over on the card.
+  // --shared-picture: how many frames' pictures were handed over on the card, and of those how
+  // many with the plane beside them (--planes).
   uint64_t shared_pictures = 0;
+  uint64_t shared_planes = 0;
   uint64_t last_shared_serial = 0;
 
   std::unordered_map<uint32_t, uint64_t> pc_counts;
@@ -1372,6 +1405,8 @@ int main(int argc, char** argv) {
       if (const emulation::psx::SharedPicture& shared = system->gpu().shared_picture()) {
         if (shared.serial != last_shared_serial) {
           ++shared_pictures;
+          if (shared.planes != nullptr)
+            ++shared_planes;
           last_shared_serial = shared.serial;
           shared.source->Release(shared.serial);
         }
@@ -1851,6 +1886,9 @@ int main(int argc, char** argv) {
   if (options.shared_picture)
     printf("shared         %llu of %d frames' pictures handed over on the card\n",
            static_cast<unsigned long long>(shared_pictures), frames);
+  if (options.shared_picture && options.planes)
+    printf("planes         %llu of them with the plane beside\n",
+           static_cast<unsigned long long>(shared_planes));
 
   if (gpu_stats.setup_count > 0) {
     printf("\nfirst textured primitives\n");

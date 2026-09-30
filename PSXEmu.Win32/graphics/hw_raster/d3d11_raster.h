@@ -97,6 +97,16 @@ namespace psxemu {
         void PrepareRead(uint32_t x, uint32_t y, uint32_t w, uint32_t h) override;
         void Written(uint32_t x, uint32_t y, uint32_t w, uint32_t h) override;
         void Reloaded() override;
+        void SetPlanes(bool keep, emulation::psx::PlaneView view) override;
+
+        // Whether the plane beside VRAM is being drawn (psx/shared_picture.h).
+        bool planes() const {
+            return plane_target_ && (keep_planes_ || shown_plane_ != emulation::psx::PlaneView::kPicture);
+        }
+        // The plane over a rectangle of VRAM, every sub-pixel of it as four floats - R, G, B, A,
+        // rows of w x scale - read back, for hw_raster_test. False if it is not being drawn.
+        bool ReadPlanes(uint32_t x, uint32_t y, uint32_t w, uint32_t h, std::vector<float>* rgba);
+        int scale() const { return scale_; }
         emulation::psx::RasterCounters& counters() override { return counters_; }
         const char* lost() const override { return lost_.empty() ? nullptr : lost_.c_str(); }
         std::string device() const override { return adapter_name_; }
@@ -128,7 +138,11 @@ namespace psxemu {
             int32_t tw_mask_x, tw_mask_y, tw_offset_x, tw_offset_y;   // the texture window
         };
 
-        enum Shader { kShaderDraw, kShaderCopy, kShaderDownsample, kShaderExpand, kShaderDisplay };
+        enum Shader {
+            kShaderDraw, kShaderCopy, kShaderDownsample, kShaderExpand, kShaderDisplay,
+            kShaderDisplayDepth, kShaderDisplayMotion,
+            kShaderCount
+        };
 
         // What one batch shares. A job needing anything different flushes first.
         struct BatchKey {
@@ -153,6 +167,15 @@ namespace psxemu {
         // every one is still in use, and the picture has to be read back this time.
         bool ShareDisplay(uint32_t x, uint32_t y, UINT width, UINT height,
                           emulation::psx::SharedPicture* shared);
+
+        // The plane's textures, made when it is first asked for: false, and none, if the card
+        // cannot hold them.
+        bool MakePlanes();
+        // What the draws write into: VRAM on the card, and the plane beside it while it is kept.
+        void BindTargets();
+        // The plane over a rectangle of VRAM - inside it - set to "not known": uploads, which may
+        // be anything from a still background to a film.
+        void ForgetPlanes(int32_t x, int32_t y, int32_t w, int32_t h);
 
         // Draws what has been batched.
         void Flush();
@@ -247,12 +270,34 @@ namespace psxemu {
         Microsoft::WRL::ComPtr<ID3D11DeviceContext4> context4_;
         uint64_t adapter_luid_ = 0;
         Microsoft::WRL::ComPtr<ID3D11VertexShader> vertex_shader_;
-        Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel_shaders_[5];   // by Shader
+        Microsoft::WRL::ComPtr<ID3D11PixelShader> pixel_shaders_[kShaderCount];   // by Shader
+        // PsDraw and PsCopy writing the plane too, for while it is kept.
+        Microsoft::WRL::ComPtr<ID3D11PixelShader> plane_draw_shader_;
+        Microsoft::WRL::ComPtr<ID3D11PixelShader> plane_copy_shader_;
         Microsoft::WRL::ComPtr<ID3D11InputLayout> layout_;
         Microsoft::WRL::ComPtr<ID3D11Buffer> vertices_;
         Microsoft::WRL::ComPtr<ID3D11Buffer> constants_;
         Microsoft::WRL::ComPtr<ID3D11RasterizerState> raster_state_;
+        // Everything written as the shader says: VRAM, and for copies the plane too.
         Microsoft::WRL::ComPtr<ID3D11BlendState> blend_state_;
+        // Drawing while the plane is kept: VRAM as ever, and the plane kept as it was wherever
+        // the shader's plane alpha is 0 - where it drew something translucent - with that alpha
+        // stored, saying so. Blending each target its own way needs feature level 10.1.
+        Microsoft::WRL::ComPtr<ID3D11BlendState> plane_blend_state_;
+
+        // The plane beside VRAM (psx/shared_picture.h, Docs/DLSS-Plan.md): VRAM's layout at
+        // scale_, RGBA16F. Made the first time it is asked for, and kept after. Its read copy is
+        // what copies and 15-bit texels carry along, made current tile by tile with VRAM's.
+        bool keep_planes_ = false;
+        emulation::psx::PlaneView shown_plane_ = emulation::psx::PlaneView::kPicture;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> plane_target_;
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> plane_target_view_;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> plane_source_;   // for showing it
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> plane_read_copy_;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> plane_read_copy_view_;
+        Microsoft::WRL::ComPtr<ID3D11DeviceContext1> context1_;   // ClearView, for ForgetPlanes
+        // Beside each shared picture, the same area of the plane, while it is kept.
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> picture_planes_[kPictureSlots];
 
         std::vector<Vertex> batch_;
         BatchKey batch_key_ = {};

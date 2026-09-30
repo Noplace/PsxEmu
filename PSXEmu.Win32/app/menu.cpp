@@ -203,6 +203,8 @@ namespace psxemu {
         AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(filter), L"&Filter");
         AppendMenuW(video, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewVram), L"View &VRAM");
+        AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewDepth), L"View &Depth");
+        AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewMotion), L"View &Motion");
         AppendMenuW(video, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandFullscreen),
                     L"F&ull Screen\tAlt+Enter");
@@ -497,6 +499,22 @@ namespace psxemu {
                           MF_BYCOMMAND | (item.on ? MF_CHECKED : MF_UNCHECKED));
             EnableMenuItem(bar, static_cast<UINT>(item.id),
                            MF_BYCOMMAND | (item.enabled ? MF_ENABLED : MF_GRAYED));
+        }
+    }
+
+    void TickPlaneView(HWND window, int view, bool available) {
+        HMENU bar = MenuBar(window);
+        if (bar == nullptr)
+            return;
+        const struct { int id; int view; } items[] = {
+            { kCommandViewDepth, 1 },
+            { kCommandViewMotion, 2 },
+        };
+        for (const auto& item : items) {
+            CheckMenuItem(bar, static_cast<UINT>(item.id),
+                          MF_BYCOMMAND | (view == item.view ? MF_CHECKED : MF_UNCHECKED));
+            EnableMenuItem(bar, static_cast<UINT>(item.id),
+                           MF_BYCOMMAND | (available ? MF_ENABLED : MF_GRAYED));
         }
     }
 

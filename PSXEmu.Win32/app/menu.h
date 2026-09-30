@@ -90,6 +90,9 @@ namespace psxemu {
     // PGXP's three switches, greyed unless the hardware rasteriser draws (and the last two unless
     // precise vertices are on).
     void TickPgxp(HWND window, bool hardware, bool vertices, bool textures, bool culling);
+    // Video > View Depth and View Motion: `view` 0 for neither, 1 depth, 2 motion. Greyed unless
+    // the hardware rasteriser draws above 1x, the only picture they can take the place of.
+    void TickPlaneView(HWND window, int view, bool available);
 
     // The current filter, and every filter item greyed out when the active renderer does not
     // support them - D3D11Presenter's SetPixelShader is a no-op, and a menu that silently does

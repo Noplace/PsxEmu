@@ -91,9 +91,15 @@ namespace psxemu {
         //
         // TRUE_COLOR (above 1x only): no dithering, and eight bits a channel kept rather than
         // five, the pixel underneath included. It gives up the sub-pixel exactness above.
+        //
+        // PLANES: PsDraw and PsCopy write the plane beside VRAM too (psx/shared_picture.h), as a
+        // second target - which is what DLSS will need to know of each sub-pixel. Compiled both
+        // ways, so with the plane not kept the shaders are exactly what they were.
         const char kShaderSource[] =
             "static const int scale = SCALE;\n"
             "static const bool fine = SCALE > 1 && TRUE_COLOR != 0;\n"
+            "static const float unknown_motion = UNKNOWN_MOTION;\n"
+            "static const float depth_scale = DEPTH_SCALE;\n"
             "\n"
             "cbuffer Constants : register(b0) {\n"
             "  int skip_field;\n"
@@ -106,8 +112,17 @@ namespace psxemu {
             "  int tw_offset_y;\n"
             "};\n"
             "// The read copy, for drawing and copies; the target or native VRAM's copy on the\n"
-            "// card for a download or an upload.\n"
+            "// card for a download or an upload; the plane, to show it.\n"
             "Texture2D<float4> source : register(t0);\n"
+            "// The plane's read copy, for copies to carry it along.\n"
+            "Texture2D<float4> plane_source : register(t1);\n"
+            "\n"
+            "#if PLANES\n"
+            "struct Out {\n"
+            "  float4 colour : SV_TARGET0;\n"
+            "  float4 plane : SV_TARGET1;\n"
+            "};\n"
+            "#endif\n"
             "\n"
             "struct VsIn {\n"
             "  float2 position : POSITION;\n"
@@ -171,11 +186,18 @@ namespace psxemu {
             "  return swap ? -e : e;\n"
             "}\n"
             "\n"
+            "#if PLANES\n"
+            "Out PsDraw(VsOut input) {\n"
+            "#else\n"
             "float4 PsDraw(VsOut input) : SV_TARGET {\n"
+            "#endif\n"
             "  int2 at = int2(input.position.xy);\n"
             "  int2 pixel = at / scale;\n"
             "  int2 sub = at - pixel * scale;\n"
             "  bool exact = sub.x == 0 && sub.y == 0;\n"
+            "  float inverse_depth = 0.0;   // 1 / the depth here, where PGXP gave every vertex one\n"
+            "  bool direct = false;         // a 15-bit texel, read from here in the target:\n"
+            "  int2 direct_at = int2(0, 0); // what may be a picture the game drew, and its plane\n"
             "  if (skip_field != 0 && (pixel.y & 1) == active_line_lsb)\n"
             "    discard;\n"
             "  uint a0 = input.p2.x;\n"
@@ -241,6 +263,10 @@ namespace psxemu {
             "    if (area <= 0.0)\n"
             "      discard;\n"
             "    float3 l = float3(e1, e2, e0) / area;   // a's weight, b's, c's\n"
+            "    // One over the depth runs straight across the screen, so it is interpolated\n"
+            "    // with the screen's weights.\n"
+            "    if (depth.x > 0.0 && depth.y > 0.0 && depth.z > 0.0)\n"
+            "      inverse_depth = dot(l, 1.0 / depth);\n"
             "    uint3 ca = RGB(input.p0.w), cb = RGB(input.p1.x), cc = RGB(input.p1.y);\n"
             "    c = (a0 & 0x20000000u) != 0\n"
             "        ? int3(min(floor(l.x * float3(ca) + l.y * float3(cb) + l.z * float3(cc) + 0.002), 255.0))\n"
@@ -298,6 +324,9 @@ namespace psxemu {
             "      t = Texel(clut_x + ((block >> ((u & 1) * 8)) & 255), clut_y, 0, 0);\n"
             "    } else {\n"
             "      t = Texel(page_x + u, page_y + v, fine_texel.x, fine_texel.y);\n"
+            "      direct = true;\n"
+            "      direct_at = int2(((page_x + u) & 1023) * scale + fine_texel.x,\n"
+            "                       ((page_y + v) & 511) * scale + fine_texel.y);\n"
             "    }\n"
             "    int texel = Pack(t);\n"
             "    if (texel == 0)\n"
@@ -329,11 +358,38 @@ namespace psxemu {
             "    }\n"
             "  }\n"
             "  float3 colour = fine ? float3(c) / 255.0 : float3(Cut(c.r), Cut(c.g), Cut(c.b));\n"
-            "  return float4(colour, (force_mask != 0 || texel_mask) ? 1.0 : 0.0);\n"
+            "  float4 result = float4(colour, (force_mask != 0 || texel_mask) ? 1.0 : 0.0);\n"
+            "#if PLANES\n"
+            "  // A fill is a background standing still. Nothing else's motion is known yet.\n"
+            "  // A 15-bit texel brings its own plane along, as a copy does - a game drawing a\n"
+            "  // picture it drew itself back onto the screen, a blur or a wipe - with the\n"
+            "  // primitive's own depth first where it has one. Translucent, alpha 0 keeps what\n"
+            "  // is under it (the target's blend) and says so.\n"
+            "  bool fill = kind == 2u && input.p3.w != 0u;\n"
+            "  float4 plane = float4(fill ? 0.0 : unknown_motion, fill ? 0.0 : unknown_motion,\n"
+            "                        depth_scale * inverse_depth, 1.0);\n"
+            "  if (direct) {\n"
+            "    float4 carried = plane_source.Load(int3(direct_at, 0));\n"
+            "    plane.rg = carried.rg;\n"
+            "    if (inverse_depth == 0.0)\n"
+            "      plane.b = carried.b;\n"
+            "  }\n"
+            "  plane.a = blend ? 0.0 : 1.0;\n"
+            "  Out output;\n"
+            "  output.colour = result;\n"
+            "  output.plane = plane;\n"
+            "  return output;\n"
+            "#else\n"
+            "  return result;\n"
+            "#endif\n"
             "}\n"
             "\n"
-            "// A VRAM-to-VRAM copy, sub-pixel for sub-pixel.\n"
+            "// A VRAM-to-VRAM copy, sub-pixel for sub-pixel - and the plane with it.\n"
+            "#if PLANES\n"
+            "Out PsCopy(VsOut input) {\n"
+            "#else\n"
             "float4 PsCopy(VsOut input) : SV_TARGET {\n"
+            "#endif\n"
             "  int2 at = int2(input.position.xy);\n"
             "  int2 pixel = at / scale;\n"
             "  int2 sub = at - pixel * scale;\n"
@@ -343,7 +399,14 @@ namespace psxemu {
             "  float4 texel = source.Load(int3(from, 0));\n"
             "  if (force_mask != 0)\n"
             "    texel.a = 1.0;\n"
+            "#if PLANES\n"
+            "  Out output;\n"
+            "  output.colour = texel;\n"
+            "  output.plane = plane_source.Load(int3(from, 0));\n"
+            "  return output;\n"
+            "#else\n"
             "  return texel;\n"
+            "#endif\n"
             "}\n"
             "\n"
             "// Downloads, above 1x: each console pixel's own sub-pixel, into a native-sized target.\n"
@@ -360,14 +423,44 @@ namespace psxemu {
             "// Showing, above 1x: the display area out of the target, alpha opaque.\n"
             "float4 PsDisplay(VsOut input) : SV_TARGET {\n"
             "  return float4(source.Load(int3(int2(input.position.xy) + XY(input.p0.x), 0)).rgb, 1.0);\n"
+            "}\n"
+            "\n"
+            "// Video > View Depth: the plane's depth in place of the picture, nearer brighter, on a\n"
+            "// scale of powers of two from about 100 to 100,000 GTE units. Dark blue where there is no\n"
+            "// depth; reddened where the last thing drawn was translucent.\n"
+            "float4 PsDisplayDepth(VsOut input) : SV_TARGET {\n"
+            "  float4 p = source.Load(int3(int2(input.position.xy) + XY(input.p0.x), 0));\n"
+            "  if (!(p.b > 0.0))\n"
+            "    return float4(0.05, 0.05, 0.3, 1.0);\n"
+            "  float g = saturate((log2(p.b / depth_scale) + 16.5) / 10.0);\n"
+            "  float3 c = p.a < 0.5 ? float3(saturate(g + 0.35), g * 0.6, g * 0.6) : float3(g, g, g);\n"
+            "  return float4(c, 1.0);\n"
+            "}\n"
+            "\n"
+            "// Video > View Motion: which way each sub-pixel moved, as the hue, and how far - up to\n"
+            "// eight console pixels - as the brightness. Black is still; dim purple, not known.\n"
+            "float4 PsDisplayMotion(VsOut input) : SV_TARGET {\n"
+            "  float4 p = source.Load(int3(int2(input.position.xy) + XY(input.p0.x), 0));\n"
+            "  if (p.r >= unknown_motion * 0.5 || p.g >= unknown_motion * 0.5)\n"
+            "    return float4(0.25, 0.0, 0.3, 1.0);\n"
+            "  float2 m = p.rg / scale;\n"
+            "  float length_ = length(m);\n"
+            "  float hue = (atan2(m.y, m.x) / 6.2831853 + 1.0) * 6.0;\n"
+            "  float3 rgb = saturate(abs(fmod(hue + float3(0.0, 4.0, 2.0), 6.0) - 3.0) - 1.0);\n"
+            "  return float4(rgb * saturate(length_ / 8.0), 1.0);\n"
             "}\n";
 
-        bool Compile(const char* entry, const char* target, int scale, bool true_color,
+        bool Compile(const char* entry, const char* target, int scale, bool true_color, bool planes,
                      Microsoft::WRL::ComPtr<ID3DBlob>* blob, std::string* error) {
             const std::string scale_text = std::to_string(scale);
+            const std::string unknown_text = std::to_string(emulation::psx::kUnknownMotion);
+            const std::string depth_text = std::to_string(emulation::psx::kPlaneDepthScale);
             const D3D_SHADER_MACRO macros[] = {
                 { "SCALE", scale_text.c_str() },
                 { "TRUE_COLOR", true_color ? "1" : "0" },
+                { "PLANES", planes ? "1" : "0" },
+                { "UNKNOWN_MOTION", unknown_text.c_str() },
+                { "DEPTH_SCALE", depth_text.c_str() },
                 { nullptr, nullptr },
             };
             Microsoft::WRL::ComPtr<ID3DBlob> errors;
@@ -431,6 +524,34 @@ namespace psxemu {
         // it opened cannot mistake a new one for an old one made at the same handle.
         std::atomic<uint64_t> next_texture_id{ 1 };
 
+        // A 16-bit float, as the plane keeps its values, widened.
+        float HalfToFloat(uint16_t half) {
+            const uint32_t sign = static_cast<uint32_t>(half & 0x8000u) << 16;
+            const uint32_t exponent = (half >> 10) & 0x1Fu;
+            uint32_t mantissa = half & 0x3FFu;
+            uint32_t bits;
+            if (exponent == 31) {
+                bits = sign | 0x7F800000u | (mantissa << 13);
+            }
+            else if (exponent != 0) {
+                bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+            }
+            else if (mantissa == 0) {
+                bits = sign;
+            }
+            else {   // subnormal: shifted up until it is a normal number's
+                uint32_t shifts = 0;
+                while ((mantissa & 0x400u) == 0) {
+                    mantissa <<= 1;
+                    ++shifts;
+                }
+                bits = sign | ((113 - shifts) << 23) | ((mantissa & 0x3FFu) << 13);
+            }
+            float value;
+            memcpy(&value, &bits, sizeof(value));
+            return value;
+        }
+
     }   // namespace
 
     // Shared pictures, the part any thread may touch (psx/shared_picture.h): each texture's NT
@@ -445,10 +566,13 @@ namespace psxemu {
         static constexpr int kSlots = D3D11Raster::kSharedPictures;
 
         struct Slot {
-            // The rasteriser's: the handle, and what the texture behind it is.
+            // The rasteriser's: the handle, and what the texture behind it is - and the plane's
+            // beside it, the same size, while the plane is kept.
             HANDLE handle = nullptr;
             UINT width = 0, height = 0;
             uint64_t id = 0;
+            HANDLE planes = nullptr;
+            uint64_t planes_id = 0;
             // Any thread's: the picture last drawn into it (0: none yet), and that same number
             // once the frame carrying it was dropped.
             std::atomic<uint64_t> serial{ 0 };
@@ -460,9 +584,12 @@ namespace psxemu {
               event_(CreateEventW(nullptr, FALSE, FALSE, nullptr)) {}
 
         ~CardPictures() override {
-            for (Slot& slot : slots_)
+            for (Slot& slot : slots_) {
                 if (slot.handle != nullptr)
                     CloseHandle(slot.handle);
+                if (slot.planes != nullptr)
+                    CloseHandle(slot.planes);
+            }
             if (event_ != nullptr)
                 CloseHandle(event_);
         }
@@ -513,7 +640,8 @@ namespace psxemu {
             }
             return any;
         }
-        // A new texture behind `index`, whose old one nobody will read again.
+        // A new texture behind `index`, whose old one nobody will read again - nor its plane,
+        // which goes with it.
         void Replace(int index, HANDLE handle, UINT width, UINT height) {
             Slot& slot = slots_[index];
             if (slot.handle != nullptr)
@@ -522,6 +650,16 @@ namespace psxemu {
             slot.width = width;
             slot.height = height;
             slot.id = next_texture_id.fetch_add(1, std::memory_order_relaxed);
+            ReplacePlanes(index, nullptr);
+        }
+        // A plane texture beside `index`'s picture, the same size.
+        void ReplacePlanes(int index, HANDLE handle) {
+            Slot& slot = slots_[index];
+            if (slot.planes != nullptr)
+                CloseHandle(slot.planes);
+            slot.planes = handle;
+            slot.planes_id = handle != nullptr ? next_texture_id.fetch_add(1, std::memory_order_relaxed)
+                                               : 0;
         }
         // Picture `serial` is being drawn into `index`.
         void Drawn(int index, uint64_t serial) {
@@ -726,14 +864,19 @@ namespace psxemu {
             return false;
         }
 
-        Microsoft::WRL::ComPtr<ID3DBlob> vertex_blob, pixel_blobs[5];
-        const char* const entries[5] = { "PsDraw", "PsCopy", "PsDownsample", "PsExpand",
-                                         "PsDisplay" };
-        if (!Compile("VsMain", "vs_4_0", scale_, true_color_, &vertex_blob, error))
+        Microsoft::WRL::ComPtr<ID3DBlob> vertex_blob, pixel_blobs[kShaderCount];
+        Microsoft::WRL::ComPtr<ID3DBlob> plane_draw_blob, plane_copy_blob;
+        const char* const entries[kShaderCount] = { "PsDraw", "PsCopy", "PsDownsample", "PsExpand",
+                                                    "PsDisplay", "PsDisplayDepth",
+                                                    "PsDisplayMotion" };
+        if (!Compile("VsMain", "vs_4_0", scale_, true_color_, false, &vertex_blob, error))
             return false;
-        for (int i = 0; i < 5; ++i)
-            if (!Compile(entries[i], "ps_4_0", scale_, true_color_, &pixel_blobs[i], error))
+        for (int i = 0; i < kShaderCount; ++i)
+            if (!Compile(entries[i], "ps_4_0", scale_, true_color_, false, &pixel_blobs[i], error))
                 return false;
+        if (!Compile("PsDraw", "ps_4_0", scale_, true_color_, true, &plane_draw_blob, error) ||
+            !Compile("PsCopy", "ps_4_0", scale_, true_color_, true, &plane_copy_blob, error))
+            return false;
         const D3D11_INPUT_ELEMENT_DESC elements[] = {
             { "POSITION", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Vertex, x),
               D3D11_INPUT_PER_VERTEX_DATA, 0 },
@@ -752,10 +895,17 @@ namespace psxemu {
                     SUCCEEDED(device_->CreateInputLayout(elements, ARRAYSIZE(elements),
                                                          vertex_blob->GetBufferPointer(),
                                                          vertex_blob->GetBufferSize(), &layout_));
-        for (int i = 0; i < 5 && made; ++i)
+        for (int i = 0; i < kShaderCount && made; ++i)
             made = SUCCEEDED(device_->CreatePixelShader(pixel_blobs[i]->GetBufferPointer(),
                                                         pixel_blobs[i]->GetBufferSize(), nullptr,
                                                         &pixel_shaders_[i]));
+        made = made &&
+               SUCCEEDED(device_->CreatePixelShader(plane_draw_blob->GetBufferPointer(),
+                                                    plane_draw_blob->GetBufferSize(), nullptr,
+                                                    &plane_draw_shader_)) &&
+               SUCCEEDED(device_->CreatePixelShader(plane_copy_blob->GetBufferPointer(),
+                                                    plane_copy_blob->GetBufferSize(), nullptr,
+                                                    &plane_copy_shader_));
         if (!made) {
             *error = "the hardware rasteriser could not make its shaders";
             return false;
@@ -806,7 +956,7 @@ namespace psxemu {
         viewport.Height = static_cast<float>(kHeight * scale_);
         viewport.MaxDepth = 1.0f;
         context_->RSSetViewports(1, &viewport);
-        context_->OMSetRenderTargets(1, target_view_.GetAddressOf(), nullptr);
+        BindTargets();
 
         batch_.reserve(kBatchVertices);
         Reloaded();
@@ -832,6 +982,127 @@ namespace psxemu {
             return;
         }
         pictures_ = std::make_shared<CardPictures>(std::move(fence), adapter_luid_);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // The plane beside VRAM (psx/shared_picture.h, Docs/DLSS-Plan.md)
+    // ------------------------------------------------------------------------------------------
+
+    void D3D11Raster::SetPlanes(bool keep, emulation::psx::PlaneView view) {
+        const bool was = planes();
+        Flush();   // what is batched is drawn the way it was batched
+        keep_planes_ = keep;
+        shown_plane_ = view;
+        if ((keep || view != emulation::psx::PlaneView::kPicture) && !plane_target_ &&
+            !MakePlanes()) {
+            // The card cannot hold it: nothing is kept, and the picture is shown as ever.
+            keep_planes_ = false;
+            shown_plane_ = emulation::psx::PlaneView::kPicture;
+        }
+        // Started afresh: nothing drawn while it was not kept is known - and its read copy,
+        // which has not been kept either, is stale everywhere.
+        if (planes() && !was) {
+            ForgetPlanes(0, 0, kWidth, kHeight);
+            std::fill(stale_.begin(), stale_.end(), 1);
+        }
+        context_->OMSetBlendState(blend_state_.Get(), nullptr, 0xFFFFFFFF);
+        BindTargets();
+    }
+
+    bool D3D11Raster::MakePlanes() {
+        D3D11_BLEND_DESC blend = {};
+        blend.IndependentBlendEnable = TRUE;
+        blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        D3D11_RENDER_TARGET_BLEND_DESC& plane = blend.RenderTarget[1];
+        plane.BlendEnable = TRUE;
+        plane.SrcBlend = D3D11_BLEND_SRC_ALPHA;
+        plane.DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+        plane.BlendOp = D3D11_BLEND_OP_ADD;
+        plane.SrcBlendAlpha = D3D11_BLEND_ONE;
+        plane.DestBlendAlpha = D3D11_BLEND_ZERO;
+        plane.BlendOpAlpha = D3D11_BLEND_OP_ADD;
+        plane.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+
+        // VRAM's size at scale_, eight bytes a sub-pixel: 256 MB at 8x, and its read copy as much.
+        D3D11_TEXTURE2D_DESC texture = {};
+        texture.Width = kWidth * scale_;
+        texture.Height = kHeight * scale_;
+        texture.MipLevels = 1;
+        texture.ArraySize = 1;
+        texture.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        texture.SampleDesc.Count = 1;
+        texture.Usage = D3D11_USAGE_DEFAULT;
+        texture.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        bool made = SUCCEEDED(context_.As(&context1_)) &&
+                    SUCCEEDED(device_->CreateBlendState(&blend, &plane_blend_state_)) &&
+                    SUCCEEDED(device_->CreateTexture2D(&texture, nullptr, &plane_target_)) &&
+                    SUCCEEDED(device_->CreateRenderTargetView(plane_target_.Get(), nullptr,
+                                                              &plane_target_view_)) &&
+                    SUCCEEDED(device_->CreateShaderResourceView(plane_target_.Get(), nullptr,
+                                                                &plane_source_));
+        texture.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        made = made && SUCCEEDED(device_->CreateTexture2D(&texture, nullptr, &plane_read_copy_)) &&
+               SUCCEEDED(device_->CreateShaderResourceView(plane_read_copy_.Get(), nullptr,
+                                                           &plane_read_copy_view_));
+        if (!made) {
+            plane_target_.Reset();
+            plane_target_view_.Reset();
+            plane_source_.Reset();
+            plane_read_copy_.Reset();
+            plane_read_copy_view_.Reset();
+            plane_blend_state_.Reset();
+            CheckDevice();
+        }
+        return made;
+    }
+
+    void D3D11Raster::BindTargets() {
+        ID3D11RenderTargetView* const views[2] = { target_view_.Get(), plane_target_view_.Get() };
+        context_->OMSetRenderTargets(planes() ? 2 : 1, views, nullptr);
+    }
+
+    void D3D11Raster::ForgetPlanes(int32_t x, int32_t y, int32_t w, int32_t h) {
+        const float unknown[4] = { emulation::psx::kUnknownMotion, emulation::psx::kUnknownMotion,
+                                   0.0f, 1.0f };
+        const D3D11_RECT rect = { x * scale_, y * scale_, (x + w) * scale_, (y + h) * scale_ };
+        context1_->ClearView(plane_target_view_.Get(), unknown, &rect, 1);
+    }
+
+    bool D3D11Raster::ReadPlanes(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                                 std::vector<float>* rgba) {
+        if (!planes() || w == 0 || h == 0 || x + w > kWidth || y + h > kHeight)
+            return false;
+        Flush();
+        D3D11_TEXTURE2D_DESC texture = {};
+        texture.Width = w * scale_;
+        texture.Height = h * scale_;
+        texture.MipLevels = 1;
+        texture.ArraySize = 1;
+        texture.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+        texture.SampleDesc.Count = 1;
+        texture.Usage = D3D11_USAGE_STAGING;
+        texture.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> staging;
+        if (FAILED(device_->CreateTexture2D(&texture, nullptr, &staging)))
+            return false;
+        const D3D11_BOX box = Scaled(static_cast<int32_t>(x), static_cast<int32_t>(y),
+                                     static_cast<int32_t>(x + w), static_cast<int32_t>(y + h));
+        context_->CopySubresourceRegion(staging.Get(), 0, 0, 0, 0, plane_target_.Get(), 0, &box);
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        if (FAILED(context_->Map(staging.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+            CheckDevice();
+            return false;
+        }
+        const size_t values = static_cast<size_t>(texture.Width) * 4;
+        rgba->resize(values * texture.Height);
+        for (UINT row = 0; row < texture.Height; ++row) {
+            const uint16_t* source = reinterpret_cast<const uint16_t*>(
+                static_cast<const uint8_t*>(mapped.pData) + row * mapped.RowPitch);
+            for (size_t i = 0; i < values; ++i)
+                (*rgba)[row * values + i] = HalfToFloat(source[i]);
+        }
+        context_->Unmap(staging.Get(), 0);
+        return true;
     }
 
     void D3D11Raster::Apply(const DrawJob& job) {
@@ -878,12 +1149,25 @@ namespace psxemu {
                                      batch_key_.scissor.right * scale_,
                                      batch_key_.scissor.bottom * scale_ };
         context_->RSSetScissorRects(1, &scissor);
-        context_->PSSetShader(pixel_shaders_[batch_key_.shader].Get(), nullptr, 0);
-        // Bound only while drawing, since the read copy is also what refreshes copy into.
-        context_->PSSetShaderResources(0, 1, read_copy_view_.GetAddressOf());
+        // While the plane is kept, draws and copies write it too: a draw blending it, a copy
+        // carrying it across whole - and both reading its read copy, as they read VRAM's.
+        const bool planes_kept = planes();
+        const bool copy = batch_key_.shader == kShaderCopy;
+        ID3D11PixelShader* shader = pixel_shaders_[batch_key_.shader].Get();
+        if (planes_kept) {
+            shader = copy ? plane_copy_shader_.Get() : plane_draw_shader_.Get();
+            context_->OMSetBlendState(copy ? blend_state_.Get() : plane_blend_state_.Get(), nullptr,
+                                      0xFFFFFFFF);
+        }
+        context_->PSSetShader(shader, nullptr, 0);
+        // Bound only while drawing, since the read copies are also what refreshes copy into.
+        ID3D11ShaderResourceView* const sources[2] = {
+            read_copy_view_.Get(), planes_kept ? plane_read_copy_view_.Get() : nullptr
+        };
+        context_->PSSetShaderResources(0, 2, sources);
         context_->Draw(static_cast<UINT>(batch_.size()), 0);
-        ID3D11ShaderResourceView* none = nullptr;
-        context_->PSSetShaderResources(0, 1, &none);
+        ID3D11ShaderResourceView* const none[2] = { nullptr, nullptr };
+        context_->PSSetShaderResources(0, 2, none);
         batch_.clear();
         ++batch_serial_;
     }
@@ -1214,6 +1498,7 @@ namespace psxemu {
         uint32_t payload[16] = {};
         payload[3] = ToCard(job.fill_colour) & 0x00FFFFFF;
         payload[8] = kKindFlat << 27;
+        payload[15] = 1;   // a fill, not a line's pixel: to the plane, a background standing still
         Begin(key, 6);
         AddBox(job.x, job.y, right, bottom, payload);
     }
@@ -1236,6 +1521,7 @@ namespace psxemu {
             return;
         }
 
+        // The source made current in the read copy - and the plane's, which goes with the pixels.
         Fresh(job.src_x, job.src_y, job.w, job.h);
         if (job.env.check_mask)
             Fresh(job.x, job.y, job.w, job.h);
@@ -1355,6 +1641,11 @@ namespace psxemu {
                                                  (ty + 1) * kTile);
                     context_->CopySubresourceRegion(read_copy_.Get(), 0, box.left, box.top, 0,
                                                     target_.Get(), 0, &box);
+                    // The plane's read copy goes with it: whatever draws into a tile draws
+                    // into both, so they are stale together.
+                    if (planes())
+                        context_->CopySubresourceRegion(plane_read_copy_.Get(), 0, box.left,
+                                                        box.top, 0, plane_target_.Get(), 0, &box);
                     tx = end;
                 }
             }
@@ -1514,6 +1805,8 @@ namespace psxemu {
                                     upload_.data(), static_cast<UINT>(w * sizeof(uint32_t)), 0);
         if (scale_ > 1)
             Pass(kShaderExpand, native_source_view_.Get(), false, { { x, y, x + w, y + h } });
+        if (planes())
+            ForgetPlanes(x, y, w, h);
     }
 
     D3D11_BOX D3D11Raster::Scaled(int32_t left, int32_t top, int32_t right, int32_t bottom) const {
@@ -1573,7 +1866,7 @@ namespace psxemu {
         viewport.Width = static_cast<float>(kWidth * scale_);
         viewport.Height = static_cast<float>(kHeight * scale_);
         viewport.MaxDepth = 1.0f;
-        context_->OMSetRenderTargets(1, target_view_.GetAddressOf(), nullptr);
+        BindTargets();
         context_->RSSetViewports(1, &viewport);
     }
 
@@ -1602,18 +1895,26 @@ namespace psxemu {
         viewport.Height = static_cast<float>(height);
         viewport.MaxDepth = 1.0f;
         const D3D11_RECT scissor = { 0, 0, static_cast<LONG>(width), static_cast<LONG>(height) };
+        // The picture - or, for Video > View Depth and View Motion, the plane in its place.
+        Shader shader = kShaderDisplay;
+        ID3D11ShaderResourceView* source = target_source_.Get();
+        if (planes() && shown_plane_ != emulation::psx::PlaneView::kPicture) {
+            shader = shown_plane_ == emulation::psx::PlaneView::kDepth ? kShaderDisplayDepth
+                                                                       : kShaderDisplayMotion;
+            source = plane_source_.Get();
+        }
         context_->OMSetRenderTargets(1, &into, nullptr);
         context_->RSSetViewports(1, &viewport);
         context_->RSSetScissorRects(1, &scissor);
         context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        context_->PSSetShader(pixel_shaders_[kShaderDisplay].Get(), nullptr, 0);
-        context_->PSSetShaderResources(0, 1, target_source_.GetAddressOf());
+        context_->PSSetShader(pixel_shaders_[shader].Get(), nullptr, 0);
+        context_->PSSetShaderResources(0, 1, &source);
         context_->Draw(6, 0);
         ID3D11ShaderResourceView* none = nullptr;
         context_->PSSetShaderResources(0, 1, &none);
         viewport.Width = static_cast<float>(kWidth * scale_);
         viewport.Height = static_cast<float>(kHeight * scale_);
-        context_->OMSetRenderTargets(1, target_view_.GetAddressOf(), nullptr);
+        BindTargets();
         context_->RSSetViewports(1, &viewport);
     }
 
@@ -1660,9 +1961,45 @@ namespace psxemu {
                 return false;
             }
             pictures.Replace(slot, handle, width, height);
+            picture_planes_[slot].Reset();
         }
 
         DrawDisplay(picture_views_[slot].Get(), x, y, width, height);
+        // The plane's same area beside it, while the plane is kept for DLSS - copied before the
+        // fence, so the presenter's one wait covers both. A card that will not share this one
+        // still hands the picture over, without it.
+        bool with_planes = false;
+        if (keep_planes_ && planes()) {
+            if (!picture_planes_[slot] || pictures.slot(slot).planes == nullptr) {
+                picture_planes_[slot].Reset();
+                D3D11_TEXTURE2D_DESC texture = {};
+                texture.Width = width;
+                texture.Height = height;
+                texture.MipLevels = 1;
+                texture.ArraySize = 1;
+                texture.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                texture.SampleDesc.Count = 1;
+                texture.Usage = D3D11_USAGE_DEFAULT;
+                texture.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+                texture.MiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+                Microsoft::WRL::ComPtr<IDXGIResource1> resource;
+                HANDLE handle = nullptr;
+                if (SUCCEEDED(device_->CreateTexture2D(&texture, nullptr, &picture_planes_[slot])) &&
+                    SUCCEEDED(picture_planes_[slot].As(&resource)) &&
+                    SUCCEEDED(resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ, nullptr,
+                                                           &handle)))
+                    pictures.ReplacePlanes(slot, handle);
+                else
+                    picture_planes_[slot].Reset();
+            }
+            if (picture_planes_[slot]) {
+                const D3D11_BOX box = { x * scale_, y * scale_, 0, x * scale_ + width,
+                                        y * scale_ + height, 1 };
+                context_->CopySubresourceRegion(picture_planes_[slot].Get(), 0, 0, 0, 0,
+                                                plane_target_.Get(), 0, &box);
+                with_planes = true;
+            }
+        }
         const uint64_t serial = ++picture_serial_;
         pictures.Drawn(slot, serial);
         if (FAILED(context4_->Signal(pictures.fence(), serial))) {
@@ -1680,6 +2017,8 @@ namespace psxemu {
         shared->serial = serial;
         shared->width = static_cast<int>(width);
         shared->height = static_cast<int>(height);
+        shared->planes = with_planes ? chosen.planes : nullptr;
+        shared->planes_id = with_planes ? chosen.planes_id : 0;
         return true;
     }
 

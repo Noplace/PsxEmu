@@ -457,6 +457,8 @@ What it does not measure:
 | `--gpu <name>` | With `--hw-raster`: draw on the graphics card with `<name>` anywhere in its name, any case - what Settings > Video > Graphics Card does (bug 128). The report's `gpu` line names the card. An unknown name is refused with a hint to `--list-gpus` |
 | `--list-gpus` | Print the graphics cards and their LUIDs, and exit. The LUID is spelt as Windows' `\GPU Engine` and `\GPU Process Memory` performance counters spell it, for finding which card a process is really using |
 | `--shared-picture` | With `--scale`: hand the sharper picture over on the graphics card (psx/shared_picture.h, phase 6, bug 127), as to a renderer that can take it there, rather than reading it back - for timing that path. `--ppm` reads the last picture back the way a screenshot does; the report adds how many frames' pictures were shared |
+| `--planes` | With `--hw-raster`: keep the plane beside VRAM that DLSS will use - depth and motion per sub-pixel (Docs/DLSS-Plan.md, phase 1) - and with `--shared-picture` hand it over beside each picture; the report adds how many were. The machine runs exactly as without it, and not a pixel of the picture changes |
+| `--view depth\|motion` | With `--hw-raster` above 1x: the plane shown in place of the picture, as Video > View Depth and View Motion do, so `--ppm` writes it. Depth is brighter nearer, dark blue where there is none; motion's hue is its direction, dim purple where it is not known |
 | `--pgxp-culling` | With `--pgxp`: NCLIP from the unrounded positions too. The one PGXP option the machine can see - a triangle culled or not changes what the game does |
 | `--no-pgxp-textures` | With `--pgxp`: precise positions, textures still affine |
 | `--quiet` | Suppress the per-100-frame progress lines |
@@ -616,7 +618,7 @@ person using it.
 
 ## hw_raster_test
 
-    hw_raster_test [--seed n] [--verbose] [--bisect]
+    hw_raster_test [--seed n] [--scale n] [--planes] [--verbose] [--bisect]
 
 The hardware rasteriser against the software one (Docs/Hardware-Renderer-Plan.md,
 bug 122). Two machines with no BIOS, one drawing with `SoftwareRaster` and one
@@ -644,15 +646,28 @@ fixed seed, and then compares all of VRAM:
   compared with the read-back one; five pictures held make the sixth read back,
   a dropped frame's texture and one the presenter has moved past are drawn into
   again and the one on screen is not, and a picture outlives its rasteriser
+- the plane beside VRAM (Docs/DLSS-Plan.md, phase 1), on one rasteriser at 2x,
+  read back sub-pixel by sub-pixel: none until asked for, then nothing known; a
+  fill still and opaque; a triangle at whole pixels with motion and depth
+  unknown; a precise one at depth 512 giving 256/512 in every sub-pixel, and one
+  sloping away giving one over the depth interpolated in perspective; something
+  translucent keeping the depth under it and saying so; a 15-bit sprite drawn
+  from a picture the game drew carrying that picture's plane, as a blur or a
+  wipe does; the mask check leaving the plane alone where it leaves the pixel;
+  a copy carrying it; an upload
+  forgetting it; handed over beside the shared picture while kept, and shown in
+  its place, not beside it, when only shown; let go and asked for again, it
+  starts over
 
 At native size the two do the same integer arithmetic, so **every pixel must
-match** - 45 checks, two a scene, the lost card's own and six for the shared picture. A scene that does not says how many pixels
+match** - 61 checks, two a scene, the lost card's own, six for the shared picture and sixteen for the plane. A scene that does not says how many pixels
 differ and how many by more than one 5-bit step, which tells rounding from a
 wrong texel. `--bisect` compares after every primitive and stops at the first
 one to differ, printing its GP0 words. `--scale n` draws the hardware side at n
 times the resolution (true colour off): native VRAM is downloaded from each
 console pixel's own sub-pixel, so every scene must still match to the pixel -
-and does, at 1x-6x and 8x (bug 124).
+and does, at 1x-6x and 8x (bug 124). `--planes` keeps the plane beside VRAM
+through every scene, which must change no pixel - and does not, at 1x, 2x and 4x.
 
 No primitive samples a texture from the pixels it is drawing itself: the
 software rasteriser sees its own writes as it goes and the card sees VRAM as it
@@ -726,9 +741,9 @@ copies; and DuckStation's and RetroArch's cheat files, the manual-activation and
 non-GameShark cheats left out, written and read back), `timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is), `host_test` (34 checks, the
-threads and the channels between them - its own section above), and `hw_raster_test` (45
+threads and the channels between them - its own section above), and `hw_raster_test` (61
 checks, bugs 122-123 and 127 - the hardware rasteriser against the software one, every pixel of VRAM
-after each scene of random primitives; its own section above, as is `gpu_test --hw-raster`,
+after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
 which runs gpu_test's 80 through it).
 
 `rec_test` (467 checks) is not counted either, and for a different reason: it

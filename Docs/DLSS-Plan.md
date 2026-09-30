@@ -1,9 +1,20 @@
 # NVIDIA DLSS 4.5 and DLSS 5
 
-**Status: plan (2026-09-29), nothing built. DLSS 4.5 Super Resolution, DLAA and 2x Frame
-Generation are possible on this laptop's RTX 4060 once it is back (it has shown as "Unknown" since
-the 0x9F restart). DLSS 5 is not possible yet: there is no public SDK for it, and it runs on RTX 50
-cards only until an RTX 40 update NVIDIA has promised for "later this fall".**
+**Status: phase 1 done (2026-09-30) - the plane beside VRAM, with depth from PGXP, handed over
+beside each shared picture and shown by Video > View Depth and View Motion; the machine runs
+exactly as without it. Phase 2, motion vectors, next. DLSS 4.5 Super Resolution, DLAA and 2x
+Frame Generation are possible on this laptop's RTX 4060 once it is back (it has shown as "Unknown"
+since the 0x9F restart). DLSS 5 is not possible yet: there is no public SDK for it, and it runs on
+RTX 50 cards only until an RTX 40 update NVIDIA has promised for "later this fall".**
+
+**Decided 2026-09-29:**
+
+- **Scope:** Super Resolution and DLAA, then Frame Generation.
+- **DLLs:** NVIDIA's DLLs ship beside the executable, once phase 0 confirms the licence allows it.
+- **FSR:** left for later.
+- **Pacing:** the machine's own frame limiter keeps pacing.
+- **RTX 50 modes:** shown in the menu, untested.
+- **DLSS 5:** an enhancement, like PGXP, once its gate opens.
 
 DLSS is not a filter over a finished picture. Every version since 2.0 is *temporal*: it rebuilds each
 frame from the last ones, and to do that it needs to know, for every pixel, how far away it is and
@@ -30,10 +41,12 @@ work on the machine's side, not on NVIDIA's.
 - **The machine never sees any of it**, the rule PGXP follows: with DLSS's inputs on, every disc runs
   the same instructions and reads the same sectors. Jitter gives up the exact sub-pixel, as true
   colour and PGXP already do.
-- **DLSS 5 is gated, not planned.** Streamline 2.14.1's public headers name a `kFeatureDLSS_NR` and
-  two "uplift" colour buffers and nothing else: no options header, no plugin, no guide. Nothing
-  DLSS 5-specific gets built until NVIDIA publishes those and ships RTX 40 support. What it is known
-  to take - colour and motion vectors - comes from the DLSS 4.5 phases anyway.
+- **All of it is an enhancement**, like upscaling and PGXP: the emulator has two goals, accuracy and
+  enhancement, and DLSS is off whenever accuracy is what is asked for.
+- **DLSS 5 is gated.** Streamline 2.14.1's public headers name a `kFeatureDLSS_NR` and two "uplift"
+  colour buffers and nothing else: no options header, no plugin, no guide. Nothing DLSS 5-specific
+  gets built until NVIDIA publishes those and ships RTX 40 support. What it is known to take -
+  colour and motion vectors - comes from the DLSS 4.5 phases anyway.
 - **Size:** roughly 12-17 sessions to Frame Generation; the motion vectors are about a third of it
   and the one part whose outcome is not certain.
 
@@ -95,20 +108,22 @@ The planes must be VRAM-shaped, not screen-shaped: a game draws its next frame i
 showing the other, and what DLSS gets with a picture must be what was drawn into *that* buffer.
 
 - **One more target in the rasteriser, the size of upscaled VRAM, RGBA16F**: motion (x, y, in
-  sub-pixels) in RG, depth in B, flags in A - motion unknown, translucent. Written by the same draws
-  as a second render target.
+  sub-pixels) in RG, with a value of its own for "not known"; depth in B; in A whether the last
+  thing drawn was opaque or translucent. Written by the same draws as a second render target.
 - **Per kind of job:**
   - triangles write it; a precise one's depth from `w`, anything else's depth unknown (far)
-  - translucent pixels leave what is under them and set the translucent flag - a blend state on the
-    second target alone, since the colour target does its own blending in the shader
+  - translucent pixels leave what is under them and say so in A - a blend state on the second
+    target alone, since the colour target does its own blending in the shader
   - mask-rejected pixels are discarded, from both
   - rectangles and lines take their motion from sprite matching (below), depth far
-  - fills write zero motion, far, no flags
+  - fills write zero motion, far, opaque
   - VRAM-to-VRAM copies carry the plane along; a copy onto itself (phase 3's CPU path) clears it
-  - uploads write zero motion, far, and "unknown"
+  - 15-bit texels carry theirs too (as built: a game drawing its own picture back onto the
+    screen), the primitive's own depth first
+  - uploads write "not known" and far
 - **`ResolveDisplay` copies the displayed area of the plane** into a second shared texture in the
-  picture's slot, same serial. `SharedPicture` gains its handle, the picture's jitter and two flags:
-  *new picture* and *reset*.
+  picture's slot, same serial. `SharedPicture` gains its handle (phase 1); the picture's jitter and
+  two flags - *new picture* and *reset* - come with phases 2 and 3.
 - **Not machine state.** Native VRAM, downloads and save states are untouched; a loaded state starts
   a new history.
 
@@ -192,9 +207,15 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
     pads are read
   - on the video thread: render submit and present, start and end
   - frame ids: the pictures' serials
-- **Pacing.** Reflex expects to own the frame rate (`slReflexSleep`, `frameLimitUs`). With Frame
-  Generation on, the machine's limiter would hand over to Reflex's at the console's own rate. Any
-  speed but 100% turns Frame Generation off.
+- **Pacing stays the machine's.** Its limiter keeps the console's rate, as now. Reflex is there
+  because Frame Generation requires it:
+  - its markers are always set
+  - `slReflexSleep` is called at each frame's start, as NVIDIA requires, but with no frame limit
+    (`frameLimitUs` 0), so it never sets the rate
+  - its low-latency mode is off at first; turning it on beside our limiter is measured in phase 5
+    before it is offered
+
+  Any speed but 100% turns Frame Generation off.
 - **Our overlay is the UI layer.** It draws into its own target, premultiplied, tagged as UI colour
   and alpha. The screen before it is the HUD-less picture. A menu or glass window over the picture
   turns generation off, with its resources kept.
@@ -203,8 +224,8 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 - **Latency**: about one picture more, 33 ms for a 30 fps game. A per-game setting.
 - **Requirements the menu checks**: hardware-accelerated GPU scheduling on, Windows 10 2004 or later,
   v-sync interval 0 or 1.
-- **RTX 50's 3x-6x and Dynamic**: offered from `numFramesToGenerateMax`, but not testable on this
-  machine.
+- **RTX 50's 3x-6x and Dynamic** are in the menu whenever the card reports them
+  (`numFramesToGenerateMax`), marked untested, since no card here can run them.
 
 ### DLSS 5
 
@@ -228,10 +249,10 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 - **Normals** would come from the depth plane's slopes, since most games keep none that reach the
   GPU.
 - **An engine mask** would keep 2D, text and films out of it.
-- **Opt-in only**: off by default, never a per-game default, and screenshots taken with it on say so.
-  It invents detail the game does not have, which is the opposite of what the rest of this emulator
-  checks for, and at the PlayStation's polygon counts it will reinterpret more than it does in a
-  modern game.
+- **An enhancement, like PGXP**: off by default and off whenever accuracy is asked for. The machine
+  never sees it. It invents detail the game does not have, and at the PlayStation's polygon counts
+  it will reinterpret more than it does in a modern game, so its intensity controls and masks
+  matter more here than in NBA 2K27.
 
 **The gate:**
 
@@ -244,7 +265,7 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 - **Settings > Video > NVIDIA DLSS**:
   - Off, DLAA, Quality, Balanced, Performance, Ultra Performance
   - Preset: Auto, K, L, M
-  - Frame Generation: Off, 2x, and 3x, 4x and Dynamic on RTX 50
+  - Frame Generation: Off, 2x, and on RTX 50 3x-6x and Dynamic, marked untested
 - **Greyed with the reason**: not Direct3D 12, not an NVIDIA card, the software rasteriser, GPU
   scheduling off, the DLLs missing.
 - **Per game**: `dlss_mode`, `dlss_frame_generation`.
@@ -257,16 +278,131 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 
 | # | What | Done when | Card | Rough size |
 |---|---|---|---|---|
-| 0 | The SDK read, the licence decided, `sl_probe` (one run: each card's LUID, `slIsFeatureSupported` for DLSS and Frame Generation, GPU scheduling, driver) | the 4060 back and reporting both features | 4060, once | 1 |
-| 1 | The plane beside VRAM: second target, the rules per kind of job, carried in the shared picture, depth from `w`, View Depth, `--ppm-depth`; zero motion | the twelve-disc table's instruction and sector counts identical with it on; all harnesses green; depth reviewed on five discs | Radeon, WARP | 2 |
+| 0 | The SDK read, the licence confirmed for shipping the DLLs, `sl_probe` (one run: each card's LUID, `slIsFeatureSupported` for DLSS and Frame Generation, GPU scheduling, driver) | the 4060 back and reporting both features | 4060, once | 1 |
+| 1 (**done**) | The plane beside VRAM: second target, the rules per kind of job, carried in the shared picture, depth from `w`, View Depth, `--ppm-depth`; zero motion | the twelve-disc table's instruction and sector counts identical with it on; all harnesses green; depth reviewed on five discs | Radeon, WARP | 2 |
 | 2 | Motion vectors: picture boundaries, the GTE's two tables, the identity keys measured, sprite matching, flags, resets, `--motion`, the warp check | the warp check beats zero motion on every 3D disc of the 26; the keys chosen by numbers | Radeon, WARP | 3-5 |
 | 3 | Jitter | the table identical in the machine's terms; the warp check unchanged with the jitter taken out | Radeon, WARP | 1-2 |
 | 4 | Super Resolution and DLAA in the Direct3D 12 renderer through Streamline; the menus; per-game keys | pictures reviewed at the table's checkpoints; ghosting no worse than without on the 26 discs; the cost measured | 4060 | 2-3 |
-| 5 | Frame Generation: the swap chain, Reflex on both threads, new-picture presents, the overlay as UI, pacing | 30 to 60 and 60 to 120 even (PresentMon); latency measured (Reflex's own stats); the overlay clean | 4060 | 3-4 |
+| 5 | Frame Generation: the swap chain, Reflex on both threads, new-picture presents, the overlay as UI, our pacing kept; the RTX 50 modes in the menu | 30 to 60 and 60 to 120 even (PresentMon); latency measured (Reflex's own stats); the overlay clean | 4060 | 3-4 |
 | 6 | DLSS 5 | the gate above | RTX 50, or RTX 40 after its update | unknown |
 
 A usable feature is the end of phase 4. Phases 1-3 are worth having without it: View Motion and the
 warp check are the first tools here that can tell whether a game's picture moves smoothly.
+
+### Phase 1, as built
+
+**The plane.**
+
+- **`psx/shared_picture.h`** says what it holds: RGBA16F, VRAM's layout, one texel per sub-pixel:
+  - R, G: motion in sub-pixels, `kUnknownMotion` (32768) where it is not known
+  - B: `kPlaneDepthScale` (256) over PGXP's depth, 0 where there is none, which reads as
+    infinitely far
+  - A: 1 where the last thing drawn was opaque, 0 where it was translucent
+
+  `SharedPicture` gains `planes` and `planes_id`, the same area of it beside the picture.
+- **`RasterBackend::SetPlanes(keep, view)`** keeps the plane and shows it or not (`PlaneView`:
+  picture, depth, motion). **`Gpu::SetPlanes`** remembers the request across boots and changes of
+  rasteriser, and `Machine::set_plane_view` is the front end's way in. Nothing to the software
+  rasteriser.
+- **Made the first time it is asked for, and kept.** Its target, its read copy - 256 MB each at 8x -
+  and a blend state that treats the two targets differently, which needs feature level 10.1. A card
+  that cannot give them keeps nothing, and the picture is shown as ever.
+- **`PsDraw` and `PsCopy` are compiled twice.** With the plane not kept, the shaders are phase 6's
+  exactly.
+
+**What each draw leaves in it.** Draws write it as a second target:
+
+- **Depth:** 1/w interpolated with the screen's weights, where PGXP gave every vertex a depth.
+- **Fills:** still, opaque, no depth.
+- **Motion:** nothing else's is known yet (phase 2).
+- **Translucent pixels** leave what was under them: the plane's target is blended by its own
+  alpha, and that alpha is stored, saying so.
+- **The mask check** discards both targets.
+- **Copies** carry the plane. **So do 15-bit texels**, with the primitive's own depth first where
+  it has one, because a 15-bit texture is how a game draws a picture it drew itself back onto the
+  screen.
+- **Uploads** forget it, with `ClearView`. So do state loads and copies onto themselves, which go
+  through native VRAM.
+- **The read copy** is made current tile by tile with VRAM's, since whatever draws into a tile
+  draws into both.
+
+**Handing it over and showing it.**
+
+- **Handed over:** `ShareDisplay` copies the displayed area of the plane into a shared texture
+  beside the picture, before the fence, so the presenter's one wait covers both. Only while it is
+  kept, not while it is only shown. A picture that is read back carries none.
+- **Video > View Depth and View Motion** show the plane in place of the picture (`PsDisplayDepth`,
+  `PsDisplayMotion`), one at a time. They are greyed unless the hardware rasteriser draws above 1x,
+  the only picture they can replace, and not saved.
+  - Depth is brighter nearer, on a logarithmic scale from about 100 to 100,000 GTE units. It is
+    dark blue where there is none, and reddened where the last draw was translucent.
+  - Motion's hue is its direction and its brightness how far. Dim purple is not known.
+- **`boot_runner --planes`, `--view depth|motion`.** The report counts pictures handed over with the
+  plane. `--view` with `--ppm` is the plan's `--ppm-depth`.
+- **`hw_raster_test`**: a scene of sixteen checks on the plane's rules, read back sub-pixel by
+  sub-pixel (`D3D11Raster::ReadPlanes`), and `--planes` to keep it through every other scene.
+
+**Found on the way.** Metal Gear Solid's in-engine intro showed no depth at all, with 88% of its
+vertices precise. It draws its frame somewhere else in VRAM and puts it on the screen as 15-bit
+sprites, blurring it, and a sprite wrote "not known" over everything. Carrying the plane with
+15-bit texels, as copies already did, fixed it: its walls and arches have their depth, reddened
+because the blur is drawn translucent over them.
+
+**Verified:**
+
+- **`hw_raster_test`: 61 checks** - 45 as before and sixteen for the plane - every one passing
+  plain, and with the plane kept through every scene at 1x, 2x and 4x. Keeping it changes no pixel
+  of VRAM.
+- **The twelve-disc table on the Radeon, with and without `--planes`** (`--scale 2 --pgxp
+  --shared-picture`): every line of every report the same on all twelve discs - instructions,
+  checkpoints, sectors, GP0 words, interrupts. The only lines left out are the wall-clock speed
+  and the rasteriser thread's count of barriers waited, which varies run to run anyway. Run again
+  with the final build, the same. Between 582 and 2,879 of each disc's 3,000 pictures went over
+  with the plane beside them.
+- **At 4x with the console's colours** (`--no-true-color --shared-picture --planes`): 35 of the
+  table's 36 checkpoints are the recorded software table's.
+  - The 36th is Ridge Racer at frame 3000: `f8a515e892619e84`, where the table says
+    `fc77d928fb3c4159`.
+  - The software rasteriser gives the same, and so does a build of the last commit (6d89f81)
+    without any of this, with the same instructions and sectors. The table's entry was already out
+    of date, and is left to be explained on its own.
+- **Every harness green**, with the counts Test-Suite records. `gpu_test --hw-raster` 80.
+- **The front end:** a scratch copy on the Radeon, Direct3D 12 at 4x.
+  - View Depth and View Motion are enabled there, each ticks and turns the other off, and a second
+    choice turns it off.
+  - 59.3 fps throughout, and it closes cleanly.
+- **Depth, reviewed by eye:**
+  - **Ridge Racer**, frame 3000:
+    - the road brightest near and fading smoothly into the distance
+    - buildings, hills and palms each at their own depth
+    - the sky, drawn without the GTE, with none
+    - the car's lights translucent
+  - **Spyro 3**, frame 4500: scenery, castle and egg have depth. Spyro himself and some of the
+    ground have none - only 58% of vertices were precise by then, the rest ones PGXP does not
+    follow.
+  - **Crash 3**, frame 4500: black in colour, mid-fade, and the plane shows the 3D title logo under
+    a translucent full-screen fade - the rule for translucency, seen whole.
+  - **Metal Gear Solid**, frame 9000: above.
+  - **Tekken 3** was in films at the frames tried, which are shown at native size and have no
+    plane.
+- **Speed**, Ridge Racer 3,000 frames on the Radeon, with the app's own path (`--pgxp
+  --shared-picture --shown-only`), one run at a time:
+
+  | Scale | Plane off | Plane on |
+  |---|---|---|
+  | 4x | 1.69x-1.70x real time | 1.69x |
+  | 6x | 1.66x | 1.44x |
+  | 8x | 1.59x | 1.01x |
+
+  Refreshing its read copy costs nothing measurable (8x without it: 1.00x). The cost is writing
+  eight more bytes a sub-pixel through a blend, on an integrated card's shared memory. DLSS on this
+  laptop's 2560x1600 screen would not draw above 6x anyway, and the RTX 4060 has memory of its own.
+  If it matters there, batches of primitives that cannot blend could write the plane without
+  reading it.
+
+**What it shows for phase 2:** depth is only where PGXP followed every vertex of a polygon. Spyro
+himself is the plainest case. Motion will ride on the same tracking, so the vertices phase 2 teaches
+PGXP to follow - halfword stores, most likely - are depth gained as well.
 
 ---
 
@@ -287,7 +423,7 @@ warp check are the first tools here that can tell whether a game's picture moves
 
 ---
 
-## Risks, and the decisions that are yours
+## Risks, and the decisions taken
 
 - **Motion vectors are heuristic.** Wrong ones smear worse than none, which is why unknown stays
   unknown and why phase 2 is scored before anything is shown. Some games will be better with DLSS
@@ -300,12 +436,11 @@ warp check are the first tools here that can tell whether a game's picture moves
 - **The hybrid laptop**: the renderer on the 4060 presents to a screen on the Radeon. Pacing under
   Frame Generation is measured, not assumed.
 
-**Decisions:**
+**Decided 2026-09-29:**
 
-1. **Scope**: Super Resolution and DLAA only, or Frame Generation too. Recommended: both, in that
-   order - Frame Generation is the one thing DLSS gives here that nothing else can (smooth 60 from a
-   30 fps game), and DLAA alone barely beats drawing at 8x.
-2. **The licence.** NVIDIA's RTX SDK licence:
+1. **Scope: both.** Super Resolution and DLAA first, then Frame Generation. Frame Generation is the
+   one thing DLSS gives here that nothing else can: smooth 60 from a 30 fps game.
+2. **The licence: ship the DLLs, if the licence allows it.** NVIDIA's RTX SDK licence:
    - forbids using the SDK "in any manner that would cause it to become subject to an open source
      software license" (4(e))
    - requires NVIDIA's marks in the About box and the notice "This software contains source code
@@ -314,16 +449,15 @@ warp check are the first tools here that can tell whether a game's picture moves
    - forbids modifying the binaries
 
    This project is MIT, which is not copyleft, so shipping NVIDIA's DLLs beside it under NVIDIA's own
-   terms is the usual reading. Whether that holds, and whether the binaries live in the repository
-   or are fetched, is yours.
-3. **FSR on the same inputs.** AMD's FSR 3.1 (MIT) takes the same colour, depth, motion and jitter
-   and runs on the Radeon. Either a test stand-in for DLSS while the 4060 is away, or a shipped
-   option for every card. Recommended: at least the first.
-4. **Pacing under Frame Generation**: Reflex's limiter at the console's rate, or ours kept and
-   Reflex's sleep left idle. Recommended: Reflex's, as NVIDIA intends; measured in phase 5.
-5. **RTX 50 modes offered untested, or hidden** until someone can try them.
-6. **DLSS 5**: whether a mode that invents detail belongs in PSXEmu at all. It is gated either way;
-   this is about whether to build it once the gate opens.
+   terms should be allowed. Phase 0 reads the licence in full to confirm that before anything ships.
+   Still open: whether the binaries live in the repository or are fetched.
+3. **FSR: later.** AMD's FSR 3.1 (MIT) takes the same colour, depth, motion and jitter and would
+   run on the Radeon. Not planned now.
+4. **Pacing: ours.** The machine's limiter keeps the console's rate under Frame Generation. Reflex
+   is integrated only as far as Frame Generation requires: markers, and a sleep with no limit.
+5. **RTX 50 modes: shown**, marked untested.
+6. **DLSS 5: an enhancement.** PSXEmu has two goals - accuracy, and enhancement such as upscaling
+   and PGXP. DLSS 5 belongs to the second, like all of DLSS, and gets built once its gate opens.
 
 ---
 

@@ -20,6 +20,7 @@
 #include "host/sample_ring.h"
 #include "platform/frame_limiter.h"
 #include "platform/speed_resampler.h"
+#include "psx/raster.h"
 
 #include <atomic>
 #include <chrono>
@@ -144,6 +145,10 @@ class Machine {
 
   // Video > View VRAM: ship the whole of VRAM instead of the display.
   void set_view_vram(bool on) { view_vram_ = on; }
+
+  // Video > View Depth and View Motion: the plane beside VRAM that DLSS will use, shown in
+  // place of the picture (Docs/DLSS-Plan.md) - by the hardware rasteriser, above 1x.
+  void set_plane_view(psx::PlaneView view);
 
   // Instructions stepped since the thread started. The machine's thread, or
   // anyone once Stop has returned.

@@ -435,6 +435,10 @@ namespace psxemu {
         // Video > View VRAM: the machine ships all of VRAM instead of the display area. Not
         // persisted - always starts off.
         bool view_vram_ = false;
+        // Video > View Depth and View Motion: 0 neither, 1 depth, 2 motion - the plane beside
+        // VRAM in place of the picture (Docs/DLSS-Plan.md). Not persisted either.
+        int plane_view_ = 0;
+        void SetPlaneView(int view);
 
         // The BIOS in use, as a full path, and the images the last scan found. bios_path_ is what
         // the *next* cold boot will use, which is not necessarily what the running machine was

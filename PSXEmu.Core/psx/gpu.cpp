@@ -164,6 +164,16 @@ namespace emulation {
             picture_scale_ = 1;   // until the new one resolves a frame
             shared_picture_ = SharedPicture();
             PushWatch();
+            backend_->SetPlanes(planes_keep_, plane_view_);
+        }
+
+        void Gpu::SetPlanes(bool keep, PlaneView view) {
+            planes_keep_ = keep;
+            plane_view_ = view;
+            if (!backend_)
+                return;   // not initialised; ChooseRasteriser will hand them over
+            SyncRaster();
+            backend_->SetPlanes(keep, view);
         }
 
         // A rasteriser that can no longer draw - the graphics card reset, or went - is replaced

@@ -649,6 +649,8 @@ namespace psxemu {
                                config_.true_color);
             TickPgxp(window_, drawing_hardware_, config_.pgxp_vertices, config_.pgxp_textures,
                      config_.pgxp_culling);
+            TickPlaneView(window_, plane_view_,
+                          drawing_hardware_ && config_.resolution_scale > 1);
             if (video_ != nullptr) {
                 uint64_t presents = 0;
                 double total_ms = 0.0;
@@ -1219,6 +1221,18 @@ namespace psxemu {
         Notify(OverlayIcon::kScreen, ToastKind::kInfo, done);
     }
 
+    // Video > View Depth and View Motion, one at a time or neither: the hardware rasteriser shows
+    // the plane beside VRAM - what DLSS will be told about each pixel - in place of the picture.
+    // The machine keeps it across boots and changes of rasteriser; above 1x only.
+    void App::SetPlaneView(int view) {
+        plane_view_ = view;
+        TickPlaneView(window_, plane_view_, drawing_hardware_ && config_.resolution_scale > 1);
+        const emulation::psx::PlaneView shown = view == 1   ? emulation::psx::PlaneView::kDepth
+                                                : view == 2 ? emulation::psx::PlaneView::kMotion
+                                                            : emulation::psx::PlaneView::kPicture;
+        PostToMachine([shown](Machine& machine) { machine.set_plane_view(shown); });
+    }
+
     void App::RemakeRasteriser(const std::wstring& done) {
         SaveSettingsIfChanged();
         SendConfigToMachine();
@@ -1347,6 +1361,7 @@ namespace psxemu {
         TickRasteriser(window_, hardware, config_.resolution_scale, config_.true_color);
         TickPgxp(window_, hardware, config_.pgxp_vertices, config_.pgxp_textures,
                  config_.pgxp_culling);
+        TickPlaneView(window_, plane_view_, hardware && config_.resolution_scale > 1);
         if (!error.empty())
             Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"Hardware rasteriser unavailable",
                    Wide(error) + L" - drawing in software");
@@ -3192,6 +3207,14 @@ namespace psxemu {
                 PostToMachine([on](Machine& machine) { machine.set_view_vram(on); });
                 break;
             }
+
+            case kCommandViewDepth:
+                SetPlaneView(plane_view_ == 1 ? 0 : 1);
+                break;
+
+            case kCommandViewMotion:
+                SetPlaneView(plane_view_ == 2 ? 0 : 2);
+                break;
 
             case kCommandFrameLimiter:
                 SetFrameLimiter(!config_.frame_limiter);

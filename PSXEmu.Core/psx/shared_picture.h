@@ -28,6 +28,20 @@ namespace psx {
 inline constexpr int kSharedTextureCount = 8;
 inline constexpr size_t kMaxOpenedPictures = 2 * kSharedTextureCount;
 
+// The plane beside VRAM (Docs/DLSS-Plan.md): what DLSS needs to know about each pixel that the
+// picture does not say. RGBA16F, one texel per sub-pixel, in VRAM's layout - a game draws its
+// next frame into one buffer while showing another, and what goes with a picture has to be what
+// was drawn into that buffer.
+//
+//   R, G  where it was in the last picture minus where it is now, in sub-pixels; both
+//         kUnknownMotion where that is not known
+//   B     kPlaneDepthScale over the depth PGXP projected it from, GTE units: nearer is larger,
+//         and 0 is unknown, which reads as infinitely far
+//   A     1 where the last thing drawn over it was opaque, 0 where it was translucent - which
+//         leaves R, G and B as they were underneath
+inline constexpr float kUnknownMotion = 32768.0f;
+inline constexpr float kPlaneDepthScale = 256.0f;
+
 // The rasteriser's side of its pictures: what a presenter waits on and gives back. It lives as
 // long as any frame refers to it - past the rasteriser that made it, whose textures a frame
 // still in flight can still be drawn from. Every call is safe from any thread.
@@ -74,6 +88,11 @@ struct SharedPicture {
   uint64_t serial = 0;   // which picture this is, counting up
   int width = 0;
   int height = 0;
+  // The plane beside the picture, when the rasteriser keeps one: the same display area of it,
+  // width x height, RGBA16F as above, by an NT handle like `texture`'s; null when it keeps none.
+  // Drawn with the picture, so the same fence says both are ready.
+  void* planes = nullptr;
+  uint64_t planes_id = 0;
 
   explicit operator bool() const { return source != nullptr; }
 };

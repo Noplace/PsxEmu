@@ -228,6 +228,10 @@ void Machine::RunOneFrame() {
   frame_instructions_ = 0;
 }
 
+void Machine::set_plane_view(psx::PlaneView view) {
+  system_->gpu().SetPlanes(false, view);
+}
+
 // The frame is resolved at the start of vblank, which is exactly when
 // RunOneFrame returns - so this copies a finished picture, never a half-drawn
 // one. About a tenth of a millisecond for 640x480.

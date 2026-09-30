@@ -106,6 +106,10 @@ class Gpu : public GpuCore {
   void ChooseRasteriser();
   // Carries on with the software rasteriser when the hardware one says it is lost.
   void FallBackToSoftware(const char* reason);
+  // Keeps the plane beside VRAM that DLSS needs, and shows it in place of the picture or not
+  // (psx/shared_picture.h, Docs/DLSS-Plan.md). The hardware rasteriser's alone, and kept across a
+  // change of rasteriser; nothing the machine sees changes. Machine thread, between frames.
+  void SetPlanes(bool keep, PlaneView view);
 
   // Whether the hardware rasteriser is drawing, and if it was asked for but is
   // not, why not. Settled by ChooseRasteriser.
@@ -495,6 +499,9 @@ class Gpu : public GpuCore {
   SharedPicture shared_picture_;
   int picture_scale_ = 1;
   bool native_picture_ = true;
+  // SetPlanes', handed to each rasteriser as it is made.
+  bool planes_keep_ = false;
+  PlaneView plane_view_ = PlaneView::kPicture;
 
   // Adds the backend's counters into stats_ and clears them. The caller holds
   // jobs_mutex_.

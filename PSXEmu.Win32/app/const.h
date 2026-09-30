@@ -150,6 +150,10 @@ namespace psxemu {
         kCommandGraphicsCardAutomatic,
         kCommandGraphicsCardFirst,
         kCommandGraphicsCardLast = kCommandGraphicsCardFirst + 7,   // kMaxGraphicsCards
+        // Video > View Depth and View Motion: the plane beside VRAM that DLSS will use, shown in
+        // place of the picture (Docs/DLSS-Plan.md).
+        kCommandViewDepth,
+        kCommandViewMotion,
     };
 
     // ---------------------------------------------------------------------------------------------

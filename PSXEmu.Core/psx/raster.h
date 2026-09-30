@@ -113,6 +113,10 @@ namespace psx {
     uint32_t watch_writers[256];
   };
 
+  // What is shown of the plane beside VRAM (psx/shared_picture.h), in place of the picture:
+  // nothing, its depth, or its motion. Video > View Depth and View Motion.
+  enum class PlaneView { kPicture, kDepth, kMotion };
+
   // A VRAM rectangle whose writes are counted against the command making them - see
   // `Gpu::WatchVram`. Empty when `w` is zero.
   struct RasterWatch {
@@ -158,6 +162,11 @@ namespace psx {
       (void)x; (void)y; (void)w; (void)h; (void)picture; (void)shared; (void)scale;
       return false;
     }
+
+    // Keeps the plane beside VRAM or not (psx/shared_picture.h, Docs/DLSS-Plan.md), and shows it
+    // in place of the picture or not - which keeps it too. Nothing to the software rasteriser.
+    // What the machine sees is the same either way: the plane is never read back.
+    virtual void SetPlanes(bool keep, PlaneView view) { (void)keep; (void)view; }
 
     // The counters since the last call, which `Gpu` merges into its stats and clears.
     virtual RasterCounters& counters() = 0;

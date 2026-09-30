@@ -15,10 +15,13 @@
 // rasteriser sees its own writes as it goes, the card sees VRAM as it was before, and the console
 // has a texture cache - there is no right answer to compare against (RandomTexture).
 //
-//   hw_raster_test [--seed n] [--scale n] [--verbose] [--bisect]
+//   hw_raster_test [--seed n] [--scale n] [--planes] [--verbose] [--bisect]
 //
 // --scale draws the hardware side at n times the resolution, without true colour. Native VRAM
 // is taken from each console pixel's own sub-pixel, so it must still match to the pixel.
+//
+// --planes keeps the plane beside VRAM that DLSS will use (Docs/DLSS-Plan.md) while every scene
+// draws, which must change no pixel. The plane's own rules are a scene of their own either way.
 //
 // --bisect compares after every primitive and stops a scene at the first one to differ, printing
 // its GP0 words.
@@ -497,9 +500,228 @@ void SceneSharedPicture(Random& random) {
         "a picture outlives the rasteriser that drew it");
 }
 
+// ---- The plane beside VRAM (Docs/DLSS-Plan.md, phase 1) -----------------------------------------
+
+using emulation::psx::DrawJob;
+using emulation::psx::PlaneView;
+using emulation::psx::kUnknownMotion;
+
+DrawJob Job(DrawJob::Kind kind) {
+  DrawJob job = {};
+  job.kind = kind;
+  job.env.area_right = 1023;
+  job.env.area_bottom = 511;
+  return job;
+}
+
+emulation::psx::RasterVertex Corner(int32_t x, int32_t y) {
+  emulation::psx::RasterVertex v;
+  v.x = x;
+  v.y = y;
+  v.r = v.g = v.b = 128;
+  v.u = v.v = 0;
+  return v;
+}
+
+// PGXP's: drawn at (fx, fy), projected from depth w.
+emulation::psx::RasterVertex Precise(float fx, float fy, float w) {
+  emulation::psx::RasterVertex v = Corner(static_cast<int32_t>(fx + 0.5f),
+                                          static_cast<int32_t>(fy + 0.5f));
+  v.precise = true;
+  v.fx = fx;
+  v.fy = fy;
+  v.w = w;
+  return v;
+}
+
+struct PlaneTexel {
+  float r, g, b, a;
+};
+
+// Console pixel (x, y)'s own sub-pixel of the plane - and whether all its sub-pixels agree.
+PlaneTexel PlaneAt(psxemu::D3D11Raster& raster, uint32_t x, uint32_t y, bool* uniform = nullptr) {
+  std::vector<float> rgba;
+  PlaneTexel texel = { -1.0f, -1.0f, -1.0f, -1.0f };
+  if (!raster.ReadPlanes(x, y, 1, 1, &rgba))
+    return texel;
+  texel = { rgba[0], rgba[1], rgba[2], rgba[3] };
+  if (uniform != nullptr) {
+    *uniform = true;
+    for (size_t i = 4; i < rgba.size(); ++i)
+      *uniform = *uniform && rgba[i] == rgba[i % 4];
+  }
+  return texel;
+}
+
+bool Unknown(const PlaneTexel& t) {
+  return t.r == kUnknownMotion && t.g == kUnknownMotion && t.b == 0.0f && t.a == 1.0f;
+}
+
+bool Near(float value, float expected) {
+  return value > expected - 0.002f && value < expected + 0.002f;
+}
+
+// Each rule the plane follows, on one rasteriser at 2x with it kept: what a fill, a triangle, a
+// precise one, something translucent, the mask check, an upload and a copy each leave in it, and
+// the plane handed over beside a shared picture.
+void ScenePlanes() {
+  printf("the plane beside VRAM\n");
+  std::vector<uint16_t> vram(1024 * 512, 0);
+  emulation::psx::RasterOptions options;
+  options.scale = 2;
+  options.shared_picture = true;
+  std::string error;
+  std::unique_ptr<psxemu::D3D11Raster> raster =
+      psxemu::D3D11Raster::Create(vram.data(), options, true, &error);
+  if (!raster) {
+    Check(false, "WARP makes a rasteriser at 2x: " + error);
+    return;
+  }
+  raster->Written(0, 0, 1024, 512);
+  std::vector<float> unused;
+  Check(!raster->ReadPlanes(0, 0, 1, 1, &unused), "no plane until one is asked for");
+  raster->SetPlanes(true, PlaneView::kPicture);
+  Check(raster->planes() && Unknown(PlaneAt(*raster, 5, 5)),
+        "asked for, the plane starts out not knowing anything");
+
+  // A fill: a background standing still.
+  DrawJob fill = Job(DrawJob::kFill);
+  fill.x = 100;
+  fill.y = 100;
+  fill.w = 200;
+  fill.h = 100;
+  fill.fill_colour = 0x1234;
+  raster->Apply(fill);
+  const PlaneTexel still = PlaneAt(*raster, 250, 150);
+  Check(still.r == 0.0f && still.g == 0.0f && still.b == 0.0f && still.a == 1.0f,
+        "a fill: no motion, no depth, opaque");
+
+  // A triangle at whole pixels: its motion not known, and no depth.
+  DrawJob triangle = Job(DrawJob::kTriangle);
+  triangle.v[0] = Corner(110, 110);
+  triangle.v[1] = Corner(180, 110);
+  triangle.v[2] = Corner(110, 180);
+  raster->Apply(triangle);
+  Check(Unknown(PlaneAt(*raster, 120, 120)), "a triangle at whole pixels: motion and depth unknown");
+  const PlaneTexel beside = PlaneAt(*raster, 250, 150);
+  Check(beside.r == 0.0f && beside.a == 1.0f, "and the fill beside it untouched");
+
+  // A precise one at one depth: 256 / 512 all over.
+  DrawJob flat = Job(DrawJob::kTriangle);
+  flat.v[0] = Precise(200.25f, 105.5f, 512.0f);
+  flat.v[1] = Precise(290.75f, 105.5f, 512.0f);
+  flat.v[2] = Precise(200.25f, 190.0f, 512.0f);
+  raster->Apply(flat);
+  bool uniform = false;
+  const PlaneTexel level = PlaneAt(*raster, 210, 115, &uniform);
+  Check(level.b == 0.5f && level.a == 1.0f && level.r == kUnknownMotion && uniform,
+        "a precise triangle at depth 512: 256/512 in every sub-pixel");
+
+  // A precise one sloping away: one over the depth interpolated across the screen. At (420, 130)
+  // the corners weigh 0.5, 0.2 and 0.3.
+  DrawJob slope = Job(DrawJob::kTriangle);
+  slope.v[0] = Precise(400.0f, 100.0f, 200.0f);
+  slope.v[1] = Precise(500.0f, 100.0f, 800.0f);
+  slope.v[2] = Precise(400.0f, 200.0f, 400.0f);
+  raster->Apply(slope);
+  const float expected = 256.0f * (0.5f / 200.0f + 0.2f / 800.0f + 0.3f / 400.0f);
+  Check(Near(PlaneAt(*raster, 420, 130).b, expected),
+        "sloping away: depth in perspective, " + std::to_string(expected));
+
+  // Something translucent over the level one: what was under it stays, and it says so.
+  DrawJob glass = Job(DrawJob::kTriangle);
+  glass.v[0] = Corner(205, 110);
+  glass.v[1] = Corner(260, 110);
+  glass.v[2] = Corner(205, 150);
+  glass.state.semi_transparent = true;
+  raster->Apply(glass);
+  const PlaneTexel under = PlaneAt(*raster, 210, 115);
+  Check(under.b == 0.5f && under.a == 0.0f,
+        "translucent: the depth under it kept, alpha 0");
+
+  // A picture the game drew, drawn back as a 15-bit sprite - a blur, a wipe: its plane comes
+  // along with its texels. Texel (210, 115), under the translucent one, drawn at (300, 300).
+  DrawJob sprite = Job(DrawJob::kRectangle);
+  sprite.x = 300;
+  sprite.y = 300;
+  sprite.w = 16;
+  sprite.h = 16;
+  sprite.r = sprite.g = sprite.b = 128;
+  sprite.state.textured = true;
+  sprite.state.raw_texture = true;
+  sprite.state.texpage_colors = 2;
+  sprite.state.texpage_x = 192;
+  sprite.state.texpage_y = 0;
+  sprite.base_u = 210 - 192;
+  sprite.base_v = 115;
+  raster->Apply(sprite);
+  const PlaneTexel blitted = PlaneAt(*raster, 300, 300);
+  Check(blitted.b == 0.5f && blitted.a == 1.0f && blitted.r == kUnknownMotion,
+        "a 15-bit sprite carries the plane of the texels it draws");
+
+  // The mask: a precise triangle setting it, then one checking it, which draws nothing there.
+  DrawJob masked = Job(DrawJob::kTriangle);
+  masked.v[0] = Precise(600.0f, 100.0f, 256.0f);
+  masked.v[1] = Precise(700.0f, 100.0f, 256.0f);
+  masked.v[2] = Precise(600.0f, 200.0f, 256.0f);
+  masked.env.force_set_mask = true;
+  raster->Apply(masked);
+  DrawJob checked = Job(DrawJob::kTriangle);
+  checked.v[0] = Corner(590, 90);
+  checked.v[1] = Corner(720, 90);
+  checked.v[2] = Corner(590, 220);
+  checked.env.check_mask = true;
+  raster->Apply(checked);
+  Check(PlaneAt(*raster, 610, 110).b == 1.0f,
+        "a pixel the mask check leaves alone keeps its plane too");
+
+  // A copy carries the plane with the pixels.
+  DrawJob copy = Job(DrawJob::kVramCopy);
+  copy.src_x = 200;
+  copy.src_y = 100;
+  copy.x = 700;
+  copy.y = 300;
+  copy.w = 100;
+  copy.h = 100;
+  raster->Apply(copy);
+  const PlaneTexel from = PlaneAt(*raster, 210, 115);
+  const PlaneTexel to = PlaneAt(*raster, 710, 315);
+  Check(to.r == from.r && to.g == from.g && to.b == from.b && to.a == from.a && to.b == 0.5f,
+        "a VRAM-to-VRAM copy carries the plane along");
+
+  // An upload may be anything, a film included: not known.
+  raster->Written(415, 125, 20, 20);
+  Check(Unknown(PlaneAt(*raster, 420, 130)), "an upload: not known");
+
+  // Handed over beside the shared picture while kept for DLSS, not when only shown.
+  std::vector<uint32_t> pixels;
+  emulation::psx::SharedPicture shared;
+  int scale = 0;
+  const bool resolved = raster->ResolveDisplay(0, 0, 640, 480, &pixels, &shared, &scale);
+  Check(resolved && shared && shared.planes != nullptr && shared.planes_id != 0 &&
+            shared.planes_id != shared.texture_id,
+        "kept, the plane goes beside the shared picture");
+  std::vector<uint32_t> picture, depth;
+  const bool read = psxemu::D3D11Raster::ReadSharedPicture(shared, &picture);
+  shared.source->Release(shared.serial + 1);
+  raster->SetPlanes(false, PlaneView::kDepth);
+  emulation::psx::SharedPicture shown;
+  raster->ResolveDisplay(0, 0, 640, 480, &pixels, &shown, &scale);
+  Check(read && shown && shown.planes == nullptr &&
+            psxemu::D3D11Raster::ReadSharedPicture(shown, &depth) && depth != picture,
+        "only shown, it is the picture instead - and not handed over beside it");
+
+  // Let go and asked for again, it starts over.
+  raster->SetPlanes(false, PlaneView::kPicture);
+  Check(!raster->planes(), "let go, the plane is not drawn");
+  raster->SetPlanes(true, PlaneView::kPicture);
+  Check(Unknown(PlaneAt(*raster, 210, 115)), "asked for again, it starts out knowing nothing");
+}
+
 int main(int argc, char** argv) {
   uint32_t seed = 1;
   int scale = 1;
+  bool planes = false;
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--seed") == 0 && i + 1 < argc)
       seed = static_cast<uint32_t>(strtoul(argv[++i], nullptr, 0));
@@ -509,6 +731,8 @@ int main(int argc, char** argv) {
       g_bisect = true;
     else if (strcmp(argv[i], "--scale") == 0 && i + 1 < argc)
       scale = atoi(argv[++i]);
+    else if (strcmp(argv[i], "--planes") == 0)
+      planes = true;
   }
 
   Machines m;
@@ -534,7 +758,11 @@ int main(int argc, char** argv) {
     printf("no hardware rasteriser: %s\n", m.hardware->gpu().raster_error().c_str());
     return 1;
   }
-  printf("seed %u, the hardware rasteriser at %dx\n\n", seed, scale);
+  // --planes: the plane beside VRAM kept all along, which must change no pixel of VRAM.
+  if (planes)
+    m.hardware->gpu().SetPlanes(true, PlaneView::kPicture);
+  printf("seed %u, the hardware rasteriser at %dx%s\n\n", seed, scale,
+         planes ? ", the plane beside VRAM kept" : "");
   Random random{seed ? seed : 1};
 
   // Polygons: flat 20h/22h, Gouraud 30h/32h - only the untextured bits.
@@ -617,6 +845,7 @@ int main(int argc, char** argv) {
   ScenePolygons(m, random, "after, in software, from where it was", 0x1F, 500, 60, false);
 
   SceneSharedPicture(random);
+  ScenePlanes();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete m.hardware;
