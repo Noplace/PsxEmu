@@ -151,6 +151,7 @@ namespace psxemu {
         void RemakeRasteriser(const std::wstring& done);
         void SetPgxp(bool* setting, bool on, const std::wstring& done);
         void ReportRasteriser(bool hardware, const std::string& error, bool announce);
+        void UpdateRasteriserMenus();
         // The renderer that opened can take the hardware rasteriser's pictures on this adapter
         // (a LUID), or on none (0): the rasteriser is made again to draw where it should, if it
         // draws - see UpdateRasteriserCard.
@@ -439,6 +440,28 @@ namespace psxemu {
         // VRAM in place of the picture (Docs/DLSS-Plan.md). Not persisted either.
         int plane_view_ = 0;
         void SetPlaneView(int view);
+
+        // Settings > Video > NVIDIA DLSS (Docs/DLSS-Plan.md, phase 4). The mode and preset are
+        // EmuConfig's; whether DLSS actually runs is the renderer's to say (dlss_status_), and
+        // the machine is told only while it does: the plane kept and the triangles jittered, the
+        // rasteriser at the mode's scale for the window, and PGXP's precise vertices on.
+        void SetDlssMode(const std::string& key);
+        void SetDlssPreset(const std::string& key);
+        // Tells the renderer what DLSS is asked for, when that changed, and hears back whether it
+        // runs.
+        void SendDlssToRenderer();
+        void OnDlssStatus(const DlssStatus& status);
+        // Works out whether DLSS runs, at what scale and jitter, and tells the machine what
+        // changed. Called whenever anything it depends on may have: the setting, the renderer's
+        // word, the rasteriser, the window's size.
+        void UpdateDlss();
+        void UpdateDlssMenu();
+        DlssChoice dlss_sent_;           // what the renderer was last told
+        DlssStatus dlss_status_;         // ...and what it said
+        bool dlss_active_ = false;       // DLSS running: the machine told so
+        int dlss_scale_ = 0;             // the rasteriser's scale while it does
+        int dlss_phases_ = 0;            // the jitter's length
+        bool sizing_ = false;            // inside a drag or resize of the window
 
         // The BIOS in use, as a full path, and the images the last scan found. bios_path_ is what
         // the *next* cold boot will use, which is not necessarily what the running machine was

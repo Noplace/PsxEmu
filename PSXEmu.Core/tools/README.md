@@ -26,6 +26,8 @@ place to keep current.
 | `rec_bench` | Recompiled against interpreted; a benchmark, asserts nothing |
 | `host_test` | The threads and channels in `host/` |
 | `frame_limiter_test` `speed_resampler_test` `letterbox_test` | The host-side headers the front end leans on |
+| `dlss_choice_test` | The arithmetic of sizes around DLSS - the rasteriser's scale, the jitter, the output |
+| `sl_probe` | What NVIDIA Streamline says of each card; with `--optimal`, `--jitter-test` or `--cost`, DLSS's input sizes, the signs of its jitter and motion, and its cost. Needs the SDK fetched (`PSXEmu.Win32\graphics\dlss\fetch_streamline.ps1`) |
 | `wav_pitch` | The note in a WAV `boot_runner --wav` wrote |
 | `make_test_disc` | Writes a synthetic disc image |
 

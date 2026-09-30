@@ -67,13 +67,17 @@ namespace psxemu {
     // `*warning`, and the caller shows it. This runs on the video thread now, and a message box
     // from any thread but the window's is a wait on the window's thread - see Docs/Threading-
     // Plan.md's rules. Empty means nothing to say.
+    //
+    // `dlss` is what DLSS is asked for (IGraphicsEngine::SetDlss), also given before each engine
+    // starts. An engine without it starts regardless, and says why not.
     std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred,
                                                           const RenderWindows& windows,
                                                           int width, int height,
                                                           std::string* active_backend,
                                                           std::wstring* warning,
                                                           uint64_t adapter_luid = 0,
-                                                          const std::string& adapter_name = std::string());
+                                                          const std::string& adapter_name = std::string(),
+                                                          const DlssChoice& dlss = DlssChoice());
 
     // Compiles every ported filter into the engine at once - cheap (startup-cost shader compiles,
     // not per-frame work), so there is no reason to defer any of them until first selected. HLSL

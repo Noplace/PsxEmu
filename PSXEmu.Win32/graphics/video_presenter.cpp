@@ -52,7 +52,7 @@ namespace psxemu {
         std::wstring warning;
         std::string opened;
         engine_ = CreateGraphicsEngine(preferred, windows_, width_, height_, &opened, &warning,
-                                       card_luid_, card_name_);
+                                       card_luid_, card_name_, dlss_);
         if (engine_ == nullptr && card_luid_ != 0) {
             // No engine would start on the card chosen. Better a picture on the one Windows
             // picks than none, with the reason - the card is dropped from here on, so the menu
@@ -61,7 +61,7 @@ namespace psxemu {
             std::string reason = card_name_;
             card_name_.clear();
             engine_ = CreateGraphicsEngine(preferred, windows_, width_, height_, &opened,
-                                           &warning);
+                                           &warning, 0, std::string(), dlss_);
             if (engine_ != nullptr) {
                 std::wstring text = L"No renderer would start on " +
                                     std::wstring(reason.begin(), reason.end()) +
@@ -204,6 +204,19 @@ namespace psxemu {
         card_name_ = name;
         if (engine_ != nullptr && renderer_ != "opengl")
             Rebuild(renderer_);
+    }
+
+    void D3DPresenter::SetDlss(const DlssChoice& choice) {
+        if (choice == dlss_)
+            return;
+        const DlssChoice before = dlss_;
+        dlss_ = choice;
+        if (engine_ == nullptr)
+            return;
+        if (engine_->DlssNeedsRemaking(before, choice))
+            Rebuild(renderer_);
+        else
+            engine_->SetDlss(choice);
     }
 
     void D3DPresenter::Rebuild(const std::string& key) {

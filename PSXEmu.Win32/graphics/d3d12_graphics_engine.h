@@ -26,9 +26,13 @@
 #include <wrl/client.h>
 #include "graphics/d3dx12.h"
 #include "tools/letterbox.h"
+#include <memory>
 #include <unordered_map>
 #include <string>
 #include <vector>
+
+namespace psxemu { class Streamline; }
+namespace sl { struct FrameToken; }
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -80,6 +84,11 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     bool LoadShaderChain(const std::string& name, const std::vector<ShaderPass>& passes) override;
     void SetOverlay(const psxemu::OverlayDrawData* overlay) override { overlay_ = overlay; }
 
+    void SetDlss(const psxemu::DlssChoice& choice) override;
+    psxemu::DlssStatus dlss_status() const override;
+    bool DlssNeedsRemaking(const psxemu::DlssChoice& from,
+                           const psxemu::DlssChoice& to) const override;
+
  private:
     // ---- the overlay (ui/overlay), drawn last in EndFrame ----------------------------------
     bool CreateOverlayPipeline();
@@ -112,6 +121,10 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     // Draws fb_texture_, which holds a frame width x height, into the window: the letterbox,
     // the filter or chain, all of it.
     void DrawFramebuffer(int width, int height);
+    // ...and the single-shader draw under it, of the texture a width x height pair of SRVs at
+    // `table` in `heap` shows, into `rect`: fb_texture_'s, or DLSS's output.
+    void DrawTexture(ID3D12DescriptorHeap* heap, D3D12_GPU_DESCRIPTOR_HANDLE table, int width,
+                     int height, const LetterboxRect& rect);
     // The rasteriser's texture for `picture`, opened on this device, or null.
     ID3D12Resource* OpenSharedPicture(const emulation::psx::SharedPicture& picture);
     // Hands back to their sources the pictures whose frames the card has finished.
@@ -237,4 +250,74 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     // The last shared picture drawn, until a frame of pixels hands it back.
     std::shared_ptr<emulation::psx::SharedPictureSource> trail_source_;
     uint64_t trail_serial_ = 0;
+
+    // ---- NVIDIA DLSS through Streamline (Docs/DLSS-Plan.md, phase 4) ------------------------
+    //
+    // Started in Initialize when DLSS is asked for, before the queue and swap chain, which are
+    // then made through Streamline's proxies of the device and factory - its manual hooking,
+    // under which nothing else of this device, and nothing of any other, passes through it. Each
+    // new picture that comes with its plane, and is not interlaced, is turned into DLSS's inputs
+    // - motion, depth and a hint where to trust the picture over its history - by one compute
+    // pass, and DLSS draws the screen's picture from them. Anything failing leaves the renderer
+    // drawing as it always has, and dlss_status says why.
+    void StartStreamline();
+    void StopStreamline();
+    bool CreateDlssPipeline();
+    // The output size for a `width` x `height` picture shown in `screen`, and whether DLSS runs
+    // at all (graphics/dlss/dlss_choice.h).
+    bool ChooseDlssOutput(int width, int height, const LetterboxRect& screen, int* out_width,
+                          int* out_height);
+    bool EnsureDlssTargets(int in_width, int in_height, int out_width, int out_height);
+    ID3D12Resource* OpenPlanes(const emulation::psx::SharedPicture& picture);
+    // DLSS on the picture in fb_texture_, into dlss_output_. False if it could not run.
+    bool EvaluateDlss(const emulation::psx::SharedPicture& picture, ID3D12Resource* planes,
+                      int out_width, int out_height);
+    // Draws DLSS's picture of `picture` - made now if it is a new one - in place of the picture.
+    // False, drawing nothing, when DLSS cannot take it: no plane, interlaced, a size it will not
+    // take, or any step failing.
+    bool DrawDlss(const emulation::psx::SharedPicture& picture);
+    bool DlssRunning() const { return streamline_ != nullptr && dlss_pipeline_ != nullptr &&
+                                      dlss_choice_.mode != psxemu::DlssMode::kOff; }
+
+    psxemu::DlssChoice dlss_choice_;
+    std::unique_ptr<psxemu::Streamline> streamline_;
+    std::string dlss_why_;             // why DLSS does not run here; empty when it does
+    std::string dlss_version_;
+    ComPtr<ID3D12Device> sl_device_;   // Streamline's proxy of device_, which makes the queue
+    ComPtr<IDXGIFactory2> sl_factory_; // ...and of factory_, which makes the swap chain
+    sl::FrameToken* frame_token_ = nullptr;   // this frame's, from BeginFrame
+    ComPtr<ID3D12RootSignature> dlss_root_;
+    ComPtr<ID3D12PipelineState> dlss_pipeline_;
+    // Shader-visible: per frame in flight t0 the plane, u0-u2 motion, depth and hint; then the
+    // output twice, t0 and t1 for the draw to the screen (kDlssOutputSlot).
+    ComPtr<ID3D12DescriptorHeap> dlss_heap_;
+    static const UINT kDlssOutputSlot = 4 * kFrameCount;
+    ComPtr<ID3D12Resource> dlss_motion_, dlss_depth_, dlss_hint_, dlss_output_;
+    int dlss_in_width_ = 0, dlss_in_height_ = 0;
+    int dlss_out_width_ = 0, dlss_out_height_ = 0;
+    // The planes' textures opened here, as the pictures' are (opened_pictures_).
+    std::vector<OpenedPicture> opened_planes_;
+    const emulation::psx::SharedPictureSource* planes_source_ = nullptr;
+    // What dlss_output_ holds: the picture it was made from, and whether it is there at all.
+    uint64_t dlss_serial_ = 0;
+    bool dlss_output_valid_ = false;
+    // The next evaluation starts afresh: a picture DLSS did not see came between.
+    bool dlss_reset_ = true;
+    // DLSS's range for each output asked about (slDLSSGetOptimalSettings): the screen's and the
+    // mode's own ratio's are both asked about every frame a picture misses the first, so each
+    // keeps its own entry. `taken` false when DLSS gave none.
+    struct DlssRangeEntry {
+        psxemu::DlssMode mode;
+        int width, height;
+        bool taken;
+        psxemu::DlssRange range;
+    };
+    std::vector<DlssRangeEntry> dlss_ranges_;
+    bool dlss_options_set_ = false;
+    int dlss_options_width_ = 0, dlss_options_height_ = 0;
+    psxemu::DlssChoice dlss_options_choice_;
+    // What DLSS last did, for PSXEMU_DLSS_LOG (psxemu::DlssNote) - written when it changes, not
+    // at every frame.
+    void NoteDlss(const std::string& line);
+    std::string dlss_last_note_;
 };

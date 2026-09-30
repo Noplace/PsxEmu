@@ -178,6 +178,7 @@ namespace emulation {
             backend_->SetPlanes(planes_keep_, plane_view_);
             backend_->set_motion_check(motion_check_);
             backend_->SetJitter(jitter_phases_);
+            jitter_drawn_ = jitter_phases_;
             UpdateMotion();
             motion_fresh_ = true;   // the new rasteriser's plane knows nothing of the old
         }
@@ -206,6 +207,7 @@ namespace emulation {
                 return;
             SyncRaster();
             backend_->SetJitter(phases);
+            jitter_drawn_ = phases;
         }
 
         void Gpu::UpdateMotion() {
@@ -243,6 +245,13 @@ namespace emulation {
             // afresh; DLSS leaves them as they are (Docs/DLSS-Plan.md).
             const bool interlaced = status_.vres && status_.vertical_interlace;
             *reset = cut || cut_before_ || changed || interlaced || motion_fresh_;
+            // ...and since they are shown as they are, they are not jittered either, which would
+            // show as a shake. Back on from the first picture that is not.
+            const int jitter = interlaced ? 0 : jitter_phases_;
+            if (jitter != jitter_drawn_) {
+                backend_->SetJitter(jitter);
+                jitter_drawn_ = jitter;
+            }
             cut_before_ = cut;
             motion_fresh_ = false;
             shown_width_ = display_width_;
@@ -1619,6 +1628,7 @@ namespace emulation {
             }
             shared_picture_.new_picture = new_picture;
             shared_picture_.reset = reset;
+            shared_picture_.interlaced = status_.vres && status_.vertical_interlace;
             // framebuffer_ is the native picture, which the checksums and everything else that
             // measures the machine read. Bringing native VRAM up to date for it waits for the
             // hardware rasteriser to finish the frame, so when the sharper picture is what is

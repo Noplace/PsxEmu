@@ -206,6 +206,8 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("pgxp_vertices", c.pgxp_vertices);
   f.SetBool("pgxp_textures", c.pgxp_textures);
   f.SetBool("pgxp_culling", c.pgxp_culling);
+  f.SetString("dlss_mode", c.dlss_mode);
+  f.SetString("dlss_preset", c.dlss_preset);
   f.SetBool("gpu_transfer_timing", c.gpu_transfer_timing);
   f.SetBool("icache_timing", c.icache_timing);
   f.SetBool("exact_event_timing", c.exact_event_timing);
@@ -303,6 +305,12 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   c.pgxp_vertices = f.GetBool("pgxp_vertices", c.pgxp_vertices);
   c.pgxp_textures = f.GetBool("pgxp_textures", c.pgxp_textures);
   c.pgxp_culling = f.GetBool("pgxp_culling", c.pgxp_culling);
+  const std::string dlss_mode = f.GetString("dlss_mode", c.dlss_mode);
+  if (IsValidChoice(dlss_mode, EmuConfig::kValidDlssModes))
+    c.dlss_mode = dlss_mode;
+  const std::string dlss_preset = f.GetString("dlss_preset", c.dlss_preset);
+  if (IsValidChoice(dlss_preset, EmuConfig::kValidDlssPresets))
+    c.dlss_preset = dlss_preset;
   c.gpu_transfer_timing = f.GetBool("gpu_transfer_timing", c.gpu_transfer_timing);
   c.icache_timing = f.GetBool("icache_timing", c.icache_timing);
   c.exact_event_timing = f.GetBool("exact_event_timing", c.exact_event_timing);
@@ -366,6 +374,9 @@ inline std::vector<std::string> GameSettingKeys() {
       // resolution (Docs/Hardware-Renderer-Plan.md).
       "gpu_rasteriser",     "resolution_scale",    "true_color",
       "pgxp_vertices",      "pgxp_textures",       "pgxp_culling",
+      // ...and DLSS off, or in another mode, for a game it does badly or well
+      // (Docs/DLSS-Plan.md).
+      "dlss_mode",
   };
   for (int port = 0; port < 2; ++port) {
     for (int player = 0; player < 4; ++player)

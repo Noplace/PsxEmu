@@ -229,7 +229,14 @@ void Machine::RunOneFrame() {
 }
 
 void Machine::set_plane_view(psx::PlaneView view) {
-  system_->gpu().SetPlanes(false, view);
+  plane_view_ = view;
+  system_->gpu().SetPlanes(dlss_, view);
+}
+
+void Machine::set_dlss(bool on, int jitter_phases) {
+  dlss_ = on;
+  system_->gpu().SetPlanes(on, plane_view_);
+  system_->gpu().SetJitter(on ? jitter_phases : 0);
 }
 
 // The frame is resolved at the start of vblank, which is exactly when

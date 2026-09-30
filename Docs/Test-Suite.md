@@ -154,7 +154,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 412 checks, 0 failures.**
+**Current: 416 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -714,18 +714,20 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 80 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 412 |
+| `timer_test` | 80 | | `media_test` | 416 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,692 checks, 0 failures**, all ten green. Each harness's own section above
+**1,696 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
 two with PGXP's three options, and three with the graphics card's name:
 every setting in `EmuConfig` round-trips through the file, and those are
 settings. It gained twenty-three more with the pregaps of a music track that
-follows music on a CloneCD dump that did not keep them, bug 131.)
+follows music on a CloneCD dump that did not keep them, bug 131, and four with
+DLSS's mode and preset: their defaults, the round trip, values the menu does not
+offer ignored, and the mode among a game's own keys.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
@@ -760,7 +762,23 @@ correctness count: it records how far off the timing is), `host_test` (34 checks
 threads and the channels between them - its own section above), and `hw_raster_test` (73
 checks, bugs 122-123 and 127 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
-which runs gpu_test's 80 through it).
+which runs gpu_test's 80 through it), and `dlss_choice_test` (35 checks, the
+arithmetic of sizes around DLSS in `graphics/dlss/dlss_choice.h` - the rasteriser's
+scale for each mode and window, never 1x, always inside the range DLSS 310.9.1 gave
+on the RTX 4060; the jitter's length; and the output asked for, the screen's or the
+mode's own ratio's).
+
+`sl_probe` is not a test but NVIDIA's side of DLSS, checked (Docs/DLSS-Plan.md,
+phases 0 and 4). It needs the Streamline SDK fetched
+(`PSXEmu.Win32\graphics\dlss\fetch_streamline.ps1`); with no options it makes no
+device, and prints each card's LUID, GPU scheduling, and whether DLSS, Frame
+Generation and Reflex run there. `--optimal` asks DLSS, on the first card it runs
+on, which input sizes each mode takes for three screen sizes; `--jitter-test` puts
+a sharp-edged pattern through 48 frames of DLSS with each sign of the jitter and
+of the motion, and scores each against the pattern (the signs the renderer uses
+come out at 0.025 and 0.043, the others at 0.12-0.25); `--cost` does that and then
+times DLSS at the sizes the emulator gives it. Each makes one device, once: on the
+4060, never in a loop.
 
 `rec_test` (467 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter

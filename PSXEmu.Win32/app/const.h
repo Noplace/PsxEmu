@@ -154,6 +154,13 @@ namespace psxemu {
         // place of the picture (Docs/DLSS-Plan.md).
         kCommandViewDepth,
         kCommandViewMotion,
+        // Settings > Video > NVIDIA DLSS: the modes, in kDlssModeChoices' order; the presets, in
+        // kDlssPresetChoices'; and the line that says whether it runs (never enabled).
+        kCommandDlssModeFirst,
+        kCommandDlssModeLast = kCommandDlssModeFirst + 5,
+        kCommandDlssPresetFirst,
+        kCommandDlssPresetLast = kCommandDlssPresetFirst + 3,
+        kCommandDlssStatus,
     };
 
     // ---------------------------------------------------------------------------------------------
@@ -270,6 +277,26 @@ namespace psxemu {
         { 5, L"&5x" },
         { 6, L"&6x" },
         { 8, L"&8x" },
+    };
+
+    // Settings > Video > NVIDIA DLSS, in the order EmuConfig::kValidDlssModes and
+    // kValidDlssPresets hold them.
+    struct DlssModeChoice { const char* key; const wchar_t* label; };
+
+    inline constexpr DlssModeChoice kDlssModeChoices[] = {
+        { "off",               L"&Off" },
+        { "dlaa",              L"&DLAA (anti-aliasing only)" },
+        { "quality",           L"&Quality" },
+        { "balanced",          L"&Balanced" },
+        { "performance",       L"&Performance" },
+        { "ultra_performance", L"&Ultra Performance" },
+    };
+
+    inline constexpr DlssModeChoice kDlssPresetChoices[] = {
+        { "auto", L"Preset: &Automatic" },
+        { "k",    L"Preset &K" },
+        { "l",    L"Preset &L" },
+        { "m",    L"Preset &M" },
     };
 
     // What a port can hold - the three real PS1 controllers, a mouse, a multitap, a GunCon, or

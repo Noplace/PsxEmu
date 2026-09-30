@@ -97,6 +97,9 @@ PsxEmu/
       frame_limiter_test.cpp  speed_resampler_test.cpp  letterbox_test.cpp
       bindings_test.cpp        keys and pad controls onto PSX buttons, and the settings they live in
       cheats_test.cpp          GameShark codes read, every code type run, and the cheat files
+      dlss_choice_test.cpp     the sizes around DLSS: the rasteriser's scale, the jitter, the output
+      sl_probe.cpp             what NVIDIA Streamline says of each card; DLSS's input sizes, the
+                               signs of its jitter and motion, and its cost (Docs/DLSS-Plan.md)
       wav_pitch.cpp            the note in a WAV boot_runner wrote
       make_test_disc.cpp       writes a synthetic disc image
       make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format
@@ -123,6 +126,14 @@ PsxEmu/
       video_presenter.h/.cpp   what the video thread draws with, and the menus' asks of it
       d3d11_presenter.h/.cpp   uploads the core framebuffer and draws it; no filters
       d3d12_graphics_engine.h/.cpp   the same, plus the ported pixel-shader filters
+      d3d12_dlss.cpp           ...and its NVIDIA DLSS: Streamline started with it, the plane
+                               turned into DLSS's inputs, DLSS's picture drawn in the picture's place
+      dlss/                    NVIDIA DLSS (Docs/DLSS-Plan.md)
+        streamline.h/.cpp      Streamline's DLL loaded, its signature checked, started and stopped
+        dlss_choice.h          the modes, and the arithmetic of sizes; header-only, the tools use it
+        fetch_streamline.ps1   downloads the Streamline SDK into Temp\streamline\ - its DLLs are
+                               NVIDIA's, never committed; the build copies them beside the exe
+        streamline/            Streamline's headers, MIT, as they come in the SDK
       d3dx12.h                 Microsoft's D3D12 helpers, vendored as they come
       opengl_engine.h/.cpp     the same again in OpenGL 3.3, on a child window of its own
       gl_functions.h           the OpenGL past 1.1 the engine asks the driver for

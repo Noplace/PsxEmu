@@ -42,7 +42,8 @@ namespace psxemu {
                                                           std::string* active_backend,
                                                           std::wstring* warning,
                                                           uint64_t adapter_luid,
-                                                          const std::string& adapter_name) {
+                                                          const std::string& adapter_name,
+                                                          const DlssChoice& dlss) {
         if (warning != nullptr)
             warning->clear();
         auto try_backend = [&](GraphicsBackend backend) -> std::unique_ptr<IGraphicsEngine> {
@@ -59,6 +60,7 @@ namespace psxemu {
                                 : backend == GraphicsBackend::kVulkan ? windows.vulkan
                                                                       : windows.main;
             engine->SetPreferredAdapter(adapter_luid, adapter_name);
+            engine->SetDlss(dlss);
             if (target != nullptr && engine->Initialize(target, width, height))
                 return engine;
             return nullptr;

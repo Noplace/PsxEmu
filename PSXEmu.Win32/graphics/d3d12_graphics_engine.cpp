@@ -19,6 +19,7 @@
 #include "graphics/d3d12_graphics_engine.h"
 
 #include "graphics/adapters.h"
+#include "graphics/dlss/streamline.h"
 #include "shaders/overlay_shaders.h"
 #include "tools/letterbox.h"
 
@@ -37,6 +38,10 @@ bool D3D12GraphicsEngine::Initialize(HWND window_handle, int width, int height) 
 
     if (!CreateDevice())
         return false;
+    // DLSS asked for: Streamline first, since the queue and the swap chain are made through it.
+    // If it cannot start, they are made as ever and dlss_status says why.
+    if (dlss_choice_.mode != psxemu::DlssMode::kOff)
+        StartStreamline();
     if (!CreateCommandQueue())
         return false;
     if (!CreateSwapChain(window_handle))
@@ -61,6 +66,11 @@ bool D3D12GraphicsEngine::Initialize(HWND window_handle, int width, int height) 
     if (!CreateOverlayPipeline()) {
         overlay_pipeline_.Reset();
         overlay_root_.Reset();
+    }
+    // So is DLSS.
+    if (streamline_ != nullptr && !CreateDlssPipeline()) {
+        dlss_pipeline_.Reset();
+        dlss_why_ = "its shaders could not be made";
     }
 
     return true;
@@ -325,7 +335,9 @@ bool D3D12GraphicsEngine::CreateCommandQueue() {
     queue_desc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
     queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
-    return SUCCEEDED(device_->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&command_queue_)));
+    // Through Streamline's proxy when it runs: the swap chain it hooks has to be made on its queue.
+    ID3D12Device* const maker = sl_device_ != nullptr ? sl_device_.Get() : device_.Get();
+    return SUCCEEDED(maker->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&command_queue_)));
 }
 
 bool D3D12GraphicsEngine::CreateSwapChain(HWND window_handle) {
@@ -345,9 +357,12 @@ bool D3D12GraphicsEngine::CreateSwapChain(HWND window_handle) {
         swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     }
 
+    // Through Streamline's proxy when it runs, so its Present, GetBuffer and ResizeBuffers are
+    // the ones called.
+    IDXGIFactory2* const maker = sl_factory_ != nullptr ? sl_factory_.Get() : factory_.Get();
     ComPtr<IDXGISwapChain1> swap_chain;
-    if (FAILED(factory_->CreateSwapChainForHwnd(command_queue_.Get(), window_handle,
-                                                &swap_chain_desc, nullptr, nullptr, &swap_chain))) {
+    if (FAILED(maker->CreateSwapChainForHwnd(command_queue_.Get(), window_handle,
+                                             &swap_chain_desc, nullptr, nullptr, &swap_chain))) {
         return false;
     }
 
@@ -413,6 +428,11 @@ void D3D12GraphicsEngine::BeginFrame() {
     command_allocators_[frame_index_]->Reset();
     command_list_->Reset(command_allocators_[frame_index_].Get(), nullptr);
 
+    // Streamline counts frames by its tokens: one for every frame presented through it.
+    frame_token_ = nullptr;
+    if (streamline_ != nullptr)
+        streamline_->slGetNewFrameToken(frame_token_, nullptr);
+
     if (!render_targets_[frame_index_]) {
         // Can't render, just return early. EndFrame will close the list.
         return;
@@ -456,6 +476,9 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
     if (!EnsureUploadHeaps())
         return;
     shown_texture_id_ = 0;   // fb_texture_ holds no shared picture now
+    // A picture DLSS never sees - a film, or the software rasteriser's - breaks its history.
+    dlss_reset_ = true;
+    dlss_output_valid_ = false;
 
     ID3D12Resource* const upload_heap = fb_upload_heap_[frame_index_].Get();
     if (!fb_texture_ || !upload_heap)
@@ -550,6 +573,9 @@ bool D3D12GraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPictur
     trail_source_ = picture.source;   // see RenderFramebuffer
     trail_serial_ = picture.serial;
 
+    // DLSS's picture of it, when DLSS runs and can take this one; otherwise the picture itself.
+    if (DlssRunning() && DrawDlss(picture))
+        return true;
     DrawFramebuffer(picture.width, picture.height);
     return true;
 }
@@ -586,11 +612,6 @@ void D3D12GraphicsEngine::ReleasePictures(UINT64 completed) {
 }
 
 void D3D12GraphicsEngine::DrawFramebuffer(int width, int height) {
-    command_list_->SetPipelineState(current_pipeline_state_ != nullptr
-                                        ? current_pipeline_state_
-                                        : default_pipeline_state_.Get());
-    command_list_->SetGraphicsRootSignature(root_signature_.Get());
-
     // Fixed 4:3, not derived from the frame's own width:height - see bug 47
     // (Docs/Bugs-Found.md) for why the latter is wrong for this console: PSX
     // horizontal resolution and the vertical/interlace range are independent
@@ -640,6 +661,18 @@ void D3D12GraphicsEngine::DrawFramebuffer(int width, int height) {
         rect.height = snapped_height;
     }*/
 
+    DrawTexture(srv_heap_.Get(), srv_heap_->GetGPUDescriptorHandleForHeapStart(), width, height,
+                rect);
+}
+
+void D3D12GraphicsEngine::DrawTexture(ID3D12DescriptorHeap* heap,
+                                      D3D12_GPU_DESCRIPTOR_HANDLE table, int width, int height,
+                                      const LetterboxRect& rect) {
+    command_list_->SetPipelineState(current_pipeline_state_ != nullptr
+                                        ? current_pipeline_state_
+                                        : default_pipeline_state_.Get());
+    command_list_->SetGraphicsRootSignature(root_signature_.Get());
+
     // outW/outH are the letterboxed viewport size, not the full window size -
     // Sharp Bilinear (legacy_shaders.h[1]) computes its texel scale directly
     // from these and would over- or under-scale against black bars otherwise.
@@ -647,10 +680,9 @@ void D3D12GraphicsEngine::DrawFramebuffer(int width, int height) {
                                static_cast<float>(height) };
     command_list_->SetGraphicsRoot32BitConstants(1, 4, shader_params, 0);
 
-    ID3D12DescriptorHeap* pp_heaps[] = { srv_heap_.Get() };
+    ID3D12DescriptorHeap* pp_heaps[] = { heap };
     command_list_->SetDescriptorHeaps(_countof(pp_heaps), pp_heaps);
-    command_list_->SetGraphicsRootDescriptorTable(0,
-                                                  srv_heap_->GetGPUDescriptorHandleForHeapStart());
+    command_list_->SetGraphicsRootDescriptorTable(0, table);
 
     const D3D12_VIEWPORT viewport = { rect.x, rect.y, rect.width, rect.height, 0.0f, 1.0f };
     const D3D12_RECT scissor = { static_cast<LONG>(rect.x), static_cast<LONG>(rect.y),
@@ -745,6 +777,9 @@ void D3D12GraphicsEngine::Shutdown() {
     ReleasePictures(UINT64_MAX);
     trail_source_.reset();
     opened_pictures_.clear();
+    opened_planes_.clear();
+    // Streamline goes before the device it was given - and what was made through it, before it.
+    StopStreamline();
 
     if (fence_event_) {
         CloseHandle(fence_event_);

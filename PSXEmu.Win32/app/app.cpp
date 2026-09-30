@@ -366,6 +366,7 @@ namespace psxemu {
         UpdateRendererMenu();
         UpdateAudioBackendMenu();
         RefreshGraphicsCardMenu();
+        UpdateDlssMenu();
     }
 
     void App::SetUpDataDirectories() {
@@ -464,10 +465,14 @@ namespace psxemu {
         const uint64_t start_card = chosen_adapter_;
         const std::string start_card_name = chosen_adapter_ != 0 ? config_.graphics_adapter
                                                                  : std::string();
+        DlssChoice start_dlss;
+        start_dlss.mode = ParseDlssMode(config_.dlss_mode);
+        start_dlss.preset = ParseDlssPreset(config_.dlss_preset);
+        dlss_sent_ = start_dlss;
         video_ = std::make_unique<VideoOutput>(
             [this, start_renderer, start_filter, start_stats, start_notifications,
-             start_controllers, start_theme, start_card,
-             start_card_name]() -> std::unique_ptr<Presenter> {
+             start_controllers, start_theme, start_card, start_card_name,
+             start_dlss]() -> std::unique_ptr<Presenter> {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
                 auto presenter = std::make_unique<D3DPresenter>(
@@ -479,6 +484,7 @@ namespace psxemu {
                 presenter->overlay().SetControllersAlwaysVisible(start_controllers);
                 presenter->overlay().SetTheme(start_theme);
                 presenter->SetGraphicsCard(start_card, start_card_name);
+                presenter->SetDlss(start_dlss);
                 if (!presenter->Open(start_renderer, start_filter)) {
                     PostToUi([this] {
                         ShowError(window_, L"Could not create a Direct3D device.");
@@ -491,7 +497,8 @@ namespace psxemu {
                 const std::string filter = presenter->filter();
                 const uint64_t adapter = presenter->shared_adapter();
                 const uint64_t card = presenter->card_luid();
-                PostToUi([this, renderer, filter, adapter, card] {
+                const DlssStatus dlss = presenter->dlss_status();
+                PostToUi([this, renderer, filter, adapter, card, dlss] {
                     current_backend_ = renderer;
                     current_filter_ = filter;
                     config_.graphics_backend = renderer;
@@ -500,6 +507,7 @@ namespace psxemu {
                     UpdateFilterMenu();
                     SaveSettingsIfChanged();
                     OnPresenterAdapter(adapter, renderer, card);
+                    OnDlssStatus(dlss);
                 });
                 return presenter;
             });
@@ -624,6 +632,12 @@ namespace psxemu {
         // Held Tab runs the machine unpaced, without touching the setting itself.
         if (fast_forward_)
             config.frame_limiter = false;
+        // DLSS, while it runs, has the rasteriser's scale and PGXP's precise vertices - its
+        // motion comes from them - again without touching the settings.
+        if (dlss_active_) {
+            config.resolution_scale = dlss_scale_;
+            config.pgxp_vertices = true;
+        }
         PostToMachine([config](Machine& machine) { machine.ApplyConfig(config); });
     }
 
@@ -645,12 +659,7 @@ namespace psxemu {
                                  report.hardware_raster ? std::string() : report.raster_error,
                                  false);
             else   // a game's own settings may have brought another resolution
-                TickRasteriser(window_, drawing_hardware_, config_.resolution_scale,
-                               config_.true_color);
-            TickPgxp(window_, drawing_hardware_, config_.pgxp_vertices, config_.pgxp_textures,
-                     config_.pgxp_culling);
-            TickPlaneView(window_, plane_view_,
-                          drawing_hardware_ && config_.resolution_scale > 1);
+                UpdateRasteriserMenus();
             if (video_ != nullptr) {
                 uint64_t presents = 0;
                 double total_ms = 0.0;
@@ -1066,6 +1075,10 @@ namespace psxemu {
     // rather than one setting changed through its setter.
     void App::ConfigReplaced(const EmuConfig& before) {
         SendConfigToMachine();
+        // A game's own DLSS mode.
+        SendDlssToRenderer();
+        UpdateDlss();
+        UpdateDlssMenu();
         // A port that has just become a multitap gets the disc's cards B-D, as SetControllerType
         // does for one chosen by hand.
         if (config_.controller_type != before.controller_type)
@@ -1157,8 +1170,9 @@ namespace psxemu {
             const std::string filter = presenter->filter();
             const uint64_t adapter = presenter->shared_adapter();
             const uint64_t card = presenter->card_luid();
+            const DlssStatus dlss = presenter->dlss_status();
             video.PresentAgain();
-            PostToUi([this, renderer, filter, adapter, card] {
+            PostToUi([this, renderer, filter, adapter, card, dlss] {
                 current_backend_ = renderer;
                 current_filter_ = filter;
                 if (!renderer.empty())
@@ -1168,6 +1182,7 @@ namespace psxemu {
                 UpdateFilterMenu();
                 SaveSettingsIfChanged();
                 OnPresenterAdapter(adapter, renderer, card);
+                OnDlssStatus(dlss);
                 if (!renderer.empty())
                     Notify(OverlayIcon::kScreen, ToastKind::kInfo,
                            L"Renderer: " + NameForRenderer(renderer));
@@ -1216,8 +1231,7 @@ namespace psxemu {
         *setting = on;
         SaveSettingsIfChanged();
         SendConfigToMachine();
-        TickPgxp(window_, drawing_hardware_, config_.pgxp_vertices, config_.pgxp_textures,
-                 config_.pgxp_culling);
+        UpdateRasteriserMenus();
         Notify(OverlayIcon::kScreen, ToastKind::kInfo, done);
     }
 
@@ -1226,11 +1240,125 @@ namespace psxemu {
     // The machine keeps it across boots and changes of rasteriser; above 1x only.
     void App::SetPlaneView(int view) {
         plane_view_ = view;
-        TickPlaneView(window_, plane_view_, drawing_hardware_ && config_.resolution_scale > 1);
+        UpdateRasteriserMenus();
         const emulation::psx::PlaneView shown = view == 1   ? emulation::psx::PlaneView::kDepth
                                                 : view == 2 ? emulation::psx::PlaneView::kMotion
                                                             : emulation::psx::PlaneView::kPicture;
         PostToMachine([shown](Machine& machine) { machine.set_plane_view(shown); });
+    }
+
+    // Settings > Video > NVIDIA DLSS. The renderer is told, and says whether it runs; the machine
+    // hears of it through UpdateDlss once it does.
+    void App::SetDlssMode(const std::string& key) {
+        if (key == config_.dlss_mode)
+            return;
+        config_.dlss_mode = key;
+        SaveSettingsIfChanged();
+        SendDlssToRenderer();
+        UpdateDlss();
+        UpdateDlssMenu();
+        for (const DlssModeChoice& choice : kDlssModeChoices) {
+            if (key == choice.key) {
+                std::wstring label;
+                for (const wchar_t* c = choice.label; *c != 0; ++c)
+                    if (*c != L'&')
+                        label += *c;
+                Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"NVIDIA DLSS: " + label);
+            }
+        }
+    }
+
+    void App::SetDlssPreset(const std::string& key) {
+        if (key == config_.dlss_preset)
+            return;
+        config_.dlss_preset = key;
+        SaveSettingsIfChanged();
+        SendDlssToRenderer();
+        UpdateDlssMenu();
+    }
+
+    // Only when it changed: turning DLSS on or off makes the Direct3D 12 renderer again. What
+    // the renderer is and where it takes pictures can change with that, so all of it comes back.
+    void App::SendDlssToRenderer() {
+        DlssChoice choice;
+        choice.mode = ParseDlssMode(config_.dlss_mode);
+        choice.preset = ParseDlssPreset(config_.dlss_preset);
+        if (choice == dlss_sent_ || video_ == nullptr)
+            return;
+        dlss_sent_ = choice;
+        video_->Post([this, choice](VideoOutput& video) {
+            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            if (presenter == nullptr)
+                return;
+            presenter->SetDlss(choice);
+            const std::string renderer = presenter->renderer();
+            const uint64_t adapter = presenter->shared_adapter();
+            const uint64_t card = presenter->card_luid();
+            const DlssStatus status = presenter->dlss_status();
+            video.PresentAgain();
+            PostToUi([this, renderer, adapter, card, status] {
+                OnPresenterAdapter(adapter, renderer, card);
+                OnDlssStatus(status);
+            });
+        });
+    }
+
+    void App::OnDlssStatus(const DlssStatus& status) {
+        const DlssStatus before = dlss_status_;
+        dlss_status_ = status;
+        UpdateDlss();
+        UpdateDlssMenu();
+        // Asked for and not there: said once for each reason, not at every renderer made.
+        if (config_.dlss_mode != "off" && !status.ready &&
+            (before.ready || status.why != before.why))
+            Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"NVIDIA DLSS unavailable",
+                   status.why.empty() ? std::wstring(L"Needs the Direct3D 12 renderer")
+                                      : Wide(status.why));
+    }
+
+    void App::UpdateDlss() {
+        const DlssMode mode = ParseDlssMode(config_.dlss_mode);
+        RECT client = {};
+        GetClientRect(window_, &client);
+        const int shown = DlssShownHeight(client.right - client.left, client.bottom - client.top);
+        // Minimised: nothing to fit, and nothing to change until it comes back.
+        if (shown <= 0)
+            return;
+        const bool active = mode != DlssMode::kOff && dlss_status_.ready && drawing_hardware_ &&
+                            raster_shared_.load(std::memory_order_acquire);
+        const int scale = active ? DlssScale(mode, shown) : 0;
+        const int phases = active ? DlssJitterPhases(mode, shown, scale) : 0;
+        if (active == dlss_active_ && scale == dlss_scale_ && phases == dlss_phases_)
+            return;
+        const bool rescaled = active != dlss_active_ || scale != dlss_scale_;
+        dlss_active_ = active;
+        dlss_scale_ = scale;
+        dlss_phases_ = phases;
+        PostToMachine([active, phases](Machine& machine) { machine.set_dlss(active, phases); });
+        // The scale and PGXP: a new scale makes the rasteriser again, between frames.
+        if (rescaled)
+            SendConfigToMachine();
+        UpdateRasteriserMenus();
+        UpdateDlssMenu();
+    }
+
+    // The line under the modes: what DLSS is doing, or why it is not.
+    void App::UpdateDlssMenu() {
+        std::wstring status;
+        if (config_.dlss_mode == "off")
+            status = L"Off";
+        else if (!dlss_status_.ready)
+            status = L"Not running: " +
+                     (dlss_status_.why.empty() ? std::wstring(L"needs the Direct3D 12 renderer")
+                                               : Wide(dlss_status_.why));
+        else if (!drawing_hardware_)
+            status = L"Not running: needs the hardware rasteriser";
+        else if (!raster_shared_.load(std::memory_order_acquire))
+            status = L"Not running: the rasteriser is on another graphics card";
+        else
+            status = L"NVIDIA DLSS " + Wide(dlss_status_.version) + L", internal resolution " +
+                     std::to_wstring(dlss_scale_) + L"x";
+        TickDlss(window_, config_.dlss_mode, config_.dlss_preset, status);
     }
 
     void App::RemakeRasteriser(const std::wstring& done) {
@@ -1326,8 +1454,9 @@ namespace psxemu {
             const std::string filter = presenter->filter();
             const uint64_t adapter = presenter->shared_adapter();
             const uint64_t card = presenter->card_luid();
+            const DlssStatus dlss = presenter->dlss_status();
             video.PresentAgain();
-            PostToUi([this, renderer, filter, adapter, card, name] {
+            PostToUi([this, renderer, filter, adapter, card, name, dlss] {
                 current_backend_ = renderer;
                 current_filter_ = filter;
                 if (!renderer.empty())
@@ -1337,6 +1466,7 @@ namespace psxemu {
                 UpdateFilterMenu();
                 SaveSettingsIfChanged();
                 OnPresenterAdapter(adapter, renderer, card);
+                OnDlssStatus(dlss);
                 Notify(OverlayIcon::kScreen, ToastKind::kInfo,
                        name.empty() ? std::wstring(L"Graphics card: automatic")
                                     : L"Graphics card: " + Wide(name));
@@ -1355,13 +1485,22 @@ namespace psxemu {
         PopulateGraphicsCardMenu(window_, labels, chosen);
     }
 
+    // The resolution, PGXP and the plane views, as they are drawing: DLSS, while it runs, has
+    // the resolution and precise vertices.
+    void App::UpdateRasteriserMenus() {
+        const int scale = dlss_active_ ? dlss_scale_ : config_.resolution_scale;
+        TickRasteriser(window_, drawing_hardware_, scale, config_.true_color, dlss_active_);
+        TickPgxp(window_, drawing_hardware_, config_.pgxp_vertices, config_.pgxp_textures,
+                 config_.pgxp_culling, dlss_active_);
+        TickPlaneView(window_, plane_view_, drawing_hardware_ && scale > 1);
+    }
+
     // The menu ticks what is drawing, not what was asked for; a failure says why.
     void App::ReportRasteriser(bool hardware, const std::string& error, bool announce) {
         drawing_hardware_ = hardware;
-        TickRasteriser(window_, hardware, config_.resolution_scale, config_.true_color);
-        TickPgxp(window_, hardware, config_.pgxp_vertices, config_.pgxp_textures,
-                 config_.pgxp_culling);
-        TickPlaneView(window_, plane_view_, hardware && config_.resolution_scale > 1);
+        UpdateRasteriserMenus();
+        // DLSS needs the hardware rasteriser, which has just come or gone.
+        UpdateDlss();
         if (!error.empty())
             Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"Hardware rasteriser unavailable",
                    Wide(error) + L" - drawing in software");
@@ -2481,8 +2620,23 @@ namespace psxemu {
                             video.presenter()->Resize(width, height);
                         video.PresentAgain();
                     });
+                    // DLSS's scale follows the window's size - once a drag has finished, not at
+                    // every step of it, since a new scale is a new rasteriser.
+                    if (!app->sizing_)
+                        app->UpdateDlss();
                 }
                 return 0;
+
+            case WM_ENTERSIZEMOVE:
+                if (app != nullptr)
+                    app->sizing_ = true;
+                break;
+            case WM_EXITSIZEMOVE:
+                if (app != nullptr) {
+                    app->sizing_ = false;
+                    app->UpdateDlss();
+                }
+                break;
 
             // Windows is about to run a modal loop of its own - the menu bar, or a drag or resize
             // of the window. The machine keeps running underneath it now; whether it should is
@@ -3292,6 +3446,11 @@ namespace psxemu {
                            command < kCommandResolutionFirst +
                                          static_cast<int>(std::size(kResolutionChoices))) {
                     SetResolutionScale(kResolutionChoices[command - kCommandResolutionFirst].scale);
+                } else if (command >= kCommandDlssModeFirst && command <= kCommandDlssModeLast) {
+                    SetDlssMode(kDlssModeChoices[command - kCommandDlssModeFirst].key);
+                } else if (command >= kCommandDlssPresetFirst &&
+                           command <= kCommandDlssPresetLast) {
+                    SetDlssPreset(kDlssPresetChoices[command - kCommandDlssPresetFirst].key);
                 } else if (command >= kCommandFilterFirst &&
                            command <
                                kCommandFilterFirst + static_cast<int>(std::size(kFilterChoices))) {

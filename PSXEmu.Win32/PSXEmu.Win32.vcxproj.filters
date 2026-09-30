@@ -66,6 +66,12 @@
     <ClCompile Include="graphics\d3d12_graphics_engine.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
+    <ClCompile Include="graphics\d3d12_dlss.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\dlss\streamline.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
     <ClCompile Include="graphics\opengl_engine.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
@@ -165,6 +171,12 @@
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\d3d12_graphics_engine.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\dlss\dlss_choice.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\dlss\streamline.h">
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\opengl_engine.h">

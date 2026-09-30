@@ -72,6 +72,13 @@ namespace psxemu {
         // The card actually asked of the engines - 0 once it turned out no engine would start on
         // the one chosen, and Windows' pick was used instead.
         uint64_t card_luid() const { return card_luid_; }
+        // Settings > Video > NVIDIA DLSS: before Open, and after. The engine is made again when
+        // DLSS goes on or off, if it has to be (IGraphicsEngine::DlssNeedsRemaking).
+        void SetDlss(const DlssChoice& choice);
+        // Whether DLSS runs in the engine now, and if not why not.
+        DlssStatus dlss_status() const {
+            return engine_ != nullptr ? engine_->dlss_status() : DlssStatus();
+        }
 
         // What is actually running, which is not always what was asked for.
         const std::string& renderer() const { return renderer_; }
@@ -91,6 +98,7 @@ namespace psxemu {
 
         uint64_t card_luid_ = 0;
         std::string card_name_;
+        DlssChoice dlss_;
 
         HWND window_;
         RenderWindows windows_;

@@ -245,6 +245,19 @@ struct EmuConfig {
   // itself decides, unlike the two above, and breaks a few games - off by default.
   bool pgxp_culling = false;
 
+  // NVIDIA DLSS (Docs/DLSS-Plan.md): the picture drawn smaller and jittered, and DLSS making the
+  // screen's picture of it from the motion and depth the hardware rasteriser keeps beside VRAM.
+  // An enhancement, like PGXP, and off by default: only what is shown changes. It runs in the
+  // Direct3D 12 renderer on an NVIDIA RTX card, with the hardware rasteriser; while it does, it
+  // picks the rasteriser's resolution for the mode (graphics/dlss/dlss_choice.h) and turns on
+  // PGXP's precise vertices, which the motion comes from. "off", "dlaa", "quality", "balanced",
+  // "performance" or "ultra_performance".
+  std::string dlss_mode = "off";
+  static const std::array<const char*, 6> kValidDlssModes;
+  // DLSS's model: "auto" - NVIDIA's own for each mode - or preset "k", "l" or "m".
+  std::string dlss_preset = "auto";
+  static const std::array<const char*, 4> kValidDlssPresets;
+
   // Charge the GPU for CPU-to-VRAM and VRAM-to-CPU transfers: one tick per pixel
   // moved, so commands issued after a large upload wait for it the way they
   // would on hardware. Off by default because it can only make a game slower,
@@ -436,6 +449,11 @@ inline const std::array<const char*, 2>
     EmuConfig::kValidGpuRasterisers = { "software", "hardware" };
 
 inline const std::array<int, 7> EmuConfig::kValidResolutionScales = { 1, 2, 3, 4, 5, 6, 8 };
+
+// In the order PSXEmu.Win32's Video > NVIDIA DLSS menu offers them.
+inline const std::array<const char*, 6> EmuConfig::kValidDlssModes = {
+    "off", "dlaa", "quality", "balanced", "performance", "ultra_performance" };
+inline const std::array<const char*, 4> EmuConfig::kValidDlssPresets = { "auto", "k", "l", "m" };
 
 // Empty string ("None") first, then the nine loaded filters in the same
 // order PSXEmu.Win32's Video > Filter menu offers them.

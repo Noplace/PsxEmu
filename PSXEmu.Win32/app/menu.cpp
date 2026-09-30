@@ -195,11 +195,28 @@ namespace psxemu {
         AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandPgxpCulling),
                     L"PGXP: Precise &Culling (may break some games)");
 
+        // NVIDIA DLSS (Docs/DLSS-Plan.md): the mode, the model, and a line saying whether it
+        // runs and why not - which is never a command.
+        HMENU dlss = CreatePopupMenu();
+        for (size_t i = 0; i < std::size(kDlssModeChoices); ++i) {
+            AppendMenuW(dlss, MF_STRING, static_cast<UINT_PTR>(kCommandDlssModeFirst + i),
+                        kDlssModeChoices[i].label);
+        }
+        AppendMenuW(dlss, MF_SEPARATOR, 0, nullptr);
+        for (size_t i = 0; i < std::size(kDlssPresetChoices); ++i) {
+            AppendMenuW(dlss, MF_STRING, static_cast<UINT_PTR>(kCommandDlssPresetFirst + i),
+                        kDlssPresetChoices[i].label);
+        }
+        AppendMenuW(dlss, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(dlss, MF_STRING | MF_GRAYED, static_cast<UINT_PTR>(kCommandDlssStatus),
+                    L"Off");
+
         HMENU video = CreatePopupMenu();
         AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(renderer), L"&Renderer");
         // Filled once the graphics cards have been listed (PopulateGraphicsCardMenu).
         AppendTaggedPopup(video, CreatePopupMenu(), L"Graphics &Card", kGraphicsCardMenuTag);
         AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(rasteriser), L"R&asteriser");
+        AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(dlss), L"NVIDIA &DLSS");
         AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(filter), L"&Filter");
         AppendMenuW(video, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewVram), L"View &VRAM");
@@ -485,12 +502,14 @@ namespace psxemu {
         }
     }
 
-    void TickPgxp(HWND window, bool hardware, bool vertices, bool textures, bool culling) {
+    void TickPgxp(HWND window, bool hardware, bool vertices, bool textures, bool culling,
+                  bool dlss) {
         HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
+        vertices = vertices || dlss;
         const struct { int id; bool on; bool enabled; } items[] = {
-            { kCommandPgxpVertices, vertices, hardware },
+            { kCommandPgxpVertices, vertices, hardware && !dlss },
             { kCommandPgxpTextures, textures, hardware && vertices },
             { kCommandPgxpCulling, culling, hardware && vertices },
         };
@@ -518,7 +537,7 @@ namespace psxemu {
         }
     }
 
-    void TickRasteriser(HWND window, bool hardware, int scale, bool true_color) {
+    void TickRasteriser(HWND window, bool hardware, int scale, bool true_color, bool dlss) {
         HMENU bar = MenuBar(window);
         if (bar == nullptr)
             return;
@@ -527,8 +546,9 @@ namespace psxemu {
         CheckMenuItem(bar, static_cast<UINT>(kCommandRasteriserHardware),
                       MF_BYCOMMAND | (hardware ? MF_CHECKED : MF_UNCHECKED));
         // The resolution and true colour are the hardware rasteriser's alone: greyed while the
-        // software one draws, and still ticked, so it is plain what switching would give.
-        const UINT enabled = MF_BYCOMMAND | (hardware ? MF_ENABLED : MF_GRAYED);
+        // software one draws, and still ticked, so it is plain what switching would give. While
+        // DLSS runs the resolution is its choice, ticked and greyed.
+        const UINT enabled = MF_BYCOMMAND | (hardware && !dlss ? MF_ENABLED : MF_GRAYED);
         for (size_t i = 0; i < std::size(kResolutionChoices); ++i) {
             const UINT id = static_cast<UINT>(kCommandResolutionFirst + i);
             CheckMenuItem(bar, id,
@@ -540,6 +560,27 @@ namespace psxemu {
                       MF_BYCOMMAND | (true_color ? MF_CHECKED : MF_UNCHECKED));
         EnableMenuItem(bar, static_cast<UINT>(kCommandTrueColour),
                        MF_BYCOMMAND | (hardware && scale > 1 ? MF_ENABLED : MF_GRAYED));
+    }
+
+    void TickDlss(HWND window, const std::string& mode, const std::string& preset,
+                  const std::wstring& status) {
+        HMENU bar = MenuBar(window);
+        if (bar == nullptr)
+            return;
+        for (size_t i = 0; i < std::size(kDlssModeChoices); ++i) {
+            CheckMenuItem(bar, static_cast<UINT>(kCommandDlssModeFirst + i),
+                          MF_BYCOMMAND | (mode == kDlssModeChoices[i].key ? MF_CHECKED
+                                                                          : MF_UNCHECKED));
+        }
+        for (size_t i = 0; i < std::size(kDlssPresetChoices); ++i) {
+            const UINT id = static_cast<UINT>(kCommandDlssPresetFirst + i);
+            CheckMenuItem(bar, id,
+                          MF_BYCOMMAND | (preset == kDlssPresetChoices[i].key ? MF_CHECKED
+                                                                              : MF_UNCHECKED));
+            EnableMenuItem(bar, id, MF_BYCOMMAND | (mode != "off" ? MF_ENABLED : MF_GRAYED));
+        }
+        ModifyMenuW(bar, static_cast<UINT>(kCommandDlssStatus), MF_BYCOMMAND | MF_STRING | MF_GRAYED,
+                    static_cast<UINT_PTR>(kCommandDlssStatus), status.c_str());
     }
 
     void TickFilter(HWND window, const std::string& backend, const std::string& filter) {

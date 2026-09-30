@@ -12,6 +12,7 @@
 
 #include "psx/psx.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -2027,6 +2028,31 @@ void TestSettingsFile(const std::string& directory) {
     emulation::psx::LoadConfig(out, loaded);
     Check(loaded.pgxp_vertices && !loaded.pgxp_textures && loaded.pgxp_culling,
           "each of PGXP's three survives the round trip");
+  }
+
+  // DLSS (Docs/DLSS-Plan.md): off, with NVIDIA's own preset, by default; a mode and a preset
+  // kept; one the menu does not offer ignored; and the mode a game can keep its own of.
+  {
+    EmuConfig config;
+    Check(config.dlss_mode == "off" && config.dlss_preset == "auto",
+          "DLSS is off by default, with the automatic preset");
+    config.dlss_mode = "ultra_performance";
+    config.dlss_preset = "m";
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.dlss_mode == "ultra_performance" && loaded.dlss_preset == "m",
+          "a DLSS mode and preset survive the round trip");
+    out.SetString("dlss_mode", "ultra");
+    out.SetString("dlss_preset", "a");
+    EmuConfig rejected;
+    emulation::psx::LoadConfig(out, rejected);
+    Check(rejected.dlss_mode == "off" && rejected.dlss_preset == "auto",
+          "a DLSS mode or preset the menu does not offer is ignored");
+    const std::vector<std::string> keys = emulation::psx::GameSettingKeys();
+    Check(std::find(keys.begin(), keys.end(), "dlss_mode") != keys.end(),
+          "a game can keep its own DLSS mode");
   }
 
   // The graphics card (Settings > Video > Graphics Card): automatic by default, and a name -

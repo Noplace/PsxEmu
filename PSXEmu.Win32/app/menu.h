@@ -86,10 +86,16 @@ namespace psxemu {
     void TickAudioBackend(HWND window, const std::string& backend);
     void TickRenderer(HWND window, const std::string& backend);
     // Ticks what is actually drawing, which a failed hardware rasteriser leaves as software.
-    void TickRasteriser(HWND window, bool hardware, int scale, bool true_color);
+    // While DLSS runs (`dlss`) the scale is its choice: ticked, and greyed.
+    void TickRasteriser(HWND window, bool hardware, int scale, bool true_color, bool dlss);
     // PGXP's three switches, greyed unless the hardware rasteriser draws (and the last two unless
-    // precise vertices are on).
-    void TickPgxp(HWND window, bool hardware, bool vertices, bool textures, bool culling);
+    // precise vertices are on). While DLSS runs precise vertices are on, and greyed.
+    void TickPgxp(HWND window, bool hardware, bool vertices, bool textures, bool culling,
+                  bool dlss);
+    // Settings > Video > NVIDIA DLSS: the mode and preset as EmuConfig keeps them, and the line
+    // saying whether it runs.
+    void TickDlss(HWND window, const std::string& mode, const std::string& preset,
+                  const std::wstring& status);
     // Video > View Depth and View Motion: `view` 0 for neither, 1 depth, 2 motion. Greyed unless
     // the hardware rasteriser draws above 1x, the only picture they can take the place of.
     void TickPlaneView(HWND window, int view, bool available);

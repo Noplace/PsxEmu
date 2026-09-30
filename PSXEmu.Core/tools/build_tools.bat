@@ -199,6 +199,19 @@ cl %FLAGS% /Fo:Temp\tools\obj_ppm\ /Fe:Temp\tools\ppm_diff.exe ^
    PSXEmu.Core\tools\ppm_diff.cpp
 if errorlevel 1 exit /b 1
 
+rem The arithmetic of sizes around DLSS: graphics\dlss\dlss_choice.h, header-only.
+if not exist Temp\tools\obj_dlss mkdir Temp\tools\obj_dlss
+cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_dlss\ /Fe:Temp\tools\dlss_choice_test.exe ^
+   PSXEmu.Core\tools\dlss_choice_test.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
+rem What NVIDIA Streamline says about each card - Docs/DLSS-Plan.md, phase 0. Needs
+rem PSXEmu.Win32\graphics\dlss\fetch_streamline.ps1 run first to find anything, but builds without.
+if not exist Temp\tools\obj_slprobe mkdir Temp\tools\obj_slprobe
+cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_slprobe\ /Fe:Temp\tools\sl_probe.exe ^
+   PSXEmu.Core\tools\sl_probe.cpp PSXEmu.Win32\graphics\dlss\streamline.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 echo.
 echo Built Temp\tools\boot_runner.exe
 echo Built Temp\tools\media_test.exe

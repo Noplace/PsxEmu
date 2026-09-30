@@ -23,6 +23,7 @@
 #include <string>
 #include <vector>
 
+#include "graphics/dlss/dlss_choice.h"
 #include "psx/shared_picture.h"
 #include "ui/overlay/overlay_draw.h"
 
@@ -86,6 +87,24 @@ class IGraphicsEngine {
     // The graphics adapter, by LUID, whose shared pictures this engine can draw; 0 if it takes
     // none - and then the hardware rasteriser reads its pictures back for it.
     virtual uint64_t SharedPictureAdapter() const { return 0; }
+
+    // NVIDIA DLSS (Docs/DLSS-Plan.md): made from the shared pictures and the plane beside them.
+    // Given before Initialize - an engine may need to start something for it first - and again
+    // whenever it changes. Only the Direct3D 12 engine has it; the rest say so.
+    virtual void SetDlss(const psxemu::DlssChoice& choice) { (void)choice; }
+    virtual psxemu::DlssStatus dlss_status() const {
+        psxemu::DlssStatus status;
+        status.why = "only the Direct3D 12 renderer has it";
+        return status;
+    }
+    // Whether this engine has to be made again for DLSS to go from `from` to `to`: on or off,
+    // for one that starts NVIDIA's Streamline with its device.
+    virtual bool DlssNeedsRemaking(const psxemu::DlssChoice& from,
+                                   const psxemu::DlssChoice& to) const {
+        (void)from;
+        (void)to;
+        return false;
+    }
 
     // The window was resized; follow the back buffer to the new client area.
     virtual void Resize(int width, int height) = 0;

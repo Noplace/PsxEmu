@@ -149,6 +149,10 @@ class Machine {
   // Video > View Depth and View Motion: the plane beside VRAM that DLSS will use, shown in
   // place of the picture (Docs/DLSS-Plan.md) - by the hardware rasteriser, above 1x.
   void set_plane_view(psx::PlaneView view);
+  // DLSS running in the renderer (Docs/DLSS-Plan.md, phase 4): the plane kept beside VRAM, with
+  // motion, for every picture, and the triangles jittered through `jitter_phases` offsets.
+  // Nothing the machine sees changes. Off: neither.
+  void set_dlss(bool on, int jitter_phases);
 
   // Instructions stepped since the thread started. The machine's thread, or
   // anyone once Stop has returned.
@@ -187,6 +191,8 @@ class Machine {
   // Everything below is the machine thread's.
   uint32_t pause_reasons_ = 0;
   bool view_vram_ = false;
+  psx::PlaneView plane_view_ = psx::PlaneView::kPicture;
+  bool dlss_ = false;
   utilities::FrameLimiter limiter_;
   utilities::SpeedResampler resampler_;
   // The speed the machine is actually managing, in multiples of real time,

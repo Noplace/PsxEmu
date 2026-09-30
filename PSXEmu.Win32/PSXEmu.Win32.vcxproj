@@ -60,6 +60,17 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
+  <!-- NVIDIA DLSS's DLLs beside the executable, when they have been fetched into Temp\streamline
+       (graphics\dlss\fetch_streamline.ps1): NVIDIA's, under NVIDIA's licence, so never in the
+       repository. Without them the emulator builds and runs, and says DLSS's files are missing. -->
+  <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
+    <PostBuildEvent>
+      <Command>set SL=$(SolutionDir)Temp\streamline\v2.14.1\bin\x64
+if exist "%SL%\sl.interposer.dll" for %%f in (sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll nvngx_dlss.license.txt) do xcopy /y /d /q "%SL%\%%f" "$(OutDir)." &gt;nul
+exit /b 0</Command>
+      <Message>NVIDIA DLSS's DLLs, if fetched</Message>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
@@ -94,6 +105,8 @@
     <ClCompile Include="graphics\d3d11_presenter.cpp" />
     <ClCompile Include="graphics\hw_raster\d3d11_raster.cpp" />
     <ClCompile Include="graphics\d3d12_graphics_engine.cpp" />
+    <ClCompile Include="graphics\d3d12_dlss.cpp" />
+    <ClCompile Include="graphics\dlss\streamline.cpp" />
     <ClCompile Include="graphics\opengl_engine.cpp" />
     <ClCompile Include="graphics\vulkan_engine.cpp" />
     <ClCompile Include="app\engine_factory.cpp" />
@@ -129,6 +142,8 @@
     <ClInclude Include="graphics\adapters.h" />
     <ClInclude Include="graphics\hw_raster\d3d11_raster.h" />
     <ClInclude Include="graphics\d3d12_graphics_engine.h" />
+    <ClInclude Include="graphics\dlss\dlss_choice.h" />
+    <ClInclude Include="graphics\dlss\streamline.h" />
     <ClInclude Include="graphics\opengl_engine.h" />
     <ClInclude Include="graphics\gl_functions.h" />
     <ClInclude Include="graphics\vulkan_engine.h" />

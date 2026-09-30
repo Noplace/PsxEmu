@@ -1,14 +1,15 @@
 # NVIDIA DLSS 4.5 and DLSS 5
 
-**Status: phases 1-3 done (2026-09-30) - everything DLSS needs from the PlayStation. The plane beside
-VRAM carries depth from PGXP and motion from the GTE and 2D matching. It is handed over beside each
-shared picture, with whether the picture is new or starts afresh and the jitter it was drawn with,
-and shown by Video > View Depth and View Motion. On the 26 discs, motion never does worse than
-none, and halves the warp error where 3D moves. Jittering leaves it as it was, and the machine
-runs exactly as without any of it. Phase 4, DLSS itself on the RTX 4060, next. DLSS 4.5 Super Resolution, DLAA and 2x
-Frame Generation are possible on this laptop's RTX 4060 once it is back (it has shown as "Unknown"
-since the 0x9F restart). DLSS 5 is not possible yet: there is no public SDK for it, and it runs on
-RTX 50 cards only until an RTX 40 update NVIDIA has promised for "later this fall".**
+**Status: phases 0-4 built (2026-09-30); phase 4 waits on the review of its pictures in motion.
+Settings > Video > NVIDIA DLSS runs DLSS 310.9.1 Super Resolution and DLAA in the Direct3D 12
+renderer on the RTX 4060, through Streamline 2.14.1: Ridge Racer at full speed, the signs of its
+jitter and motion measured rather than guessed, 0.6-2 ms a picture on the card. Phases 1-3 are
+everything DLSS needs from the PlayStation: the plane beside VRAM carries depth from PGXP and motion
+from the GTE and 2D matching, handed over beside each shared picture with whether it is new or
+starts afresh and the jitter it was drawn with. On the 26 discs, motion never does worse than none,
+and halves the warp error where 3D moves; the machine runs exactly as without any of it. Frame
+Generation (phase 5) next. DLSS 5 is not possible yet: there is no public SDK for it, and it runs
+on RTX 50 cards only until an RTX 40 update NVIDIA has promised for "later this fall".**
 
 **Decided 2026-09-29:**
 
@@ -281,11 +282,11 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 
 | # | What | Done when | Card | Rough size |
 |---|---|---|---|---|
-| 0 | The SDK read, the licence confirmed for shipping the DLLs, `sl_probe` (one run: each card's LUID, `slIsFeatureSupported` for DLSS and Frame Generation, GPU scheduling, driver) | the 4060 back and reporting both features | 4060, once | 1 |
+| 0 (**done**) | The SDK read, the licence confirmed for shipping the DLLs, `sl_probe` (one run: each card's LUID, `slIsFeatureSupported` for DLSS and Frame Generation, GPU scheduling, driver) | the 4060 back and reporting both features | 4060, once | 1 |
 | 1 (**done**) | The plane beside VRAM: second target, the rules per kind of job, carried in the shared picture, depth from `w`, View Depth, `--ppm-depth`; zero motion | the twelve-disc table's instruction and sector counts identical with it on; all harnesses green; depth reviewed on five discs | Radeon, WARP | 2 |
 | 2 (**done**) | Motion vectors: picture boundaries, the GTE's two tables, the identity keys measured, sprite matching, flags, resets, `--motion`, the warp check | the warp check beats zero motion on every 3D disc of the 26; the keys chosen by numbers | Radeon, WARP | 3-5 |
 | 3 (**done**) | Jitter | the table identical in the machine's terms; the warp check unchanged with the jitter taken out | Radeon, WARP | 1-2 |
-| 4 | Super Resolution and DLAA in the Direct3D 12 renderer through Streamline; the menus; per-game keys | pictures reviewed at the table's checkpoints; ghosting no worse than without on the 26 discs; the cost measured | 4060 | 2-3 |
+| 4 (**built**) | Super Resolution and DLAA in the Direct3D 12 renderer through Streamline; the menus; per-game keys | pictures reviewed at the table's checkpoints; ghosting no worse than without on the 26 discs; the cost measured - the cost is, the review in motion is to do | 4060 | 2-3 |
 | 5 | Frame Generation: the swap chain, Reflex on both threads, new-picture presents, the overlay as UI, our pacing kept; the RTX 50 modes in the menu | 30 to 60 and 60 to 120 even (PresentMon); latency measured (Reflex's own stats); the overlay clean | 4060 | 3-4 |
 | 6 | DLSS 5 | the gate above | RTX 50, or RTX 40 after its update | unknown |
 
@@ -546,7 +547,7 @@ PGXP to follow - halfword stores, most likely - are depth gained as well.
   - That is the offset set at the new picture *before* the one showing it, since a picture is drawn
     between the two.
   - Its sign is where the sample point moved: a pixel shows what is at itself plus the offset.
-    DLSS's own convention is checked in phase 4, by eye.
+    DLSS's own convention is the other way, as phase 4 measured (`sl_probe --jitter-test`).
 
 **In the rasteriser:**
 
@@ -615,6 +616,140 @@ PGXP to follow - halfword stores, most likely - are depth gained as well.
   halves this laptop's speed, so the three are only comparable with each other.
 - **Every harness green**; `hw_raster_test` 73 (+6), plain and with the plane kept at 2x and 4x.
 
+### Phase 0, as built
+
+- **`sl_probe`** (`tools/sl_probe.cpp`) loads Streamline as the emulator does and, for each card,
+  prints its LUID, GPU scheduling (the kernel driver's own WDDM 2.7 caps) and whether DLSS, Frame
+  Generation and Reflex run there. One run, 2026-09-30:
+  - **RTX 4060 Laptop**: all three; GPU scheduling on; driver 610.62 (512.15 needed); DLSS and
+    Frame Generation 310.9.1.
+  - **Radeon 780M**: DLSS and Frame Generation "this graphics card does not support it"; Reflex's
+    markers yes.
+  - Every Streamline DLL's NVIDIA signature verified.
+- **The licence**, read in full: decision 2 below.
+
+### Phase 4, as built
+
+**Streamline** (`graphics/dlss/`):
+
+- **`fetch_streamline.ps1`** downloads Streamline 2.14.1 (276 MB) into `Temp\streamline\`, checks
+  its size and unpacks it; running it again does nothing. The repository holds only Streamline's
+  headers, MIT, in `graphics/dlss/streamline/`. The x64 build copies `sl.interposer.dll`,
+  `sl.common.dll`, `sl.dlss.dll`, `nvngx_dlss.dll` and DLSS's licence beside the executable when they
+  are there; without them it builds and runs, and the menu says the files are missing.
+- **`Streamline`** (`streamline.h/.cpp`) loads `sl.interposer.dll` once per process, after
+  `sl::security::verifyEmbeddedSignature`, takes every function by name (nothing links against it),
+  and starts it for DLSS - and Frame Generation, Reflex and PC Latency when asked, for phase 5:
+  - manual hooking, frame-based tagging, the host keeping command-list state
+  - neither optional updates nor downloaded plugins (both on by default)
+  - a custom engine with a project GUID of PSXEmu's own, no NVIDIA application id
+  - DLSS's own functions taken once the device is given (`SetDevice`); before that
+    `slGetFeatureFunction` refuses, which phase 0's first probe found
+  - stopped with `slShutdown`, but never unloaded
+- **What Streamline does regardless.** Its release builds start the driver's NGX updater
+  (`nvngx_update.exe ... -api update`) whenever an NVIDIA card is present, which checks NVIDIA's
+  servers and may download newer Streamline plugins into `ProgramData\NVIDIA\NGX`
+  (`source/core/sl.ota/ota.cpp`, `OTA::checkForOTA`). No preference stops it; the plugins it
+  fetches are never loaded here, since downloaded plugins are off. Seen in Streamline's own log.
+- **`PSXEMU_DLSS_LOG=<folder>`** writes Streamline's verbose `sl.log` there, and the renderer's own
+  `dlss.log`: started, why not run, the ranges DLSS gave, what it ran at, any step that failed.
+
+**The renderer** (`d3d12_graphics_engine.cpp`, and `d3d12_dlss.cpp` for DLSS's half):
+
+- **Made with Streamline when DLSS is asked for** on an NVIDIA card: the device first, then
+  Streamline, then the queue and swap chain made through its proxies of the device and factory, so
+  its Present runs every frame. On any other card nothing of NVIDIA's is loaded. DLSS going on or
+  off makes the renderer again (`DlssNeedsRemaking`); a change of mode or preset does not. At the
+  end the swap chain and queue go while Streamline is there to hear of it, then Streamline, then
+  the device.
+- **A compute pass turns the plane into DLSS's inputs**, a thread a pixel: motion `RG16F` (0 where
+  unknown), depth `R32F` as 1/w (`depthInverted`), and the bias-current-colour hint `R8` - 1 where
+  motion is unknown, 0.5 where the last thing drawn was translucent.
+- **Each new picture** gets a frame token, the constants (identity matrices, camera motion included,
+  `mvecScale` 1/size, the jitter, reset from the picture or from a picture DLSS did not see), the
+  options when they change (the presets: Auto is K for DLAA to Balanced, M for Performance, L for
+  Ultra Performance), the five tags in their states, and the evaluation. A picture shown again is
+  drawn from the last output; the output is drawn by the ordinary single-shader pass, filters
+  included.
+- **Shown as they are**: pictures without the plane, interlaced 480 lines, films (which come as
+  pixels), and anything DLSS will not take. The Gpu stops jittering while interlaced, so they do not
+  shake (`Gpu::NextPicture`).
+
+**The sizes** (`graphics/dlss/dlss_choice.h`, `tools/dlss_choice_test.cpp`, 35 checks). What DLSS
+310.9.1 takes on the 4060 (`sl_probe --optimal`): Quality, Balanced and Performance anything from
+half the output to all of it, each way; DLAA the output to within 1%; Ultra Performance exactly a
+third.
+
+- **The output is the screen's rectangle** when the picture is in the range for it (Quality to
+  Performance), drawn one to one. Otherwise it is the picture times the mode's own ratio, scaled
+  onto the screen as any picture is: DLAA is then anti-aliasing at the rasteriser's resolution, and
+  a 256-wide picture still goes through the mode.
+- **The front end picks the rasteriser's scale** for the window: the mode's ratio as near as a
+  whole scale gets it, within the range - at 1600 lines 4x for Quality to Performance, 6x for DLAA,
+  2x for Ultra Performance. **At least 2x**: at 1x the rasteriser hands over no picture of its own.
+  The scale follows the window once a drag ends, and the Resolution items show it, ticked and greyed.
+- **The jitter's length** is 8 x (output / input)^2, NVIDIA's rule, at the ratio actually used.
+
+**The signs, measured** (`sl_probe --jitter-test`). A sharp-edged pattern, sampled as the
+rasteriser samples, through 48 frames of DLSS Quality, scored against the pattern drawn at the
+output's size (mean difference, lower is better):
+
+| Given to DLSS | Still | | Moving 0.37, 0.23 px a frame |
+|---|---|---|---|
+| jitter as the picture's | 0.246 | motion where it was minus where it is | **0.043** |
+| **jitter negated** | **0.025** | motion negated | 0.155 |
+| jitter +x, -y | 0.195 | no motion | 0.142 |
+| jitter -x, +y | 0.123 | | |
+
+So the renderer gives DLSS the picture's jitter negated - the sample point moved one way is the
+picture moved the other - and the plane's motion as it is. Both are the same on repeated runs.
+
+**The cost on the card** (`sl_probe --cost`, timestamps either side of the evaluation, median of 30):
+
+| | In | Out | ms |
+|---|---|---|---|
+| Quality | 640x480 | 945x709 | 0.61 |
+| Quality | 960x720 | 1440x1080 | 1.02 |
+| Quality | 1280x960 | 2133x1600 | 1.97 |
+| Performance | 1280x960 | 2133x1600 | 3.22 |
+| DLAA | 1280x960 | 1280x960 | 0.86 |
+| DLAA | 1920x1440 | 1920x1440 | 1.59 |
+| Ultra Performance | 640x480 | 1920x1440 | 1.57 |
+
+**The front end:**
+
+- **Settings > Video > NVIDIA DLSS**: Off, DLAA, Quality, Balanced, Performance, Ultra Performance;
+  the preset; and a line saying what it runs at, or why it does not - not the Direct3D 12
+  renderer, not NVIDIA's card, the DLLs missing, the software rasteriser, the rasteriser on another
+  card. A toast says so once for each reason.
+- **While DLSS runs** the machine is told (`Machine::set_dlss`): the plane kept, the jitter on; and
+  `SendConfigToMachine` gives it the scale and PGXP's precise vertices without touching the
+  settings. PGXP's item shows it, ticked and greyed.
+- **`EmuConfig::dlss_mode`** and **`dlss_preset`**; `dlss_mode` is one of a game's own keys.
+
+**Verified:**
+
+- **On the Radeon**: DLSS asked for, the menu says the card is not NVIDIA's, the rasteriser and the
+  picture are as ever.
+- **On the 4060**, a handful of runs, one device each: the BIOS (all 480i, rightly left alone);
+  Ridge Racer's attract mode maximised at 2x, 640-wide screens at DLSS's own ratio (1280x480 to
+  1920x720) and the race to the screen (640x480 to 945x709), at 49.7 fps, full speed for this PAL
+  disc. Its pictures, captured from the screen, are clean: the bridge's cables thin and unbroken,
+  text on the cars legible. A faint smear beside a car may be ghosting; stills cannot say.
+- **The machine, unchanged**: Air Combat, 3,000 frames with `--planes --jitter 8`, against the
+  build before the interlaced change: every line the same but the six 480i checkpoints, which are
+  now exactly the unjittered run's.
+- **Every harness green**: `media_test` 416 (+4, the DLSS settings), `dlss_choice_test` 35 (new).
+
+**Not yet:**
+
+- **The review in motion**: ghosting on the 26 discs against DLSS off, which needs eyes on moving
+  pictures, and the per-game choices that follow from it.
+- **The app is not DPI-aware**: on this laptop's 200% screen its whole window is drawn at half the
+  resolution and stretched by Windows, DLSS's output with it. Per-monitor DPI awareness would double
+  what DLSS draws to; that is the whole front end's change, not DLSS's.
+- **Emulation > Show Timings** does not show DLSS's milliseconds yet.
+
 ---
 
 ## How it will be verified
@@ -651,17 +786,25 @@ PGXP to follow - halfword stores, most likely - are depth gained as well.
 
 1. **Scope: both.** Super Resolution and DLAA first, then Frame Generation. Frame Generation is the
    one thing DLSS gives here that nothing else can: smooth 60 from a 30 fps game.
-2. **The licence: ship the DLLs, if the licence allows it.** NVIDIA's RTX SDK licence:
+2. **The licence: ship the DLLs, if the licence allows it.** NVIDIA's RTX SDK licence
+   (`nvngx_dlss.license.txt` in the SDK's `bin\x64`), as read in phase 0:
    - forbids using the SDK "in any manner that would cause it to become subject to an open source
      software license" (4(e))
-   - requires NVIDIA's marks in the About box and the notice "This software contains source code
-     provided by NVIDIA Corporation"
+   - asks for the notice "This software contains source code provided by NVIDIA Corporation" in
+     modifications and derivative works of NVIDIA's *source* - none here: the Streamline headers
+     are MIT, and NVIDIA's binaries are not modified
+   - asks for the SDK's use to be attributed, with NVIDIA's marks "on splash screens, in the about
+     box of the application (if present), and in credits for game applications" (Exhibit 7.1(b)).
+     PSXEmu has none of the three; DLSS is named, with NVIDIA's, in its menu and in the docs
    - allows deployment only for systems with NVIDIA GPUs
    - forbids modifying the binaries
+   - reserves NVIDIA's right to update software on the system, "except for those updates that you
+     may opt-out via the SDK API" (5) - which Streamline's release builds do regardless (phase 4)
 
    This project is MIT, which is not copyleft, so shipping NVIDIA's DLLs beside it under NVIDIA's own
-   terms should be allowed. Phase 0 reads the licence in full to confirm that before anything ships.
-   Still open: whether the binaries live in the repository or are fetched.
+   terms is allowed. **Fetched, never committed** (decided 2026-09-30): `graphics\dlss\
+   fetch_streamline.ps1` downloads the SDK into `Temp\streamline\`, and the build copies the DLLs
+   and DLSS's licence beside the executable.
 3. **FSR: later.** AMD's FSR 3.1 (MIT) takes the same colour, depth, motion and jitter and would
    run on the Radeon. Not planned now.
 4. **Pacing: ours.** The machine's limiter keeps the console's rate under Frame Generation. Reflex

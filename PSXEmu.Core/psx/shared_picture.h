@@ -98,6 +98,9 @@ struct SharedPicture {
   // display changed. What DLSS needs to know of the picture as a whole (Gpu::NewPicture).
   bool new_picture = false;
   bool reset = false;
+  // 480 lines interlaced: half of each picture is the last field's lines, which no motion
+  // describes. DLSS leaves such pictures as they are.
+  bool interlaced = false;
   // Where the picture's triangles were sampled within each of its pixels, when jittered for DLSS
   // (Docs/DLSS-Plan.md, phase 3): in its own pixels, each within [-0.5, 0.5). A pixel shows what
   // is at itself plus this - the sample point moved, not the picture. 0 when not jittered.

@@ -539,6 +539,7 @@ class Gpu : public GpuCore {
   bool motion_ = false;
   bool motion_check_ = false;   // SetMotionCheck's
   int jitter_phases_ = 0;       // SetJitter's
+  int jitter_drawn_ = 0;        // ...and what the rasteriser has now: none while interlaced
   VertexMotion sprite_motion_;
   uint32_t shown_x_ = 0, shown_y_ = 0;   // the display's start at the last vblank
   uint32_t vblanks_since_flip_ = 0;
