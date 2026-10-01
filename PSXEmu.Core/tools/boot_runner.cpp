@@ -58,8 +58,8 @@
 //                        to a presenter that can take it there, rather than reading it back
 //     --planes           ...keeping the plane beside VRAM that DLSS will use - depth and
 //                        motion - and handing it over with a shared picture (Docs/DLSS-Plan.md)
-//     --view depth|motion  ...showing that plane in place of the picture, as Video > View Depth
-//                        and View Motion do: above 1x, --ppm writes it
+//     --view depth|motion  ...showing that plane in place of the picture, as View > Depth
+//                        and Motion do: above 1x, --ppm writes it
 //     --motion           ...with the plane kept, the warp check: each new picture compared with
 //                        the last one moved by its motion and left still (Docs/DLSS-Plan.md,
 //                        phase 2) - slow, since it reads each picture back; with --pgxp

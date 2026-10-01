@@ -39,10 +39,18 @@ namespace psxemu {
     // Ultra Performance.
     enum class DlssPreset { kAuto, kK, kL, kM };
 
+    // DLSS Frame Generation (phase 5): how many pictures it makes for each one drawn - 0 off, 1
+    // for 2x, up to 5 for 6x (RTX 50) - or kDlssGenerationDynamic, to the screen's rate (RTX 50).
+    // It runs only with Super Resolution (a mode other than Off): it takes the same motion and
+    // depth.
+    inline constexpr int kDlssGenerationDynamic = -1;
+
     struct DlssChoice {
         DlssMode mode = DlssMode::kOff;
         DlssPreset preset = DlssPreset::kAuto;
+        int frame_generation = 0;
         bool operator==(const DlssChoice&) const = default;
+        bool generating() const { return mode != DlssMode::kOff && frame_generation != 0; }
     };
 
     // Whether DLSS runs in a renderer, and if not why not - in words for the menu.
@@ -50,7 +58,23 @@ namespace psxemu {
         bool ready = false;
         std::string why;       // when not ready
         std::string version;   // DLSS's own, when ready: "310.9.1"
+        // Frame Generation, when asked for: whether it runs, and if not why not; the most
+        // pictures the card makes for one (1: 2x only; 5: up to 6x) and whether it makes as
+        // many as the screen wants (Dynamic).
+        bool generation_ready = false;
+        std::string generation_why;
+        int generation_most = 0;
+        bool generation_dynamic = false;
+        bool operator==(const DlssStatus&) const = default;
     };
+
+    // As EmuConfig keeps dlss_frame_generation: "off", "2x" to "6x", "dynamic".
+    inline int ParseDlssGeneration(const std::string& key) {
+        if (key == "dynamic") return kDlssGenerationDynamic;
+        if (key.size() == 2 && key[1] == 'x' && key[0] >= '2' && key[0] <= '6')
+            return key[0] - '1';
+        return 0;
+    }
 
     // As EmuConfig keeps them: dlss_mode and dlss_preset.
     inline DlssMode ParseDlssMode(const std::string& key) {

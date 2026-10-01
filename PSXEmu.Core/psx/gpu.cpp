@@ -1629,6 +1629,9 @@ namespace emulation {
             shared_picture_.new_picture = new_picture;
             shared_picture_.reset = reset;
             shared_picture_.interlaced = status_.vres && status_.vertical_interlace;
+            if (new_picture)
+                ++picture_number_;
+            shared_picture_.picture = motion_ ? picture_number_ : 0;
             // framebuffer_ is the native picture, which the checksums and everything else that
             // measures the machine read. Bringing native VRAM up to date for it waits for the
             // hardware rasteriser to finish the frame, so when the sharper picture is what is

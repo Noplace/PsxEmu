@@ -180,6 +180,7 @@ namespace psxemu {
             return false;
         }
         started_ = true;
+        frame_generation_ = frame_generation;
         return true;
     }
 
@@ -201,7 +202,40 @@ namespace psxemu {
             *error = "DLSS's functions are missing from Streamline";
             return false;
         }
+        // Frame Generation's, and the Reflex and PC Latency it needs: all of them, or none, and
+        // Super Resolution carries on either way.
+        if (frame_generation_) {
+            bool found = true;
+            auto take = [&](sl::Feature feature, auto*& out, const char* name) {
+                void* pointer = nullptr;
+                if (slGetFeatureFunction(feature, name, pointer) != sl::Result::eOk)
+                    pointer = nullptr;
+                out = reinterpret_cast<std::remove_reference_t<decltype(out)>>(pointer);
+                found = found && pointer != nullptr;
+            };
+            take(sl::kFeatureDLSS_G, slDLSSGSetOptions, "slDLSSGSetOptions");
+            take(sl::kFeatureDLSS_G, slDLSSGGetState, "slDLSSGGetState");
+            take(sl::kFeatureReflex, slReflexSetOptions, "slReflexSetOptions");
+            take(sl::kFeatureReflex, slReflexSleep, "slReflexSleep");
+            take(sl::kFeatureReflex, slReflexGetState, "slReflexGetState");
+            take(sl::kFeaturePCL, slPCLSetMarker, "slPCLSetMarker");
+            take(sl::kFeaturePCL, slPCLGetState, "slPCLGetState");
+            take(sl::kFeaturePCL, slPCLSetOptions, "slPCLSetOptions");
+            if (!found)
+                ForgetGeneration();
+        }
         return true;
+    }
+
+    void Streamline::ForgetGeneration() {
+        slDLSSGSetOptions = nullptr;
+        slDLSSGGetState = nullptr;
+        slReflexSetOptions = nullptr;
+        slReflexSleep = nullptr;
+        slReflexGetState = nullptr;
+        slPCLSetMarker = nullptr;
+        slPCLGetState = nullptr;
+        slPCLSetOptions = nullptr;
     }
 
     void Streamline::Stop() {
@@ -209,8 +243,10 @@ namespace psxemu {
             return;
         slShutdown();
         started_ = false;
+        frame_generation_ = false;
         slDLSSGetOptimalSettings = nullptr;
         slDLSSSetOptions = nullptr;
+        ForgetGeneration();
     }
 
     bool Streamline::Supports(sl::Feature feature, uint64_t luid, std::string* why) const {

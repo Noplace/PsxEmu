@@ -31,7 +31,7 @@ struct VideoFrame {
   // width x height, and `pixels` empty. Only for a presenter that said it can take one.
   psx::SharedPicture shared;
 
-  // Or, for Video > View VRAM, all of VRAM as the GPU holds it: 1024x512
+  // Or, for View > VRAM, all of VRAM as the GPU holds it: 1024x512
   // 16-bit pixels, converted by the video thread, which has the time to spare
   // where the machine's thread has none.
   std::vector<uint16_t> vram;

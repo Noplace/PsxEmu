@@ -61,6 +61,7 @@ namespace psxemu {
                                            LPARAM lparam);
         void AppendWide(const std::wstring& text);
         void TrimIfLong();
+        void SetFontForDpi(int dpi);
 
         HWND window_ = nullptr;
         HWND edit_ = nullptr;

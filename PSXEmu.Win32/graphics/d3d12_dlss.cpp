@@ -24,6 +24,7 @@
 #include "graphics/d3d12_graphics_engine.h"
 
 #include "graphics/adapters.h"
+#include "graphics/dlss/reflex_markers.h"
 #include "graphics/dlss/streamline.h"
 
 #include <algorithm>
@@ -119,6 +120,14 @@ void D3D12GraphicsEngine::SetDlss(const psxemu::DlssChoice& choice) {
     dlss_choice_ = choice;
 }
 
+sl::FrameToken* D3D12GraphicsEngine::Token(uint32_t picture) {
+    sl::FrameToken* token = nullptr;
+    if (streamline_ == nullptr ||
+        streamline_->slGetNewFrameToken(token, &picture) != sl::Result::eOk)
+        return nullptr;
+    return token;
+}
+
 void D3D12GraphicsEngine::NoteDlss(const std::string& line) {
     if (line == dlss_last_note_)
         return;
@@ -131,6 +140,10 @@ psxemu::DlssStatus D3D12GraphicsEngine::dlss_status() const {
     status.ready = streamline_ != nullptr && dlss_pipeline_ != nullptr && dlss_why_.empty();
     status.why = dlss_why_;
     status.version = dlss_version_;
+    status.generation_ready = generation_ready_ && generation_why_.empty();
+    status.generation_why = generation_why_;
+    status.generation_most = generation_most_;
+    status.generation_dynamic = generation_dynamic_;
     return status;
 }
 
@@ -138,7 +151,10 @@ psxemu::DlssStatus D3D12GraphicsEngine::dlss_status() const {
 // the engine: made again when DLSS goes on or off, not when it only changes mode.
 bool D3D12GraphicsEngine::DlssNeedsRemaking(const psxemu::DlssChoice& from,
                                            const psxemu::DlssChoice& to) const {
-    return (from.mode == DlssMode::kOff) != (to.mode == DlssMode::kOff);
+    // ...and when Frame Generation goes on or off: its plugin, Reflex and PC Latency are loaded
+    // only for it, and NVIDIA asks for the swap chain to be made again either way.
+    return (from.mode == DlssMode::kOff) != (to.mode == DlssMode::kOff) ||
+           from.generating() != to.generating();
 }
 
 void D3D12GraphicsEngine::StartStreamline() {
@@ -154,7 +170,8 @@ void D3D12GraphicsEngine::StartStreamline() {
 
     auto streamline = std::make_unique<psxemu::Streamline>();
     std::string error;
-    if (!streamline->Start(psxemu::ExecutableFolder(), false, &error)) {
+    const bool generating = dlss_choice_.generating();
+    if (!streamline->Start(psxemu::ExecutableFolder(), generating, &error)) {
         dlss_why_ = error;
         return;
     }
@@ -168,6 +185,14 @@ void D3D12GraphicsEngine::StartStreamline() {
         dlss_why_ = error;
         streamline->Stop();
         return;
+    }
+    // Frame Generation, when asked for: Super Resolution runs whether or not it can.
+    generation_why_.clear();
+    if (generating) {
+        if (!streamline->Supports(sl::kFeatureDLSS_G, adapter_luid_, &why))
+            generation_why_ = why;
+        else if (!streamline->generating())
+            generation_why_ = "Streamline's Frame Generation, Reflex or PC Latency is missing";
     }
     // The proxies the queue and the swap chain are made through. Each holds the object it
     // stands for; the pointer handed in comes back as the proxy, with a reference of its own.
@@ -204,6 +229,13 @@ void D3D12GraphicsEngine::StartStreamline() {
 void D3D12GraphicsEngine::StopStreamline() {
     if (streamline_ == nullptr)
         return;
+    // No marker from the machine's thread reaches it from here on.
+    psxemu::ReflexMarkers::Get().Attach(nullptr);
+    if (generation_ready_) {
+        SetGenerationMode(false);
+        streamline_->slFreeResources(sl::kFeatureDLSS_G, sl::ViewportHandle(0u));
+    }
+    generation_ready_ = false;
     FlushGPU();
     streamline_->slFreeResources(sl::kFeatureDLSS, sl::ViewportHandle(0u));
     // What was made through Streamline goes while it is there to hear of it.
@@ -213,9 +245,283 @@ void D3D12GraphicsEngine::StopStreamline() {
     command_queue_.Reset();
     sl_device_.Reset();
     sl_factory_.Reset();
-    frame_token_ = nullptr;
+    hudless_.Reset();
+    ui_.Reset();
     streamline_->Stop();
     streamline_.reset();
+}
+
+// After the swap chain: Reflex on - Frame Generation will not run without its low-latency mode
+// - with no frame limit, so the machine's own pacing keeps the rate; PC Latency's pings to the
+// window's thread; and what the card makes.
+void D3D12GraphicsEngine::SetUpGeneration(HWND window) {
+    generation_ready_ = false;
+    if (streamline_ == nullptr || !dlss_choice_.generating() || !generation_why_.empty() ||
+        !streamline_->generating() || dlss_pipeline_ == nullptr)
+        return;
+    sl::ReflexOptions reflex{};
+    reflex.mode = sl::ReflexMode::eLowLatency;
+    reflex.frameLimitUs = 0;
+    if (streamline_->slReflexSetOptions(reflex) != sl::Result::eOk) {
+        generation_why_ = "Reflex would not start";
+        return;
+    }
+    sl::PCLOptions pcl{};
+    pcl.idThread = GetWindowThreadProcessId(window, nullptr);
+    streamline_->slPCLSetOptions(pcl);
+    sl::PCLState pcl_state{};
+    if (streamline_->slPCLGetState(pcl_state) == sl::Result::eOk)
+        psxemu::ReflexMarkers::Get().set_ping_message(pcl_state.statsWindowMessage);
+
+    sl::DLSSGState state{};
+    if (streamline_->slDLSSGGetState(sl::ViewportHandle(0u), state, nullptr) != sl::Result::eOk) {
+        generation_why_ = "Frame Generation would not say what it can do";
+        return;
+    }
+    generation_most_ = static_cast<int>(state.numFramesToGenerateMax);
+    generation_dynamic_ = state.bIsDynamicMFGSupported == sl::Boolean::eTrue;
+    generation_min_size_ = state.minWidthOrHeight;
+    const int asked = dlss_choice_.frame_generation;
+    if (asked == psxemu::kDlssGenerationDynamic && !generation_dynamic_) {
+        generation_why_ = "this card does not make Dynamic Frame Generation";
+        return;
+    }
+    if (asked > generation_most_) {
+        generation_why_ = "this card makes at most " + std::to_string(generation_most_ + 1) +
+                          "x";
+        return;
+    }
+    generation_ready_ = true;
+    psxemu::ReflexMarkers::Get().Attach(streamline_.get());
+    NoteDlss("Frame Generation ready: up to " + std::to_string(generation_most_ + 1) + "x" +
+             (generation_dynamic_ ? ", Dynamic" : ""));
+}
+
+void D3D12GraphicsEngine::SetGenerationMode(bool on) {
+    if (!generation_ready_ || on == generation_on_)
+        return;
+    sl::DLSSGOptions options{};
+    const int asked = dlss_choice_.frame_generation;
+    options.mode = !on ? sl::DLSSGMode::eOff
+                   : asked == psxemu::kDlssGenerationDynamic ? sl::DLSSGMode::eDynamic
+                                                             : sl::DLSSGMode::eOn;
+    options.numFramesToGenerate = static_cast<uint32_t>((std::max)(asked, 1));
+    // Off between pictures it cannot make anything after - a film, a pause - keeps its memory,
+    // so coming back is not a stutter.
+    options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
+    options.dynamicTargetFrameRate = 0.0f;   // the screen's own rate
+    const sl::Result result = streamline_->slDLSSGSetOptions(sl::ViewportHandle(0u), options);
+    if (result != sl::Result::eOk) {
+        NoteDlss(std::string("slDLSSGSetOptions failed: ") + psxemu::StreamlineResultText(result));
+        return;
+    }
+    generation_on_ = on;
+    NoteDlss(on ? "Frame Generation on" : "Frame Generation off");
+}
+
+bool D3D12GraphicsEngine::EnsureUiTargets() {
+    if (hudless_ && ui_ && ui_width_ == width_ && ui_height_ == height_)
+        return true;
+    FlushGPU();
+    hudless_.Reset();
+    ui_.Reset();
+    ui_width_ = ui_height_ = 0;
+    const CD3DX12_HEAP_PROPERTIES heap(D3D12_HEAP_TYPE_DEFAULT);
+    CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_B8G8R8A8_UNORM, static_cast<UINT64>(width_), static_cast<UINT>(height_), 1, 1);
+    if (FAILED(device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
+                                                IID_PPV_ARGS(&hudless_))))
+        return false;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    if (FAILED(device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+                                                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
+                                                IID_PPV_ARGS(&ui_)))) {
+        hudless_.Reset();
+        return false;
+    }
+    if (!ui_rtv_heap_) {
+        D3D12_DESCRIPTOR_HEAP_DESC rtv = {};
+        rtv.NumDescriptors = 1;
+        rtv.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        if (FAILED(device_->CreateDescriptorHeap(&rtv, IID_PPV_ARGS(&ui_rtv_heap_))))
+            return false;
+    }
+    device_->CreateRenderTargetView(ui_.Get(), nullptr,
+                                    ui_rtv_heap_->GetCPUDescriptorHandleForHeapStart());
+    const UINT increment =
+        device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    D3D12_CPU_DESCRIPTOR_HANDLE slot = dlss_heap_->GetCPUDescriptorHandleForHeapStart();
+    slot.ptr += static_cast<SIZE_T>(kDlssUiSlot) * increment;
+    D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
+    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    view.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    view.Texture2D.MipLevels = 1;
+    for (int i = 0; i < 2; ++i) {
+        device_->CreateShaderResourceView(ui_.Get(), &view, slot);
+        slot.ptr += increment;
+    }
+    ui_width_ = width_;
+    ui_height_ = height_;
+    return true;
+}
+
+// Frame Generation's layers, into the command list EndFrame is about to close: the picture as it
+// is before the overlay (HUD-less colour), the overlay alone in a layer of its own (UI colour
+// and alpha, premultiplied), then that layer over the picture; and the tags for this picture's
+// frame, with DLSS's own motion and depth and the picture's rectangle of the back buffer.
+void D3D12GraphicsEngine::DrawGenerationLayers() {
+    ID3D12Resource* const back = render_targets_[frame_index_].Get();
+    {
+        const CD3DX12_RESOURCE_BARRIER to_copy[] = {
+            CD3DX12_RESOURCE_BARRIER::Transition(back, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                                                 D3D12_RESOURCE_STATE_COPY_SOURCE),
+            CD3DX12_RESOURCE_BARRIER::Transition(hudless_.Get(),
+                                                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                                 D3D12_RESOURCE_STATE_COPY_DEST),
+            CD3DX12_RESOURCE_BARRIER::Transition(ui_.Get(),
+                                                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                                                 D3D12_RESOURCE_STATE_RENDER_TARGET),
+        };
+        command_list_->ResourceBarrier(_countof(to_copy), to_copy);
+        command_list_->CopyResource(hudless_.Get(), back);
+        const CD3DX12_RESOURCE_BARRIER copied[] = {
+            CD3DX12_RESOURCE_BARRIER::Transition(back, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                                                 D3D12_RESOURCE_STATE_RENDER_TARGET),
+            CD3DX12_RESOURCE_BARRIER::Transition(hudless_.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+                                                 D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        };
+        command_list_->ResourceBarrier(_countof(copied), copied);
+    }
+
+    // The overlay's own blending into a clear layer leaves it premultiplied, with its coverage
+    // in alpha - what Frame Generation's UI layer is.
+    const D3D12_CPU_DESCRIPTOR_HANDLE ui_rtv = ui_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+    const float clear[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    command_list_->ClearRenderTargetView(ui_rtv, clear, 0, nullptr);
+    DrawOverlay(&ui_rtv);
+    const CD3DX12_RESOURCE_BARRIER drawn = CD3DX12_RESOURCE_BARRIER::Transition(
+        ui_.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    command_list_->ResourceBarrier(1, &drawn);
+
+    // ...and over the picture, premultiplied.
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv(rtv_heap_->GetCPUDescriptorHandleForHeapStart());
+    rtv.ptr += static_cast<SIZE_T>(frame_index_) * rtv_descriptor_size_;
+    command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>(width_),
+                                      static_cast<float>(height_), 0.0f, 1.0f };
+    const D3D12_RECT scissor = { 0, 0, static_cast<LONG>(width_), static_cast<LONG>(height_) };
+    command_list_->RSSetViewports(1, &viewport);
+    command_list_->RSSetScissorRects(1, &scissor);
+    command_list_->SetPipelineState(composite_pipeline_.Get());
+    command_list_->SetGraphicsRootSignature(root_signature_.Get());
+    const float params[4] = { static_cast<float>(width_), static_cast<float>(height_),
+                              static_cast<float>(width_), static_cast<float>(height_) };
+    command_list_->SetGraphicsRoot32BitConstants(1, 4, params, 0);
+    ID3D12DescriptorHeap* heaps[] = { dlss_heap_.Get() };
+    command_list_->SetDescriptorHeaps(1, heaps);
+    D3D12_GPU_DESCRIPTOR_HANDLE table = dlss_heap_->GetGPUDescriptorHandleForHeapStart();
+    table.ptr += static_cast<UINT64>(kDlssUiSlot) *
+                 device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    command_list_->SetGraphicsRootDescriptorTable(0, table);
+    command_list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    command_list_->DrawInstanced(3, 1, 0, 0);
+
+    // The tags, for this picture's frame: valid until it is presented, when Frame Generation
+    // reads them - and nothing touches any of them again before the next picture.
+    const LetterboxRect screen = ComputeLetterboxRect(width_, height_, 4.0f / 3.0f);
+    sl::Resource hudless(sl::ResourceType::eTex2d, hudless_.Get(),
+                         D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    sl::Resource ui(sl::ResourceType::eTex2d, ui_.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    sl::Resource depth(sl::ResourceType::eTex2d, dlss_depth_.Get(),
+                       D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    sl::Resource motion(sl::ResourceType::eTex2d, dlss_motion_.Get(),
+                        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    const sl::Extent whole{ 0, 0, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_) };
+    const sl::Extent input{ 0, 0, static_cast<uint32_t>(dlss_in_width_),
+                            static_cast<uint32_t>(dlss_in_height_) };
+    // The picture's rectangle of the back buffer: generated there, the bars copied as they are.
+    const sl::Extent picture_area{ static_cast<uint32_t>(std::lround(screen.y)),
+                                   static_cast<uint32_t>(std::lround(screen.x)),
+                                   static_cast<uint32_t>(std::lround(screen.width)),
+                                   static_cast<uint32_t>(std::lround(screen.height)) };
+    const sl::ResourceLifecycle until = sl::ResourceLifecycle::eValidUntilPresent;
+    const sl::ResourceTag tags[] = {
+        sl::ResourceTag(&hudless, sl::kBufferTypeHUDLessColor, until, &whole),
+        sl::ResourceTag(&ui, sl::kBufferTypeUIColorAndAlpha, until, &whole),
+        sl::ResourceTag(&depth, sl::kBufferTypeDepth, until, &input),
+        sl::ResourceTag(&motion, sl::kBufferTypeMotionVectors, until, &input),
+        sl::ResourceTag(nullptr, sl::kBufferTypeBackbuffer, sl::ResourceLifecycle::eOnlyValidNow,
+                        &picture_area),
+    };
+    sl::FrameToken* const token = Token(present_picture_);
+    const sl::Result result =
+        token == nullptr ? sl::Result::eErrorInvalidParameter
+                         : streamline_->slSetTagForFrame(*token, sl::ViewportHandle(0u), tags,
+                                                         _countof(tags), command_list_.Get());
+    if (result != sl::Result::eOk)
+        NoteDlss(std::string("Frame Generation's tags failed: ") +
+                 psxemu::StreamlineResultText(result));
+}
+
+// Now and then, how Frame Generation is doing: anything wrong stops it, and says why.
+void D3D12GraphicsEngine::ReadGenerationState() {
+    generation_frames_ = 0;
+    sl::DLSSGState state{};
+    if (streamline_->slDLSSGGetState(sl::ViewportHandle(0u), state, nullptr) != sl::Result::eOk)
+        return;
+    std::string why;
+    if (state.status != sl::DLSSGStatus::eOk) {
+        const uint32_t status = static_cast<uint32_t>(state.status);
+        why = status & static_cast<uint32_t>(sl::DLSSGStatus::eFailResolutionTooLow)
+                  ? "the window is too small for it"
+              : status & static_cast<uint32_t>(sl::DLSSGStatus::eFailReflexNotDetectedAtRuntime)
+                  ? "Reflex was not seen running"
+              : status & static_cast<uint32_t>(sl::DLSSGStatus::eFailCommonConstantsInvalid)
+                  ? "DLSS's constants were refused"
+                  : "it reported a fault";
+    }
+    if (why != generation_why_) {
+        generation_why_ = why;
+        NoteDlss(why.empty() ? "Frame Generation running" : "Frame Generation stopped: " + why);
+    }
+    // For PSXEMU_DLSS_LOG: what it made, and Reflex's own measure of the frames' time - from
+    // the simulation's start to the card's end of drawing, and to the present, averaged over
+    // the frames it reports.
+    sl::ReflexState reflex{};
+    double to_drawn = 0.0, to_presented = 0.0;
+    int counted = 0;
+    if (streamline_->slReflexGetState(reflex) == sl::Result::eOk && reflex.latencyReportAvailable) {
+        for (const sl::ReflexReport& report : reflex.frameReport) {
+            if (report.simStartTime == 0 || report.gpuRenderEndTime < report.simStartTime ||
+                report.presentEndTime < report.simStartTime)
+                continue;
+            to_drawn += static_cast<double>(report.gpuRenderEndTime - report.simStartTime);
+            to_presented += static_cast<double>(report.presentEndTime - report.simStartTime);
+            ++counted;
+        }
+    }
+    // The swap chain's own count of presents, which under Frame Generation is Streamline's real
+    // one's: the pictures it made as well as ours, over the last 120 of ours.
+    UINT presents = 0;
+    swap_chain_->GetLastPresentCount(&presents);
+    const UINT made = presents - generation_present_count_;
+    generation_present_count_ = presents;
+    char line[240];
+    snprintf(line, sizeof(line),
+             "Frame Generation: numFramesActuallyPresented %u, swap chain presents %u for our "
+             "120; Reflex, %d frames: simulation start to drawn %.1f ms, to presented %.1f ms",
+             state.numFramesActuallyPresented, made, counted,
+             counted > 0 ? to_drawn / counted / 1000.0 : 0.0,
+             counted > 0 ? to_presented / counted / 1000.0 : 0.0);
+    psxemu::DlssNote(line);
+}
+
+void D3D12GraphicsEngine::MarkLatency(uint32_t marker) {
+    sl::FrameToken* const token = Token(present_picture_);
+    if (token != nullptr)
+        streamline_->slPCLSetMarker(static_cast<sl::PCLMarker>(marker), *token);
 }
 
 bool D3D12GraphicsEngine::CreateDlssPipeline() {
@@ -246,10 +552,45 @@ bool D3D12GraphicsEngine::CreateDlssPipeline() {
         return false;
 
     D3D12_DESCRIPTOR_HEAP_DESC heap = {};
-    heap.NumDescriptors = kDlssOutputSlot + 2;
+    heap.NumDescriptors = kDlssUiSlot + 2;
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-    return SUCCEEDED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&dlss_heap_)));
+    if (FAILED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&dlss_heap_))))
+        return false;
+
+    // Frame Generation's UI layer over the picture: premultiplied, one to one.
+    const char composite[] =
+        "Texture2D g_Ui : register(t0); SamplerState g_Point : register(s2);"
+        "float4 main(float4 pos:SV_POSITION, float2 uv:TEXCOORD0) : SV_TARGET {"
+        "    return g_Ui.Sample(g_Point, uv);"
+        "}";
+    ComPtr<ID3DBlob> ps;
+    if (FAILED(D3DCompile(composite, sizeof(composite) - 1, nullptr, nullptr, nullptr, "main",
+                          "ps_5_0", 0, 0, &ps, &errors)))
+        return false;
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+    desc.pRootSignature = root_signature_.Get();
+    desc.VS = { vs_blob_->GetBufferPointer(), vs_blob_->GetBufferSize() };
+    desc.PS = { ps->GetBufferPointer(), ps->GetBufferSize() };
+    desc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    D3D12_RENDER_TARGET_BLEND_DESC& blend = desc.BlendState.RenderTarget[0];
+    blend.BlendEnable = TRUE;
+    blend.SrcBlend = D3D12_BLEND_ONE;
+    blend.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    blend.BlendOp = D3D12_BLEND_OP_ADD;
+    blend.SrcBlendAlpha = D3D12_BLEND_ONE;
+    blend.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    desc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+    desc.DepthStencilState = CD3DX12_DEPTH_STENCIL_DESC(D3D12_DEFAULT);
+    desc.DepthStencilState.DepthEnable = FALSE;
+    desc.SampleMask = UINT_MAX;
+    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    desc.NumRenderTargets = 1;
+    desc.RTVFormats[0] = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    return SUCCEEDED(device_->CreateGraphicsPipelineState(&desc,
+                                                          IID_PPV_ARGS(&composite_pipeline_)));
 }
 
 // The screen's rectangle when DLSS takes this picture for it; otherwise the mode's own ratio of
@@ -379,7 +720,9 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
                                        ID3D12Resource* planes, int out_width, int out_height) {
     const int width = picture.width;
     const int height = picture.height;
-    if (frame_token_ == nullptr) {
+    // Streamline's frame is the picture: the same for DLSS's constants and tags here, Frame
+    // Generation's tags at the present, and Reflex's markers on both threads.
+    if (Token(picture.picture) == nullptr) {
         NoteDlss("no frame token");
         return false;
     }
@@ -492,7 +835,7 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
         constants.orthographicProjection = sl::Boolean::eFalse;
         constants.motionVectorsDilated = sl::Boolean::eFalse;
         constants.motionVectorsJittered = sl::Boolean::eFalse;
-        ok = check(streamline_->slSetConstants(constants, *frame_token_, viewport),
+        ok = check(streamline_->slSetConstants(constants, *Token(picture.picture), viewport),
                    "slSetConstants");
     }
 
@@ -550,14 +893,14 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
             sl::ResourceTag(&depth, sl::kBufferTypeDepth, until, &input_extent),
             sl::ResourceTag(&hint, sl::kBufferTypeBiasCurrentColorHint, until, &input_extent),
         };
-        ok = check(streamline_->slSetTagForFrame(*frame_token_, viewport, tags, _countof(tags),
-                                                 command_list_.Get()),
+        ok = check(streamline_->slSetTagForFrame(*Token(picture.picture), viewport, tags,
+                                                 _countof(tags), command_list_.Get()),
                    "slSetTagForFrame");
     }
     if (ok) {
         const sl::BaseStructure* inputs[] = { &viewport };
-        ok = check(streamline_->slEvaluateFeature(sl::kFeatureDLSS, *frame_token_, inputs, 1,
-                                                  command_list_.Get()),
+        ok = check(streamline_->slEvaluateFeature(sl::kFeatureDLSS, *Token(picture.picture),
+                                                  inputs, 1, command_list_.Get()),
                    "slEvaluateFeature");
     }
 
@@ -590,8 +933,8 @@ bool D3D12GraphicsEngine::DrawDlss(const emulation::psx::SharedPicture& picture)
         return false;
     };
     // Interlaced 480 lines, and pictures without the plane - the rasteriser not keeping one
-    // yet - are shown as they are.
-    if (picture.planes == nullptr)
+    // yet, and so not numbering them - are shown as they are.
+    if (picture.planes == nullptr || picture.picture == 0)
         return give_up("the picture has no plane");
     if (picture.interlaced)
         return give_up("interlaced");
@@ -606,10 +949,15 @@ bool D3D12GraphicsEngine::DrawDlss(const emulation::psx::SharedPicture& picture)
 
     // A new picture, or the same one needed at another size, is DLSS's to make; the last one
     // again - a 30 fps game's second vblank, or the overlay moving - is drawn as it was made.
+    // New by its number, not by whether the vblank that sent it had drawn it: a new picture
+    // replaced in the mailbox by its own repeat is still one DLSS has not seen, and a number
+    // skipped is a picture it never saw, which its motion refers to - so it starts afresh.
     const bool resized = picture.width != dlss_in_width_ || picture.height != dlss_in_height_ ||
                          out_width != dlss_out_width_ || out_height != dlss_out_height_;
-    const bool fresh = picture.serial != dlss_serial_;
-    if (!dlss_output_valid_ || resized || (fresh && picture.new_picture)) {
+    const bool fresh = picture.picture != dlss_picture_;
+    if (!dlss_output_valid_ || resized || fresh) {
+        if (fresh && dlss_picture_ != 0 && picture.picture != dlss_picture_ + 1)
+            dlss_reset_ = true;
         ID3D12Resource* const planes = OpenPlanes(picture);
         if (planes == nullptr)
             return give_up("the plane could not be opened");
@@ -619,8 +967,11 @@ bool D3D12GraphicsEngine::DrawDlss(const emulation::psx::SharedPicture& picture)
                  std::to_string(picture.height) + " to " + std::to_string(out_width) + "x" +
                  std::to_string(out_height));
         dlss_output_valid_ = true;
+        // Frame Generation makes pictures after a new one of DLSS's, not after one made again
+        // at another size.
+        generation_this_frame_ = fresh;
     }
-    dlss_serial_ = picture.serial;
+    dlss_picture_ = picture.picture;
 
     // One to one when it is the screen's size; otherwise scaled into the letterbox as any
     // picture is.

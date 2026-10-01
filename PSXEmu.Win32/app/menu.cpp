@@ -162,90 +162,20 @@ namespace psxemu {
                         label.c_str());
         }
 
-        HMENU renderer = CreatePopupMenu();
-        for (size_t i = 0; i < std::size(kBackendChoices); ++i) {
-            AppendMenuW(renderer, MF_STRING, static_cast<UINT_PTR>(kCommandRendererFirst + i),
-                        kBackendChoices[i].label);
-        }
-
-        HMENU filter = CreatePopupMenu();
-        for (size_t i = 0; i < std::size(kFilterChoices); ++i) {
-            AppendMenuW(filter, MF_STRING, static_cast<UINT_PTR>(kCommandFilterFirst + i),
-                        kFilterChoices[i].label);
-        }
-
-        HMENU rasteriser = CreatePopupMenu();
-        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandRasteriserSoftware),
-                    L"&Software");
-        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandRasteriserHardware),
-                    L"&Hardware (Direct3D 11, experimental)");
-        AppendMenuW(rasteriser, MF_SEPARATOR, 0, nullptr);
-        for (size_t i = 0; i < std::size(kResolutionChoices); ++i) {
-            AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandResolutionFirst + i),
-                        kResolutionChoices[i].label);
-        }
-        AppendMenuW(rasteriser, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandTrueColour),
-                    L"&True Colour (2x and above)");
-        AppendMenuW(rasteriser, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandPgxpVertices),
-                    L"&PGXP: Precise Vertices (no wobble)");
-        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandPgxpTextures),
-                    L"PGXP: Perspective-Correct Te&xtures");
-        AppendMenuW(rasteriser, MF_STRING, static_cast<UINT_PTR>(kCommandPgxpCulling),
-                    L"PGXP: Precise &Culling (may break some games)");
-
-        // NVIDIA DLSS (Docs/DLSS-Plan.md): the mode, the model, and a line saying whether it
-        // runs and why not - which is never a command.
-        HMENU dlss = CreatePopupMenu();
-        for (size_t i = 0; i < std::size(kDlssModeChoices); ++i) {
-            AppendMenuW(dlss, MF_STRING, static_cast<UINT_PTR>(kCommandDlssModeFirst + i),
-                        kDlssModeChoices[i].label);
-        }
-        AppendMenuW(dlss, MF_SEPARATOR, 0, nullptr);
-        for (size_t i = 0; i < std::size(kDlssPresetChoices); ++i) {
-            AppendMenuW(dlss, MF_STRING, static_cast<UINT_PTR>(kCommandDlssPresetFirst + i),
-                        kDlssPresetChoices[i].label);
-        }
-        AppendMenuW(dlss, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(dlss, MF_STRING | MF_GRAYED, static_cast<UINT_PTR>(kCommandDlssStatus),
-                    L"Off");
-
-        HMENU video = CreatePopupMenu();
-        AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(renderer), L"&Renderer");
-        // Filled once the graphics cards have been listed (PopulateGraphicsCardMenu).
-        AppendTaggedPopup(video, CreatePopupMenu(), L"Graphics &Card", kGraphicsCardMenuTag);
-        AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(rasteriser), L"R&asteriser");
-        AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(dlss), L"NVIDIA &DLSS");
-        AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(filter), L"&Filter");
-        AppendMenuW(video, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewVram), L"View &VRAM");
-        AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewDepth), L"View &Depth");
-        AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandViewMotion), L"View &Motion");
-        AppendMenuW(video, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(video, MF_STRING, static_cast<UINT_PTR>(kCommandFullscreen),
-                    L"F&ull Screen\tAlt+Enter");
-
-        // What is drawn over the picture (ui/overlay): the performance panel at the top left,
-        // notifications at the lower left, the controllers at the top right.
-        HMENU display = CreatePopupMenu();
-        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandStatsOff),
-                    L"Performance &Off");
-        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandStatsCompact),
-                    L"Performance &Compact");
-        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandStatsFull),
-                    L"Performance &Full, with Graphs\tF9");
-        AppendMenuW(display, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandOverlayNotifications),
-                    L"&Notifications");
-        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandOverlayControllersAlways),
-                    L"Always Show &Controllers");
-        AppendMenuW(display, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandThemeClassic),
-                    L"Theme: C&lassic");
-        AppendMenuW(display, MF_STRING, static_cast<UINT_PTR>(kCommandThemeGlass),
-                    L"Theme: &Glass");
-        AppendMenuW(video, MF_POPUP, reinterpret_cast<UINT_PTR>(display), L"On-Screen &Display");
+        // How the picture is made and shown - the renderer, the rasteriser, NVIDIA DLSS, the
+        // filter, the on-screen display - is a window of its own (ui/video_settings_window).
+        // What is left here is how the window is looked at: full screen, and the views that take
+        // the picture's place.
+        HMENU view = CreatePopupMenu();
+        AppendMenuW(view, MF_STRING, static_cast<UINT_PTR>(kCommandFullscreen),
+                    L"&Full Screen\tAlt+Enter");
+        AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(view, MF_STRING, static_cast<UINT_PTR>(kCommandViewVram), L"&VRAM");
+        AppendMenuW(view, MF_STRING, static_cast<UINT_PTR>(kCommandViewDepth), L"&Depth");
+        AppendMenuW(view, MF_STRING, static_cast<UINT_PTR>(kCommandViewMotion), L"&Motion");
+        AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(view, MF_STRING, static_cast<UINT_PTR>(kCommandVideoSettings),
+                    L"Video &Settings...");
 
         // What each port holds and what plays it - the controller type, the source, a multitap's
         // four players - is chosen in the Controllers window, beside the bindings, rather than
@@ -280,8 +210,7 @@ namespace psxemu {
         AppendMenuW(analog, MF_STRING, static_cast<UINT_PTR>(kCommandAnalogButtonPort2), L"Port &2");
         AppendMenuW(input, MF_POPUP, reinterpret_cast<UINT_PTR>(analog), L"Press &ANALOG Button");
 
-        // Which API the sound goes out through. Beside the volume rather than in place of it, the
-        // way Video holds Renderer and Filter side by side.
+        // Which API the sound goes out through, beside the volume rather than in place of it.
         HMENU output = CreatePopupMenu();
         for (size_t i = 0; i < std::size(kAudioBackendChoices); ++i) {
             AppendMenuW(output, MF_STRING, static_cast<UINT_PTR>(kCommandAudioBackendFirst + i),
@@ -299,20 +228,22 @@ namespace psxemu {
         HMENU bios = CreatePopupMenu();
 
         // Everything that is a preference rather than an action lives here, so the bar itself stays
-        // short: File for things to open, Emulation for things the running machine does, Settings
-        // for how it does them.
+        // short: File for things to open, Emulation for things the running machine does, View for
+        // how the window shows it, Settings for how it does them.
         HMENU settings = CreatePopupMenu();
         AppendMenuW(settings, MF_STRING, static_cast<UINT_PTR>(kCommandEmulationSettings),
                     L"&Emulation...");
         AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(input), L"&Input");
         AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(audio), L"&Audio");
-        AppendMenuW(settings, MF_POPUP, reinterpret_cast<UINT_PTR>(video), L"&Video");
+        AppendMenuW(settings, MF_STRING, static_cast<UINT_PTR>(kCommandVideoSettings),
+                    L"&Video...");
         AppendMenuW(settings, MF_SEPARATOR, 0, nullptr);
         AppendTaggedPopup(settings, bios, L"&BIOS", kBiosMenuTag);
 
         HMENU bar = CreateMenu();
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file), L"&File");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(emulation), L"&Emulation");
+        AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&View");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(settings), L"&Settings");
         return bar;
     }
@@ -322,56 +253,6 @@ namespace psxemu {
         if (bar == nullptr)
             bar = static_cast<HMENU>(GetPropW(window, kDetachedMenuProp));
         return bar;
-    }
-
-    void PopulateGraphicsCardMenu(HWND window, const std::vector<GraphicsCardLabel>& cards,
-                                  int chosen) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        HMENU menu = FindTaggedPopup(bar, kGraphicsCardMenuTag);
-        if (menu == nullptr)
-            return;
-        while (DeleteMenu(menu, 0, MF_BYPOSITION) != 0) {
-        }
-
-        // A card's name as a menu label: an ampersand in it would be taken for a mnemonic.
-        auto label_of = [](const std::string& name) {
-            std::wstring label = Widen(name);
-            for (size_t at = label.find(L'&'); at != std::wstring::npos;
-                 at = label.find(L'&', at + 2))
-                label.insert(at, 1, L'&');
-            return label;
-        };
-
-        const int count = std::min(static_cast<int>(cards.size()), kMaxGraphicsCards);
-        if (count < 2) {
-            // Nothing to choose between, and saying so is the answer to "where is it".
-            const std::wstring only = count == 1 ? label_of(cards[0].name) : L"none found";
-            const std::wstring text = L"(only one graphics card: " + only + L")";
-            AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, text.c_str());
-            return;
-        }
-        AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(kCommandGraphicsCardAutomatic),
-                    L"&Automatic (each renderer's own choice)");
-        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        for (int i = 0; i < count; ++i) {
-            std::wstring label = label_of(cards[i].name);
-            const uint64_t megabytes = cards[i].video_memory >> 20;
-            if (megabytes >= 1024)
-                label += L"  (" + std::to_wstring((megabytes + 512) / 1024) + L" GB)";
-            else if (megabytes > 0)
-                label += L"  (" + std::to_wstring(megabytes) + L" MB)";
-            AppendMenuW(menu, MF_STRING, static_cast<UINT_PTR>(kCommandGraphicsCardFirst + i),
-                        label.c_str());
-        }
-        if (static_cast<int>(cards.size()) > count)
-            AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, L"(more found than can be listed)");
-        CheckMenuItem(menu,
-                      static_cast<UINT>(chosen >= 0 && chosen < count
-                                            ? kCommandGraphicsCardFirst + chosen
-                                            : kCommandGraphicsCardAutomatic),
-                      MF_BYCOMMAND | MF_CHECKED);
     }
 
     void PopulateBiosMenu(HWND window, const std::vector<std::string>& files,
@@ -491,36 +372,6 @@ namespace psxemu {
         }
     }
 
-    void TickRenderer(HWND window, const std::string& backend) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        for (size_t i = 0; i < std::size(kBackendChoices); ++i) {
-            const bool on = (backend == kBackendChoices[i].key);
-            CheckMenuItem(bar, static_cast<UINT>(kCommandRendererFirst + i),
-                          MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-        }
-    }
-
-    void TickPgxp(HWND window, bool hardware, bool vertices, bool textures, bool culling,
-                  bool dlss) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        vertices = vertices || dlss;
-        const struct { int id; bool on; bool enabled; } items[] = {
-            { kCommandPgxpVertices, vertices, hardware && !dlss },
-            { kCommandPgxpTextures, textures, hardware && vertices },
-            { kCommandPgxpCulling, culling, hardware && vertices },
-        };
-        for (const auto& item : items) {
-            CheckMenuItem(bar, static_cast<UINT>(item.id),
-                          MF_BYCOMMAND | (item.on ? MF_CHECKED : MF_UNCHECKED));
-            EnableMenuItem(bar, static_cast<UINT>(item.id),
-                           MF_BYCOMMAND | (item.enabled ? MF_ENABLED : MF_GRAYED));
-        }
-    }
-
     void TickPlaneView(HWND window, int view, bool available) {
         HMENU bar = MenuBar(window);
         if (bar == nullptr)
@@ -534,65 +385,6 @@ namespace psxemu {
                           MF_BYCOMMAND | (view == item.view ? MF_CHECKED : MF_UNCHECKED));
             EnableMenuItem(bar, static_cast<UINT>(item.id),
                            MF_BYCOMMAND | (available ? MF_ENABLED : MF_GRAYED));
-        }
-    }
-
-    void TickRasteriser(HWND window, bool hardware, int scale, bool true_color, bool dlss) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        CheckMenuItem(bar, static_cast<UINT>(kCommandRasteriserSoftware),
-                      MF_BYCOMMAND | (hardware ? MF_UNCHECKED : MF_CHECKED));
-        CheckMenuItem(bar, static_cast<UINT>(kCommandRasteriserHardware),
-                      MF_BYCOMMAND | (hardware ? MF_CHECKED : MF_UNCHECKED));
-        // The resolution and true colour are the hardware rasteriser's alone: greyed while the
-        // software one draws, and still ticked, so it is plain what switching would give. While
-        // DLSS runs the resolution is its choice, ticked and greyed.
-        const UINT enabled = MF_BYCOMMAND | (hardware && !dlss ? MF_ENABLED : MF_GRAYED);
-        for (size_t i = 0; i < std::size(kResolutionChoices); ++i) {
-            const UINT id = static_cast<UINT>(kCommandResolutionFirst + i);
-            CheckMenuItem(bar, id,
-                          MF_BYCOMMAND | (kResolutionChoices[i].scale == scale ? MF_CHECKED
-                                                                                : MF_UNCHECKED));
-            EnableMenuItem(bar, id, enabled);
-        }
-        CheckMenuItem(bar, static_cast<UINT>(kCommandTrueColour),
-                      MF_BYCOMMAND | (true_color ? MF_CHECKED : MF_UNCHECKED));
-        EnableMenuItem(bar, static_cast<UINT>(kCommandTrueColour),
-                       MF_BYCOMMAND | (hardware && scale > 1 ? MF_ENABLED : MF_GRAYED));
-    }
-
-    void TickDlss(HWND window, const std::string& mode, const std::string& preset,
-                  const std::wstring& status) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        for (size_t i = 0; i < std::size(kDlssModeChoices); ++i) {
-            CheckMenuItem(bar, static_cast<UINT>(kCommandDlssModeFirst + i),
-                          MF_BYCOMMAND | (mode == kDlssModeChoices[i].key ? MF_CHECKED
-                                                                          : MF_UNCHECKED));
-        }
-        for (size_t i = 0; i < std::size(kDlssPresetChoices); ++i) {
-            const UINT id = static_cast<UINT>(kCommandDlssPresetFirst + i);
-            CheckMenuItem(bar, id,
-                          MF_BYCOMMAND | (preset == kDlssPresetChoices[i].key ? MF_CHECKED
-                                                                              : MF_UNCHECKED));
-            EnableMenuItem(bar, id, MF_BYCOMMAND | (mode != "off" ? MF_ENABLED : MF_GRAYED));
-        }
-        ModifyMenuW(bar, static_cast<UINT>(kCommandDlssStatus), MF_BYCOMMAND | MF_STRING | MF_GRAYED,
-                    static_cast<UINT_PTR>(kCommandDlssStatus), status.c_str());
-    }
-
-    void TickFilter(HWND window, const std::string& backend, const std::string& filter) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        const bool filters_available = RendererHasFilters(backend);
-        for (size_t i = 0; i < std::size(kFilterChoices); ++i) {
-            const UINT id = static_cast<UINT>(kCommandFilterFirst + i);
-            const bool on = filters_available && (filter == kFilterChoices[i].key);
-            CheckMenuItem(bar, id, MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-            EnableMenuItem(bar, id, MF_BYCOMMAND | (filters_available ? MF_ENABLED : MF_GRAYED));
         }
     }
 
@@ -670,22 +462,6 @@ namespace psxemu {
             return;
         CheckMenuItem(bar, static_cast<UINT>(kCommandFullscreen),
                       MF_BYCOMMAND | (on ? MF_CHECKED : MF_UNCHECKED));
-    }
-
-    void TickOnScreenDisplay(HWND window, int stats_mode, bool notifications,
-                             bool controllers_always, bool glass) {
-        HMENU bar = MenuBar(window);
-        if (bar == nullptr)
-            return;
-        CheckMenuRadioItem(bar, kCommandThemeClassic, kCommandThemeGlass,
-                           static_cast<UINT>(glass ? kCommandThemeGlass : kCommandThemeClassic),
-                           MF_BYCOMMAND);
-        CheckMenuRadioItem(bar, kCommandStatsOff, kCommandStatsFull,
-                           static_cast<UINT>(kCommandStatsOff + stats_mode), MF_BYCOMMAND);
-        CheckMenuItem(bar, static_cast<UINT>(kCommandOverlayNotifications),
-                      MF_BYCOMMAND | (notifications ? MF_CHECKED : MF_UNCHECKED));
-        CheckMenuItem(bar, static_cast<UINT>(kCommandOverlayControllersAlways),
-                      MF_BYCOMMAND | (controllers_always ? MF_CHECKED : MF_UNCHECKED));
     }
 
     emulation::psx::Sio::ControllerType ParseControllerType(const std::string& key) {

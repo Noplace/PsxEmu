@@ -130,7 +130,7 @@ namespace psx {
   };
 
   // What is shown of the plane beside VRAM (psx/shared_picture.h), in place of the picture:
-  // nothing, its depth, or its motion. Video > View Depth and View Motion.
+  // nothing, its depth, or its motion. View > Depth and Motion.
   enum class PlaneView { kPicture, kDepth, kMotion };
 
   // A VRAM rectangle whose writes are counted against the command making them - see

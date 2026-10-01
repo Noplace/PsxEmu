@@ -2055,6 +2055,27 @@ void TestSettingsFile(const std::string& directory) {
           "a game can keep its own DLSS mode");
   }
 
+  // DLSS Frame Generation (phase 5): off by default, each multiplier kept, one the menu does not
+  // offer ignored, and a game's own.
+  {
+    EmuConfig config;
+    Check(config.dlss_frame_generation == "off", "Frame Generation is off by default");
+    config.dlss_frame_generation = "dynamic";
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.dlss_frame_generation == "dynamic", "Frame Generation survives the round trip");
+    out.SetString("dlss_frame_generation", "8x");
+    EmuConfig rejected;
+    emulation::psx::LoadConfig(out, rejected);
+    Check(rejected.dlss_frame_generation == "off",
+          "a Frame Generation the menu does not offer is ignored");
+    const std::vector<std::string> keys = emulation::psx::GameSettingKeys();
+    Check(std::find(keys.begin(), keys.end(), "dlss_frame_generation") != keys.end(),
+          "a game can keep its own Frame Generation");
+  }
+
   // The graphics card (Settings > Video > Graphics Card): automatic by default, and a name -
   // spaces, brackets and all - kept as it is. A saved name for a card that is not here is
   // kept too: it is the front end that treats it as automatic, so that the choice comes back

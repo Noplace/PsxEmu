@@ -20,6 +20,7 @@ PsxEmu/
       request_queue.h          the one door into something another thread owns
       sample_ring.h            sound, machine thread to audio thread, lock-free
       frame_mailbox.h          finished frames, machine thread to video thread
+      latency_markers.h        where a picture's time goes, for NVIDIA Reflex; the front end's
       input_exchange.h         the host's pads and mouse in, the pads' motors out
       machine.h/.cpp           the machine's thread: requests, a frame, hand-off, pacing
       audio_output.h/.cpp      the audio thread: keeps the device fed from the ring
@@ -107,7 +108,7 @@ PsxEmu/
   PSXEmu.Win32/                front end: a window, four renderers, input
     PSXEmu.Win32.vcxproj       and .filters, which shows these folders in Solution Explorer
     app/                       the application: the UI thread and what it is made of
-      main.cpp                 wWinMain, and nothing else
+      main.cpp                 wWinMain: per-monitor DPI awareness, then App
       framework.h              the include set every file here opens with
       const.h                  every constant: window names, menu ids, the choice tables
       app.h/.cpp               class App - the UI thread: window, menus, settings, full screen,
@@ -130,6 +131,8 @@ PsxEmu/
                                turned into DLSS's inputs, DLSS's picture drawn in the picture's place
       dlss/                    NVIDIA DLSS (Docs/DLSS-Plan.md)
         streamline.h/.cpp      Streamline's DLL loaded, its signature checked, started and stopped
+        reflex_markers.h/.cpp  the machine's Reflex markers passed to whichever renderer runs
+                               Frame Generation (host/latency_markers.h)
         dlss_choice.h          the modes, and the arithmetic of sizes; header-only, the tools use it
         fetch_streamline.ps1   downloads the Streamline SDK into Temp\streamline\ - its DLLs are
                                NVIDIA's, never committed; the build copies them beside the exe
@@ -156,8 +159,12 @@ PsxEmu/
       cheats_window.h/.cpp     Emulation > Cheats: the game's codes, on and off, typed or imported
       emulation_settings_window.h/.cpp  Settings > Emulation: CPU, timing, GPU and CD-ROM
                                switches, and the Accuracy and Performance presets
-      game_scope.h             whether those two windows are editing everyone's settings or
+      video_settings_window.h/.cpp  Settings > Video: the renderer, card and filter; the
+                               rasteriser, resolution and PGXP; NVIDIA DLSS; the on-screen display
+      game_scope.h             whether those three windows are editing everyone's settings or
                                the running game's own
+      dpi.h/.cpp               per-monitor DPI: layouts in 96-DPI pixels scaled to each window's
+                               monitor, fonts made for it, and WM_DPICHANGED's rescale
       key_bindings_window.h/.cpp  the older keyboard-only list, kept but off the menu
       memcard_editor.h/.cpp    File > Memory Cards > Memory Card Editor, both slots side by side
       console_window.h/.cpp    Emulation > BIOS Console: the BIOS's putchar/puts/printf output

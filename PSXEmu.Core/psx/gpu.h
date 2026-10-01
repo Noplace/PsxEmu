@@ -126,6 +126,9 @@ class Gpu : public GpuCore {
     bool reset;
   };
   const PictureMotion& last_picture_motion() const { return last_picture_motion_; }
+  // How many new pictures there have been while the plane was kept: SharedPicture::picture's
+  // count, and NVIDIA Reflex's frames (host/latency_markers.h). Never goes back.
+  uint32_t picture_number() const { return picture_number_; }
 
   // Whether the hardware rasteriser is drawing, and if it was asked for but is
   // not, why not. Settled by ChooseRasteriser.
@@ -540,6 +543,7 @@ class Gpu : public GpuCore {
   bool motion_check_ = false;   // SetMotionCheck's
   int jitter_phases_ = 0;       // SetJitter's
   int jitter_drawn_ = 0;        // ...and what the rasteriser has now: none while interlaced
+  uint32_t picture_number_ = 0;
   VertexMotion sprite_motion_;
   uint32_t shown_x_ = 0, shown_y_ = 0;   // the display's start at the last vblank
   uint32_t vblanks_since_flip_ = 0;

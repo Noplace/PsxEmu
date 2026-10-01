@@ -67,11 +67,12 @@ bool D3D12GraphicsEngine::Initialize(HWND window_handle, int width, int height) 
         overlay_pipeline_.Reset();
         overlay_root_.Reset();
     }
-    // So is DLSS.
+    // So is DLSS, and Frame Generation.
     if (streamline_ != nullptr && !CreateDlssPipeline()) {
         dlss_pipeline_.Reset();
         dlss_why_ = "its shaders could not be made";
     }
+    SetUpGeneration(window_handle);
 
     return true;
 }
@@ -145,8 +146,9 @@ bool D3D12GraphicsEngine::CreateOverlayPipeline() {
     return SUCCEEDED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&overlay_srv_heap_)));
 }
 
-// Over everything else, into the back buffer, in the command list EndFrame is about to close.
-void D3D12GraphicsEngine::DrawOverlay() {
+// Over everything else, into the back buffer - or Frame Generation's UI layer - in the command
+// list EndFrame is about to close.
+void D3D12GraphicsEngine::DrawOverlay(const D3D12_CPU_DESCRIPTOR_HANDLE* target) {
     const psxemu::OverlayDrawData* data = overlay_;
     overlay_ = nullptr;
     if (data == nullptr || data->empty() || !overlay_pipeline_ || !render_targets_[frame_index_])
@@ -263,6 +265,8 @@ void D3D12GraphicsEngine::DrawOverlay() {
 
     D3D12_CPU_DESCRIPTOR_HANDLE rtv(rtv_heap_->GetCPUDescriptorHandleForHeapStart());
     rtv.ptr += static_cast<SIZE_T>(frame_index_) * rtv_descriptor_size_;
+    if (target != nullptr)
+        rtv = *target;
     command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
     const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>(width_),
                                       static_cast<float>(height_), 0.0f, 1.0f };
@@ -427,11 +431,8 @@ bool D3D12GraphicsEngine::CreateSyncObjects() {
 void D3D12GraphicsEngine::BeginFrame() {
     command_allocators_[frame_index_]->Reset();
     command_list_->Reset(command_allocators_[frame_index_].Get(), nullptr);
-
-    // Streamline counts frames by its tokens: one for every frame presented through it.
-    frame_token_ = nullptr;
-    if (streamline_ != nullptr)
-        streamline_->slGetNewFrameToken(frame_token_, nullptr);
+    generation_this_frame_ = false;
+    present_picture_ = 0;
 
     if (!render_targets_[frame_index_]) {
         // Can't render, just return early. EndFrame will close the list.
@@ -572,6 +573,11 @@ bool D3D12GraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPictur
     pending_releases_.push_back({ fence_values_[frame_index_], picture.source, picture.serial });
     trail_source_ = picture.source;   // see RenderFramebuffer
     trail_serial_ = picture.serial;
+    // The first present of a picture carries Reflex's markers, and Frame Generation's frame.
+    if (picture.picture != 0 && picture.picture != presented_picture_) {
+        present_picture_ = picture.picture;
+        presented_picture_ = picture.picture;
+    }
 
     // DLSS's picture of it, when DLSS runs and can take this one; otherwise the picture itself.
     if (DlssRunning() && DrawDlss(picture))
@@ -701,7 +707,17 @@ void D3D12GraphicsEngine::EndFrame() {
         command_list_->Close();
         return;
     }
-    DrawOverlay();
+    // DLSS Frame Generation makes pictures after this one if it is a new picture DLSS has just
+    // made, at full speed, in a window it takes; for anything else it is off for this present.
+    const bool generate =
+        generation_ready_ && generation_why_.empty() && generation_allowed_ &&
+        generation_this_frame_ && present_picture_ != 0 &&
+        static_cast<UINT>((std::min)(width_, height_)) >= generation_min_size_ && EnsureUiTargets();
+    if (generate)
+        DrawGenerationLayers();
+    else
+        DrawOverlay();
+    SetGenerationMode(generate);
 
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -714,14 +730,27 @@ void D3D12GraphicsEngine::EndFrame() {
 
     command_list_->Close();
 
+    // Reflex's render and present markers, for the picture's frame - the one the machine's
+    // thread marked the simulation of, and the one Frame Generation takes its tags from.
+    const bool marked = generation_ready_ && present_picture_ != 0;
+    if (marked)
+        MarkLatency(static_cast<uint32_t>(sl::PCLMarker::eRenderSubmitStart));
     ID3D12CommandList* pp_command_lists[] = { command_list_.Get() };
     command_queue_->ExecuteCommandLists(_countof(pp_command_lists), pp_command_lists);
+    if (marked) {
+        MarkLatency(static_cast<uint32_t>(sl::PCLMarker::eRenderSubmitEnd));
+        MarkLatency(static_cast<uint32_t>(sl::PCLMarker::ePresentStart));
+    }
 
     const UINT sync_interval = vsync_ ? 1 : 0;
     const UINT present_flags = (tearing_support_ && !vsync_) ? DXGI_PRESENT_ALLOW_TEARING : 0;
     swap_chain_->Present(sync_interval, present_flags);
+    if (marked)
+        MarkLatency(static_cast<uint32_t>(sl::PCLMarker::ePresentEnd));
 
     MoveToNextFrame();
+    if (generation_ready_ && ++generation_frames_ >= 120)
+        ReadGenerationState();
 }
 
 void D3D12GraphicsEngine::MoveToNextFrame() {
@@ -751,6 +780,14 @@ void D3D12GraphicsEngine::FlushGPU() {
 void D3D12GraphicsEngine::Resize(int width, int height) {
     if (!swap_chain_ || width <= 0 || height <= 0)
         return;
+
+    // Frame Generation presents on a thread of its own; NVIDIA asks for it off before the swap
+    // chain's buffers change. Off takes effect at a present, so one is made - black, and gone at
+    // once under the picture the presenter shows again after a resize.
+    if (generation_on_) {
+        BeginFrame();
+        EndFrame();
+    }
 
     width_ = width;
     height_ = height;

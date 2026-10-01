@@ -69,10 +69,7 @@ namespace psxemu {
         kCommandVolumeLast = kCommandVolumeFirst + 7,
         kCommandAudioBackendFirst,
         kCommandAudioBackendLast = kCommandAudioBackendFirst + 1,   // WASAPI, DirectSound
-        kCommandRendererFirst,
-        kCommandRendererLast = kCommandRendererFirst + 3,   // Direct3D 11, 12, OpenGL, Vulkan
-        kCommandFilterFirst,
-        kCommandFilterLast = kCommandFilterFirst + 9,   // None + 9 filters
+        // View > VRAM: all of VRAM in place of the picture.
         kCommandViewVram,
         kCommandFrameLimiter,
         // The BIOS images found in the data folder. Unlike every other run here, what these ids
@@ -110,20 +107,10 @@ namespace psxemu {
         // Settings > Input > Controllers: each port's type, source and bindings. kCommandKeyBindings
         // above still opens the older keyboard-only list, which is no longer on the menu.
         kCommandControllerBindings,
-        // Settings > Video > Full Screen, and Alt+Enter or F11 anywhere: borderless, over the whole
-        // monitor the window is on.
+        // View > Full Screen, and Alt+Enter or F11 anywhere: borderless, over the whole monitor
+        // the window is on.
         kCommandFullscreen,
         kCommandExit,
-        // Settings > Video > On-Screen Display: the performance panel's three settings (F9 steps
-        // through them), the notifications, and whether the controllers corner stays up.
-        kCommandStatsOff,
-        kCommandStatsCompact,
-        kCommandStatsFull,
-        kCommandOverlayNotifications,
-        kCommandOverlayControllersAlways,
-        // ...and its look: Classic, or Glass (frosted, over the picture).
-        kCommandThemeClassic,
-        kCommandThemeGlass,
         // Emulation > Emulation Settings and Settings > Emulation: the window with the CPU, timing,
         // GPU and CD-ROM settings and the Accuracy and Performance presets.
         kCommandEmulationSettings,
@@ -133,34 +120,13 @@ namespace psxemu {
         kCommandStatePicker,
         // Emulation > Cheats...: the running game's GameShark codes.
         kCommandCheats,
-        // Settings > Video > Rasteriser: what draws the console's pictures - the software
-        // rasteriser, or the hardware one on the graphics card (Docs/Hardware-Renderer-Plan.md).
-        kCommandRasteriserSoftware,
-        kCommandRasteriserHardware,
-        // ...and the hardware one's internal resolution, 1x to 8x, and True Colour.
-        kCommandResolutionFirst,
-        kCommandResolutionLast = kCommandResolutionFirst + 6,   // 1x-6x, 8x
-        kCommandTrueColour,
-        // ...and PGXP: precise vertices, perspective-correct textures, precise culling.
-        kCommandPgxpVertices,
-        kCommandPgxpTextures,
-        kCommandPgxpCulling,
-        // Settings > Video > Graphics Card: automatic, then one id per card the machine has - a
-        // run whose nth id means the nth adapter found at startup, like the BIOS list's.
-        kCommandGraphicsCardAutomatic,
-        kCommandGraphicsCardFirst,
-        kCommandGraphicsCardLast = kCommandGraphicsCardFirst + 7,   // kMaxGraphicsCards
-        // Video > View Depth and View Motion: the plane beside VRAM that DLSS will use, shown in
-        // place of the picture (Docs/DLSS-Plan.md).
+        // View > Depth and Motion: the plane beside VRAM that DLSS uses, shown in place of the
+        // picture (Docs/DLSS-Plan.md).
         kCommandViewDepth,
         kCommandViewMotion,
-        // Settings > Video > NVIDIA DLSS: the modes, in kDlssModeChoices' order; the presets, in
-        // kDlssPresetChoices'; and the line that says whether it runs (never enabled).
-        kCommandDlssModeFirst,
-        kCommandDlssModeLast = kCommandDlssModeFirst + 5,
-        kCommandDlssPresetFirst,
-        kCommandDlssPresetLast = kCommandDlssPresetFirst + 3,
-        kCommandDlssStatus,
+        // View > Video Settings and Settings > Video: the window with the renderer, the
+        // rasteriser, NVIDIA DLSS and the on-screen display (ui/video_settings_window).
+        kCommandVideoSettings,
     };
 
     // ---------------------------------------------------------------------------------------------
@@ -221,8 +187,9 @@ namespace psxemu {
     // EmuConfig::kValidMouseDpis holds them. Only "hardware" reads this.
     inline constexpr int kMouseDpiChoices[] = { 400, 800, 1600, 3200 };
 
-    // The renderer choices, in the order the Video > Renderer menu and
-    // EmuConfig::kValidGraphicsBackends both list them.
+    // The renderer choices, in the order the Video Settings window and
+    // EmuConfig::kValidGraphicsBackends both list them. The audio outputs below share the type,
+    // with menu labels.
     struct BackendChoice { const char* key; const wchar_t* label; };
 
     // The sound outputs, in the order Settings > Audio > Output lists them. The keys are what
@@ -233,10 +200,10 @@ namespace psxemu {
     };
 
     inline constexpr BackendChoice kBackendChoices[] = {
-        { "d3d11", L"Direct3D &11" },
-        { "d3d12", L"Direct3D &12" },
-        { "opengl", L"&OpenGL" },
-        { "vulkan", L"&Vulkan" },
+        { "d3d11", L"Direct3D 11" },
+        { "d3d12", L"Direct3D 12" },
+        { "opengl", L"OpenGL" },
+        { "vulkan", L"Vulkan" },
     };
 
     // Whether a renderer runs the video filters: Direct3D 12 does, from HLSL; OpenGL does, from the
@@ -247,56 +214,75 @@ namespace psxemu {
     }
 
     // The filter choices - None plus the ones ported from GBAEmu (see shaders/) and the multi-pass
-    // Super-xBR, in the order the Video > Filter menu and EmuConfig::kValidVideoFilters both list them. Only D3D12 supports
-    // these; see D3D11Presenter's class comment for why.
+    // Super-xBR, in the order the Video Settings window and EmuConfig::kValidVideoFilters both
+    // list them. Direct3D 11 has none; see D3D11Presenter's class comment for why.
     struct FilterChoice { const char* key; const wchar_t* label; };
 
     inline constexpr FilterChoice kFilterChoices[] = {
-        { "",            L"&None" },
-        { "nearest",     L"&Nearest Neighbor (Legacy)" },
-        { "bilinear",    L"&Bilinear" },
-        { "crt",         L"CRT (&Legacy)" },
-        { "eagle",       L"Super&Eagle" },
-        { "hq2x",        L"HQ2X (&Placeholder)" },
-        { "xbrz_legacy", L"xBRZ (&Legacy Placeholder)" },
-        { "scanline",    L"&Scanline (CRT)" },
-        { "xbrz",        L"x&BRZ" },
-        { "superxbr",    L"Super-&xBR (3 pass)" },
+        { "",            L"None" },
+        { "nearest",     L"Nearest Neighbor (Legacy)" },
+        { "bilinear",    L"Bilinear" },
+        { "crt",         L"CRT (Legacy)" },
+        { "eagle",       L"SuperEagle" },
+        { "hq2x",        L"HQ2X (Placeholder)" },
+        { "xbrz_legacy", L"xBRZ (Legacy Placeholder)" },
+        { "scanline",    L"Scanline (CRT)" },
+        { "xbrz",        L"xBRZ" },
+        { "superxbr",    L"Super-xBR (3 pass)" },
     };
 
-    // The hardware rasteriser's internal resolutions, in the order Video > Rasteriser lists them
-    // and EmuConfig::kValidResolutionScales holds them. Each is the console's picture that many
-    // times over each way: 4x of a 320x240 game is 1280x960.
+    // The hardware rasteriser's internal resolutions, in the order the Video Settings window lists
+    // them and EmuConfig::kValidResolutionScales holds them. Each is the console's picture that
+    // many times over each way: 4x of a 320x240 game is 1280x960.
     struct ResolutionChoice { int scale; const wchar_t* label; };
 
     inline constexpr ResolutionChoice kResolutionChoices[] = {
-        { 1, L"&1x (Native)" },
-        { 2, L"&2x" },
-        { 3, L"&3x" },
-        { 4, L"&4x" },
-        { 5, L"&5x" },
-        { 6, L"&6x" },
-        { 8, L"&8x" },
+        { 1, L"1x (native)" },
+        { 2, L"2x" },
+        { 3, L"3x" },
+        { 4, L"4x" },
+        { 5, L"5x" },
+        { 6, L"6x" },
+        { 8, L"8x" },
     };
 
-    // Settings > Video > NVIDIA DLSS, in the order EmuConfig::kValidDlssModes and
-    // kValidDlssPresets hold them.
+    // The Video Settings window's NVIDIA DLSS lists, in the order EmuConfig::kValidDlssModes,
+    // kValidDlssFrameGenerations and kValidDlssPresets hold them.
     struct DlssModeChoice { const char* key; const wchar_t* label; };
 
     inline constexpr DlssModeChoice kDlssModeChoices[] = {
-        { "off",               L"&Off" },
-        { "dlaa",              L"&DLAA (anti-aliasing only)" },
-        { "quality",           L"&Quality" },
-        { "balanced",          L"&Balanced" },
-        { "performance",       L"&Performance" },
-        { "ultra_performance", L"&Ultra Performance" },
+        { "off",               L"Off" },
+        { "dlaa",              L"DLAA (anti-aliasing only)" },
+        { "quality",           L"Quality" },
+        { "balanced",          L"Balanced" },
+        { "performance",       L"Performance" },
+        { "ultra_performance", L"Ultra Performance" },
+    };
+
+    // 3x and up, and Dynamic, are RTX 50's, offered when the card says it makes them - untested,
+    // since no card here does.
+    inline constexpr DlssModeChoice kDlssGenerationChoices[] = {
+        { "off",     L"Off" },
+        { "2x",      L"2x" },
+        { "3x",      L"3x (untested)" },
+        { "4x",      L"4x (untested)" },
+        { "5x",      L"5x (untested)" },
+        { "6x",      L"6x (untested)" },
+        { "dynamic", L"Dynamic (untested)" },
     };
 
     inline constexpr DlssModeChoice kDlssPresetChoices[] = {
-        { "auto", L"Preset: &Automatic" },
-        { "k",    L"Preset &K" },
-        { "l",    L"Preset &L" },
-        { "m",    L"Preset &M" },
+        { "auto", L"Automatic" },
+        { "k",    L"K" },
+        { "l",    L"L" },
+        { "m",    L"M" },
+    };
+
+    // The on-screen display's performance panel, in StatsMode's order (ui/overlay).
+    inline constexpr const wchar_t* kStatsChoices[] = {
+        L"Off",
+        L"Compact",
+        L"Full, with graphs",
     };
 
     // What a port can hold - the three real PS1 controllers, a mouse, a multitap, a GunCon, or
@@ -412,10 +398,6 @@ namespace psxemu {
     // File > Recent Discs: the other menu filled at runtime, found the same way.
     inline constexpr ULONG_PTR kRecentDiscsMenuTag = 0x52435344;   // 'RCSD'
     inline constexpr int kMaxRecentDiscs = 8;
-
-    // Settings > Video > Graphics Card: a third, filled once the graphics cards have been listed.
-    inline constexpr ULONG_PTR kGraphicsCardMenuTag = 0x47505543;   // 'GPUC'
-    inline constexpr int kMaxGraphicsCards = 8;
 
     // ---------------------------------------------------------------------------------------------
     // Input

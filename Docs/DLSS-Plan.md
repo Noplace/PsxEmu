@@ -1,15 +1,17 @@
 # NVIDIA DLSS 4.5 and DLSS 5
 
-**Status: phases 0-4 built (2026-09-30); phase 4 waits on the review of its pictures in motion.
-Settings > Video > NVIDIA DLSS runs DLSS 310.9.1 Super Resolution and DLAA in the Direct3D 12
-renderer on the RTX 4060, through Streamline 2.14.1: Ridge Racer at full speed, the signs of its
-jitter and motion measured rather than guessed, 0.6-2 ms a picture on the card. Phases 1-3 are
-everything DLSS needs from the PlayStation: the plane beside VRAM carries depth from PGXP and motion
-from the GTE and 2D matching, handed over beside each shared picture with whether it is new or
-starts afresh and the jitter it was drawn with. On the 26 discs, motion never does worse than none,
-and halves the warp error where 3D moves; the machine runs exactly as without any of it. Frame
-Generation (phase 5) next. DLSS 5 is not possible yet: there is no public SDK for it, and it runs
-on RTX 50 cards only until an RTX 40 update NVIDIA has promised for "later this fall".**
+**Status: phases 0-5 built (2026-10-01); both wait on the review of their pictures in motion.
+The Video Settings window's NVIDIA DLSS group runs DLSS 310.9.1 Super Resolution, DLAA and 2x
+Frame Generation in the Direct3D 12 renderer on the RTX 4060, through Streamline 2.14.1: Ridge Racer
+at full speed with
+exactly two frames on the screen for each of its pictures, the overlay kept out of the generated
+ones, the signs of the jitter and motion measured rather than guessed, 0.6-2 ms a picture on the
+card. Phases 1-3 are everything DLSS needs from the PlayStation: the plane beside VRAM carries depth
+from PGXP and motion from the GTE and 2D matching, handed over beside each shared picture with its
+number, whether it starts afresh and the jitter it was drawn with. On the 26 discs, motion never
+does worse than none, and halves the warp error where 3D moves; the machine runs exactly as without
+any of it. DLSS 5 is not possible yet: there is no public SDK for it, and it runs on RTX 50 cards
+only until an RTX 40 update NVIDIA has promised for "later this fall".**
 
 **Decided 2026-09-29:**
 
@@ -217,7 +219,8 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
   - `slReflexSleep` is called at each frame's start, as NVIDIA requires, but with no frame limit
     (`frameLimitUs` 0), so it never sets the rate
   - its low-latency mode is off at first; turning it on beside our limiter is measured in phase 5
-    before it is offered
+    before it is offered. (Phase 5 found Frame Generation will not run without it, so it is on
+    with Frame Generation; it holds the machine 0.01 ms a picture.)
 
   Any speed but 100% turns Frame Generation off.
 - **Our overlay is the UI layer.** It draws into its own target, premultiplied, tagged as UI colour
@@ -266,7 +269,7 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 
 ### Settings and the menus
 
-- **Settings > Video > NVIDIA DLSS**:
+- **Settings > Video, the NVIDIA DLSS group** (a menu until 2026-10-01, Bugs-Found 133):
   - Off, DLAA, Quality, Balanced, Performance, Ultra Performance
   - Preset: Auto, K, L, M
   - Frame Generation: Off, 2x, and on RTX 50 3x-6x and Dynamic, marked untested
@@ -287,7 +290,7 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 | 2 (**done**) | Motion vectors: picture boundaries, the GTE's two tables, the identity keys measured, sprite matching, flags, resets, `--motion`, the warp check | the warp check beats zero motion on every 3D disc of the 26; the keys chosen by numbers | Radeon, WARP | 3-5 |
 | 3 (**done**) | Jitter | the table identical in the machine's terms; the warp check unchanged with the jitter taken out | Radeon, WARP | 1-2 |
 | 4 (**built**) | Super Resolution and DLAA in the Direct3D 12 renderer through Streamline; the menus; per-game keys | pictures reviewed at the table's checkpoints; ghosting no worse than without on the 26 discs; the cost measured - the cost is, the review in motion is to do | 4060 | 2-3 |
-| 5 | Frame Generation: the swap chain, Reflex on both threads, new-picture presents, the overlay as UI, our pacing kept; the RTX 50 modes in the menu | 30 to 60 and 60 to 120 even (PresentMon); latency measured (Reflex's own stats); the overlay clean | 4060 | 3-4 |
+| 5 (**built**) | Frame Generation: the swap chain, Reflex on both threads, new-picture presents, the overlay as UI, our pacing kept; the RTX 50 modes in the menu | 30 to 60 and 60 to 120 even (PresentMon); latency measured (Reflex's own stats); the overlay clean - doubled exactly and latency measured; evenness on the screen is to judge | 4060 | 3-4 |
 | 6 | DLSS 5 | the gate above | RTX 50, or RTX 40 after its update | unknown |
 
 A usable feature is the end of phase 4. Phases 1-3 are worth having without it: View Motion and the
@@ -718,8 +721,8 @@ picture moved the other - and the plane's motion as it is. Both are the same on 
 
 **The front end:**
 
-- **Settings > Video > NVIDIA DLSS**: Off, DLAA, Quality, Balanced, Performance, Ultra Performance;
-  the preset; and a line saying what it runs at, or why it does not - not the Direct3D 12
+- **Settings > Video, NVIDIA DLSS** (then a menu): Off, DLAA, Quality, Balanced, Performance,
+  Ultra Performance; the preset; and a line saying what it runs at, or why it does not - not the Direct3D 12
   renderer, not NVIDIA's card, the DLLs missing, the software rasteriser, the rasteriser on another
   card. A toast says so once for each reason.
 - **While DLSS runs** the machine is told (`Machine::set_dlss`): the plane kept, the jitter on; and
@@ -745,10 +748,89 @@ picture moved the other - and the plane's motion as it is. Both are the same on 
 
 - **The review in motion**: ghosting on the 26 discs against DLSS off, which needs eyes on moving
   pictures, and the per-game choices that follow from it.
-- **The app is not DPI-aware**: on this laptop's 200% screen its whole window is drawn at half the
-  resolution and stretched by Windows, DLSS's output with it. Per-monitor DPI awareness would double
-  what DLSS draws to; that is the whole front end's change, not DLSS's.
+- ~~**The app is not DPI-aware**~~ - done 2026-10-01 (Bugs-Found 133): it is per-monitor aware, so
+  on this laptop's 200% screen DLSS draws to the window's real 1280x960 rather than to 640x480
+  stretched by Windows. Quality there picks 3x internal resolution, Performance 2x; the BIOS ran
+  at full speed (59.3 fps) with Frame Generation on, its doubling not measured again.
 - **Emulation > Show Timings** does not show DLSS's milliseconds yet.
+
+### Phase 5, as built
+
+**What Reflex is here.** NVIDIA's latency system: a low-latency mode that holds the thread that
+starts a frame just long enough that frames do not queue for the card, and markers that say when a
+frame's simulation, rendering and present happened. Frame Generation needs it: the present marker's
+frame number is how it finds the constants and tags of the frame being presented, and it counts
+Reflex as running only in low-latency mode (`source/plugins/sl.reflex/reflexEntry.cpp`). So Reflex
+is loaded only with Frame Generation, and its low-latency mode is on whenever Frame Generation is.
+
+**A picture is a frame.** Reflex's frames, Streamline's frame tokens and Frame Generation's are the
+pictures' own numbers:
+
+- **`SharedPicture::picture`** numbers new pictures from 1 while the plane is kept, the same in
+  every repeat of one (`Gpu::ResolveFramebuffer`). A repeat of a new picture the mailbox dropped is
+  still new to the renderer, and a number skipped is a picture never seen - which is a reset. This
+  also fixes phase 4, which went by the vblank's own `new_picture` flag: after a dropped new picture
+  DLSS showed the one before until the next.
+- **The machine's thread marks the simulation** (`host/latency_markers.h`, `Machine::Run`): picture
+  n's starts at the first vblank after picture n - 1 was drawn - Reflex's sleep, then the marker -
+  and ends at the vblank that resolved it; the input marker where the pads are read. The front end
+  hands the machine `ReflexMarkers` (`graphics/dlss/reflex_markers.h`) while Frame Generation runs,
+  which passes them to whichever renderer's Streamline is attached, under a lock the renderer takes
+  to detach before Streamline stops.
+- **The video thread marks rendering and the present** for the picture's first present, and DLSS's
+  constants and tags, and Frame Generation's, all carry the same number.
+- **Reflex's sleep stays on the machine's thread**, as NVIDIA has it. Moved to the renderer, before
+  drawing, Frame Generation stopped making pictures. It holds the machine 0.01 ms a picture, at most
+  0.09: the machine's own limiter keeps the pace, as decided.
+
+**Presents.**
+
+- **Each new picture is presented once**, and its repeats not at all (`D3DPresenter`): a 30 fps game
+  gives 30 presents a second, Frame Generation makes the 30 between. While pictures come, the
+  overlay moves with them rather than presenting between two; a paused picture gets the overlay's
+  presents, with Frame Generation off for them.
+- **Frame Generation is on for a present** only when its picture is one DLSS has just made, at 100%
+  speed with the limiter pacing, in a window it takes. Anything else - a film, an interlaced
+  picture, the overlay over a paused one, 150% - goes with it off for that present, its resources
+  kept (`eRetainResourcesWhenOff`), so coming back is not a stutter.
+- **The overlay is the UI layer**: the back buffer before it is copied as the HUD-less colour, the
+  overlay is drawn alone into a clear layer - its own blending leaves that premultiplied, alpha its
+  coverage - and put over the picture. Both tagged, with DLSS's motion and depth and the picture's
+  rectangle of the back buffer; the bars are copied as they are.
+- **Resizing** turns Frame Generation off first, with a present of its own, as NVIDIA asks.
+- **Turning it on or off** makes the renderer again, as the swap chain has to be.
+
+**The menu**, now the Video Settings window's Frame generation list: Off, 2x, and 3x to 6x and Dynamic
+marked untested and greyed unless the card says it makes them (`numFramesToGenerateMax`,
+`bIsDynamicMFGSupported`). Only with a DLSS mode. The status line adds Frame Generation's state or
+why not; at another speed, "paused: only at 100% speed". `EmuConfig::dlss_frame_generation`, one of
+a game's own keys.
+
+**Verified on the RTX 4060**, Ridge Racer's attract mode maximised, one device a run:
+
+- **Exactly double**: the swap chain's own count of presents, which under Frame Generation is
+  Streamline's real one's, is 240 for every 120 of ours while it runs, 120 while it does not; 49.7
+  of our presents a second, so 99.4 on the 165 Hz screen.
+- **Only with the window in front.** When other windows overlapped it - the desktop in use - the
+  same runs showed 120 for 120: NVIDIA's pacer makes no pictures for a window composed with others.
+  Kept in front, every run doubled, the full statistics panel and the controllers showing or not.
+- **The overlay clean** over the generated pictures, glass and classic.
+- **Latency, by Reflex's own report**: 17-18 ms from a picture's simulation starting to the card
+  finishing it, 12 ms to the present returning, with Frame Generation on.
+- **Resizing, 150% and back, and Frame Generation off and on from the menu**, in one run: no
+  hang; paused and resumed; the renderer made again twice, ready both times.
+- **The Radeon**: the menu says the card is not NVIDIA's, and 3x-6x and Dynamic are greyed.
+- **The machine**: 49.7 fps at 100% in every run.
+- **Every harness green**: `media_test` 420 (+4), `dlss_choice_test` 42 (+7).
+
+**Not yet:**
+
+- **Evenness on the screen.** The count is exact, but whether the pictures are evenly spaced needs
+  PresentMon or FrameView (not installed) or eyes.
+- **The game's own HUD** cannot be told from the picture and will waver in the generated frames;
+  the experiment in the design (2D after the last 3D polygon as the UI mask) is not built.
+- **One burst of dropped sound** when Frame Generation first starts (NVIDIA loading its model),
+  16,500 samples once, then none; without Frame Generation, none.
 
 ---
 

@@ -66,6 +66,7 @@ namespace psxemu {
         void Refresh(int select);
         void ShowCheat(int index);   // into the editor; -1 for a new one
         void SetStatus(const std::wstring& text, bool error);
+        void MakeFonts();
         int Scale(int value) const { return MulDiv(value, dpi_, 96); }
 
         Host host_;

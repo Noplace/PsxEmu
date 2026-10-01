@@ -20,6 +20,7 @@
 #include "app/app_icon.h"
 
 #include "app/menu.h"   // ParseControllerType, ParseInputSource
+#include "ui/dpi.h"
 
 #include <commctrl.h>
 #include <windowsx.h>   // GET_X_LPARAM
@@ -228,25 +229,12 @@ namespace psxemu {
 
         // Everything is laid out in 96-DPI pixels and scaled by the window's own DPI, so the
         // picture and the boxes stay in proportion however the front end is scaled.
-        dpi_ = static_cast<int>(GetDpiForWindow(window_));
-        if (dpi_ <= 0)
-            dpi_ = 96;
+        dpi_ = WindowDpi(window_);
         RECT bounds = { 0, 0, Scale(kClientWidth), Scale(kClientHeight) };
         AdjustWindowRectExForDpi(&bounds, style, FALSE, 0, static_cast<UINT>(dpi_));
         SetWindowPos(window_, nullptr, 0, 0, bounds.right - bounds.left,
                      bounds.bottom - bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-
-        NONCLIENTMETRICSW metrics = { sizeof(metrics) };
-        if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0,
-                                       static_cast<UINT>(dpi_))) {
-            font_ = CreateFontIndirectW(&metrics.lfMessageFont);
-            LOGFONTW bold = metrics.lfMessageFont;
-            bold.lfWeight = FW_BOLD;
-            bold_font_ = CreateFontIndirectW(&bold);
-            LOGFONTW caption = metrics.lfMessageFont;
-            caption.lfHeight = caption.lfHeight * 85 / 100;
-            small_font_ = CreateFontIndirectW(&caption);
-        }
+        MakeFonts();
 
         auto make = [&](HWND parent, const wchar_t* cls, const wchar_t* text, DWORD control_style,
                         int id, int x, int y, int w, int h) {
@@ -300,6 +288,12 @@ namespace psxemu {
         close_ = make(window_, L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, kIdClose,
                       kClientWidth - kMargin - 100, buttons_top, 100, 28);
         return true;
+    }
+
+    void ControllerBindingsWindow::MakeFonts() {
+        font_ = CreateMessageFont(dpi_);
+        bold_font_ = CreateMessageFont(dpi_, true);
+        small_font_ = CreateMessageFont(dpi_, false, 85);
     }
 
     void ControllerBindingsWindow::Show(const ControllerBindings& current) {
@@ -1132,6 +1126,27 @@ namespace psxemu {
                         SendMessageW(window, WM_CLOSE, 0, 0);
                         break;
                 }
+                return 0;
+            }
+
+            case WM_DPICHANGED: {
+                // Onto a monitor with another scaling: the same layout, at its DPI. The boxes on
+                // the canvas scale with it; the picture and the boxes' own text are drawn at
+                // whatever dpi_ is.
+                const int from = self->dpi_;
+                const HFONT old[] = { self->font_, self->bold_font_, self->small_font_ };
+                self->dpi_ = HIWORD(wparam);
+                self->MakeFonts();
+                SwapFonts(window, { { old[0], self->font_ },
+                                    { old[1], self->bold_font_ },
+                                    { old[2], self->small_font_ } });
+                for (HFONT font : old) {
+                    if (font != nullptr)
+                        DeleteObject(font);
+                }
+                const HWND canvas = self->canvas_;
+                RescaleForDpi(window, from, self->dpi_, *reinterpret_cast<const RECT*>(lparam),
+                              [canvas](HWND child) { return child == canvas; });
                 return 0;
             }
 

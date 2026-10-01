@@ -21,6 +21,7 @@
 
 #include "app/const.h"
 #include "app/win32_dialogs.h"
+#include "ui/dpi.h"
 
 #include "psx/bios_calls.h"
 #include "psx/disasm.h"
@@ -250,13 +251,9 @@ namespace psxemu {
                                   instance, this);
         if (window_ == nullptr)
             return false;
-
-        NONCLIENTMETRICSW metrics = { sizeof(metrics) };
-        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0))
-            font_ = CreateFontIndirectW(&metrics.lfMessageFont);
-        mono_ = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                            FIXED_PITCH | FF_MODERN, L"Consolas");
+        dpi_ = WindowDpi(window_);
+        SizeForDpi(window_, 1200, 900);
+        MakeFonts();
 
         auto make = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int id,
                         DWORD ex_style = 0) {
@@ -407,6 +404,8 @@ namespace psxemu {
             if (mono_ != nullptr)
                 SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(mono_), FALSE);
         }
+        // The column widths above are at 96 DPI.
+        ScaleListColumns(window_, 96, dpi_);
 
         RECT client = {};
         GetClientRect(window_, &client);
@@ -415,6 +414,13 @@ namespace psxemu {
         UpdateControls();
         UpdateStatus();
         return true;
+    }
+
+    void DebuggerWindow::MakeFonts() {
+        font_ = CreateMessageFont(dpi_);
+        mono_ = CreateFontW(-ScaleForDpi(13, dpi_), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
     }
 
     void DebuggerWindow::Show(bool on) {
@@ -1789,32 +1795,39 @@ namespace psxemu {
         return 0;
     }
 
+    // In pixels at 96 DPI: the client size is taken down to them, and each control scaled back up
+    // to the window's DPI as it is placed.
     void DebuggerWindow::Layout(int width, int height) {
+        width = MulDiv(width, 96, dpi_);
+        height = MulDiv(height, 96, dpi_);
+        auto move = [this](HWND control, int x, int y, int w, int h) {
+            MoveForDpi(control, dpi_, x, y, w, h);
+        };
         const int margin = 8, gap = 6, row = 26;
         int x = margin;
         const int widths[] = { 100, 60, 104, 108, 132, 96 };   // kContinue..kRunToCursor
         for (int c = kContinue; c <= kRunToCursor; ++c) {
-            MoveWindow(controls_[c], x, margin, widths[c], row, TRUE);
+            move(controls_[c], x, margin, widths[c], row);
             x += widths[c] + gap;
         }
 
         const int y2 = margin + row + gap;
         x = margin;
-        MoveWindow(address_, x, y2 + 2, 110, row - 4, TRUE);
+        move(address_, x, y2 + 2, 110, row - 4);
         x += 110 + gap;
-        MoveWindow(controls_[kGoTo], x, y2, 64, row, TRUE);
+        move(controls_[kGoTo], x, y2, 64, row);
         x += 64 + gap;
-        MoveWindow(controls_[kGoToPc], x, y2, 40, row, TRUE);
+        move(controls_[kGoToPc], x, y2, 40, row);
         x += 40 + gap;
-        MoveWindow(controls_[kAddBreakpoint], x, y2, 124, row, TRUE);
+        move(controls_[kAddBreakpoint], x, y2, 124, row);
         x += 124 + gap * 2;
-        MoveWindow(label_edit_, x, y2 + 2, 150, row - 4, TRUE);
+        move(label_edit_, x, y2 + 2, 150, row - 4);
         x += 150 + gap;
-        MoveWindow(controls_[kName], x, y2, 54, row, TRUE);
+        move(controls_[kName], x, y2, 54, row);
         x += 54 + gap;
-        MoveWindow(controls_[kLabels], x, y2, 74, row, TRUE);
+        move(controls_[kLabels], x, y2, 74, row);
         x += 74 + gap * 2;
-        MoveWindow(status_, x, y2 + 5, width - x - margin, row - 6, TRUE);
+        move(status_, x, y2 + 5, width - x - margin, row - 6);
 
         const int top = y2 + row + gap;
         const int label = 18;
@@ -1825,84 +1838,89 @@ namespace psxemu {
 
         // Left: the listing over the memory pane, the memory controls along the bottom.
         const int code_height = (lists_height * 55) / 100;
-        MoveWindow(code_label_, margin, top, left_width, label, TRUE);
-        MoveWindow(code_, margin, top + label, left_width, code_height - label, TRUE);
+        move(code_label_, margin, top, left_width, label);
+        move(code_, margin, top + label, left_width, code_height - label);
 
         // Under it, the tabs: each page fills the tab control's display area.
         const int tab_top = top + code_height + gap;
-        MoveWindow(tab_, margin, tab_top, left_width, height - margin - tab_top, TRUE);
-        RECT page = { margin, tab_top, margin + left_width, height - margin };
+        move(tab_, margin, tab_top, left_width, height - margin - tab_top);
+        // The tab control measures its display area in real pixels, so the rect goes up to them
+        // and comes back.
+        RECT page = { ScaleForDpi(margin, dpi_), ScaleForDpi(tab_top, dpi_),
+                      ScaleForDpi(margin + left_width, dpi_), ScaleForDpi(height - margin, dpi_) };
         TabCtrl_AdjustRect(tab_, FALSE, &page);
+        page = { MulDiv(page.left, 96, dpi_), MulDiv(page.top, 96, dpi_),
+                 MulDiv(page.right, 96, dpi_), MulDiv(page.bottom, 96, dpi_) };
         const int page_x = page.left + 2, page_w = page.right - page.left - 4;
         const int page_top = page.top + 2, page_bottom = page.bottom - 2;
 
         const int memory_top = page_top;
         const int memory_controls_y = page_bottom - row;
-        MoveWindow(memory_label_, page_x, memory_top, page_w, label, TRUE);
-        MoveWindow(memory_, page_x, memory_top + label, page_w,
-                   memory_controls_y - gap - (memory_top + label), TRUE);
+        move(memory_label_, page_x, memory_top, page_w, label);
+        move(memory_, page_x, memory_top + label, page_w,
+             memory_controls_y - gap - (memory_top + label));
 
-        MoveWindow(bios_note_, page_x, page_top + 4, page_w - 130 - gap, label, TRUE);
-        MoveWindow(controls_[kClearBiosBreaks], page_x + page_w - 130, page_top, 130, row, TRUE);
-        MoveWindow(bios_list_, page_x, page_top + row + gap, page_w,
-                   page_bottom - (page_top + row + gap), TRUE);
+        move(bios_note_, page_x, page_top + 4, page_w - 130 - gap, label);
+        move(controls_[kClearBiosBreaks], page_x + page_w - 130, page_top, 130, row);
+        move(bios_list_, page_x, page_top + row + gap, page_w,
+             page_bottom - (page_top + row + gap));
 
-        MoveWindow(stack_track_, page_x, page_top, page_w, row, TRUE);
-        MoveWindow(stack_list_, page_x, page_top + row + gap, page_w,
-                   page_bottom - (page_top + row + gap), TRUE);
+        move(stack_track_, page_x, page_top, page_w, row);
+        move(stack_list_, page_x, page_top + row + gap, page_w,
+             page_bottom - (page_top + row + gap));
 
-        MoveWindow(devices_list_, page_x, page_top, page_w, page_bottom - page_top, TRUE);
+        move(devices_list_, page_x, page_top, page_w, page_bottom - page_top);
 
         x = page_x;
-        MoveWindow(memory_address_, x, memory_controls_y + 2, 90, row - 4, TRUE);
+        move(memory_address_, x, memory_controls_y + 2, 90, row - 4);
         x += 90 + gap;
-        MoveWindow(controls_[kMemoryView], x, memory_controls_y, 50, row, TRUE);
+        move(controls_[kMemoryView], x, memory_controls_y, 50, row);
         x += 50 + gap;
-        MoveWindow(controls_[kMemoryPrevious], x, memory_controls_y, 60, row, TRUE);
+        move(controls_[kMemoryPrevious], x, memory_controls_y, 60, row);
         x += 60 + gap;
-        MoveWindow(controls_[kMemoryNext], x, memory_controls_y, 60, row, TRUE);
+        move(controls_[kMemoryNext], x, memory_controls_y, 60, row);
         x += 60 + gap * 3;
         const int write_width = 60;
-        MoveWindow(memory_bytes_, x, memory_controls_y + 2,
-                   page_x + page_w - write_width - gap - x, row - 4, TRUE);
-        MoveWindow(controls_[kMemoryWrite], page_x + page_w - write_width, memory_controls_y,
-                   write_width, row, TRUE);
+        move(memory_bytes_, x, memory_controls_y + 2,
+             page_x + page_w - write_width - gap - x, row - 4);
+        move(controls_[kMemoryWrite], page_x + page_w - write_width, memory_controls_y,
+             write_width, row);
 
         // Right: the registers with their edit box, the breakpoints, then the watchpoints.
         const int registers_height = (lists_height * 50) / 100;
-        MoveWindow(registers_label_, right_x, top, right_width, label, TRUE);
+        move(registers_label_, right_x, top, right_width, label);
         const int registers_list_height = registers_height - label - row - gap;
-        MoveWindow(registers_, right_x, top + label, right_width, registers_list_height, TRUE);
+        move(registers_, right_x, top + label, right_width, registers_list_height);
         const int set_y = top + label + registers_list_height + gap;
-        MoveWindow(register_value_, right_x, set_y + 2, right_width - 60 - gap, row - 4, TRUE);
-        MoveWindow(controls_[kSetRegister], right_x + right_width - 60, set_y, 60, row, TRUE);
+        move(register_value_, right_x, set_y + 2, right_width - 60 - gap, row - 4);
+        move(controls_[kSetRegister], right_x + right_width - 60, set_y, 60, row);
 
         // What is left is split between the two lists, each with a row of controls under it.
         const int bp_top = top + registers_height + gap;
         const int rest = height - margin - bp_top;
         const int bp_block = rest / 2;
-        MoveWindow(breakpoints_label_, right_x, bp_top, right_width, label, TRUE);
+        move(breakpoints_label_, right_x, bp_top, right_width, label);
         const int bp_list_height = bp_block - label - row - gap * 2;
-        MoveWindow(breakpoint_list_, right_x, bp_top + label, right_width, bp_list_height, TRUE);
+        move(breakpoint_list_, right_x, bp_top + label, right_width, bp_list_height);
         const int bp_buttons_y = bp_top + label + bp_list_height + gap;
-        MoveWindow(controls_[kRemoveBreakpoint], right_x, bp_buttons_y, 90, row, TRUE);
-        MoveWindow(controls_[kRemoveAll], right_x + 90 + gap, bp_buttons_y, 100, row, TRUE);
+        move(controls_[kRemoveBreakpoint], right_x, bp_buttons_y, 90, row);
+        move(controls_[kRemoveAll], right_x + 90 + gap, bp_buttons_y, 100, row);
 
         const int wp_top = bp_top + bp_block;
-        MoveWindow(watchpoints_label_, right_x, wp_top, right_width, label, TRUE);
+        move(watchpoints_label_, right_x, wp_top, right_width, label);
         const int wp_controls_y = height - margin - row;
-        MoveWindow(watch_list_, right_x, wp_top + label, right_width,
-                   wp_controls_y - gap - (wp_top + label), TRUE);
+        move(watch_list_, right_x, wp_top + label, right_width,
+             wp_controls_y - gap - (wp_top + label));
         x = right_x;
-        MoveWindow(watch_address_, x, wp_controls_y + 2, 84, row - 4, TRUE);
+        move(watch_address_, x, wp_controls_y + 2, 84, row - 4);
         x += 84 + gap;
-        MoveWindow(watch_length_, x, wp_controls_y + 2, 44, row - 4, TRUE);
+        move(watch_length_, x, wp_controls_y + 2, 44, row - 4);
         x += 44 + gap;
-        MoveWindow(watch_kind_, x, wp_controls_y, 72, 200, TRUE);   // the drop-down's height
+        move(watch_kind_, x, wp_controls_y, 72, 200);   // the drop-down's height
         x += 72 + gap;
-        MoveWindow(controls_[kAddWatchpoint], x, wp_controls_y, 56, row, TRUE);
-        MoveWindow(controls_[kRemoveWatchpoint], right_x + right_width - 70, wp_controls_y, 70,
-                   row, TRUE);
+        move(controls_[kAddWatchpoint], x, wp_controls_y, 56, row);
+        move(controls_[kRemoveWatchpoint], right_x + right_width - 70, wp_controls_y, 70,
+                   row);
     }
 
     LRESULT CALLBACK DebuggerWindow::WindowProc(HWND window, UINT message, WPARAM wparam,
@@ -1925,8 +1943,24 @@ namespace psxemu {
 
             case WM_GETMINMAXINFO: {
                 MINMAXINFO* info = reinterpret_cast<MINMAXINFO*>(lparam);
-                info->ptMinTrackSize.x = 860;
-                info->ptMinTrackSize.y = 600;
+                info->ptMinTrackSize.x = ScaleForDpi(860, self->dpi_);
+                info->ptMinTrackSize.y = ScaleForDpi(600, self->dpi_);
+                return 0;
+            }
+
+            case WM_DPICHANGED: {
+                // Onto a monitor with another scaling. The new size lays it out again.
+                const int from = self->dpi_;
+                const HFONT old[] = { self->font_, self->mono_ };
+                self->dpi_ = HIWORD(wparam);
+                self->MakeFonts();
+                SwapFonts(window, { { old[0], self->font_ }, { old[1], self->mono_ } });
+                for (HFONT font : old) {
+                    if (font != nullptr)
+                        DeleteObject(font);
+                }
+                ScaleListColumns(window, from, self->dpi_);
+                MoveToSuggested(window, *reinterpret_cast<const RECT*>(lparam));
                 return 0;
             }
 

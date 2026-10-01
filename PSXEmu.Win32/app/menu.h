@@ -52,16 +52,6 @@ namespace psxemu {
     // Fills in File > Recent Discs, most recent first - the first entry is the last disc played.
     void PopulateRecentDiscsMenu(HWND window, const std::vector<std::string>& discs);
 
-    // Fills in Settings > Video > Graphics Card: Automatic, then each card by name with its video
-    // memory - which is what tells a laptop's two apart - ticking `chosen` (an index, or -1 for
-    // Automatic). With only one card it says so and offers nothing to choose.
-    struct GraphicsCardLabel {
-        std::string name;
-        uint64_t video_memory;
-    };
-    void PopulateGraphicsCardMenu(HWND window, const std::vector<GraphicsCardLabel>& cards,
-                                  int chosen);
-
     // ---------------------------------------------------------------------------------------------
     // Ticks
     // ---------------------------------------------------------------------------------------------
@@ -81,29 +71,12 @@ namespace psxemu {
     // looking broken when it is off.
     void TickSpeed(HWND window, float current);
 
-    // The renderer actually running, which is not necessarily the persisted preference - creating
+    // The output actually running, which is not necessarily the persisted preference - creating
     // the preferred one can fall back to the other.
     void TickAudioBackend(HWND window, const std::string& backend);
-    void TickRenderer(HWND window, const std::string& backend);
-    // Ticks what is actually drawing, which a failed hardware rasteriser leaves as software.
-    // While DLSS runs (`dlss`) the scale is its choice: ticked, and greyed.
-    void TickRasteriser(HWND window, bool hardware, int scale, bool true_color, bool dlss);
-    // PGXP's three switches, greyed unless the hardware rasteriser draws (and the last two unless
-    // precise vertices are on). While DLSS runs precise vertices are on, and greyed.
-    void TickPgxp(HWND window, bool hardware, bool vertices, bool textures, bool culling,
-                  bool dlss);
-    // Settings > Video > NVIDIA DLSS: the mode and preset as EmuConfig keeps them, and the line
-    // saying whether it runs.
-    void TickDlss(HWND window, const std::string& mode, const std::string& preset,
-                  const std::wstring& status);
-    // Video > View Depth and View Motion: `view` 0 for neither, 1 depth, 2 motion. Greyed unless
-    // the hardware rasteriser draws above 1x, the only picture they can take the place of.
+    // View > Depth and Motion: `view` 0 for neither, 1 depth, 2 motion. Greyed unless the
+    // hardware rasteriser draws above 1x, the only picture they can take the place of.
     void TickPlaneView(HWND window, int view, bool available);
-
-    // The current filter, and every filter item greyed out when the active renderer does not
-    // support them - D3D11Presenter's SetPixelShader is a no-op, and a menu that silently does
-    // nothing on click is worse than one that looks unavailable.
-    void TickFilter(HWND window, const std::string& backend, const std::string& filter);
 
     // The Memory Cards items for the three cards a multitap adds, greyed out for a port with no
     // multitap.
@@ -124,10 +97,6 @@ namespace psxemu {
     // shown in that same console.
     void TickSerialToConsole(HWND window, bool on);
     void TickFullscreen(HWND window, bool on);
-    // Settings > Video > On-Screen Display: which performance panel (0 off, 1 compact, 2 full)
-    // the two switches, and whether the look is Glass rather than Classic.
-    void TickOnScreenDisplay(HWND window, int stats_mode, bool notifications,
-                             bool controllers_always, bool glass);
 
     // EmuConfig::mouse_motion and EmuConfig::mouse_dpi - how a host mouse's movement becomes a
     // PSX mouse's counts, and what the host mouse's own resolution is.

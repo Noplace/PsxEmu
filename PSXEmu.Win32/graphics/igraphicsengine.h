@@ -97,6 +97,12 @@ class IGraphicsEngine {
         status.why = "only the Direct3D 12 renderer has it";
         return status;
     }
+    // DLSS Frame Generation only at full speed, paced by the machine: false turns it off from the
+    // next present, on again when true.
+    virtual void SetFrameGenerationAllowed(bool allowed) { (void)allowed; }
+    // Whether each new picture is to be presented once and its repeats not at all - Frame
+    // Generation making the pictures in between (SharedPicture::picture).
+    virtual bool TakesOnlyNewPictures() const { return false; }
     // Whether this engine has to be made again for DLSS to go from `from` to `to`: on or off,
     // for one that starts NVIDIA's Streamline with its device.
     virtual bool DlssNeedsRemaking(const psxemu::DlssChoice& from,

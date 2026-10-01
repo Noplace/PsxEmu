@@ -53,6 +53,16 @@ void TestNames() {
   Check(psxemu::ParseDlssMode("nonsense") == DlssMode::kOff, "anything else is off");
   Check(psxemu::ParseDlssPreset("m") == psxemu::DlssPreset::kM, "preset m");
   Check(psxemu::ParseDlssPreset("") == psxemu::DlssPreset::kAuto, "preset auto");
+  CheckInt(psxemu::ParseDlssGeneration("off"), 0, "Frame Generation off");
+  CheckInt(psxemu::ParseDlssGeneration("2x"), 1, "2x makes one picture");
+  CheckInt(psxemu::ParseDlssGeneration("6x"), 5, "6x makes five");
+  CheckInt(psxemu::ParseDlssGeneration("7x"), 0, "7x is not a choice");
+  CheckInt(psxemu::ParseDlssGeneration("dynamic"), psxemu::kDlssGenerationDynamic, "dynamic");
+  psxemu::DlssChoice choice;
+  choice.frame_generation = 1;
+  Check(!choice.generating(), "no Frame Generation without a DLSS mode");
+  choice.mode = DlssMode::kQuality;
+  Check(choice.generating(), "...and with one");
 }
 
 void TestShownHeight() {

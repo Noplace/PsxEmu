@@ -18,6 +18,7 @@
 *****************************************************************************************************************/
 #include "ui/console_window.h"
 #include "app/app_icon.h"
+#include "ui/dpi.h"
 
 namespace psxemu {
 
@@ -71,6 +72,7 @@ namespace psxemu {
                                   this);
         if (window_ == nullptr)
             return false;
+        SizeForDpi(window_, 760, 420);
 
         edit_ = CreateWindowExW(0, L"EDIT", L"",
                                 WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE |
@@ -80,18 +82,24 @@ namespace psxemu {
             return false;
         SendMessageW(edit_, EM_SETLIMITTEXT, 0, 0);   // the ceiling, not the default 32K
 
-        const UINT dpi = GetDpiForWindow(window_);
-        font_ = CreateFontW(-MulDiv(10, dpi == 0 ? 96 : static_cast<int>(dpi), 72), 0, 0, 0,
-                            FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN,
-                            L"Consolas");
-        if (font_ != nullptr)
-            SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), FALSE);
+        SetFontForDpi(WindowDpi(window_));
 
         RECT client = {};
         GetClientRect(window_, &client);
         MoveWindow(edit_, 0, 0, client.right, client.bottom, FALSE);
         return true;
+    }
+
+    // Consolas at 10 points, at the window's DPI.
+    void ConsoleWindow::SetFontForDpi(int dpi) {
+        const HFONT old = font_;
+        font_ = CreateFontW(-MulDiv(10, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                            CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+        if (font_ != nullptr)
+            SendMessageW(edit_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        if (old != nullptr)
+            DeleteObject(old);
     }
 
     void ConsoleWindow::Show(bool on) {
@@ -233,6 +241,12 @@ namespace psxemu {
             case WM_SETFOCUS:
                 if (self->edit_ != nullptr)
                     SetFocus(self->edit_);
+                return 0;
+
+            case WM_DPICHANGED:
+                if (self->edit_ != nullptr)
+                    self->SetFontForDpi(HIWORD(wparam));
+                MoveToSuggested(window, *reinterpret_cast<const RECT*>(lparam));
                 return 0;
 
             // A read-only edit control asks for the dialog-grey background; the console reads

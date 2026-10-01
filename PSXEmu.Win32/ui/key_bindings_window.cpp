@@ -20,6 +20,7 @@
 #include "app/app_icon.h"
 
 #include "app/win32_paths.h"   // Widen
+#include "ui/dpi.h"
 
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")
@@ -80,10 +81,9 @@ namespace psxemu {
                                   this);
         if (window_ == nullptr)
             return false;
-
-        NONCLIENTMETRICSW metrics = { sizeof(metrics) };
-        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0))
-            font_ = CreateFontIndirectW(&metrics.lfMessageFont);
+        dpi_ = WindowDpi(window_);
+        SizeForDpi(window_, 420, 470);
+        font_ = CreateMessageFont(dpi_);
 
         auto make = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int id) {
             HWND control = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0,
@@ -102,10 +102,10 @@ namespace psxemu {
         LVCOLUMNW column = {};
         column.mask = LVCF_TEXT | LVCF_WIDTH;
         column.pszText = const_cast<wchar_t*>(L"Button");
-        column.cx = 150;
+        column.cx = Scale(150);
         ListView_InsertColumn(list_, 0, &column);
         column.pszText = const_cast<wchar_t*>(L"Key");
-        column.cx = 150;
+        column.cx = Scale(150);
         ListView_InsertColumn(list_, 1, &column);
         for (int i = 0; i < kPadButtons; ++i) {
             LVITEMW item = {};
@@ -188,17 +188,20 @@ namespace psxemu {
         SetFocus(list_);
     }
 
+    // In pixels at 96 DPI, scaled to the window's.
     void KeyBindingsWindow::Layout(int width, int height) {
-        const int margin = 10;
-        const int button_height = 28;
-        const int status_height = 36;
+        const int margin = Scale(10);
+        const int gap = Scale(6);
+        const int button_height = Scale(28);
+        const int status_height = Scale(36);
         const int buttons_top = height - margin - button_height;
-        const int status_top = buttons_top - 6 - status_height;
-        MoveWindow(list_, margin, margin, width - margin * 2, status_top - 6 - margin, TRUE);
+        const int status_top = buttons_top - gap - status_height;
+        MoveWindow(list_, margin, margin, width - margin * 2, status_top - gap - margin, TRUE);
         MoveWindow(status_, margin, status_top, width - margin * 2, status_height, TRUE);
-        MoveWindow(set_, margin, buttons_top, 100, button_height, TRUE);
-        MoveWindow(clear_, margin + 106, buttons_top, 80, button_height, TRUE);
-        MoveWindow(defaults_, width - margin - 130, buttons_top, 130, button_height, TRUE);
+        MoveWindow(set_, margin, buttons_top, Scale(100), button_height, TRUE);
+        MoveWindow(clear_, margin + Scale(106), buttons_top, Scale(80), button_height, TRUE);
+        MoveWindow(defaults_, width - margin - Scale(130), buttons_top, Scale(130), button_height,
+                   TRUE);
     }
 
     LRESULT CALLBACK KeyBindingsWindow::WindowProc(HWND window, UINT message, WPARAM wparam,
@@ -221,8 +224,22 @@ namespace psxemu {
 
             case WM_GETMINMAXINFO: {
                 MINMAXINFO* limits = reinterpret_cast<MINMAXINFO*>(lparam);
-                limits->ptMinTrackSize.x = 380;
-                limits->ptMinTrackSize.y = 360;
+                limits->ptMinTrackSize.x = self->Scale(380);
+                limits->ptMinTrackSize.y = self->Scale(360);
+                return 0;
+            }
+
+            case WM_DPICHANGED: {
+                // Onto a monitor with another scaling. The new size lays it out again.
+                const int from = self->dpi_;
+                self->dpi_ = HIWORD(wparam);
+                const HFONT old = self->font_;
+                self->font_ = CreateMessageFont(self->dpi_);
+                SwapFonts(window, { { old, self->font_ } });
+                if (old != nullptr)
+                    DeleteObject(old);
+                ScaleListColumns(window, from, self->dpi_);
+                MoveToSuggested(window, *reinterpret_cast<const RECT*>(lparam));
                 return 0;
             }
 

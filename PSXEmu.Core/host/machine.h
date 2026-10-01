@@ -16,6 +16,7 @@
 #include "host/doorbell.h"
 #include "host/frame_mailbox.h"
 #include "host/input_exchange.h"
+#include "host/latency_markers.h"
 #include "host/request_queue.h"
 #include "host/sample_ring.h"
 #include "platform/frame_limiter.h"
@@ -143,16 +144,19 @@ class Machine {
   // load for one.
   void ResetPacing();
 
-  // Video > View VRAM: ship the whole of VRAM instead of the display.
+  // View > VRAM: ship the whole of VRAM instead of the display.
   void set_view_vram(bool on) { view_vram_ = on; }
 
-  // Video > View Depth and View Motion: the plane beside VRAM that DLSS will use, shown in
+  // View > Depth and Motion: the plane beside VRAM that DLSS will use, shown in
   // place of the picture (Docs/DLSS-Plan.md) - by the hardware rasteriser, above 1x.
   void set_plane_view(psx::PlaneView view);
   // DLSS running in the renderer (Docs/DLSS-Plan.md, phase 4): the plane kept beside VRAM, with
   // motion, for every picture, and the triangles jittered through `jitter_phases` offsets.
   // Nothing the machine sees changes. Off: neither.
   void set_dlss(bool on, int jitter_phases);
+  // NVIDIA Reflex's markers while DLSS Frame Generation runs (host/latency_markers.h), null for
+  // none. Outlives the machine, or is set to null first; the machine's thread calls it.
+  void set_latency_markers(LatencyMarkers* markers) { latency_ = markers; }
 
   // Instructions stepped since the thread started. The machine's thread, or
   // anyone once Stop has returned.
@@ -193,6 +197,9 @@ class Machine {
   bool view_vram_ = false;
   psx::PlaneView plane_view_ = psx::PlaneView::kPicture;
   bool dlss_ = false;
+  LatencyMarkers* latency_ = nullptr;
+  // The picture whose simulation is under way, 0 before the first starts (latency_ only).
+  uint32_t latency_picture_ = 0;
   utilities::FrameLimiter limiter_;
   utilities::SpeedResampler resampler_;
   // The speed the machine is actually managing, in multiples of real time,

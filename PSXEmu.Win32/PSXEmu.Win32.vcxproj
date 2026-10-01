@@ -66,7 +66,7 @@
   <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
     <PostBuildEvent>
       <Command>set SL=$(SolutionDir)Temp\streamline\v2.14.1\bin\x64
-if exist "%SL%\sl.interposer.dll" for %%f in (sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll nvngx_dlss.license.txt) do xcopy /y /d /q "%SL%\%%f" "$(OutDir)." &gt;nul
+if exist "%SL%\sl.interposer.dll" for %%f in (sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll nvngx_dlss.license.txt sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll reflex.license.txt) do xcopy /y /d /q "%SL%\%%f" "$(OutDir)." &gt;nul
 exit /b 0</Command>
       <Message>NVIDIA DLSS's DLLs, if fetched</Message>
     </PostBuildEvent>
@@ -98,6 +98,8 @@ exit /b 0</Command>
     <ClCompile Include="ui\controller_bindings_window.cpp" />
     <ClCompile Include="ui\emulation_settings_window.cpp" />
     <ClCompile Include="ui\cheats_window.cpp" />
+    <ClCompile Include="ui\dpi.cpp" />
+    <ClCompile Include="ui\video_settings_window.cpp" />
     <ClCompile Include="ui\overlay\memory_usage.cpp" />
     <ClCompile Include="ui\overlay\overlay.cpp" />
     <ClCompile Include="ui\overlay\overlay_atlas.cpp" />
@@ -107,6 +109,7 @@ exit /b 0</Command>
     <ClCompile Include="graphics\d3d12_graphics_engine.cpp" />
     <ClCompile Include="graphics\d3d12_dlss.cpp" />
     <ClCompile Include="graphics\dlss\streamline.cpp" />
+    <ClCompile Include="graphics\dlss\reflex_markers.cpp" />
     <ClCompile Include="graphics\opengl_engine.cpp" />
     <ClCompile Include="graphics\vulkan_engine.cpp" />
     <ClCompile Include="app\engine_factory.cpp" />
@@ -131,6 +134,8 @@ exit /b 0</Command>
     <ClInclude Include="ui\emulation_settings_window.h" />
     <ClInclude Include="ui\cheats_window.h" />
     <ClInclude Include="ui\game_scope.h" />
+    <ClInclude Include="ui\dpi.h" />
+    <ClInclude Include="ui\video_settings_window.h" />
     <ClInclude Include="ui\overlay\memory_usage.h" />
     <ClInclude Include="ui\overlay\overlay.h" />
     <ClInclude Include="ui\overlay\overlay_atlas.h" />
@@ -144,6 +149,7 @@ exit /b 0</Command>
     <ClInclude Include="graphics\d3d12_graphics_engine.h" />
     <ClInclude Include="graphics\dlss\dlss_choice.h" />
     <ClInclude Include="graphics\dlss\streamline.h" />
+    <ClInclude Include="graphics\dlss\reflex_markers.h" />
     <ClInclude Include="graphics\opengl_engine.h" />
     <ClInclude Include="graphics\gl_functions.h" />
     <ClInclude Include="graphics\vulkan_engine.h" />

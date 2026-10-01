@@ -18,54 +18,52 @@
 *****************************************************************************************************************/
 #pragma once
 
-// Settings > Input > Keyboard Bindings: which key presses each of the pad's fourteen buttons.
+// NVIDIA Reflex's markers from the machine's thread (host/latency_markers.h), passed to whichever
+// renderer's Streamline runs Frame Generation (Docs/DLSS-Plan.md, phase 5).
 //
-// Pick a button - double-click it, or select it and press Set Key - and the next key pressed is
-// bound to it. Escape cancels. A key can only press one button, so binding it takes it from
-// wherever it was; the keys the window already answers to (Space, F1-F8) are refused. Every
-// change is handed to the app at once, which saves it and passes it to the input thread - there
-// is no OK button to forget.
+// One for the process: the machine keeps the pointer across renderers made and remade, and a
+// renderer attaches its Streamline here once Frame Generation is ready, and detaches it before
+// Streamline stops - under the lock every marker is sent under, so none reaches one shutting down.
+// Without one attached every call does nothing.
 
-#include "app/framework.h"
-#include "input/keyboard.h"
+#include "host/latency_markers.h"
 
-#include <functional>
+#include <atomic>
+#include <cstdint>
+#include <shared_mutex>
 
 namespace psxemu {
 
-    class KeyBindingsWindow {
+    class Streamline;
+
+    class ReflexMarkers : public emulation::host::LatencyMarkers {
      public:
-        KeyBindingsWindow() = default;
-        ~KeyBindingsWindow();
+        static ReflexMarkers& Get();
 
-        KeyBindingsWindow(const KeyBindingsWindow&) = delete;
-        KeyBindingsWindow& operator=(const KeyBindingsWindow&) = delete;
+        // The video thread's: a Streamline with Frame Generation, or null.
+        void Attach(Streamline* streamline);
 
-        bool Create(HINSTANCE instance, HWND owner, std::function<void(const KeyMap&)> on_change);
-        void Show(const KeyMap& current);
+        // The machine's thread's.
+        void Sleep(uint32_t picture) override;
+        void Mark(Marker marker, uint32_t picture) override;
+
+        // PC Latency's ping: the Windows message it posts to the window's thread now and then,
+        // 0 until there is one. On seeing it, Ping() - the marker, for the next picture.
+        uint32_t ping_message() const { return ping_message_.load(std::memory_order_relaxed); }
+        void set_ping_message(uint32_t message) {
+            ping_message_.store(message, std::memory_order_relaxed);
+        }
+        void Ping();
 
      private:
-        static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
-                                           LPARAM lparam);
-        void Layout(int width, int height);
-        void Refresh();
-        void BeginCapture();
-        void EndCapture(const wchar_t* status);
-        void Bind(int button, int key);
-        int SelectedButton() const;
-        int Scale(int value) const { return MulDiv(value, dpi_, 96); }
-
-        HWND window_ = nullptr;
-        int dpi_ = 96;
-        HWND list_ = nullptr;
-        HWND set_ = nullptr;
-        HWND clear_ = nullptr;
-        HWND defaults_ = nullptr;
-        HWND status_ = nullptr;
-        HFONT font_ = nullptr;
-        KeyMap map_ = {};
-        int capturing_ = -1;   // the button waiting for a key, or -1
-        std::function<void(const KeyMap&)> on_change_;
+        ReflexMarkers() = default;
+        std::shared_mutex mutex_;
+        Streamline* streamline_ = nullptr;
+        std::atomic<uint32_t> ping_message_{ 0 };
+        std::atomic<uint32_t> picture_{ 0 };   // the picture whose simulation last started
+        // The machine's thread's: how long Reflex has held it, for PSXEMU_DLSS_LOG.
+        double slept_total_ = 0.0, slept_most_ = 0.0;
+        int slept_count_ = 0;
     };
 
 }   // namespace psxemu

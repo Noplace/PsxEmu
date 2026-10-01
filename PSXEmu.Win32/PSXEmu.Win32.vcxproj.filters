@@ -45,6 +45,12 @@
     <ClCompile Include="ui\cheats_window.cpp">
       <Filter>ui</Filter>
     </ClCompile>
+    <ClCompile Include="ui\dpi.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
+    <ClCompile Include="ui\video_settings_window.cpp">
+      <Filter>ui</Filter>
+    </ClCompile>
     <ClCompile Include="ui\overlay\memory_usage.cpp">
       <Filter>ui</Filter>
     </ClCompile>
@@ -70,6 +76,9 @@
       <Filter>graphics</Filter>
     </ClCompile>
     <ClCompile Include="graphics\dlss\streamline.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\dlss\reflex_markers.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
     <ClCompile Include="graphics\opengl_engine.cpp">
@@ -140,6 +149,12 @@
     <ClInclude Include="ui\game_scope.h">
       <Filter>ui</Filter>
     </ClInclude>
+    <ClInclude Include="ui\dpi.h">
+      <Filter>ui</Filter>
+    </ClInclude>
+    <ClInclude Include="ui\video_settings_window.h">
+      <Filter>ui</Filter>
+    </ClInclude>
     <ClInclude Include="ui\overlay\memory_usage.h">
       <Filter>ui</Filter>
     </ClInclude>
@@ -177,6 +192,9 @@
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\dlss\streamline.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\dlss\reflex_markers.h">
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\opengl_engine.h">

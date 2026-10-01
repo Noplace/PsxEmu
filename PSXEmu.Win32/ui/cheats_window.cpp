@@ -19,6 +19,7 @@
 #include "ui/cheats_window.h"
 #include "app/app_icon.h"
 #include "app/win32_paths.h"   // Widen, Narrow
+#include "ui/dpi.h"
 
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")
@@ -114,27 +115,12 @@ namespace psxemu {
                                   CW_USEDEFAULT, 100, 100, owner, nullptr, instance, this);
         if (window_ == nullptr)
             return false;
-        dpi_ = static_cast<int>(GetDpiForWindow(window_));
-        if (dpi_ <= 0)
-            dpi_ = 96;
+        dpi_ = WindowDpi(window_);
         RECT bounds = { 0, 0, Scale(kClientWidth), Scale(kClientHeight) };
         AdjustWindowRectExForDpi(&bounds, style, FALSE, 0, static_cast<UINT>(dpi_));
         SetWindowPos(window_, nullptr, 0, 0, bounds.right - bounds.left, bounds.bottom - bounds.top,
                      SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-
-        NONCLIENTMETRICSW metrics = { sizeof(metrics) };
-        if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0,
-                                       static_cast<UINT>(dpi_))) {
-            font_ = CreateFontIndirectW(&metrics.lfMessageFont);
-            LOGFONTW bold = metrics.lfMessageFont;
-            bold.lfWeight = FW_BOLD;
-            bold_font_ = CreateFontIndirectW(&bold);
-            // Codes line up in columns in a fixed-width font, which is how they are printed.
-            LOGFONTW mono = metrics.lfMessageFont;
-            wcscpy_s(mono.lfFaceName, L"Consolas");
-            mono.lfHeight = mono.lfHeight * 110 / 100;
-            code_font_ = CreateFontIndirectW(&mono);
-        }
+        MakeFonts();
 
         auto make = [&](DWORD ex_style, const wchar_t* cls, const wchar_t* text, DWORD control_style,
                         int id, int x, int y, int w, int h, HFONT font) {
@@ -186,6 +172,20 @@ namespace psxemu {
         make(0, L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, kIdClose,
              kClientWidth - kMargin - 100, kButtonsY, 100, 28, font_);
         return true;
+    }
+
+    void CheatsWindow::MakeFonts() {
+        font_ = CreateMessageFont(dpi_);
+        bold_font_ = CreateMessageFont(dpi_, true);
+        // Codes line up in columns in a fixed-width font, which is how they are printed.
+        NONCLIENTMETRICSW metrics = { sizeof(metrics) };
+        if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0,
+                                       static_cast<UINT>(dpi_))) {
+            LOGFONTW mono = metrics.lfMessageFont;
+            wcscpy_s(mono.lfFaceName, L"Consolas");
+            mono.lfHeight = mono.lfHeight * 110 / 100;
+            code_font_ = CreateFontIndirectW(&mono);
+        }
     }
 
     void CheatsWindow::Show() {
@@ -350,6 +350,23 @@ namespace psxemu {
                         SendMessageW(window, WM_CLOSE, 0, 0);
                         break;
                 }
+                return 0;
+            }
+
+            case WM_DPICHANGED: {
+                // Onto a monitor with another scaling: the same layout, at its DPI.
+                const int from = self->dpi_;
+                const HFONT old[] = { self->font_, self->bold_font_, self->code_font_ };
+                self->dpi_ = HIWORD(wparam);
+                self->MakeFonts();
+                SwapFonts(window, { { old[0], self->font_ },
+                                    { old[1], self->bold_font_ },
+                                    { old[2], self->code_font_ } });
+                for (HFONT font : old) {
+                    if (font != nullptr)
+                        DeleteObject(font);
+                }
+                RescaleForDpi(window, from, self->dpi_, *reinterpret_cast<const RECT*>(lparam));
                 return 0;
             }
 

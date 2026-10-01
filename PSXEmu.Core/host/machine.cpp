@@ -115,11 +115,23 @@ void Machine::Run() {
     }
 
     const Clock::time_point start = Clock::now();
+    // NVIDIA Reflex, while DLSS Frame Generation runs (host/latency_markers.h): the next
+    // picture's simulation starts at the first vblank after the last one was drawn.
+    if (latency_ != nullptr && latency_picture_ <= system_->gpu().picture_number()) {
+      latency_picture_ = system_->gpu().picture_number() + 1;
+      latency_->Sleep(latency_picture_);
+      latency_->Mark(LatencyMarkers::Marker::kSimulationStart, latency_picture_);
+    }
     if (hooks_.apply_input)
       hooks_.apply_input(*system_, input_.Take());
+    if (latency_ != nullptr)
+      latency_->Mark(LatencyMarkers::Marker::kInputSample, latency_picture_);
     const Clock::time_point input_taken = Clock::now();
     RunOneFrame();
     const Clock::time_point emulated = Clock::now();
+    // ...and ends at the vblank that resolved it.
+    if (latency_ != nullptr && system_->gpu().picture_number() >= latency_picture_)
+      latency_->Mark(LatencyMarkers::Marker::kSimulationEnd, latency_picture_);
     if (system_->debugger().halted()) {
       // Mid-frame: nothing to publish, no sound to pump, no pace to keep.
       SetPaused(kPausedByDebugger, true);

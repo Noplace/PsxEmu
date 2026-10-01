@@ -154,7 +154,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 416 checks, 0 failures.**
+**Current: 420 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -459,7 +459,7 @@ What it does not measure:
 | `--list-gpus` | Print the graphics cards and their LUIDs, and exit. The LUID is spelt as Windows' `\GPU Engine` and `\GPU Process Memory` performance counters spell it, for finding which card a process is really using |
 | `--shared-picture` | With `--scale`: hand the sharper picture over on the graphics card (psx/shared_picture.h, phase 6, bug 127), as to a renderer that can take it there, rather than reading it back - for timing that path. `--ppm` reads the last picture back the way a screenshot does; the report adds how many frames' pictures were shared |
 | `--planes` | With `--hw-raster`: keep the plane beside VRAM that DLSS will use - depth and motion per sub-pixel (Docs/DLSS-Plan.md, phase 1) - and with `--shared-picture` hand it over beside each picture; the report adds how many were. The machine runs exactly as without it, and not a pixel of the picture changes |
-| `--view depth\|motion` | With `--hw-raster` above 1x: the plane shown in place of the picture, as Video > View Depth and View Motion do, so `--ppm` writes it. Depth is brighter nearer, dark blue where there is none; motion's hue is its direction, dim purple where it is not known |
+| `--view depth\|motion` | With `--hw-raster` above 1x: the plane shown in place of the picture, as View > Depth and Motion do, so `--ppm` writes it. Depth is brighter nearer, dark blue where there is none; motion's hue is its direction, dim purple where it is not known |
 | `--motion` | With `--hw-raster` above 1x, and `--pgxp` for 3D: keep the plane, and run the warp check (Docs/DLSS-Plan.md, phase 2) - each new picture compared with the last one moved by its motion and left still. The report's `warp` line gives both, per pixel and channel in 8-bit steps, and their ratio: below 1 the motion helps. Slow, since it reads every new picture back. The `motion` line says how many new pictures there were and how many started afresh, and how many vertices and 2D primitives were found in the picture before |
 | `--motion-log` | A `picture` line for each new picture: its frame, vertices found of those looked for, and whether it started afresh |
 | `--motion-key model\|order\|address` | What the GTE finds a vertex in the last picture by first: its model's coordinates (the default, chosen by measuring), its place in the picture's list, or the RAM address it was loaded from. Not found, it tries the other of coordinates and address, and then - when the last two pictures' lists were the same length - its place |
@@ -714,11 +714,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 80 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 416 |
+| `timer_test` | 80 | | `media_test` | 420 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,696 checks, 0 failures**, all ten green. Each harness's own section above
+**1,700 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -762,7 +762,7 @@ correctness count: it records how far off the timing is), `host_test` (34 checks
 threads and the channels between them - its own section above), and `hw_raster_test` (73
 checks, bugs 122-123 and 127 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
-which runs gpu_test's 80 through it), and `dlss_choice_test` (35 checks, the
+which runs gpu_test's 80 through it), and `dlss_choice_test` (42 checks, the
 arithmetic of sizes around DLSS in `graphics/dlss/dlss_choice.h` - the rasteriser's
 scale for each mode and window, never 1x, always inside the range DLSS 310.9.1 gave
 on the RTX 4060; the jitter's length; and the output asked for, the screen's or the

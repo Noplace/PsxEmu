@@ -124,6 +124,7 @@ namespace psxemu {
         LRESULT CustomDrawRegisters(NMLVCUSTOMDRAW* draw);
         LRESULT CustomDrawMemory(NMLVCUSTOMDRAW* draw);
         void Layout(int width, int height);
+        void MakeFonts();
         void OnControl(Control control);
         void ShowContextMenu(int x, int y);
         void ShowRegisterMenu(int x, int y);
@@ -200,6 +201,7 @@ namespace psxemu {
         uint64_t shown_bios_calls_ = ~0ull;   // the call count the BIOS list was last filled at
         HFONT font_ = nullptr;
         HFONT mono_ = nullptr;
+        int dpi_ = 96;
         Host host_;
 
         Debugger::Snapshot snapshot_;      // the latest - disassembly and breakpoints

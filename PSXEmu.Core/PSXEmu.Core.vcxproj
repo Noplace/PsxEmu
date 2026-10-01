@@ -212,6 +212,7 @@
     <ClInclude Include="host\audio_output.h" />
     <ClInclude Include="host\doorbell.h" />
     <ClInclude Include="host\frame_mailbox.h" />
+    <ClInclude Include="host\latency_markers.h" />
     <ClInclude Include="host\input_exchange.h" />
     <ClInclude Include="host\machine.h" />
     <ClInclude Include="host\request_queue.h" />

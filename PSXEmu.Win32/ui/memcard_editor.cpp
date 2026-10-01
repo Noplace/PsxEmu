@@ -21,7 +21,9 @@
 
 #include "app/const.h"
 #include "app/win32_dialogs.h"
+#include "ui/dpi.h"
 
+#include <algorithm>
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")
 // Version 6 of the common controls, so the list and the buttons look like the rest of Windows.
@@ -45,7 +47,12 @@ namespace psxemu {
         const int kIdShowDeleted = 2000;
         const int kIdRefresh = 2001;
 
-        const int kIconPixels = 32;   // the card's 16x16, doubled
+        // The card's 16x16 icons are shown a whole number of times bigger, so every pixel stays
+        // square: doubled at 100% scaling, as near half the scaling again as a whole number gets
+        // above it.
+        int IconPixels(int dpi) {
+            return mcdir::kIconSize * std::max(2, (dpi + 24) / 48);
+        }
 
         const wchar_t* const kButtonLabels[] = {
             L"Delete", L"Undelete", L"Export...", L"Import...", L"Copy to %s", L"Format...",
@@ -62,13 +69,14 @@ namespace psxemu {
             return wide;
         }
 
-        // One icon frame, doubled to 32x32, as a 32-bit bitmap an image list takes with its
+        // One icon frame, `size` pixels square, as a 32-bit bitmap an image list takes with its
         // alpha. Transparent pixels are 0 in all four channels, which is premultiplied already.
-        HBITMAP IconBitmap(const uint32_t* pixels) {
+        HBITMAP IconBitmap(const uint32_t* pixels, int size) {
+            const int times = size / mcdir::kIconSize;
             BITMAPINFO info = {};
             info.bmiHeader.biSize = sizeof(info.bmiHeader);
-            info.bmiHeader.biWidth = kIconPixels;
-            info.bmiHeader.biHeight = -kIconPixels;   // top-down
+            info.bmiHeader.biWidth = size;
+            info.bmiHeader.biHeight = -size;   // top-down
             info.bmiHeader.biPlanes = 1;
             info.bmiHeader.biBitCount = 32;
             info.bmiHeader.biCompression = BI_RGB;
@@ -77,10 +85,10 @@ namespace psxemu {
             if (bitmap == nullptr || bits == nullptr)
                 return bitmap;
             uint32_t* out = static_cast<uint32_t*>(bits);
-            for (int y = 0; y < kIconPixels; ++y) {
-                for (int x = 0; x < kIconPixels; ++x) {
-                    out[y * kIconPixels + x] =
-                        pixels ? pixels[(y / 2) * mcdir::kIconSize + (x / 2)] : 0;
+            for (int y = 0; y < size; ++y) {
+                for (int x = 0; x < size; ++x) {
+                    out[y * size + x] =
+                        pixels ? pixels[(y / times) * mcdir::kIconSize + (x / times)] : 0;
                 }
             }
             return bitmap;
@@ -163,10 +171,9 @@ namespace psxemu {
                                   owner, nullptr, instance, this);
         if (window_ == nullptr)
             return false;
-
-        NONCLIENTMETRICSW metrics = { sizeof(metrics) };
-        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0))
-            font_ = CreateFontIndirectW(&metrics.lfMessageFont);
+        dpi_ = WindowDpi(window_);
+        SizeForDpi(window_, 1020, 560);
+        font_ = CreateMessageFont(dpi_);
 
         auto make = [&](const wchar_t* cls, const wchar_t* text, DWORD style, int id) {
             HWND control = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 0, 0,
@@ -198,8 +205,7 @@ namespace psxemu {
                              base + kIdList);
             ListView_SetExtendedListViewStyle(pane.list,
                                               LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
-            pane.icons = ImageList_Create(kIconPixels, kIconPixels, ILC_COLOR32, 16, 16);
-            ListView_SetImageList(pane.list, pane.icons, LVSIL_SMALL);
+            MakeIcons(pane);
 
             const struct { const wchar_t* title; int width; } columns[] = {
                 { L"Title", 230 }, { L"Save", 150 }, { L"Blocks", 50 }, { L"", 60 },
@@ -208,7 +214,7 @@ namespace psxemu {
                 LVCOLUMNW column = {};
                 column.mask = LVCF_TEXT | LVCF_WIDTH;
                 column.pszText = const_cast<wchar_t*>(columns[c].title);
-                column.cx = columns[c].width;
+                column.cx = Scale(columns[c].width);
                 ListView_InsertColumn(pane.list, c, &column);
             }
 
@@ -224,6 +230,15 @@ namespace psxemu {
         Layout(client.right, client.bottom);
         UpdateButtons();
         return true;
+    }
+
+    // A pane's image list, its icons the size the window's DPI wants. Empty: Fill adds the saves'.
+    void MemoryCardEditor::MakeIcons(Pane& pane) {
+        if (pane.icons != nullptr)
+            ImageList_Destroy(pane.icons);
+        const int size = IconPixels(dpi_);
+        pane.icons = ImageList_Create(size, size, ILC_COLOR32, 16, 16);
+        ListView_SetImageList(pane.list, pane.icons, LVSIL_SMALL);
     }
 
     void MemoryCardEditor::Show(bool on) {
@@ -292,7 +307,8 @@ namespace psxemu {
 
             for (size_t i = 0; i < pane.saves.size(); ++i) {
                 const mcdir::Save& save = pane.saves[i];
-                HBITMAP bitmap = IconBitmap(save.icon_frames > 0 ? save.icons.data() : nullptr);
+                HBITMAP bitmap = IconBitmap(save.icon_frames > 0 ? save.icons.data() : nullptr,
+                                            IconPixels(dpi_));
                 const int image_index = ImageList_Add(pane.icons, bitmap, nullptr);
                 DeleteObject(bitmap);
 
@@ -463,15 +479,22 @@ namespace psxemu {
         }
     }
 
+    // In pixels at 96 DPI: the client size is taken down to them, and each control scaled back up
+    // to the window's DPI as it is placed.
     void MemoryCardEditor::Layout(int width, int height) {
+        width = MulDiv(width, 96, dpi_);
+        height = MulDiv(height, 96, dpi_);
+        auto move = [this](HWND control, int x, int y, int w, int h) {
+            MoveForDpi(control, dpi_, x, y, w, h);
+        };
         const int margin = 10;
         const int bar = 26;           // the top row: show-deleted and refresh
         const int label_height = 26;   // the card selector sits on this row
         const int button_height = 28;
         const int pane_width = (width - margin * 3) / 2;
 
-        MoveWindow(show_deleted_, margin, margin, 200, bar - 4, TRUE);
-        MoveWindow(refresh_, width - margin - 90, margin - 2, 90, bar, TRUE);
+        move(show_deleted_, margin, margin, 200, bar - 4);
+        move(refresh_, width - margin - 90, margin - 2, 90, bar);
 
         const int top = margin + bar + 6;
         const int list_top = top + label_height + 2;
@@ -481,16 +504,15 @@ namespace psxemu {
             const Pane& pane = panes_[slot];
             const int x = margin + slot * (pane_width + margin);
             const int selector_width = 190;
-            MoveWindow(pane.selector, x, top - 2, selector_width, 220, TRUE);
-            MoveWindow(pane.label, x + selector_width + 8, top + 1, pane_width - selector_width - 8,
-                       label_height, TRUE);
-            MoveWindow(pane.list, x, list_top, pane_width, list_height > 50 ? list_height : 50,
-                       TRUE);
+            move(pane.selector, x, top - 2, selector_width, 220);
+            move(pane.label, x + selector_width + 8, top + 1, pane_width - selector_width - 8,
+                 label_height);
+            move(pane.list, x, list_top, pane_width, list_height > 50 ? list_height : 50);
             const int gap = 4;
             const int button_width = (pane_width - gap * (kButtonCount - 1)) / kButtonCount;
             for (int b = 0; b < kButtonCount; ++b) {
-                MoveWindow(pane.buttons[b], x + b * (button_width + gap), buttons_top,
-                           button_width, button_height, TRUE);
+                move(pane.buttons[b], x + b * (button_width + gap), buttons_top, button_width,
+                     button_height);
             }
         }
     }
@@ -515,8 +537,27 @@ namespace psxemu {
 
             case WM_GETMINMAXINFO: {
                 MINMAXINFO* limits = reinterpret_cast<MINMAXINFO*>(lparam);
-                limits->ptMinTrackSize.x = 800;
-                limits->ptMinTrackSize.y = 360;
+                limits->ptMinTrackSize.x = ScaleForDpi(800, self->dpi_);
+                limits->ptMinTrackSize.y = ScaleForDpi(360, self->dpi_);
+                return 0;
+            }
+
+            case WM_DPICHANGED: {
+                // Onto a monitor with another scaling. The new size lays it out again; the icons
+                // are drawn again at their new size.
+                const int from = self->dpi_;
+                self->dpi_ = HIWORD(wparam);
+                const HFONT old = self->font_;
+                self->font_ = CreateMessageFont(self->dpi_);
+                SwapFonts(window, { { old, self->font_ } });
+                if (old != nullptr)
+                    DeleteObject(old);
+                ScaleListColumns(window, from, self->dpi_);
+                for (int slot = 0; slot < kSlots; ++slot) {
+                    self->MakeIcons(self->panes_[slot]);
+                    self->Fill(slot);
+                }
+                MoveToSuggested(window, *reinterpret_cast<const RECT*>(lparam));
                 return 0;
             }
 

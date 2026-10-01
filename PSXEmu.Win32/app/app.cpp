@@ -25,7 +25,9 @@
 #include "app/screenshot.h"
 #include "app/win32_dialogs.h"
 #include "app/win32_paths.h"
+#include "graphics/dlss/reflex_markers.h"
 #include "graphics/hw_raster/d3d11_raster.h"
+#include "ui/dpi.h"
 
 #include <shellapi.h>   // ShellExecuteA, to open the BIOS folder from its menu
 
@@ -195,6 +197,49 @@ namespace psxemu {
             emulation_settings_.Create(instance, window_, std::move(host));
         }
         {
+            VideoSettingsWindow::Host host;
+            host.state = [this] { return VideoState(); };
+            host.set_renderer = [this](const std::string& key) { SetRenderer(key); };
+            host.set_card = [this](int card) { SetGraphicsCard(card); };
+            host.set_filter = [this](const std::string& key) { SetFilter(key); };
+            host.set_rasteriser = [this](bool hardware) {
+                SetRasteriser(hardware ? "hardware" : "software");
+            };
+            host.set_resolution = [this](int scale) { SetResolutionScale(scale); };
+            host.set_true_color = [this](bool on) { SetTrueColour(on); };
+            host.set_pgxp = [this](int which, bool on) {
+                switch (which) {
+                    case 0:
+                        SetPgxp(&config_.pgxp_vertices, on,
+                                on ? L"PGXP: precise vertices on" : L"PGXP off");
+                        break;
+                    case 1:
+                        SetPgxp(&config_.pgxp_textures, on,
+                                on ? L"PGXP: textures in perspective"
+                                   : L"PGXP: textures affine, as the console");
+                        break;
+                    default:
+                        SetPgxp(&config_.pgxp_culling, on,
+                                on ? L"PGXP: precise culling on" : L"PGXP: culling as the console");
+                        break;
+                }
+            };
+            host.set_dlss_mode = [this](const std::string& key) { SetDlssMode(key); };
+            host.set_dlss_preset = [this](const std::string& key) { SetDlssPreset(key); };
+            host.set_dlss_generation = [this](const std::string& key) {
+                SetDlssFrameGeneration(key);
+            };
+            host.set_stats = [this](int mode) { SetStatsMode(static_cast<StatsMode>(mode)); };
+            host.set_notifications = [this](bool on) { SetOverlayNotifications(on); };
+            host.set_controllers_always = [this](bool on) { SetControllersAlwaysVisible(on); };
+            host.set_glass = [this](bool glass) {
+                SetOverlayTheme(glass ? OverlayTheme::kGlass : OverlayTheme::kClassic);
+            };
+            host.game = [this] { return CurrentGame(); };
+            host.set_separate = [this](bool separate) { SetGameSettingsSeparate(separate); };
+            video_settings_.Create(instance, window_, std::move(host));
+        }
+        {
             CheatsWindow::Host host;
             host.game = [this] { return CurrentGame(); };
             host.cheats = [this]() -> const std::vector<emulation::psx::Cheat>& { return cheats_; };
@@ -251,15 +296,25 @@ namespace psxemu {
             return false;
 
         // WS_CLIPCHILDREN, so the window's own background never paints over the OpenGL surface.
-        RECT bounds = { 0, 0, 640, 480 };
-        AdjustWindowRect(&bounds, WS_OVERLAPPEDWINDOW, TRUE);
-        window_ = CreateWindowExW(0, kWindowClass, kWindowTitle,
-                                  WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, CW_USEDEFAULT,
-                                  CW_USEDEFAULT, bounds.right - bounds.left,
-                                  bounds.bottom - bounds.top, nullptr, CreateMainMenu(), instance,
-                                  this);
+        // A 640x480 client at 100% scaling, as much bigger as the monitor's scaling makes it: the
+        // primary monitor's guess first, then the monitor it actually opened on.
+        const DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
+        auto window_size = [style](UINT dpi) {
+            RECT bounds = { 0, 0, MulDiv(640, static_cast<int>(dpi), 96),
+                            MulDiv(480, static_cast<int>(dpi), 96) };
+            AdjustWindowRectExForDpi(&bounds, style, TRUE, 0, dpi);
+            return SIZE{ bounds.right - bounds.left, bounds.bottom - bounds.top };
+        };
+        const SIZE guess = window_size(GetDpiForSystem());
+        window_ = CreateWindowExW(0, kWindowClass, kWindowTitle, style, CW_USEDEFAULT,
+                                  CW_USEDEFAULT, guess.cx, guess.cy, nullptr, CreateMainMenu(),
+                                  instance, this);
         if (window_ == nullptr)
             return false;
+        const SIZE size = window_size(static_cast<UINT>(WindowDpi(window_)));
+        if (size.cx != guess.cx || size.cy != guess.cy)
+            SetWindowPos(window_, nullptr, 0, 0, size.cx, size.cy,
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         return CreateRenderSurfaces(instance);
     }
 
@@ -362,11 +417,8 @@ namespace psxemu {
         UpdateBiosConsoleMenu();
         UpdateSerialToConsoleMenu();
         UpdateMouseMenu();
-        UpdateFilterMenu();
-        UpdateRendererMenu();
         UpdateAudioBackendMenu();
-        RefreshGraphicsCardMenu();
-        UpdateDlssMenu();
+        UpdateVideoSettings();
     }
 
     void App::SetUpDataDirectories() {
@@ -468,11 +520,15 @@ namespace psxemu {
         DlssChoice start_dlss;
         start_dlss.mode = ParseDlssMode(config_.dlss_mode);
         start_dlss.preset = ParseDlssPreset(config_.dlss_preset);
+        start_dlss.frame_generation = ParseDlssGeneration(config_.dlss_frame_generation);
         dlss_sent_ = start_dlss;
+        const bool start_generation_allowed = config_.frame_limiter &&
+                                              config_.emulation_speed == 1.0f;
+        generation_allowed_sent_ = start_generation_allowed;
         video_ = std::make_unique<VideoOutput>(
             [this, start_renderer, start_filter, start_stats, start_notifications,
              start_controllers, start_theme, start_card, start_card_name,
-             start_dlss]() -> std::unique_ptr<Presenter> {
+             start_dlss, start_generation_allowed]() -> std::unique_ptr<Presenter> {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
                 auto presenter = std::make_unique<D3DPresenter>(
@@ -485,6 +541,11 @@ namespace psxemu {
                 presenter->overlay().SetTheme(start_theme);
                 presenter->SetGraphicsCard(start_card, start_card_name);
                 presenter->SetDlss(start_dlss);
+                presenter->SetFrameGenerationAllowed(start_generation_allowed);
+                // DLSS changing by itself - Frame Generation stopping - comes to the menu.
+                presenter->set_dlss_listener([this](const DlssStatus& status) {
+                    PostToUi([this, status] { OnDlssStatus(status); });
+                });
                 if (!presenter->Open(start_renderer, start_filter)) {
                     PostToUi([this] {
                         ShowError(window_, L"Could not create a Direct3D device.");
@@ -503,8 +564,7 @@ namespace psxemu {
                     current_filter_ = filter;
                     config_.graphics_backend = renderer;
                     config_.video_filter = filter;
-                    UpdateRendererMenu();
-                    UpdateFilterMenu();
+                    UpdateVideoSettings();
                     SaveSettingsIfChanged();
                     OnPresenterAdapter(adapter, renderer, card);
                     OnDlssStatus(dlss);
@@ -597,6 +657,13 @@ namespace psxemu {
     int App::MainLoop() {
         MSG message = {};
         while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+            // PC Latency's ping, posted to this thread now and then while Frame Generation runs:
+            // the moment it is picked up is what measures input's latency.
+            const uint32_t ping = ReflexMarkers::Get().ping_message();
+            if (message.hwnd == nullptr && ping != 0 && message.message == ping) {
+                ReflexMarkers::Get().Ping();
+                continue;
+            }
             // The debugger's keys, while it has the focus - F10 among them, which translated
             // would be a system key.
             if (debugger_.PreTranslate(message))
@@ -638,6 +705,7 @@ namespace psxemu {
             config.resolution_scale = dlss_scale_;
             config.pgxp_vertices = true;
         }
+        SendFrameGenerationAllowed();
         PostToMachine([config](Machine& machine) { machine.ApplyConfig(config); });
     }
 
@@ -659,7 +727,7 @@ namespace psxemu {
                                  report.hardware_raster ? std::string() : report.raster_error,
                                  false);
             else   // a game's own settings may have brought another resolution
-                UpdateRasteriserMenus();
+                UpdateVideoSettings();
             if (video_ != nullptr) {
                 uint64_t presents = 0;
                 double total_ms = 0.0;
@@ -1078,7 +1146,7 @@ namespace psxemu {
         // A game's own DLSS mode.
         SendDlssToRenderer();
         UpdateDlss();
-        UpdateDlssMenu();
+        UpdateVideoSettings();
         // A port that has just become a multitap gets the disc's cards B-D, as SetControllerType
         // does for one chosen by hand.
         if (config_.controller_type != before.controller_type)
@@ -1107,9 +1175,8 @@ namespace psxemu {
         SendConfigToMachine();
     }
 
-    // These two tick against what is actually running rather than against the config, since a
-    // fallback can leave the two disagreeing.
-    void App::UpdateRendererMenu() { TickRenderer(window_, current_backend_); }
+    // Ticks against what is actually running rather than against the config, since a fallback
+    // can leave the two disagreeing - as the Video Settings window shows the renderer.
     void App::UpdateAudioBackendMenu() { TickAudioBackend(window_, current_audio_backend_); }
 
     // Switching sound output while a game runs: the audio thread closes one device and opens the
@@ -1122,16 +1189,14 @@ namespace psxemu {
         audio_->SwitchBackend(key);
     }
 
-    void App::UpdateFilterMenu() { TickFilter(window_, current_backend_, current_filter_); }
-
     void App::SetFilter(const std::string& key) {
         if (!RendererHasFilters(current_backend_)) {
-            // Reachable from the settings file (a saved filter with graphics_backend reverted to
-            // d3d11) as well as a stray click on a greyed item - either way, say why rather than
-            // doing nothing.
+            // The list is greyed for such a renderer, but the renderer can change under it -
+            // say why rather than doing nothing.
             ShowWarning(window_,
                         L"Filters need the Direct3D 12, OpenGL or Vulkan renderer. Switch "
-                        L"renderer first (Settings > Video > Renderer).");
+                        L"renderer first (Settings > Video).");
+            UpdateVideoSettings();
             return;
         }
         config_.video_filter = key;
@@ -1143,16 +1208,12 @@ namespace psxemu {
                 video.PresentAgain();
             });
         }
-        UpdateFilterMenu();
+        UpdateVideoSettings();
         SaveSettingsIfChanged();
         for (const FilterChoice& choice : kFilterChoices) {
-            if (key == choice.key) {
-                std::wstring label;
-                for (const wchar_t* c = choice.label; *c != 0; ++c)
-                    if (*c != L'&')
-                        label += *c;
-                Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"Filter: " + label);
-            }
+            if (key == choice.key)
+                Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+                       L"Filter: " + std::wstring(choice.label));
         }
     }
 
@@ -1178,8 +1239,7 @@ namespace psxemu {
                 if (!renderer.empty())
                     config_.graphics_backend = renderer;
                 config_.video_filter = filter;
-                UpdateRendererMenu();
-                UpdateFilterMenu();
+                UpdateVideoSettings();
                 SaveSettingsIfChanged();
                 OnPresenterAdapter(adapter, renderer, card);
                 OnDlssStatus(dlss);
@@ -1231,24 +1291,24 @@ namespace psxemu {
         *setting = on;
         SaveSettingsIfChanged();
         SendConfigToMachine();
-        UpdateRasteriserMenus();
+        UpdateVideoSettings();
         Notify(OverlayIcon::kScreen, ToastKind::kInfo, done);
     }
 
-    // Video > View Depth and View Motion, one at a time or neither: the hardware rasteriser shows
+    // View > Depth and Motion, one at a time or neither: the hardware rasteriser shows
     // the plane beside VRAM - what DLSS will be told about each pixel - in place of the picture.
     // The machine keeps it across boots and changes of rasteriser; above 1x only.
     void App::SetPlaneView(int view) {
         plane_view_ = view;
-        UpdateRasteriserMenus();
+        UpdateVideoSettings();
         const emulation::psx::PlaneView shown = view == 1   ? emulation::psx::PlaneView::kDepth
                                                 : view == 2 ? emulation::psx::PlaneView::kMotion
                                                             : emulation::psx::PlaneView::kPicture;
         PostToMachine([shown](Machine& machine) { machine.set_plane_view(shown); });
     }
 
-    // Settings > Video > NVIDIA DLSS. The renderer is told, and says whether it runs; the machine
-    // hears of it through UpdateDlss once it does.
+    // The Video Settings window's NVIDIA DLSS. The renderer is told, and says whether it runs;
+    // the machine hears of it through UpdateDlss once it does.
     void App::SetDlssMode(const std::string& key) {
         if (key == config_.dlss_mode)
             return;
@@ -1256,15 +1316,11 @@ namespace psxemu {
         SaveSettingsIfChanged();
         SendDlssToRenderer();
         UpdateDlss();
-        UpdateDlssMenu();
+        UpdateVideoSettings();
         for (const DlssModeChoice& choice : kDlssModeChoices) {
-            if (key == choice.key) {
-                std::wstring label;
-                for (const wchar_t* c = choice.label; *c != 0; ++c)
-                    if (*c != L'&')
-                        label += *c;
-                Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"NVIDIA DLSS: " + label);
-            }
+            if (key == choice.key)
+                Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+                       L"NVIDIA DLSS: " + std::wstring(choice.label));
         }
     }
 
@@ -1274,7 +1330,34 @@ namespace psxemu {
         config_.dlss_preset = key;
         SaveSettingsIfChanged();
         SendDlssToRenderer();
-        UpdateDlssMenu();
+        UpdateVideoSettings();
+    }
+
+    void App::SetDlssFrameGeneration(const std::string& key) {
+        if (key == config_.dlss_frame_generation)
+            return;
+        config_.dlss_frame_generation = key;
+        SaveSettingsIfChanged();
+        SendDlssToRenderer();
+        UpdateVideoSettings();
+        for (const DlssModeChoice& choice : kDlssGenerationChoices) {
+            if (key == choice.key)
+                Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+                       L"NVIDIA DLSS Frame Generation: " + std::wstring(choice.label));
+        }
+    }
+
+    void App::SendFrameGenerationAllowed() {
+        const bool allowed = config_.frame_limiter && !fast_forward_ &&
+                             config_.emulation_speed == 1.0f;
+        if (allowed == generation_allowed_sent_ || video_ == nullptr)
+            return;
+        generation_allowed_sent_ = allowed;
+        video_->Post([allowed](VideoOutput& video) {
+            if (D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter()))
+                presenter->SetFrameGenerationAllowed(allowed);
+        });
+        UpdateVideoSettings();
     }
 
     // Only when it changed: turning DLSS on or off makes the Direct3D 12 renderer again. What
@@ -1283,6 +1366,7 @@ namespace psxemu {
         DlssChoice choice;
         choice.mode = ParseDlssMode(config_.dlss_mode);
         choice.preset = ParseDlssPreset(config_.dlss_preset);
+        choice.frame_generation = ParseDlssGeneration(config_.dlss_frame_generation);
         if (choice == dlss_sent_ || video_ == nullptr)
             return;
         dlss_sent_ = choice;
@@ -1307,7 +1391,7 @@ namespace psxemu {
         const DlssStatus before = dlss_status_;
         dlss_status_ = status;
         UpdateDlss();
-        UpdateDlssMenu();
+        UpdateVideoSettings();
         // Asked for and not there: said once for each reason, not at every renderer made.
         if (config_.dlss_mode != "off" && !status.ready &&
             (before.ready || status.why != before.why))
@@ -1328,6 +1412,13 @@ namespace psxemu {
                             raster_shared_.load(std::memory_order_acquire);
         const int scale = active ? DlssScale(mode, shown) : 0;
         const int phases = active ? DlssJitterPhases(mode, shown, scale) : 0;
+        // Reflex's markers from the machine's thread while Frame Generation can run.
+        const bool markers = active && dlss_status_.generation_ready;
+        if (markers != latency_markers_on_) {
+            latency_markers_on_ = markers;
+            emulation::host::LatencyMarkers* sink = markers ? &ReflexMarkers::Get() : nullptr;
+            PostToMachine([sink](Machine& machine) { machine.set_latency_markers(sink); });
+        }
         if (active == dlss_active_ && scale == dlss_scale_ && phases == dlss_phases_)
             return;
         const bool rescaled = active != dlss_active_ || scale != dlss_scale_;
@@ -1338,27 +1429,84 @@ namespace psxemu {
         // The scale and PGXP: a new scale makes the rasteriser again, between frames.
         if (rescaled)
             SendConfigToMachine();
-        UpdateRasteriserMenus();
-        UpdateDlssMenu();
+        UpdateVideoSettings();
     }
 
-    // The line under the modes: what DLSS is doing, or why it is not.
-    void App::UpdateDlssMenu() {
-        std::wstring status;
+    void App::UpdateVideoSettings() {
+        // The depth and motion views take the place of the hardware rasteriser's picture, so
+        // need it drawing above 1x.
+        const int scale = dlss_active_ ? dlss_scale_ : config_.resolution_scale;
+        TickPlaneView(window_, plane_view_, drawing_hardware_ && scale > 1);
+        video_settings_.OnSettingsChanged();
+    }
+
+    VideoSettingsWindow::State App::VideoState() const {
+        VideoSettingsWindow::State state;
+        state.renderer = current_backend_;
+        // Each card with its video memory, which is what tells a laptop's two apart.
+        for (size_t i = 0; i < adapters_.size(); ++i) {
+            std::wstring label = Wide(adapters_[i].name);
+            const uint64_t megabytes = adapters_[i].video_memory >> 20;
+            if (megabytes >= 1024)
+                label += L"  (" + std::to_wstring((megabytes + 512) / 1024) + L" GB)";
+            else if (megabytes > 0)
+                label += L"  (" + std::to_wstring(megabytes) + L" MB)";
+            state.cards.push_back(label);
+            if (chosen_adapter_ != 0 && adapters_[i].luid == chosen_adapter_)
+                state.card = static_cast<int>(i);
+        }
+        state.filter = current_filter_;
+        state.hardware = drawing_hardware_;
+        state.resolution_scale = dlss_active_ ? dlss_scale_ : config_.resolution_scale;
+        state.true_color = config_.true_color;
+        state.pgxp_vertices = config_.pgxp_vertices;
+        state.pgxp_textures = config_.pgxp_textures;
+        state.pgxp_culling = config_.pgxp_culling;
+        state.dlss_running = dlss_active_;
+        state.dlss_mode = config_.dlss_mode;
+        state.dlss_preset = config_.dlss_preset;
+        state.dlss_generation = config_.dlss_frame_generation;
+        state.generation_most = dlss_status_.generation_most;
+        state.generation_dynamic = dlss_status_.generation_dynamic;
+
+        // What DLSS is doing, or why it is not...
         if (config_.dlss_mode == "off")
-            status = L"Off";
+            state.dlss_status = L"Off.";
         else if (!dlss_status_.ready)
-            status = L"Not running: " +
-                     (dlss_status_.why.empty() ? std::wstring(L"needs the Direct3D 12 renderer")
-                                               : Wide(dlss_status_.why));
+            state.dlss_status = L"Not running: " +
+                                (dlss_status_.why.empty()
+                                     ? std::wstring(L"needs the Direct3D 12 renderer.")
+                                     : Wide(dlss_status_.why));
         else if (!drawing_hardware_)
-            status = L"Not running: needs the hardware rasteriser";
+            state.dlss_status = L"Not running: needs the hardware rasteriser.";
         else if (!raster_shared_.load(std::memory_order_acquire))
-            status = L"Not running: the rasteriser is on another graphics card";
+            state.dlss_status = L"Not running: the rasteriser is on another graphics card.";
         else
-            status = L"NVIDIA DLSS " + Wide(dlss_status_.version) + L", internal resolution " +
-                     std::to_wstring(dlss_scale_) + L"x";
-        TickDlss(window_, config_.dlss_mode, config_.dlss_preset, status);
+            state.dlss_status = L"Running: NVIDIA DLSS " + Wide(dlss_status_.version) +
+                                L", at " + std::to_wstring(dlss_scale_) +
+                                L"x internal resolution.";
+        // ...and Frame Generation, when it is asked for.
+        if (config_.dlss_mode != "off" && config_.dlss_frame_generation != "off" &&
+            dlss_status_.ready) {
+            if (!dlss_status_.generation_ready)
+                state.generation_status = L"Frame generation not running: " +
+                                          (dlss_status_.generation_why.empty()
+                                               ? std::wstring(L"not started.")
+                                               : Wide(dlss_status_.generation_why));
+            else if (!generation_allowed_sent_)
+                state.generation_status = L"Frame generation paused: it runs at 100% speed only.";
+            else
+                state.generation_status = L"Frame generation running: " +
+                                          (config_.dlss_frame_generation == "dynamic"
+                                               ? std::wstring(L"dynamic.")
+                                               : Wide(config_.dlss_frame_generation) + L".");
+        }
+
+        state.stats_mode = static_cast<int>(stats_mode_);
+        state.notifications = overlay_notifications_;
+        state.controllers_always = controllers_always_;
+        state.glass = overlay_theme_ == OverlayTheme::kGlass;
+        return state;
     }
 
     void App::RemakeRasteriser(const std::wstring& done) {
@@ -1385,7 +1533,7 @@ namespace psxemu {
             // The card chosen could not be used by any renderer, and Windows' pick was: what is
             // chosen is automatic for now. The name stays in the settings for another time.
             chosen_adapter_ = card;
-            RefreshGraphicsCardMenu();
+            UpdateVideoSettings();
         }
         UpdateRasteriserCard();
 
@@ -1442,7 +1590,7 @@ namespace psxemu {
         config_.graphics_adapter = name;
         chosen_adapter_ = luid;
         SaveSettingsIfChanged();
-        RefreshGraphicsCardMenu();
+        UpdateVideoSettings();
         if (video_ == nullptr)
             return;
         video_->Post([this, luid, name](VideoOutput& video) {
@@ -1462,8 +1610,7 @@ namespace psxemu {
                 if (!renderer.empty())
                     config_.graphics_backend = renderer;
                 config_.video_filter = filter;
-                UpdateRendererMenu();
-                UpdateFilterMenu();
+                UpdateVideoSettings();
                 SaveSettingsIfChanged();
                 OnPresenterAdapter(adapter, renderer, card);
                 OnDlssStatus(dlss);
@@ -1474,31 +1621,10 @@ namespace psxemu {
         });
     }
 
-    void App::RefreshGraphicsCardMenu() {
-        std::vector<GraphicsCardLabel> labels;
-        int chosen = -1;
-        for (size_t i = 0; i < adapters_.size(); ++i) {
-            labels.push_back({ adapters_[i].name, adapters_[i].video_memory });
-            if (chosen_adapter_ != 0 && adapters_[i].luid == chosen_adapter_)
-                chosen = static_cast<int>(i);
-        }
-        PopulateGraphicsCardMenu(window_, labels, chosen);
-    }
-
-    // The resolution, PGXP and the plane views, as they are drawing: DLSS, while it runs, has
-    // the resolution and precise vertices.
-    void App::UpdateRasteriserMenus() {
-        const int scale = dlss_active_ ? dlss_scale_ : config_.resolution_scale;
-        TickRasteriser(window_, drawing_hardware_, scale, config_.true_color, dlss_active_);
-        TickPgxp(window_, drawing_hardware_, config_.pgxp_vertices, config_.pgxp_textures,
-                 config_.pgxp_culling, dlss_active_);
-        TickPlaneView(window_, plane_view_, drawing_hardware_ && scale > 1);
-    }
-
-    // The menu ticks what is drawing, not what was asked for; a failure says why.
+    // The window shows what is drawing, not what was asked for; a failure says why.
     void App::ReportRasteriser(bool hardware, const std::string& error, bool announce) {
         drawing_hardware_ = hardware;
-        UpdateRasteriserMenus();
+        UpdateVideoSettings();
         // DLSS needs the hardware rasteriser, which has just come or gone.
         UpdateDlss();
         if (!error.empty())
@@ -2509,7 +2635,7 @@ namespace psxemu {
         overlay_theme_ = settings_.GetString("overlay_theme", "classic") == "glass"
                              ? OverlayTheme::kGlass
                              : OverlayTheme::kClassic;
-        UpdateOverlayMenu();
+        UpdateVideoSettings();
     }
 
     void App::SaveOverlaySettings() {
@@ -2528,14 +2654,9 @@ namespace psxemu {
         settings_.Save(settings_path_);
     }
 
-    void App::UpdateOverlayMenu() {
-        TickOnScreenDisplay(window_, static_cast<int>(stats_mode_), overlay_notifications_,
-                            controllers_always_, overlay_theme_ == OverlayTheme::kGlass);
-    }
-
     void App::SetOverlayTheme(OverlayTheme theme) {
         overlay_theme_ = theme;
-        UpdateOverlayMenu();
+        UpdateVideoSettings();
         SaveOverlaySettings();
         PostToOverlay([theme](Overlay& overlay) { overlay.SetTheme(theme); });
         // Something to look at in it.
@@ -2546,14 +2667,14 @@ namespace psxemu {
 
     void App::SetStatsMode(StatsMode mode) {
         stats_mode_ = mode;
-        UpdateOverlayMenu();
+        UpdateVideoSettings();
         SaveOverlaySettings();
         PostToOverlay([mode](Overlay& overlay) { overlay.SetStatsMode(mode); });
     }
 
     void App::SetOverlayNotifications(bool on) {
         overlay_notifications_ = on;
-        UpdateOverlayMenu();
+        UpdateVideoSettings();
         SaveOverlaySettings();
         PostToOverlay([on](Overlay& overlay) { overlay.SetNotificationsEnabled(on); });
         if (on)
@@ -2562,7 +2683,7 @@ namespace psxemu {
 
     void App::SetControllersAlwaysVisible(bool on) {
         controllers_always_ = on;
-        UpdateOverlayMenu();
+        UpdateVideoSettings();
         SaveOverlaySettings();
         PostToOverlay([on](Overlay& overlay) { overlay.SetControllersAlwaysVisible(on); });
         UpdateOverlayControllers(true);
@@ -2637,6 +2758,14 @@ namespace psxemu {
                     app->UpdateDlss();
                 }
                 break;
+
+            // Dragged onto a monitor with another scaling, or the scaling changed: the rect
+            // Windows suggests keeps the window the same size to the eye, and its WM_SIZE does
+            // the rest. Full screen already covers its monitor, whatever the scaling.
+            case WM_DPICHANGED:
+                if (app == nullptr || !app->fullscreen_)
+                    MoveToSuggested(window, *reinterpret_cast<const RECT*>(lparam));
+                return 0;
 
             // Windows is about to run a modal loop of its own - the menu bar, or a drag or resize
             // of the window. The machine keeps running underneath it now; whether it should is
@@ -3291,30 +3420,6 @@ namespace psxemu {
                 ResetMachine();
                 break;
 
-            case kCommandRasteriserSoftware:
-                SetRasteriser("software");
-                break;
-            case kCommandRasteriserHardware:
-                SetRasteriser("hardware");
-                break;
-            case kCommandTrueColour:
-                SetTrueColour(!config_.true_color);
-                break;
-            case kCommandPgxpVertices:
-                SetPgxp(&config_.pgxp_vertices, !config_.pgxp_vertices,
-                        config_.pgxp_vertices ? L"PGXP off" : L"PGXP: precise vertices on");
-                break;
-            case kCommandPgxpTextures:
-                SetPgxp(&config_.pgxp_textures, !config_.pgxp_textures,
-                        config_.pgxp_textures ? L"PGXP: textures affine, as the console"
-                                              : L"PGXP: textures in perspective");
-                break;
-            case kCommandPgxpCulling:
-                SetPgxp(&config_.pgxp_culling, !config_.pgxp_culling,
-                        config_.pgxp_culling ? L"PGXP: culling as the console"
-                                             : L"PGXP: precise culling on");
-                break;
-
             case kCommandPause:
                 SetUserPaused(!paused_by_user_);
                 break;
@@ -3322,28 +3427,6 @@ namespace psxemu {
             case kCommandSaveState:
             case kCommandLoadState:
                 SaveOrLoadState(last_slot_, command == kCommandSaveState);
-                break;
-
-            case kCommandStatsOff:
-                SetStatsMode(StatsMode::kOff);
-                break;
-            case kCommandStatsCompact:
-                SetStatsMode(StatsMode::kCompact);
-                break;
-            case kCommandStatsFull:
-                SetStatsMode(StatsMode::kFull);
-                break;
-            case kCommandOverlayNotifications:
-                SetOverlayNotifications(!overlay_notifications_);
-                break;
-            case kCommandOverlayControllersAlways:
-                SetControllersAlwaysVisible(!controllers_always_);
-                break;
-            case kCommandThemeClassic:
-                SetOverlayTheme(OverlayTheme::kClassic);
-                break;
-            case kCommandThemeGlass:
-                SetOverlayTheme(OverlayTheme::kGlass);
                 break;
 
             case kCommandFullscreen:
@@ -3376,6 +3459,10 @@ namespace psxemu {
 
             case kCommandEmulationSettings:
                 emulation_settings_.Show();
+                break;
+
+            case kCommandVideoSettings:
+                video_settings_.Show();
                 break;
 
             case kCommandCheats:
@@ -3433,28 +3520,6 @@ namespace psxemu {
                                          static_cast<int>(std::size(kAudioBackendChoices))) {
                     SetAudioBackend(
                         kAudioBackendChoices[command - kCommandAudioBackendFirst].key);
-                } else if (command >= kCommandRendererFirst &&
-                           command < kCommandRendererFirst +
-                                         static_cast<int>(std::size(kBackendChoices))) {
-                    SetRenderer(kBackendChoices[command - kCommandRendererFirst].key);
-                } else if (command == kCommandGraphicsCardAutomatic) {
-                    SetGraphicsCard(-1);
-                } else if (command >= kCommandGraphicsCardFirst &&
-                           command <= kCommandGraphicsCardLast) {
-                    SetGraphicsCard(command - kCommandGraphicsCardFirst);
-                } else if (command >= kCommandResolutionFirst &&
-                           command < kCommandResolutionFirst +
-                                         static_cast<int>(std::size(kResolutionChoices))) {
-                    SetResolutionScale(kResolutionChoices[command - kCommandResolutionFirst].scale);
-                } else if (command >= kCommandDlssModeFirst && command <= kCommandDlssModeLast) {
-                    SetDlssMode(kDlssModeChoices[command - kCommandDlssModeFirst].key);
-                } else if (command >= kCommandDlssPresetFirst &&
-                           command <= kCommandDlssPresetLast) {
-                    SetDlssPreset(kDlssPresetChoices[command - kCommandDlssPresetFirst].key);
-                } else if (command >= kCommandFilterFirst &&
-                           command <
-                               kCommandFilterFirst + static_cast<int>(std::size(kFilterChoices))) {
-                    SetFilter(kFilterChoices[command - kCommandFilterFirst].key);
                 } else if (command >= kCommandMultitapCardFirst &&
                            command <= kCommandMultitapCardLast) {
                     // (port * 3 + card B-D) * 3 + action, as menu.cpp's CreateMainMenu builds it.

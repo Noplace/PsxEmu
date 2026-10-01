@@ -31,6 +31,10 @@
 #include "app/app.h"
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, LPWSTR, int show) {
+    // Per-monitor aware, before any window exists: every window lays itself out for its monitor's
+    // DPI (ui/dpi.h) rather than being drawn at 96 DPI and stretched, blurred, by Windows - and
+    // the renderers get the window's real pixels to draw into.
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     psxemu::App app;
     return app.Run(instance, show);
 }

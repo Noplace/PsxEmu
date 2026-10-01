@@ -76,6 +76,10 @@ namespace psxemu {
         }
 
         renderer_ = opened;
+        engine_->SetFrameGenerationAllowed(generation_allowed_);
+        // What the caller hears of from here: not this, which it asks for itself.
+        dlss_reported_ = engine_->dlss_status();
+        last_picture_ = 0;
         // Filters run on Direct3D 12 and OpenGL; on D3D11 nothing is loaded and nothing is ticked.
         filter_.clear();
         if (RendererHasFilters(renderer_)) {
@@ -92,7 +96,9 @@ namespace psxemu {
         return true;
     }
 
-    void D3DPresenter::Present(const VideoFrame& frame) {
+    void D3DPresenter::Present(const VideoFrame& frame) { PresentFrame(frame, false); }
+
+    void D3DPresenter::PresentFrame(const VideoFrame& frame, bool again) {
         if (engine_ == nullptr)
             return;
 
@@ -101,10 +107,23 @@ namespace psxemu {
         // not shown; the frames after it come as pixels. One never finished - the rasteriser's
         // card lost - is not shown either.
         if (frame.shared) {
+            // Under Frame Generation each picture is presented once, and the repeats of it at
+            // the vblanks after - a 30 fps game's every other one - not at all: Frame Generation
+            // makes the pictures between. By its number, so one whose first vblank the mailbox
+            // dropped is still presented, at its repeat.
+            const uint32_t picture = frame.shared.picture;
+            if (engine_->TakesOnlyNewPictures() && picture != 0 && picture == last_picture_ &&
+                !again)
+                return;
             if (engine_->SharedPictureAdapter() != frame.shared.source->adapter() ||
                 !frame.shared.source->WaitReady(frame.shared.serial, kSharedPictureWaitMs))
                 return;
+            if (picture != last_picture_) {
+                last_picture_ = picture;
+                last_picture_time_ = std::chrono::steady_clock::now();
+            }
             DrawShared(frame.shared);
+            ReportDlss();
             return;
         }
 
@@ -112,7 +131,7 @@ namespace psxemu {
         int width = frame.width;
         int height = frame.height;
 
-        // Video > View VRAM: all 1024x512 of it, converted the same way the display area already
+        // View > VRAM: all 1024x512 of it, converted the same way the display area already
         // is. Done here rather than on the machine's thread - this one has the time.
         if (frame.is_vram) {
             vram_scratch_.resize(frame.vram.size());
@@ -162,7 +181,14 @@ namespace psxemu {
     }
 
     bool D3DPresenter::WantsRefresh() {
-        return engine_ != nullptr && overlay_.NeedsRedraw(Overlay::Clock::now());
+        if (engine_ == nullptr)
+            return false;
+        // Under Frame Generation, while pictures come, the overlay moves with them: a present
+        // between two would be one Frame Generation had to go off for, and the pace would stumble.
+        if (engine_->TakesOnlyNewPictures() &&
+            std::chrono::steady_clock::now() - last_picture_time_ < std::chrono::milliseconds(200))
+            return false;
+        return overlay_.NeedsRedraw(Overlay::Clock::now());
     }
 
     // The last frame again, for the overlay moving over it - or, before there has been one, a
@@ -171,7 +197,7 @@ namespace psxemu {
         if (engine_ == nullptr)
             return;
         if (last != nullptr) {
-            Present(*last);
+            PresentFrame(*last, true);
             return;
         }
         const int kWidth = 320, kHeight = 240;
@@ -204,6 +230,21 @@ namespace psxemu {
         card_name_ = name;
         if (engine_ != nullptr && renderer_ != "opengl")
             Rebuild(renderer_);
+    }
+
+    void D3DPresenter::SetFrameGenerationAllowed(bool allowed) {
+        generation_allowed_ = allowed;
+        if (engine_ != nullptr)
+            engine_->SetFrameGenerationAllowed(allowed);
+    }
+
+    void D3DPresenter::ReportDlss() {
+        const DlssStatus status = engine_->dlss_status();
+        if (status == dlss_reported_)
+            return;
+        dlss_reported_ = status;
+        if (dlss_listener_)
+            dlss_listener_(status);
     }
 
     void D3DPresenter::SetDlss(const DlssChoice& choice) {

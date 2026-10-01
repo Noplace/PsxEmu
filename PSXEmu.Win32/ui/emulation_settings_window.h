@@ -69,6 +69,7 @@ namespace psxemu {
                                            LPARAM lparam);
 
         void Refresh();
+        void MakeFonts();
         int Scale(int value) const { return MulDiv(value, dpi_, 96); }
 
         Host host_;

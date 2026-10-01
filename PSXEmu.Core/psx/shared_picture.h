@@ -98,6 +98,12 @@ struct SharedPicture {
   // display changed. What DLSS needs to know of the picture as a whole (Gpu::NewPicture).
   bool new_picture = false;
   bool reset = false;
+  // Which new picture this is, counting from 1 while the plane is kept, 0 otherwise - and the
+  // same in every repeat of it. A presenter that takes only new pictures goes by this rather
+  // than `new_picture`: a new picture replaced in the mailbox by its own repeat is still new to
+  // it, and a number skipped is a picture it never saw. It is also the picture's frame for
+  // NVIDIA Reflex (host/latency_markers.h).
+  uint32_t picture = 0;
   // 480 lines interlaced: half of each picture is the last field's lines, which no motion
   // describes. DLSS leaves such pictures as they are.
   bool interlaced = false;

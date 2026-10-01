@@ -8219,3 +8219,51 @@ gives for the process (78 MB and 59 MB on Direct3D 11 at native resolution, with
 **A lesson from the build.** The first version was header-only, like `graphics/adapters.h`, and included
 `windows.h` from `overlay.h` - which turned every `small` in `overlay.cpp` into `char`. The Windows code is
 in `memory_usage.cpp` behind a pointer now, and the header has none.
+
+## 133. Per-monitor DPI, and a Video Settings window
+
+`ui/dpi.h/.cpp` (new), `ui/video_settings_window.h/.cpp` (new), `app/main.cpp`, `app/app.*`,
+`app/menu.*`, `app/const.h`, every window in `ui/`, `PSXEmu.Win32.vcxproj` and `.filters`
+
+Not a bug: a request - "make it DPI aware, also make all the video settings in its own window, use
+the best layout there".
+
+**DPI.** The process was DPI-unaware, so on this laptop's 200% screen Windows drew every window at
+96 DPI and stretched it to twice the size: blurred text, and a 640x480 swap chain shown at
+1280x960 - DLSS's output stretched with it (DLSS-Plan.md). `wWinMain` now makes the process
+per-monitor aware (version 2) before any window exists. Every layout stays written in pixels at 96
+DPI and is scaled by the window's own DPI (`ui/dpi.h`): the main window opens with a 640x480 client
+at 100%, as large again as the scaling makes it; the settings windows scale their fixed layouts and
+fonts as they are made, and the debugger, the memory card editor, the key bindings and the console
+scale their `WM_SIZE` layouts, list columns, minimum sizes and fonts (the debugger's Consolas too,
+the memory card icons a whole number of times their 16x16). A first size larger than the monitor's
+work area is cut to fit: the debugger's 1200x900 is taller than this screen's 752 at 200%, which
+the stretching had hidden. `WM_DPICHANGED` - a window dragged to a monitor with other scaling -
+moves each window to the rect Windows suggests; a fixed layout scales every control and swaps its
+fonts for ones made at the new DPI, and one that lays out on `WM_SIZE` swaps its fonts and is laid
+out again by the new size.
+
+**The Video Settings window.** Settings > Video was six popups - Renderer, Graphics Card, Rasteriser,
+NVIDIA DLSS, Filter, On-Screen Display - and is now one window, live like Emulation Settings (no OK
+or Cancel; each change applied at once, the window reading back what is running). The renderer,
+card and filter across the top, the card list wide enough for "NVIDIA GeForce RTX 4060 Laptop GPU
+(8 GB)" - the first layout, two columns, cut it off; the rasteriser and NVIDIA DLSS side by side
+underneath, each with a line saying what it needs or why something is greyed; the on-screen display
+across the bottom; and the game's own-settings box, since the rasteriser's settings and DLSS's mode
+are kept per game. DLSS's status, which was a greyed menu item, is two lines: what DLSS runs at or
+why not, and Frame Generation's. Full Screen and the VRAM, Depth and Motion views, which are ways of
+looking rather than settings, moved to a new View menu with a way into the window; the command ids,
+ticks and graphics-card menu filling the popups needed are gone, and the choice tables lost their
+menu ampersands.
+
+**Checked** on the scratch front end at 192 DPI: the main window's client 1280x960, every tool window
+captured and laid out in proportion; the Video Settings window's lists, switches and radio buttons
+driven as clicks are (filter, resolution, PGXP culling, the performance panel, the theme), each
+applied and read back; and on the RTX 4060, DLSS chosen in the window running at the window's real
+size - Quality at 3x internal resolution, Performance at 2x, Frame Generation on, full speed.
+**Not checked:** `WM_DPICHANGED` itself. This machine has one monitor, and changing Windows' scaling
+to provoke it is the user's to do.
+
+**A trap, designed around rather than hit.** A drop-down list's window is as tall as the list it
+drops, but `GetWindowRect` gives the closed box; scaling it by that would leave a list one row
+tall. `RescaleForDpi` takes the height from `CB_GETDROPPEDCONTROLRECT` instead.

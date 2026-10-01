@@ -42,6 +42,9 @@
 #include "graphics/dlss/streamline/sl.h"
 #include "graphics/dlss/streamline/sl_consts.h"
 #include "graphics/dlss/streamline/sl_dlss.h"
+#include "graphics/dlss/streamline/sl_dlss_g.h"
+#include "graphics/dlss/streamline/sl_pcl.h"
+#include "graphics/dlss/streamline/sl_reflex.h"
 
 #include <string>
 
@@ -60,7 +63,8 @@ namespace psxemu {
         // if any step fails.
         bool Start(const std::wstring& folder, bool frame_generation, std::string* error);
         // Gives Streamline the renderer's device (an ID3D12Device, not upgraded), and then takes
-        // DLSS's own functions, which only exist from here on.
+        // DLSS's own functions, which only exist from here on - and Frame Generation's, Reflex's
+        // and PC Latency's, if started with them; `generating()` says whether they were all there.
         bool SetDevice(void* device, std::string* error);
         // Shuts Streamline down: before the device it was given goes. The DLL stays loaded, for
         // the next Start.
@@ -93,6 +97,16 @@ namespace psxemu {
         // ...and DLSS's, through slGetFeatureFunction once SetDevice has been.
         PFun_slDLSSGetOptimalSettings* slDLSSGetOptimalSettings = nullptr;
         PFun_slDLSSSetOptions* slDLSSSetOptions = nullptr;
+        // Frame Generation's, Reflex's and PC Latency's, when started with them: all or none.
+        PFun_slDLSSGSetOptions* slDLSSGSetOptions = nullptr;
+        PFun_slDLSSGGetState* slDLSSGGetState = nullptr;
+        PFun_slReflexSetOptions* slReflexSetOptions = nullptr;
+        PFun_slReflexSleep* slReflexSleep = nullptr;
+        PFun_slReflexGetState* slReflexGetState = nullptr;
+        PFun_slPCLSetMarker* slPCLSetMarker = nullptr;
+        PFun_slPCLGetState* slPCLGetState = nullptr;
+        PFun_slPCLSetOptions* slPCLSetOptions = nullptr;
+        bool generating() const { return slDLSSGSetOptions != nullptr; }
 
         // Streamline's last warning or error, from its log.
         const std::string& last_message() const { return last_message_; }
@@ -101,9 +115,11 @@ namespace psxemu {
         // Loads the DLL - once per process, after its signature is checked - and takes the
         // functions from it.
         bool Load(const std::wstring& folder, std::string* error);
+        void ForgetGeneration();
         static void Log(sl::LogType type, const char* message);
 
         bool started_ = false;
+        bool frame_generation_ = false;   // started with Frame Generation, Reflex and PCL
         PFun_slInit* slInit_ = nullptr;
         static std::string last_message_;
     };

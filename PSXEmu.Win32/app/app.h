@@ -49,6 +49,7 @@
 #include "input/controller_bindings.h"
 #include "ui/controller_bindings_window.h"
 #include "ui/emulation_settings_window.h"
+#include "ui/video_settings_window.h"
 #include "ui/cheats_window.h"
 #include "psx/cheats.h"
 #include "app/engine_factory.h"
@@ -151,16 +152,18 @@ namespace psxemu {
         void RemakeRasteriser(const std::wstring& done);
         void SetPgxp(bool* setting, bool on, const std::wstring& done);
         void ReportRasteriser(bool hardware, const std::string& error, bool announce);
-        void UpdateRasteriserMenus();
+        // The Video Settings window, if open, and the View menu's depth and motion items, from
+        // what is set and what is running. Called by everything that changes either.
+        void UpdateVideoSettings();
+        VideoSettingsWindow::State VideoState() const;
         // The renderer that opened can take the hardware rasteriser's pictures on this adapter
         // (a LUID), or on none (0): the rasteriser is made again to draw where it should, if it
         // draws - see UpdateRasteriserCard.
         // `card` is the card the engine was really asked for - 0 if the one chosen turned out
         // to be unusable and Windows' pick was used instead.
         void OnPresenterAdapter(uint64_t adapter, const std::string& renderer, uint64_t card);
-        // Settings > Video > Graphics Card: `index` into adapters_, or -1 for automatic.
+        // The Video Settings window's graphics card: `index` into adapters_, or -1 for automatic.
         void SetGraphicsCard(int index);
-        void RefreshGraphicsCardMenu();
         // Where the hardware rasteriser draws: on the card chosen, or with none chosen the
         // renderer's, and handing its pictures over when that is the renderer's card as well.
         // Made again if that changed. Returns nothing to say when it is as it was.
@@ -180,7 +183,7 @@ namespace psxemu {
         void SetShowBiosConsole(bool on);
         void SetSerialToConsole(bool on);
         // Borderless full screen over the monitor the window is on, and back to the window as it
-        // was. Alt+Enter or F11 toggles it, Escape leaves it, and so does Settings > Video.
+        // was. Alt+Enter or F11 toggles it, Escape leaves it, and so does View > Full Screen.
         void SetFullscreen(bool on);
         void SetMouseMotion(const std::string& key);
         void SetMouseDpi(int dpi);
@@ -298,8 +301,6 @@ namespace psxemu {
         void SelectBios(int index);
 
         void UpdateVolumeMenu();
-        void UpdateRendererMenu();
-        void UpdateFilterMenu();
         void UpdateMultitapCardsMenu();
         void SetMultitapType(int port, int player, const std::string& key);
         void UpdateFrameLimiterMenu();
@@ -372,7 +373,6 @@ namespace psxemu {
         void SetOverlayTheme(OverlayTheme theme);
         void LoadOverlaySettings();
         void SaveOverlaySettings();
-        void UpdateOverlayMenu();
 
         // ---------------------------------------------------------------------------------------
         // Messages
@@ -433,20 +433,27 @@ namespace psxemu {
         std::string current_audio_backend_;
         std::string current_filter_;
 
-        // Video > View VRAM: the machine ships all of VRAM instead of the display area. Not
+        // View > VRAM: the machine ships all of VRAM instead of the display area. Not
         // persisted - always starts off.
         bool view_vram_ = false;
-        // Video > View Depth and View Motion: 0 neither, 1 depth, 2 motion - the plane beside
+        // View > Depth and Motion: 0 neither, 1 depth, 2 motion - the plane beside
         // VRAM in place of the picture (Docs/DLSS-Plan.md). Not persisted either.
         int plane_view_ = 0;
         void SetPlaneView(int view);
 
-        // Settings > Video > NVIDIA DLSS (Docs/DLSS-Plan.md, phase 4). The mode and preset are
+        // Settings > Video, NVIDIA DLSS (Docs/DLSS-Plan.md, phase 4). The mode and preset are
         // EmuConfig's; whether DLSS actually runs is the renderer's to say (dlss_status_), and
         // the machine is told only while it does: the plane kept and the triangles jittered, the
         // rasteriser at the mode's scale for the window, and PGXP's precise vertices on.
         void SetDlssMode(const std::string& key);
         void SetDlssPreset(const std::string& key);
+        void SetDlssFrameGeneration(const std::string& key);
+        // Frame Generation only at 100% speed with the limiter pacing: the renderer told when
+        // that changes (from SendConfigToMachine, which every change of either goes through).
+        void SendFrameGenerationAllowed();
+        bool generation_allowed_sent_ = true;
+        // Reflex's markers given to the machine while Frame Generation runs.
+        bool latency_markers_on_ = false;
         // Tells the renderer what DLSS is asked for, when that changed, and hears back whether it
         // runs.
         void SendDlssToRenderer();
@@ -455,7 +462,6 @@ namespace psxemu {
         // changed. Called whenever anything it depends on may have: the setting, the renderer's
         // word, the rasteriser, the window's size.
         void UpdateDlss();
-        void UpdateDlssMenu();
         DlssChoice dlss_sent_;           // what the renderer was last told
         DlssStatus dlss_status_;         // ...and what it said
         bool dlss_active_ = false;       // DLSS running: the machine told so
@@ -569,6 +575,7 @@ namespace psxemu {
             std::make_shared<const ControllerBindings>();
         ControllerBindingsWindow controller_bindings_;
         EmulationSettingsWindow emulation_settings_;
+        VideoSettingsWindow video_settings_;
         CheatsWindow cheats_window_;
         KeyBindingsWindow key_bindings_;
 

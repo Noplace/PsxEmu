@@ -257,6 +257,11 @@ struct EmuConfig {
   // DLSS's model: "auto" - NVIDIA's own for each mode - or preset "k", "l" or "m".
   std::string dlss_preset = "auto";
   static const std::array<const char*, 4> kValidDlssPresets;
+  // DLSS Frame Generation, with a DLSS mode on: pictures made between the game's own, from the
+  // same motion and depth - "off", "2x", "3x" to "6x" or "dynamic", the last five on RTX 50
+  // cards only. At 100% speed only; about one picture's more latency.
+  std::string dlss_frame_generation = "off";
+  static const std::array<const char*, 7> kValidDlssFrameGenerations;
 
   // Charge the GPU for CPU-to-VRAM and VRAM-to-CPU transfers: one tick per pixel
   // moved, so commands issued after a large upload wait for it the way they
@@ -450,13 +455,15 @@ inline const std::array<const char*, 2>
 
 inline const std::array<int, 7> EmuConfig::kValidResolutionScales = { 1, 2, 3, 4, 5, 6, 8 };
 
-// In the order PSXEmu.Win32's Video > NVIDIA DLSS menu offers them.
+// In the order PSXEmu.Win32's Video Settings window offers them.
 inline const std::array<const char*, 6> EmuConfig::kValidDlssModes = {
     "off", "dlaa", "quality", "balanced", "performance", "ultra_performance" };
 inline const std::array<const char*, 4> EmuConfig::kValidDlssPresets = { "auto", "k", "l", "m" };
+inline const std::array<const char*, 7> EmuConfig::kValidDlssFrameGenerations = {
+    "off", "2x", "3x", "4x", "5x", "6x", "dynamic" };
 
 // Empty string ("None") first, then the nine loaded filters in the same
-// order PSXEmu.Win32's Video > Filter menu offers them.
+// order PSXEmu.Win32's Video Settings window offers them.
 inline const std::array<const char*, 10> EmuConfig::kValidVideoFilters = {
     "",         "nearest",    "bilinear", "crt",   "eagle",
     "hq2x",     "xbrz_legacy", "scanline", "xbrz",     "superxbr",

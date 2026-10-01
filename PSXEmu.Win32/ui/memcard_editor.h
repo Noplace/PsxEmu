@@ -95,6 +95,8 @@ namespace psxemu {
         static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,
                                            LPARAM lparam);
         void Layout(int width, int height);
+        void MakeIcons(Pane& pane);
+        int Scale(int value) const { return MulDiv(value, dpi_, 96); }
         void Fill(int slot);
         void UpdateButtons();
         void OnButton(int slot, Button button);
@@ -104,6 +106,7 @@ namespace psxemu {
         HWND show_deleted_ = nullptr;
         HWND refresh_ = nullptr;
         HFONT font_ = nullptr;
+        int dpi_ = 96;
         Pane panes_[kSlots];
         std::array<Snapshot, kCards> cards_;
         Host host_;

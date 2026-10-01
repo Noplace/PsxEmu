@@ -88,11 +88,14 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     psxemu::DlssStatus dlss_status() const override;
     bool DlssNeedsRemaking(const psxemu::DlssChoice& from,
                            const psxemu::DlssChoice& to) const override;
+    void SetFrameGenerationAllowed(bool allowed) override { generation_allowed_ = allowed; }
+    bool TakesOnlyNewPictures() const override { return generation_ready_; }
 
  private:
     // ---- the overlay (ui/overlay), drawn last in EndFrame ----------------------------------
     bool CreateOverlayPipeline();
-    void DrawOverlay();
+    // Into the back buffer, or into `target` - Frame Generation's UI layer - when given.
+    void DrawOverlay(const D3D12_CPU_DESCRIPTOR_HANDLE* target = nullptr);
     const psxemu::OverlayDrawData* overlay_ = nullptr;
     ComPtr<ID3D12RootSignature> overlay_root_;
     ComPtr<ID3D12PipelineState> overlay_pipeline_;
@@ -276,6 +279,43 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     // False, drawing nothing, when DLSS cannot take it: no plane, interlaced, a size it will not
     // take, or any step failing.
     bool DrawDlss(const emulation::psx::SharedPicture& picture);
+    // Streamline's frame for picture `picture`: its frames are the pictures' numbers.
+    sl::FrameToken* Token(uint32_t picture);
+
+    // ---- Frame Generation (Docs/DLSS-Plan.md, phase 5) --------------------------------------
+    //
+    // Streamline started with it, and Reflex and PC Latency, when it is asked for with a DLSS
+    // mode. Each new picture DLSS has just made is presented once, with the overlay drawn apart
+    // as its UI layer and the picture before it as the HUD-less colour, and Frame Generation
+    // makes the pictures between; a repeat is not presented at all (D3DPresenter). Anything
+    // else presented - a film, an interlaced picture, the overlay over a paused one - goes with
+    // Frame Generation off for that present, its resources kept.
+    void SetUpGeneration(HWND window);
+    // Frame Generation on or off from the next present, told only when that changes.
+    void SetGenerationMode(bool on);
+    bool EnsureUiTargets();
+    // The picture before the overlay, the overlay alone and then over it, and the tags.
+    void DrawGenerationLayers();
+    void ReadGenerationState();
+    void MarkLatency(uint32_t marker);   // an sl::PCLMarker, for present_picture_
+    bool generation_ready_ = false;
+    std::string generation_why_;
+    int generation_most_ = 0;
+    bool generation_dynamic_ = false;
+    bool generation_allowed_ = true;    // 100% speed, paced (SetFrameGenerationAllowed)
+    bool generation_on_ = false;        // what it was last told
+    bool generation_this_frame_ = false;   // this frame's picture made by DLSS just now
+    uint32_t present_picture_ = 0;      // this frame's picture, the first time it is presented
+    uint32_t presented_picture_ = 0;
+    uint32_t dlss_picture_ = 0;         // the picture dlss_output_ was made from
+    int generation_frames_ = 0;         // presents since its state was last read
+    UINT generation_present_count_ = 0; // the swap chain's count then
+    UINT generation_min_size_ = 0;      // the smallest back buffer it takes
+    ComPtr<ID3D12Resource> hudless_;    // back buffer's size: the picture before the overlay
+    ComPtr<ID3D12Resource> ui_;         // ...and the overlay alone, premultiplied
+    ComPtr<ID3D12DescriptorHeap> ui_rtv_heap_;
+    ComPtr<ID3D12PipelineState> composite_pipeline_;
+    int ui_width_ = 0, ui_height_ = 0;
     bool DlssRunning() const { return streamline_ != nullptr && dlss_pipeline_ != nullptr &&
                                       dlss_choice_.mode != psxemu::DlssMode::kOff; }
 
@@ -285,21 +325,21 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     std::string dlss_version_;
     ComPtr<ID3D12Device> sl_device_;   // Streamline's proxy of device_, which makes the queue
     ComPtr<IDXGIFactory2> sl_factory_; // ...and of factory_, which makes the swap chain
-    sl::FrameToken* frame_token_ = nullptr;   // this frame's, from BeginFrame
     ComPtr<ID3D12RootSignature> dlss_root_;
     ComPtr<ID3D12PipelineState> dlss_pipeline_;
     // Shader-visible: per frame in flight t0 the plane, u0-u2 motion, depth and hint; then the
-    // output twice, t0 and t1 for the draw to the screen (kDlssOutputSlot).
+    // output twice, t0 and t1 for the draw to the screen (kDlssOutputSlot); then the UI layer
+    // twice, for putting it over the picture (kDlssUiSlot).
     ComPtr<ID3D12DescriptorHeap> dlss_heap_;
     static const UINT kDlssOutputSlot = 4 * kFrameCount;
+    static const UINT kDlssUiSlot = kDlssOutputSlot + 2;
     ComPtr<ID3D12Resource> dlss_motion_, dlss_depth_, dlss_hint_, dlss_output_;
     int dlss_in_width_ = 0, dlss_in_height_ = 0;
     int dlss_out_width_ = 0, dlss_out_height_ = 0;
     // The planes' textures opened here, as the pictures' are (opened_pictures_).
     std::vector<OpenedPicture> opened_planes_;
     const emulation::psx::SharedPictureSource* planes_source_ = nullptr;
-    // What dlss_output_ holds: the picture it was made from, and whether it is there at all.
-    uint64_t dlss_serial_ = 0;
+    // Whether dlss_output_ holds a picture at all (dlss_picture_ says which).
     bool dlss_output_valid_ = false;
     // The next evaluation starts afresh: a picture DLSS did not see came between.
     bool dlss_reset_ = true;

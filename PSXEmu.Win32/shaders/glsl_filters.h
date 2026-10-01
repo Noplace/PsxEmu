@@ -24,7 +24,8 @@
 
 // Every video filter, in GLSL for the OpenGL engine: a line-for-line port of the HLSL ones
 // (legacy_shaders.h, Resource/ps_scanline_filter.hlsl, ps_xbrz_filter.hlsl and superxbr/), under
-// the same keys, so the Video > Filter menu means the same thing whichever renderer draws it.
+// the same keys, so the Video Settings window's filter list means the same thing whichever
+// renderer draws it.
 //
 // The ports change the language, not the arithmetic. Each HLSL sampler maps to the GL sampler set
 // up to behave the same (see kGlslFilterHeader), GetDimensions is textureSize, SampleLevel is
@@ -603,7 +604,8 @@ void main() {
     float weight2 = (XBR_WEIGHT * 1.75068 / 10.0 / 2.0);
 )GLSL";
 
-    // Every single-shader filter, by the key the Video > Filter menu and LoadAllFilters use.
+    // Every single-shader filter, by the key the Video Settings window's filter list and
+    // LoadAllFilters use.
     // HQ2X is a placeholder in HLSL too - the same pass-through as Nearest Neighbor.
     struct GlslFilter {
         const char* key;

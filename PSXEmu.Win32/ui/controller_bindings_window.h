@@ -118,6 +118,7 @@ namespace psxemu {
         void PaintCanvas(HDC dc, const RECT& client);
         void DrawBox(const DRAWITEMSTRUCT& item);
         int Scale(int value) const { return MulDiv(value, dpi_, 96); }
+        void MakeFonts();
 
         Host host_;
         HWND window_ = nullptr;

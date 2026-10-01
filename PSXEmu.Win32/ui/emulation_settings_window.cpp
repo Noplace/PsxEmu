@@ -18,6 +18,7 @@
 *****************************************************************************************************************/
 #include "ui/emulation_settings_window.h"
 #include "app/app_icon.h"
+#include "ui/dpi.h"
 
 #include <algorithm>
 #include <commctrl.h>
@@ -170,21 +171,8 @@ namespace psxemu {
         if (window_ == nullptr)
             return false;
 
-        dpi_ = static_cast<int>(GetDpiForWindow(window_));
-        if (dpi_ <= 0)
-            dpi_ = 96;
-
-        NONCLIENTMETRICSW metrics = { sizeof(metrics) };
-        if (SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0,
-                                       static_cast<UINT>(dpi_))) {
-            font_ = CreateFontIndirectW(&metrics.lfMessageFont);
-            LOGFONTW bold = metrics.lfMessageFont;
-            bold.lfWeight = FW_BOLD;
-            bold_font_ = CreateFontIndirectW(&bold);
-            LOGFONTW caption = metrics.lfMessageFont;
-            caption.lfHeight = caption.lfHeight * 90 / 100;
-            small_font_ = CreateFontIndirectW(&caption);
-        }
+        dpi_ = WindowDpi(window_);
+        MakeFonts();
 
         auto make = [&](const wchar_t* cls, const wchar_t* text, DWORD control_style, int id,
                         int x, int y, int w, int h, HFONT font) {
@@ -262,6 +250,12 @@ namespace psxemu {
         SetWindowPos(window_, nullptr, 0, 0, bounds.right - bounds.left,
                      bounds.bottom - bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         return true;
+    }
+
+    void EmulationSettingsWindow::MakeFonts() {
+        font_ = CreateMessageFont(dpi_);
+        bold_font_ = CreateMessageFont(dpi_, true);
+        small_font_ = CreateMessageFont(dpi_, false, 90);
     }
 
     void EmulationSettingsWindow::Show() {
@@ -366,6 +360,23 @@ namespace psxemu {
                         SendMessageW(window, WM_CLOSE, 0, 0);
                         break;
                 }
+                return 0;
+            }
+
+            case WM_DPICHANGED: {
+                // Onto a monitor with another scaling: the same layout, at its DPI.
+                const int from = self->dpi_;
+                const HFONT old[] = { self->font_, self->bold_font_, self->small_font_ };
+                self->dpi_ = HIWORD(wparam);
+                self->MakeFonts();
+                SwapFonts(window, { { old[0], self->font_ },
+                                    { old[1], self->bold_font_ },
+                                    { old[2], self->small_font_ } });
+                for (HFONT font : old) {
+                    if (font != nullptr)
+                        DeleteObject(font);
+                }
+                RescaleForDpi(window, from, self->dpi_, *reinterpret_cast<const RECT*>(lparam));
                 return 0;
             }
 
