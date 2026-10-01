@@ -270,8 +270,8 @@ struct Options {
   const char* load_state;
   // Applied once, after the frame loop finishes, alongside --ppm/--vram.
   const char* save_state;
-  // --hw-raster: draw with the Direct3D 11 rasteriser the front end has, on the graphics card
-  // or, with --warp, on WARP - Windows' software Direct3D, which needs no card and gives the
+  // --hw-raster: draw with the Direct3D 11 rasteriser the front end has (12 with --d3d12), on
+  // the graphics card or, with --warp, on WARP - Windows' software Direct3D, which needs no card and gives the
   // same pictures every run. Only in a build that compiles it in (PSXEMU_HW_RASTER).
   bool hw_raster;
   bool warp;
@@ -1206,8 +1206,8 @@ int main(int argc, char** argv) {
       fprintf(stderr, "--hw-raster: %s\n", system->gpu().raster_error().c_str());
       return 1;
     }
-    printf("gpu            hardware rasteriser (Direct3D 11, %s), %dx%s\n",
-           system->gpu().raster_device().c_str(), options.scale,
+    printf("gpu            hardware rasteriser (Direct3D %s, %s), %dx%s\n",
+           options.d3d12 ? "12" : "11", system->gpu().raster_device().c_str(), options.scale,
            options.scale > 1 && options.true_color ? ", true colour" : "");
     if (options.planes || options.view != emulation::psx::PlaneView::kPicture) {
       system->gte().set_motion_key(options.motion_key);

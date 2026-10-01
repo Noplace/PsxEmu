@@ -8334,3 +8334,62 @@ whichever card is drawing now.
 copied in and Check Again taking the link away. On the RTX 4060, the eight files moved aside: the
 group live, "NVIDIA's DLSS files are not beside the emulator", the link; the files put back and
 Check Again: "Running: NVIDIA DLSS 310.9.1, at 3x" and Frame Generation 2x, without a restart.
+
+## 136. A Direct3D 12 rasteriser, and the hand-off that cost a third of its frame
+
+`graphics/hw_raster/` (`d3d12_raster.*`, `hardware_raster.*`, `raster_common.h`),
+`psx/shared_picture.h`, `graphics/opengl_engine.cpp`, `graphics/vulkan_engine.cpp`,
+`ui/video_settings_window.*`, `tools/boot_runner.cpp`
+
+Built on request - "make the d3d12 one but keep the current one also in case i want to switch" -
+and documented in Docs/Hardware-Renderer-Plan.md. What was a bug is what measuring it found.
+
+**Symptom.** The same pictures as the Direct3D 11 rasteriser, a little faster at 1x and 4x, and
+much slower at 8x: uncapped on the Radeon 780M, Ace Combat 3 ran at 52 fps against Direct3D 11's
+109, Tekken 3 at 84 against 133.
+
+**Cause.** The rasteriser's thread spent a third of its time waiting for the card, and GPU
+timestamps put 13 of the card's 15.4 ms a frame into handing the picture over: drawing it into the
+shared texture and putting that in the common state, the one another device may open it in. The
+texture was made like any other, so the driver compressed it, and then had to unpack it at every
+hand-off - leaving the transition out (for timing only) took the frame to 9.0 ms. Direct3D 11 does
+the same with no cost to see, because its driver handles shared textures itself. Not the cause,
+each tried: the 8x target's own state changes (cost nothing measurable), turning compression off
+on everything (slower: 44 fps), the memory budget (the APU's 48 GB is all "local"), raising the
+textures' residency priority, and showing from the read copy instead of the target (far slower,
+26-49 fps - any state change on the compressed target is dear).
+
+**Fix.** Textures made to be shared - the pictures and the planes beside them - are made with
+`D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS`, the flag D3D12 has for a texture other devices
+use: never compressed, so the common state costs nothing. Ace Combat 3 at 8x: 15.4 → 10.7 ms of
+the card's time a frame.
+
+**Measured**, uncapped, the front end's path (`--gpu-thread --shown-only --shared-picture
+--recompiler --pgxp`), 2,000 frames, two interleaved rounds averaged:
+
+| Disc | Scale | Direct3D 11 | Direct3D 12 before | Direct3D 12 now |
+|---|---|---|---|---|
+| Ridge Racer | 4x | 245 | 251 | 255 |
+| Final Fantasy VIII | 4x | 117 | 174 | 179 |
+| Ace Combat 3 | 4x | 304 | 310 | 314 |
+| Tekken 3 | 4x | 210 | 221 | 212 |
+| Ridge Racer | 8x | 152 | 112 | 149 |
+| Final Fantasy VIII | 8x | 73 | 58 | 84 |
+| Ace Combat 3 | 8x | 109 | 52 | 89 |
+| Tekken 3 | 8x | 133 | 84 | 126 |
+
+and at 1x, one round on six discs, Direct3D 12 3-7% ahead. Runs vary by 10-20% from one to the
+next on this laptop, so only the large differences mean much. **Still open:** Ace Combat 3 at 8x,
+18% behind - 320x480, so a 2560x3840 picture, its display draw alone 8.4 ms, more than its size
+explains; Final Fantasy VIII's picture is twice the size and draws faster than Direct3D 11's.
+
+**Checked after the fix.** `hw_raster_test --d3d12` 73 of 73 at 1x, 2x and 4x with the planes;
+`gpu_test --d3d12` 80 of 80. Pictures read back from the shared textures at 4x: Final Fantasy VIII
+and Ace Combat 3 identical to Direct3D 11's, Ridge Racer one pixel apart - and identical to a
+Direct3D 11 build compiling shader model 5.0, which is the whole difference (the plan says more).
+The BIOS on all four renderers on card at full speed; Ridge Racer with DLSS and Frame Generation on
+the RTX 4060, on card, DLSS 1.5 ms, 2.0x.
+
+**Also.** `boot_runner`'s report said "Direct3D 11" whichever rasteriser drew; it names the one
+used now. The earlier disc-table runs had really used Direct3D 12 - their Ridge Racer result
+matched only a shader-model-5 build.

@@ -912,6 +912,13 @@ kept so settings files already written mean what they meant) or `hardware_d3d12`
   2.0x, full speed, the picture right. Streamline is given only the renderer's device, so
   the rasteriser's own Direct3D 12 device passes it by, as the Direct3D 11 one does.
 
+**Speed** (bug 136), uncapped on the Radeon 780M on the front end's path: Direct3D 12 is ahead
+at 1x and 4x - by half on Final Fantasy VIII at 4x - level at 8x on Ridge Racer and ahead on Final
+Fantasy VIII, and behind on Ace Combat 3 (18%) and Tekken 3 (6%). As first built it was far behind
+at 8x, because the shared pictures were compressed and the card unpacked each one at hand-off;
+they are made for sharing now (`ALLOW_SIMULTANEOUS_ACCESS`). Neither is the default yet: Ace Combat
+3 at 8x is the open question.
+
 ---
 
 ## How it will be verified

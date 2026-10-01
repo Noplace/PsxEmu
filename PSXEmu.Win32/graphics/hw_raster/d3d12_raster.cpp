@@ -758,6 +758,12 @@ namespace psxemu {
         description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
         description.Flags = render_target ? D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
                                           : D3D12_RESOURCE_FLAG_NONE;
+        // A texture another device opens is made for that: uncompressed, so handing it over in
+        // the common state costs nothing. Compressed, the card unpacked it at every hand-off -
+        // Ace Combat 3 at 8x on the Radeon 780M took 15.4 ms of the card's time a frame with
+        // that, 10.7 without.
+        if (heap_flags & D3D12_HEAP_FLAG_SHARED)
+            description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
         texture->resource.Reset();
         if (FAILED(device_->CreateCommittedResource(&heap, heap_flags, &description, initial,
                                                     nullptr, IID_PPV_ARGS(&texture->resource)))) {
