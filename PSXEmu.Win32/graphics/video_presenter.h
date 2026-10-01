@@ -103,6 +103,13 @@ namespace psxemu {
         uint64_t shared_adapter() const {
             return engine_ != nullptr ? engine_->SharedPictureAdapter() : 0;
         }
+        // Waits for the card to finish everything the renderer has sent it: before a shared
+        // picture drawn on its own device is read back, so nothing of the renderer's reads it
+        // meanwhile (IGraphicsEngine::Idle).
+        void Idle() {
+            if (engine_ != nullptr)
+                engine_->Idle();
+        }
 
      private:
         // Creates an engine for `renderer`, loads the filters it supports, and tells the UI what

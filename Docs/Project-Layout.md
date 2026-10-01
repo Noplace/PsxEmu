@@ -124,6 +124,8 @@ PsxEmu/
     graphics/                  the renderers, all behind one interface
       igraphicsengine.h        what a presenter has to be able to do
       adapters.h               the graphics cards by name and LUID, and picking one
+      shared_device.h          the Direct3D 12 renderer's device, for the Direct3D 12 rasteriser
+                               to draw on too
                                (Settings > Video > Graphics Card); header-only, the tools use it too
       video_presenter.h/.cpp   what the video thread draws with, and the menus' asks of it
       d3d11_presenter.h/.cpp   uploads the core framebuffer and draws it; no filters
@@ -154,7 +156,8 @@ PsxEmu/
                                layouts, colour, position and motion packing, the jitter
         d3d11_raster.h/.cpp    DrawJobs drawn on the graphics card with Direct3D 11, into a copy
                                of VRAM kept there; native VRAM brought up to date in 32x32 tiles
-        d3d12_raster.h/.cpp    the same with Direct3D 12 (gpu_rasteriser = hardware_d3d12)
+        d3d12_raster.h/.cpp    the same with Direct3D 12 (gpu_rasteriser = hardware_d3d12), on
+                               a device of its own or the Direct3D 12 renderer's
     input/                     the host's devices, and what they press
       input_thread.h/.cpp      the input thread: pads, keyboard, raw mouse at 1 kHz
       sony_pads.h/.cpp         DualShock 4 and DualSense pads over HID, in the Gamepad slots XInput leaves

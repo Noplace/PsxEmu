@@ -35,8 +35,12 @@
 //     as they open Direct3D 11's, Vulkan and OpenGL by the Direct3D 12 handle type
 //     (SharedPictureSource::d3d12).
 //
-// It owns its own device and queue and never touches a presenter's. Every call comes from the
-// rasteriser's thread or the machine's, one at a time - Gpu makes sure of that.
+// It owns its own device - or, given the Direct3D 12 renderer's (graphics/shared_device.h),
+// draws on that one: then its pictures are ordinary textures handed to that renderer as they
+// are, compressed as the card likes, opened by no handle and never put in the common state; the
+// renderer waits for each on the card. Either way the queue is its own, and nothing of the
+// renderer's is touched. Every call comes from the rasteriser's thread or the machine's, one at
+// a time - Gpu makes sure of that.
 
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/hw_raster/raster_common.h"
@@ -62,7 +66,8 @@ namespace psxemu {
         // or cannot hold VRAM that large.
         static std::unique_ptr<D3D12Raster> Create(uint16_t* vram,
                                                    const emulation::psx::RasterOptions& options,
-                                                   bool warp, std::string* error);
+                                                   bool warp, std::string* error,
+                                                   ID3D12Device* device = nullptr);
         ~D3D12Raster() override;
 
         // A picture this rasteriser shared, read back through a Direct3D 12 device of its own
@@ -170,9 +175,11 @@ namespace psxemu {
             kRtvCount = kRtvPicture + emulation::psx::kSharedTextureCount
         };
 
-        D3D12Raster(uint16_t* vram, const emulation::psx::RasterOptions& options)
+        D3D12Raster(uint16_t* vram, const emulation::psx::RasterOptions& options,
+                    ID3D12Device* device)
             : vram_(vram), scale_(options.scale), true_color_(options.true_color),
-              adapter_(options.adapter), share_(options.shared_picture) {}
+              adapter_(options.adapter), share_(options.shared_picture), device_(device),
+              one_device_(device != nullptr) {}
         bool Initialize(bool warp, std::string* error);
         bool CreatePipelines(std::string* error);
         // The textures and fence shared pictures need; without them the picture is read back.
@@ -260,6 +267,9 @@ namespace psxemu {
         const bool share_;
 
         Microsoft::WRL::ComPtr<ID3D12Device> device_;
+        // Drawing on the renderer's device rather than one of its own: pictures go to it as
+        // they are (SharedPictureSource::device).
+        const bool one_device_;
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue_;
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list_;
         Microsoft::WRL::ComPtr<ID3D12Fence> fence_;

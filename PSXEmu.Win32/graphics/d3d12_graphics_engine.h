@@ -72,9 +72,13 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     void Resize(int width, int height) override;
 
     // Copied on the card from the rasteriser's texture into the frame's own, which everything
-    // after - filters, chains, the overlay's glass - reads as it reads an uploaded frame.
+    // after - filters, chains, the overlay's glass - reads as it reads an uploaded frame. A
+    // picture drawn on this device (graphics/shared_device.h) is not copied: everything reads
+    // the rasteriser's texture itself, and the queue waits for it on the card.
     bool RenderSharedPicture(const emulation::psx::SharedPicture& picture) override;
     uint64_t SharedPictureAdapter() const override { return adapter_luid_; }
+    void* SharedPictureDevice() const override { return device_.Get(); }
+    void Idle() override { FlushGPU(); }
 
     void SetVsync(bool enabled) override;
     void SetPixelShader(const std::string& name) override;
@@ -131,6 +135,8 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
                      int height, const LetterboxRect& rect);
     // The rasteriser's texture for `picture`, opened on this device, or null.
     ID3D12Resource* OpenSharedPicture(const emulation::psx::SharedPicture& picture);
+    // RenderSharedPicture's end, once frame_texture_ holds the picture.
+    bool ShowPicture(const emulation::psx::SharedPicture& picture);
     // Hands back to their sources the pictures whose frames the card has finished.
     void ReleasePictures(UINT64 completed);
     bool CreatePipelineState(const void* bytecode, size_t size,
@@ -254,6 +260,20 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     // The last shared picture drawn, until a frame of pixels hands it back.
     std::shared_ptr<emulation::psx::SharedPictureSource> trail_source_;
     uint64_t trail_serial_ = 0;
+
+    // What this frame shows, which everything after reads: fb_texture_, holding an uploaded
+    // frame or a copied picture - or a picture drawn on this device, read where it is, in the
+    // state its rasteriser left it in. `frame_table_` is the t0/t1 pair of SRVs of it in
+    // srv_heap_: the first pair for fb_texture_, then one pair per frame in flight for a
+    // picture, since the one a frame on the card reads must not change under it.
+    ComPtr<ID3D12Resource> frame_texture_;
+    D3D12_RESOURCE_STATES frame_state_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    D3D12_GPU_DESCRIPTOR_HANDLE frame_table_ = {};
+    void ShowFbTexture();   // frame_texture_ and frame_table_ back to fb_texture_'s
+    // The rasteriser's fence and the value this frame's list waits for on the card before it
+    // reads a picture drawn on this device; null when there is nothing to wait for.
+    ID3D12Fence* picture_fence_ = nullptr;
+    uint64_t picture_fence_value_ = 0;
 
     // ---- NVIDIA DLSS through Streamline (Docs/DLSS-Plan.md, phase 4) ------------------------
     //

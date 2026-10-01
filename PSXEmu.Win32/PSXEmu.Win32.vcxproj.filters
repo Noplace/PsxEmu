@@ -188,6 +188,9 @@
     <ClInclude Include="graphics\adapters.h">
       <Filter>graphics</Filter>
     </ClInclude>
+    <ClInclude Include="graphics\shared_device.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
     <ClInclude Include="graphics\hw_raster\d3d11_raster.h">
       <Filter>graphics</Filter>
     </ClInclude>

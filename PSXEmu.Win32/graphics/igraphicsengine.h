@@ -88,6 +88,13 @@ class IGraphicsEngine {
     // The graphics adapter, by LUID, whose shared pictures this engine can draw; 0 if it takes
     // none - and then the hardware rasteriser reads its pictures back for it.
     virtual uint64_t SharedPictureAdapter() const { return 0; }
+    // The device whose own pictures this engine takes as they are, waiting for them on the card
+    // (SharedPictureSource::device): Direct3D 12's, for a rasteriser drawing on it. Null for the
+    // rest, which take pictures only by their handles.
+    virtual void* SharedPictureDevice() const { return nullptr; }
+    // Waits until the card has finished everything this engine has sent it - so a picture can
+    // be read back while nothing of the engine's reads it (a screenshot).
+    virtual void Idle() {}
 
     // NVIDIA DLSS (Docs/DLSS-Plan.md): made from the shared pictures and the plane beside them.
     // Given before Initialize - an engine may need to start something for it first - and again

@@ -451,6 +451,7 @@ What it does not measure:
 | `--save-state <file>` | Write a save state after the run finishes |
 | `--hw-raster` | Draw with the Direct3D 11 hardware rasteriser rather than the software one (Docs/Hardware-Renderer-Plan.md). Everything the machine does is unchanged; the GPU's pixel, clip and texel counters read zero, since that rasteriser does not keep them, and the report says so. `--watch-vram` is refused with it: which command wrote each pixel is the software rasteriser's own accounting |
 | `--d3d12` | Draw with the Direct3D 12 hardware rasteriser instead - `--hw-raster` with the other API, and implying it; every option below that takes `--hw-raster` takes this too. The twelve-disc table at 4x with PGXP gives the Direct3D 11 one's reports and pictures (Docs/Hardware-Renderer-Plan.md) |
+| `--one-device` | With `--shared-picture`: the Direct3D 12 rasteriser on a device made here, as it draws on the Direct3D 12 renderer's own, handing its pictures over as they are (bug 137); implies `--d3d12`. The report says "on one device" |
 | `--warp` | With `--hw-raster`: on WARP, Windows' own software Direct3D - no graphics card needed, and the same picture every run, inline or threaded |
 | `--scale <n>` | With `--hw-raster`: at n times the console's resolution, 1-8. `--ppm` writes the picture at that size; the checksums and everything else measured stay the native picture's |
 | `--no-true-color` | With `--scale`: the console's colours exactly, dithered - then the checksums at any scale are the software rasteriser's |
@@ -687,7 +688,10 @@ console pixel's own sub-pixel, so every scene must still match to the pixel -
 and does, at 1x-6x and 8x (bug 124). `--planes` keeps the plane beside VRAM
 through every scene, which must change no pixel - and does not, at 1x, 2x and 4x.
 The Direct3D 12 rasteriser passes all 73 the same, at 1x, 2x, 4x with `--planes`,
-8x, and 3x with `--planes` and `--seed 7`.
+8x, and 3x with `--planes` and `--seed 7` - and three more of its own, 76: given a
+device, as the Direct3D 12 renderer gives it its own (bug 137), it hands over a texture
+on that device with the fence to wait on, the read-back picture to the pixel, and one
+that outlives the rasteriser.
 
 No primitive samples a texture from the pixels it is drawing itself: the
 software rasteriser sees its own writes as it goes and the card sees VRAM as it

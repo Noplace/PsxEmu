@@ -47,6 +47,9 @@
 //     --hw-raster        draw with the Direct3D 11 hardware rasteriser rather than the software
 //                        one (Docs/Hardware-Renderer-Plan.md)
 //     --d3d12            ...the Direct3D 12 one instead; on its own it means --hw-raster too
+//     --one-device       ...with --shared-picture, drawing on a Direct3D 12 device made here, as
+//                        it draws on the Direct3D 12 renderer's own (graphics/shared_device.h),
+//                        and handing its pictures over as they are; implies --d3d12
 //     --warp             ...on WARP, Windows' software Direct3D: no graphics card needed, and
 //                        the same pictures every run
 //     --scale <n>        ...at n times the console's resolution (1-8); --ppm writes that
@@ -95,6 +98,9 @@
 #ifdef PSXEMU_HW_RASTER
 #include "graphics/adapters.h"
 #include "graphics/hw_raster/hardware_raster.h"
+#include <d3d12.h>
+#include <dxgi1_4.h>
+#include <wrl/client.h>
 #endif
 
 #include <cstdio>
@@ -276,6 +282,7 @@ struct Options {
   bool hw_raster;
   bool warp;
   bool d3d12;   // --d3d12: the Direct3D 12 rasteriser rather than 11 (implies --hw-raster)
+  bool one_device;   // --one-device: on a device of this program's, as on the renderer's
   // --scale n: its internal resolution; --no-true-color: at it, the console's colours exactly,
   // dithering and all - which keeps even the upscaled run's checksums the software ones.
   int scale;
@@ -644,6 +651,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->hw_raster = false;
   options->warp = false;
   options->d3d12 = false;
+  options->one_device = false;
   options->scale = 1;
   options->shown_only = false;
   options->shared_picture = false;
@@ -739,6 +747,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
     } else if (strcmp(arg, "--d3d12") == 0) {
       options->hw_raster = true;
       options->d3d12 = true;
+    } else if (strcmp(arg, "--one-device") == 0) {
+      options->hw_raster = true;
+      options->d3d12 = true;
+      options->one_device = true;
     } else if (strcmp(arg, "--warp") == 0) {
       options->warp = true;
     } else if (strcmp(arg, "--scale") == 0 && i + 1 < argc) {
@@ -1174,14 +1186,35 @@ int main(int argc, char** argv) {
     }
     const psxemu::HardwareRaster::Api api =
         options.d3d12 ? psxemu::HardwareRaster::Api::kD3D12 : psxemu::HardwareRaster::Api::kD3D11;
-    system->set_hardware_raster([warp, shared, adapter, api](uint16_t* vram,
-                                                             const emulation::psx::RasterOptions& raster,
-                                                             std::string* error)
+    // --one-device: a device of this program's, on the card asked for or WARP, standing in for
+    // the Direct3D 12 renderer's.
+    Microsoft::WRL::ComPtr<ID3D12Device> device;
+    if (options.one_device) {
+      if (!shared) {
+        fprintf(stderr, "--one-device: only with --shared-picture\n");
+        return 2;
+      }
+      Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+      Microsoft::WRL::ComPtr<IDXGIAdapter1> card;
+      if (SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+        if (warp)
+          factory->EnumWarpAdapter(IID_PPV_ARGS(&card));
+        else if (adapter != 0)
+          card = psxemu::OpenAdapter(adapter);
+      }
+      if (FAILED(D3D12CreateDevice(card.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
+        fprintf(stderr, "--one-device: no Direct3D 12 device could be made\n");
+        return 2;
+      }
+    }
+    system->set_hardware_raster([warp, shared, adapter, api, device](
+                                    uint16_t* vram, const emulation::psx::RasterOptions& raster,
+                                    std::string* error)
                                     -> std::unique_ptr<emulation::psx::RasterBackend> {
       emulation::psx::RasterOptions shown = raster;
       shown.shared_picture = shared;
       shown.adapter = adapter;
-      return psxemu::HardwareRaster::Create(api, vram, shown, warp, error);
+      return psxemu::HardwareRaster::Create(api, vram, shown, warp, error, device.Get());
     });
     system->config().gpu_rasteriser = "hardware";
     system->config().resolution_scale = options.scale;
@@ -1206,8 +1239,9 @@ int main(int argc, char** argv) {
       fprintf(stderr, "--hw-raster: %s\n", system->gpu().raster_error().c_str());
       return 1;
     }
-    printf("gpu            hardware rasteriser (Direct3D %s, %s), %dx%s\n",
-           options.d3d12 ? "12" : "11", system->gpu().raster_device().c_str(), options.scale,
+    printf("gpu            hardware rasteriser (Direct3D %s%s, %s), %dx%s\n",
+           options.d3d12 ? "12" : "11", options.one_device ? " on one device" : "",
+           system->gpu().raster_device().c_str(), options.scale,
            options.scale > 1 && options.true_color ? ", true colour" : "");
     if (options.planes || options.view != emulation::psx::PlaneView::kPicture) {
       system->gte().set_motion_key(options.motion_key);

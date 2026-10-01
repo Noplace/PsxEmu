@@ -530,6 +530,10 @@ namespace psxemu {
         // (psx/shared_picture.h). Written here, then the machine is told to make it again.
         std::atomic<uint64_t> raster_adapter_{ 0 };
         std::atomic<bool> raster_shared_{ false };
+        // ...and written back by it: the count of renderer devices published when it made the
+        // rasteriser there is now (graphics/shared_device.h). Another count since means the
+        // Direct3D 12 rasteriser is on a device the renderer no longer has.
+        std::atomic<uint64_t> raster_device_generation_{ 0 };
         double present_ms_ = 0.0;      // mean, from the video thread's own timing
         double presents_per_second_ = 0.0;
         // DLSS's card time per picture, and the frames on the screen per picture Frame

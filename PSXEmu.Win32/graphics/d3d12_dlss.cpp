@@ -757,6 +757,9 @@ bool D3D12GraphicsEngine::EnsureDlssTargets(int in_width, int in_height, int out
 
 // As OpenSharedPicture, by the plane's own ids.
 ID3D12Resource* D3D12GraphicsEngine::OpenPlanes(const emulation::psx::SharedPicture& picture) {
+    // Drawn on this device: the resource itself (RenderSharedPicture has checked whose).
+    if (picture.source->device() != nullptr)
+        return static_cast<ID3D12Resource*>(picture.planes);
     for (const OpenedPicture& opened : opened_planes_)
         if (opened.id == picture.planes_id)
             return opened.resource.Get();
@@ -833,12 +836,16 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
         command_list_->EndQuery(dlss_queries_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                                 2 * frame_index_);
 
-    // The plane into DLSS's inputs. The plane lives in the common state between the two
-    // devices, and goes back to it.
+    // The plane into DLSS's inputs. From another device it lives in the common state between
+    // the two, and goes back to it; drawn on this one it is already readable by any shader.
+    const bool planes_here = picture.source->device() != nullptr;
     {
-        const CD3DX12_RESOURCE_BARRIER to_read = CD3DX12_RESOURCE_BARRIER::Transition(
-            planes, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-        command_list_->ResourceBarrier(1, &to_read);
+        if (!planes_here) {
+            const CD3DX12_RESOURCE_BARRIER to_read = CD3DX12_RESOURCE_BARRIER::Transition(
+                planes, D3D12_RESOURCE_STATE_COMMON,
+                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+            command_list_->ResourceBarrier(1, &to_read);
+        }
         command_list_->SetComputeRootSignature(dlss_root_.Get());
         command_list_->SetPipelineState(dlss_pipeline_.Get());
         ID3D12DescriptorHeap* heaps[] = { dlss_heap_.Get() };
@@ -848,10 +855,13 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
         command_list_->SetComputeRoot32BitConstants(1, 2, size, 0);
         command_list_->Dispatch((static_cast<UINT>(width) + 7) / 8,
                                 (static_cast<UINT>(height) + 7) / 8, 1);
+        if (!planes_here) {
+            const CD3DX12_RESOURCE_BARRIER back = CD3DX12_RESOURCE_BARRIER::Transition(
+                planes, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+                D3D12_RESOURCE_STATE_COMMON);
+            command_list_->ResourceBarrier(1, &back);
+        }
         const CD3DX12_RESOURCE_BARRIER done[] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(planes,
-                                                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                                                 D3D12_RESOURCE_STATE_COMMON),
             CD3DX12_RESOURCE_BARRIER::Transition(dlss_motion_.Get(),
                                                  D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                                                  kDlssInputState),
@@ -939,8 +949,8 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
 
     if (ok) {
         // Each in the state it is in on this command list; DLSS moves them as it needs, and back.
-        sl::Resource colour(sl::ResourceType::eTex2d, fb_texture_.Get(),
-                            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        // The picture is wherever this frame has it (frame_texture_).
+        sl::Resource colour(sl::ResourceType::eTex2d, frame_texture_.Get(), frame_state_);
         sl::Resource output(sl::ResourceType::eTex2d, dlss_output_.Get(),
                             D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         sl::Resource motion(sl::ResourceType::eTex2d, dlss_motion_.Get(), kDlssInputState);

@@ -7,7 +7,9 @@ interpreter or the recompiler; it hands its picture to every renderer on the gra
 nothing read back. At native size it is identical to the software rasteriser, and at every scale,
 PGXP on or off, what the machine sees still is. Since 2026-10-01 there is a Direct3D 12 one
 beside it, chosen in the same place, drawing the same pictures
-([below](#after-phase-6-a-direct3d-12-rasteriser-beside-the-direct3d-11-one)).**
+([below](#after-phase-6-a-direct3d-12-rasteriser-beside-the-direct3d-11-one)) - and with the
+Direct3D 12 renderer, on the renderer's own device
+([below](#one-device-for-the-direct3d-12-renderer-and-rasteriser)).**
 
 The PlayStation draws at 256-640 pixels across, with integer vertex coordinates
 and textures mapped without perspective. On a modern display that shows as three
@@ -918,6 +920,55 @@ Fantasy VIII, and behind on Ace Combat 3 (18%) and Tekken 3 (6%). As first built
 at 8x, because the shared pictures were compressed and the card unpacked each one at hand-off;
 they are made for sharing now (`ALLOW_SIMULTANEOUS_ACCESS`). Neither is the default yet: Ace Combat
 3 at 8x is the open question.
+
+### One device for the Direct3D 12 renderer and rasteriser
+
+With the renderer **and** the rasteriser on Direct3D 12 and on one card, the rasteriser draws on
+the renderer's own device. Nothing to choose: it happens whenever that pair is running, and every
+other pair hands pictures over by handle as before.
+
+- **`graphics/shared_device.h`**: `SharedD3D12Device`, where `D3D12GraphicsEngine` publishes its
+  device while it runs - the native one, never Streamline's proxy, so nothing the rasteriser makes
+  passes through NVIDIA's code - with a count that moves at every publish and withdrawal. The
+  App's factory gives it to a Direct3D 12 rasteriser on that card (`HardwareRaster::Create`'s
+  `device`), notes the count, and `UpdateRasteriserCard` makes the rasteriser again whenever it
+  moves: another renderer, another card, the renderer made again for DLSS. The rasteriser keeps a
+  reference, so a device the renderer has let go of lives until the rasteriser goes.
+- **The rasteriser keeps its own queue, fence and command lists** on that device; its pictures are
+  ordinary textures - compressed as the card likes, opened by no handle, never put in the common
+  state - left readable by any shader (`ALL_SHADER_RESOURCE`). `SharedPictureSource::device()` and
+  `device_fence()` say whose they are, and a picture's `texture` and `planes` are then the resources
+  themselves; the source holds them.
+- **The renderer waits on the card**: its queue waits for the rasteriser's fence to reach the
+  picture's serial before the frame that reads it, so the video thread never waits for the
+  rasteriser (`D3DPresenter` skips `WaitReady` for such pictures).
+- **Nothing is copied**: the picture is drawn, filtered, glassed under the overlay and given to DLSS
+  where it is (`frame_texture_`), with a pair of descriptors per frame in flight, and a filter
+  chain's descriptors written afresh each frame. The plane beside it goes to DLSS as it is.
+- **A picture from a device the renderer is not on** - in the frame or two between a renderer
+  being made again and the rasteriser following - is not shown, rather than shown wrong.
+- **Screenshots** of such a picture read it through its own device, after the renderer has
+  finished its frames (`IGraphicsEngine::Idle`), so nothing reads it while its state changes.
+- **`boot_runner --one-device`** (with `--shared-picture`) draws on a device it makes itself, as on
+  the renderer's; `hw_raster_test --d3d12` checks a rasteriser given a WARP device (bug 137).
+
+**Measured** on the Radeon 780M, uncapped, the front end's path, two rounds interleaved (three for
+Ace Combat 3), with another copy of the emulator running throughout, so slower overall than
+bug 136's:
+
+| Disc | Scale | Direct3D 11 | Direct3D 12, two devices | Direct3D 12, one device |
+|---|---|---|---|---|
+| Ridge Racer | 8x | 166 | 164 | 174 |
+| Final Fantasy VIII | 8x | 80 | 97 | 115 |
+| Tekken 3 | 8x | 149 | 147 | 169 |
+| Ace Combat 3 | 8x | 103 | 81 | 95 |
+
+and at 4x the three within a few per cent. In the emulator, the video thread's present went from
+2.4-6.4 ms a frame to 0.25-0.8 on the Radeon, and from 1.2-1.5 to 0.9 on the RTX 4060 with DLSS
+and Frame Generation (DLSS 1.44-1.49 ms, 2.0x, as before); the 4060's GPU memory, 672 MB → 588.
+Pictures the same to the pixel as two devices' on Ridge Racer, Final Fantasy VIII and Ace Combat
+3, through all four renderers - the three others by handle, after the rasteriser follows them - and
+screenshots right. Ace Combat 3 at 8x is still behind Direct3D 11, and not for the device.
 
 ---
 

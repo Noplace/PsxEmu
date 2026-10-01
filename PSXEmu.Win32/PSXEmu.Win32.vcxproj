@@ -148,6 +148,7 @@ exit /b 0</Command>
     <ClInclude Include="app\const.h" />
     <ClInclude Include="graphics\d3d11_presenter.h" />
     <ClInclude Include="graphics\adapters.h" />
+    <ClInclude Include="graphics\shared_device.h" />
     <ClInclude Include="graphics\hw_raster\d3d11_raster.h" />
     <ClInclude Include="graphics\hw_raster\d3d12_raster.h" />
     <ClInclude Include="graphics\hw_raster\hardware_raster.h" />

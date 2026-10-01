@@ -100,7 +100,9 @@ package is Streamline 2.14.1 with NGX 310.9.1.
   card: `LoadLibrary` of `sl.interposer.dll`, its signature checked (`sl::security::
   verifyEmbeddedSignature`, full path), `slInit` with `eUseManualHooking`, and only this renderer's
   device and swap chain upgraded (`slUpgradeInterface`). Nothing else in the process - the
-  rasteriser's own device, Direct3D 11 or 12, the other renderers - passes through Streamline. Without the DLLs,
+  rasteriser's own device, Direct3D 11 or 12, the other renderers - passes through Streamline. The
+  Direct3D 12 rasteriser, when it draws on this renderer's device (bug 137), is given the native
+  device, never the proxy, and makes its queue and lists on that. Without the DLLs,
   on the Radeon, or with anything failing, the renderer is exactly today's, and the menu says why.
 - **`slIsFeatureSupported` by the card's LUID** decides what the menu offers; the LUIDs are
   `graphics/adapters.h`'s.

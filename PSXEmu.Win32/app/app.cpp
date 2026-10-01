@@ -27,6 +27,7 @@
 #include "app/win32_paths.h"
 #include "graphics/dlss/reflex_markers.h"
 #include "graphics/hw_raster/hardware_raster.h"
+#include "graphics/shared_device.h"
 #include "ui/dpi.h"
 
 #include <shellapi.h>   // ShellExecuteA, to open the BIOS folder from its menu
@@ -372,9 +373,11 @@ namespace psxemu {
         chosen_adapter_ = FindGraphicsAdapter(adapters_, config_.graphics_adapter);
         raster_adapter_.store(chosen_adapter_);
         // The hardware rasteriser, for when Settings > Video's rasteriser asks for it - drawn with
-        // Direct3D 11 or 12, as it asks. Its own device, whichever renderer shows the picture: on
-        // the card chosen, or with none chosen the renderer's, handing its pictures over there
-        // when that is the renderer's card too (UpdateRasteriserCard).
+        // Direct3D 11 or 12, as it asks: on the card chosen, or with none chosen the renderer's,
+        // handing its pictures over there when that is the renderer's card too
+        // (UpdateRasteriserCard). A device of its own - except Direct3D 12's when the renderer
+        // is Direct3D 12 on that card: then one device does for both (graphics/shared_device.h),
+        // and it is made again whenever the renderer's device changes.
         system_->set_hardware_raster([this](uint16_t* vram,
                                              const emulation::psx::RasterOptions& options,
                                              std::string* error)
@@ -382,9 +385,16 @@ namespace psxemu {
             emulation::psx::RasterOptions shown = options;
             shown.adapter = raster_adapter_.load(std::memory_order_acquire);
             shown.shared_picture = raster_shared_.load(std::memory_order_acquire);
+            uint64_t generation = 0;
+            Microsoft::WRL::ComPtr<ID3D12Device> device;
+            if (shown.d3d12 && shown.shared_picture)
+                device = SharedD3D12Device::Get().On(shown.adapter, &generation);
+            else
+                generation = SharedD3D12Device::Get().generation();
+            raster_device_generation_.store(generation, std::memory_order_release);
             return HardwareRaster::Create(shown.d3d12 ? HardwareRaster::Api::kD3D12
                                                       : HardwareRaster::Api::kD3D11,
-                                          vram, shown, false, error);
+                                          vram, shown, false, error, device.Get());
         });
         if (system_->Initialize(bios_path_.c_str()) != 0) {
             ShowError(window_,
@@ -1636,10 +1646,19 @@ namespace psxemu {
     // and hands its pictures over on the card when that is the renderer's card as well, and
     // otherwise copies them across through memory. If what that means changed, it is made again:
     // between frames, keeping VRAM, as any change of rasteriser is.
+    //
+    // The Direct3D 12 rasteriser on the Direct3D 12 renderer's card draws on the renderer's own
+    // device, so it is made again whenever that device changes - another renderer, another card,
+    // the renderer made again for DLSS - as the count of devices published says.
     void App::UpdateRasteriserCard() {
         const uint64_t adapter = chosen_adapter_ != 0 ? chosen_adapter_ : presenter_adapter_;
         const bool shared = adapter != 0 && adapter == presenter_adapter_;
-        if (adapter == raster_adapter_.load() && shared == raster_shared_.load())
+        const bool device_changed =
+            config_.gpu_rasteriser == "hardware_d3d12" &&
+            SharedD3D12Device::Get().generation() !=
+                raster_device_generation_.load(std::memory_order_acquire);
+        if (adapter == raster_adapter_.load() && shared == raster_shared_.load() &&
+            !device_changed)
             return;
         raster_adapter_.store(adapter, std::memory_order_release);
         raster_shared_.store(shared, std::memory_order_release);
@@ -3224,11 +3243,15 @@ namespace psxemu {
             const emulation::host::VideoFrame* frame = video.frames().current();
             std::vector<uint32_t> pixels;
             if (frame != nullptr && !frame->is_vram) {
-                // The hardware rasteriser's picture may still be on the card.
-                if (frame->shared)
+                // The hardware rasteriser's picture may still be on the card - on the renderer's
+                // own device, read once the renderer has finished with it.
+                if (frame->shared) {
+                    if (frame->shared.source->device() != nullptr && video.presenter() != nullptr)
+                        static_cast<D3DPresenter*>(video.presenter())->Idle();
                     HardwareRaster::ReadSharedPicture(frame->shared, &pixels);
-                else
+                } else {
                     pixels = frame->pixels;
+                }
             }
             if (pixels.empty()) {
                 PostToUi([this, vram = frame != nullptr && frame->is_vram] {
@@ -3404,10 +3427,14 @@ namespace psxemu {
             const emulation::host::VideoFrame* frame = video.frames().current();
             std::vector<uint32_t> pixels;
             if (frame != nullptr && !frame->is_vram) {
-                if (frame->shared)
+                if (frame->shared) {
+                    // As for a screenshot (TakeScreenshot).
+                    if (frame->shared.source->device() != nullptr && video.presenter() != nullptr)
+                        static_cast<D3DPresenter*>(video.presenter())->Idle();
                     HardwareRaster::ReadSharedPicture(frame->shared, &pixels);
-                else
+                } else {
                     pixels = frame->pixels;
+                }
             }
             if (pixels.empty()) {
                 // An old picture would be a wrong one.

@@ -79,24 +79,36 @@ namespace psxemu {
     // CardPictures, with a Direct3D 12 fence: each texture's NT handle and bookkeeping, and the
     // fence the rasteriser's queue signals once it has drawn a picture. Frames carry a reference
     // to this, so it outlives the rasteriser while any are in flight - and with it the handles,
-    // which keep the textures themselves alive after the rasteriser has let go of them.
+    // which keep the textures themselves alive after the rasteriser has let go of them. On the
+    // renderer's own device there are no handles: the textures themselves are kept here instead.
     class D3D12Pictures : public emulation::psx::SharedPictureSource {
      public:
         static constexpr int kSlots = HardwareRaster::kSharedPictures;
 
         struct Slot {
             HANDLE handle = nullptr;
+            ComPtr<ID3D12Resource> resource;   // on the renderer's device, in place of `handle`
             UINT width = 0, height = 0;
             uint64_t bytes = 0;   // the texture's allocation, for OpenGL
             uint64_t id = 0;
             HANDLE planes = nullptr;
+            ComPtr<ID3D12Resource> planes_resource;
             uint64_t planes_id = 0;
             std::atomic<uint64_t> serial{ 0 };
             std::atomic<uint64_t> dropped{ 0 };
+
+            bool empty() const { return handle == nullptr && resource == nullptr; }
+            // What a picture carries: the handle, or the resource.
+            void* texture() const { return resource ? static_cast<void*>(resource.Get()) : handle; }
+            void* planes_texture() const {
+                return planes_resource ? static_cast<void*>(planes_resource.Get()) : planes;
+            }
         };
 
-        D3D12Pictures(ComPtr<ID3D12Fence> fence, uint64_t adapter)
-            : fence_(std::move(fence)), adapter_(adapter),
+        // `device`: the renderer's, when the textures are made on it and handed over as they
+        // are; null when they go by handle.
+        D3D12Pictures(ComPtr<ID3D12Fence> fence, uint64_t adapter, ID3D12Device* device)
+            : fence_(std::move(fence)), adapter_(adapter), device_(device),
               event_(CreateEventW(nullptr, FALSE, FALSE, nullptr)) {}
 
         ~D3D12Pictures() override {
@@ -134,6 +146,8 @@ namespace psxemu {
 
         uint64_t adapter() const override { return adapter_; }
         bool d3d12() const override { return true; }
+        void* device() const override { return device_.Get(); }
+        void* device_fence() const override { return fence_.Get(); }
 
         bool Free(int index) const {
             const uint64_t serial = slots_[index].serial.load(std::memory_order_acquire);
@@ -147,29 +161,34 @@ namespace psxemu {
                     continue;
                 if (slots_[i].width == width && slots_[i].height == height)
                     return i;
-                if (any < 0 || slots_[i].handle == nullptr)
+                if (any < 0 || slots_[i].empty())
                     any = i;
             }
             return any;
         }
-        void Replace(int index, HANDLE handle, UINT width, UINT height, uint64_t bytes) {
+        // A slot's texture made again: by its handle, or - on the renderer's device - itself.
+        void Replace(int index, HANDLE handle, ID3D12Resource* resource, UINT width, UINT height,
+                     uint64_t bytes) {
             Slot& slot = slots_[index];
             if (slot.handle != nullptr)
                 CloseHandle(slot.handle);
             slot.handle = handle;
+            slot.resource = resource;
             slot.width = width;
             slot.height = height;
             slot.bytes = bytes;
             slot.id = next_texture_id.fetch_add(1, std::memory_order_relaxed);
-            ReplacePlanes(index, nullptr);
+            ReplacePlanes(index, nullptr, nullptr);
         }
-        void ReplacePlanes(int index, HANDLE handle) {
+        void ReplacePlanes(int index, HANDLE handle, ID3D12Resource* resource) {
             Slot& slot = slots_[index];
             if (slot.planes != nullptr)
                 CloseHandle(slot.planes);
             slot.planes = handle;
-            slot.planes_id = handle != nullptr ? next_texture_id.fetch_add(1, std::memory_order_relaxed)
-                                               : 0;
+            slot.planes_resource = resource;
+            slot.planes_id = handle != nullptr || resource != nullptr
+                                 ? next_texture_id.fetch_add(1, std::memory_order_relaxed)
+                                 : 0;
         }
         void Drawn(int index, uint64_t serial) {
             slots_[index].dropped.store(0, std::memory_order_relaxed);
@@ -182,6 +201,7 @@ namespace psxemu {
         Slot slots_[kSlots];
         ComPtr<ID3D12Fence> fence_;
         const uint64_t adapter_;
+        const ComPtr<ID3D12Device> device_;
         HANDLE event_;
         std::mutex wait_mutex_;
     };
@@ -205,17 +225,28 @@ namespace psxemu {
         if (!picture || picture.width <= 0 || picture.height <= 0 ||
             !picture.source->WaitReady(picture.serial, 1000))
             return false;
-        ComPtr<IDXGIFactory4> factory;
-        ComPtr<IDXGIAdapter1> adapter;
         ComPtr<ID3D12Device> device;
         ComPtr<ID3D12Resource> shared, readback;
-        if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) ||
-            FAILED(factory->EnumAdapterByLuid(LuidFrom(picture.source->adapter()),
-                                              IID_PPV_ARGS(&adapter))) ||
-            FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))) ||
-            FAILED(device->OpenSharedHandle(static_cast<HANDLE>(picture.texture),
-                                            IID_PPV_ARGS(&shared))))
-            return false;
+        // On the renderer's own device the texture is there to be read, in the state it was
+        // handed over in. Nothing else may be reading it meanwhile: the front end has the
+        // renderer finish its frames first (IGraphicsEngine::Idle).
+        D3D12_RESOURCE_STATES before = D3D12_RESOURCE_STATE_COMMON;
+        if (picture.source->device() != nullptr) {
+            device = static_cast<ID3D12Device*>(picture.source->device());
+            shared = static_cast<ID3D12Resource*>(picture.texture);
+            before = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+        } else {
+            ComPtr<IDXGIFactory4> factory;
+            ComPtr<IDXGIAdapter1> adapter;
+            if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) ||
+                FAILED(factory->EnumAdapterByLuid(LuidFrom(picture.source->adapter()),
+                                                  IID_PPV_ARGS(&adapter))) ||
+                FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0,
+                                         IID_PPV_ARGS(&device))) ||
+                FAILED(device->OpenSharedHandle(static_cast<HANDLE>(picture.texture),
+                                                IID_PPV_ARGS(&shared))))
+                return false;
+        }
         const D3D12_RESOURCE_DESC texture = shared->GetDesc();
         if (texture.Width != static_cast<UINT64>(picture.width) ||
             texture.Height != static_cast<UINT>(picture.height))
@@ -253,7 +284,7 @@ namespace psxemu {
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Transition.pResource = shared.Get();
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+        barrier.Transition.StateBefore = before;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
         list->ResourceBarrier(1, &barrier);
         D3D12_TEXTURE_COPY_LOCATION to = {};
@@ -297,10 +328,11 @@ namespace psxemu {
 
     std::unique_ptr<D3D12Raster> D3D12Raster::Create(uint16_t* vram,
                                                      const emulation::psx::RasterOptions& options,
-                                                     bool warp, std::string* error) {
+                                                     bool warp, std::string* error,
+                                                     ID3D12Device* device) {
         emulation::psx::RasterOptions checked = options;
         checked.scale = std::min(std::max(options.scale, 1), 8);
-        std::unique_ptr<D3D12Raster> raster(new D3D12Raster(vram, checked));
+        std::unique_ptr<D3D12Raster> raster(new D3D12Raster(vram, checked, device));
         if (!raster->Initialize(warp, error))
             return nullptr;
         return raster;
@@ -314,28 +346,31 @@ namespace psxemu {
             *error = "DXGI could not be started";
             return false;
         }
-        ComPtr<IDXGIAdapter1> chosen;
-        if (warp) {
-            if (FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&chosen)))) {
-                *error = "Direct3D 12's WARP device could not be found";
+        // Given the renderer's device, that is the card.
+        if (!one_device_) {
+            ComPtr<IDXGIAdapter1> chosen;
+            if (warp) {
+                if (FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&chosen)))) {
+                    *error = "Direct3D 12's WARP device could not be found";
+                    return false;
+                }
+            } else if (adapter_ != 0 && FAILED(factory->EnumAdapterByLuid(
+                                            LuidFrom(adapter_), IID_PPV_ARGS(&chosen)))) {
+                chosen.Reset();
+            }
+            HRESULT result = D3D12CreateDevice(chosen.Get(), D3D_FEATURE_LEVEL_11_0,
+                                               IID_PPV_ARGS(&device_));
+            if (FAILED(result) && chosen && !warp) {
+                // The card asked for cannot make a Direct3D 12 device: Windows' default one,
+                // whose pictures StartSharing then sees cannot be shared, and reads back.
+                chosen.Reset();
+                result = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
+            }
+            if (FAILED(result)) {
+                *error = warp ? "Direct3D 12's WARP device could not be made"
+                              : "no graphics card here offers Direct3D 12 at feature level 11.0";
                 return false;
             }
-        } else if (adapter_ != 0 &&
-                   FAILED(factory->EnumAdapterByLuid(LuidFrom(adapter_), IID_PPV_ARGS(&chosen)))) {
-            chosen.Reset();
-        }
-        HRESULT result = D3D12CreateDevice(chosen.Get(), D3D_FEATURE_LEVEL_11_0,
-                                           IID_PPV_ARGS(&device_));
-        if (FAILED(result) && chosen && !warp) {
-            // The card asked for cannot make a Direct3D 12 device: Windows' default one, whose
-            // pictures StartSharing then sees cannot be shared, and reads back.
-            chosen.Reset();
-            result = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device_));
-        }
-        if (FAILED(result)) {
-            *error = warp ? "Direct3D 12's WARP device could not be made"
-                          : "no graphics card here offers Direct3D 12 at feature level 11.0";
-            return false;
         }
         adapter_luid_ = LuidBits(device_->GetAdapterLuid());
         {
@@ -582,7 +617,8 @@ namespace psxemu {
         if (adapter_luid_ == 0 ||
             FAILED(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence))))
             return;
-        pictures_ = std::make_shared<D3D12Pictures>(std::move(fence), adapter_luid_);
+        pictures_ = std::make_shared<D3D12Pictures>(std::move(fence), adapter_luid_,
+                                                    one_device_ ? device_.Get() : nullptr);
     }
 
     // ------------------------------------------------------------------------------------------
@@ -1767,10 +1803,29 @@ namespace psxemu {
 
     // The picture left on the card for the presenter's device (psx/shared_picture.h). Nothing
     // here waits: the picture's commands are sent and the fence signalled behind them, and the
-    // presenter waits for the fence - on its own thread - before it draws from the texture.
+    // presenter waits for the fence - on its own thread, or on the renderer's own device on the
+    // card - before it draws from the texture.
+    //
+    // On the renderer's device the textures are ordinary ones: compressed as the card likes, and
+    // left where any shader may read them (kHandedOver) rather than in the common state, which
+    // would have the card unpack them at every hand-off. Otherwise each is made to be opened by
+    // another device, and handed over in the common state, the one that device may open it in.
     bool D3D12Raster::ShareDisplay(uint32_t x, uint32_t y, UINT width, UINT height,
                                    emulation::psx::SharedPicture* shared) {
         static_assert(kPictureSlots == D3D12Pictures::kSlots, "one texture per shared slot");
+        constexpr D3D12_RESOURCE_STATES kHandedOver = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+        const D3D12_HEAP_FLAGS heap_flags = one_device_ ? D3D12_HEAP_FLAG_NONE
+                                                        : D3D12_HEAP_FLAG_SHARED;
+        const D3D12_RESOURCE_STATES handed_over = one_device_ ? kHandedOver
+                                                              : D3D12_RESOURCE_STATE_COMMON;
+        // A new texture's handle for another device; none on the renderer's own.
+        auto share = [this](ID3D12Resource* resource, HANDLE* handle) {
+            *handle = nullptr;
+            return one_device_ || SUCCEEDED(device_->CreateSharedHandle(resource, nullptr,
+                                                                        GENERIC_ALL, nullptr,
+                                                                        handle));
+        };
+
         D3D12Pictures& pictures = *pictures_;
         const int slot = pictures.Pick(width, height);
         if (slot < 0)
@@ -1783,9 +1838,8 @@ namespace psxemu {
             picture_planes_[slot] = Texture();
             HANDLE handle = nullptr;
             if (!MakeTexture(&picture_textures_[slot], width, height, DXGI_FORMAT_B8G8R8A8_UNORM,
-                             true, D3D12_RESOURCE_STATE_COMMON, D3D12_HEAP_FLAG_SHARED) ||
-                FAILED(device_->CreateSharedHandle(picture_textures_[slot].resource.Get(), nullptr,
-                                                   GENERIC_ALL, nullptr, &handle))) {
+                             true, handed_over, heap_flags) ||
+                !share(picture_textures_[slot].resource.Get(), &handle)) {
                 // A card that will not share a texture will not share the next one either:
                 // the picture is read back from here on.
                 picture_textures_[slot] = Texture();
@@ -1796,7 +1850,9 @@ namespace psxemu {
             const D3D12_RESOURCE_DESC description = picture_textures_[slot].resource->GetDesc();
             const D3D12_RESOURCE_ALLOCATION_INFO allocation =
                 device_->GetResourceAllocationInfo(0, 1, &description);
-            pictures.Replace(slot, handle, width, height, allocation.SizeInBytes);
+            pictures.Replace(slot, handle,
+                             one_device_ ? picture_textures_[slot].resource.Get() : nullptr,
+                             width, height, allocation.SizeInBytes);
             D3D12_RENDER_TARGET_VIEW_DESC rtv = {};
             rtv.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
             rtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
@@ -1811,15 +1867,14 @@ namespace psxemu {
         // still hands the picture over, without it.
         bool with_planes = false;
         if (keep_planes_ && planes()) {
-            if (!picture_planes_[slot].resource || pictures.slot(slot).planes == nullptr) {
+            if (!picture_planes_[slot].resource || pictures.slot(slot).planes_texture() == nullptr) {
                 picture_planes_[slot] = Texture();
                 HANDLE handle = nullptr;
                 if (MakeTexture(&picture_planes_[slot], width, height,
-                                DXGI_FORMAT_R16G16B16A16_FLOAT, false, D3D12_RESOURCE_STATE_COMMON,
-                                D3D12_HEAP_FLAG_SHARED) &&
-                    SUCCEEDED(device_->CreateSharedHandle(picture_planes_[slot].resource.Get(),
-                                                          nullptr, GENERIC_ALL, nullptr, &handle)))
-                    pictures.ReplacePlanes(slot, handle);
+                                DXGI_FORMAT_R16G16B16A16_FLOAT, false, handed_over, heap_flags) &&
+                    share(picture_planes_[slot].resource.Get(), &handle))
+                    pictures.ReplacePlanes(
+                        slot, handle, one_device_ ? picture_planes_[slot].resource.Get() : nullptr);
                 else
                     picture_planes_[slot] = Texture();
             }
@@ -1835,12 +1890,11 @@ namespace psxemu {
                 source.pResource = plane_target_.resource.Get();
                 source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
                 List()->CopyTextureRegion(&destination, 0, 0, 0, &source, &box);
-                Use(picture_planes_[slot], D3D12_RESOURCE_STATE_COMMON);
+                Use(picture_planes_[slot], handed_over);
                 with_planes = true;
             }
         }
-        // Handed over in the common state, which is the one another device may open it in.
-        Use(texture, D3D12_RESOURCE_STATE_COMMON);
+        Use(texture, handed_over);
         const uint64_t serial = ++picture_serial_;
         pictures.Drawn(slot, serial);
         Submit();
@@ -1851,13 +1905,13 @@ namespace psxemu {
 
         const D3D12Pictures::Slot& chosen = pictures.slot(slot);
         shared->source = pictures_;
-        shared->texture = chosen.handle;
+        shared->texture = chosen.texture();
         shared->texture_id = chosen.id;
         shared->texture_bytes = chosen.bytes;
         shared->serial = serial;
         shared->width = static_cast<int>(width);
         shared->height = static_cast<int>(height);
-        shared->planes = with_planes ? chosen.planes : nullptr;
+        shared->planes = with_planes ? chosen.planes_texture() : nullptr;
         shared->planes_id = with_planes ? chosen.planes_id : 0;
         shared->jitter_x = jitter_phases_ > 0 ? shown_jitter_x_ : 0.0f;
         shared->jitter_y = jitter_phases_ > 0 ? shown_jitter_y_ : 0.0f;

@@ -8393,3 +8393,50 @@ the RTX 4060, on card, DLSS 1.5 ms, 2.0x.
 **Also.** `boot_runner`'s report said "Direct3D 11" whichever rasteriser drew; it names the one
 used now. The earlier disc-table runs had really used Direct3D 12 - their Ridge Racer result
 matched only a shader-model-5 build.
+
+## 137. One device for the Direct3D 12 renderer and rasteriser
+
+`graphics/shared_device.h`, `graphics/d3d12_graphics_engine.*`, `graphics/d3d12_dlss.cpp`,
+`graphics/video_presenter.*`, `graphics/igraphicsengine.h`, `graphics/hw_raster/`,
+`psx/shared_picture.h`, `app/app.*`, `tools/boot_runner.cpp`, `tools/hw_raster_test.cpp`
+
+Not a bug: a request - "let them share one device, want best performance without any
+compromise". Docs/Hardware-Renderer-Plan.md has the design and the measurements.
+
+**What it saves.** With the renderer and the rasteriser on Direct3D 12 and one card, the
+rasteriser now draws on the renderer's device, and each picture goes over as the texture it is:
+compressed, with no NT handle and no common state - bug 136's cost gone without the uncompressed
+textures that fixed it - waited for by the renderer's queue on the card instead of by the video
+thread, and read where it is instead of copied into the renderer's own texture first. One device
+also means one set of driver state: the RTX 4060's GPU memory 672 MB → 588.
+
+**Measured** (Radeon 780M, 8x, uncapped): Ridge Racer 164 → 174 fps, Final Fantasy VIII 97 → 115,
+Tekken 3 147 → 169, Ace Combat 3 81 → 95 - Direct3D 11's 166, 80, 149 and 103. The video thread's
+present 2.4-6.4 ms → 0.25-0.8 ms on the Radeon, 1.2-1.5 → 0.9 on the RTX 4060 with DLSS and
+Frame Generation, which run as before (1.44-1.49 ms, 2.0x).
+
+**What could go wrong, and why it does not.**
+
+- *The renderer made again under a rasteriser drawing on its device* - a switch of renderer or
+  card, or DLSS's remaking: the rasteriser holds the device, so nothing goes away under it; the
+  count `SharedD3D12Device` keeps moves, and the App makes the rasteriser again on the new one. A
+  picture from the old device in the meantime is not shown (`D3DPresenter`), rather than shown
+  through a device that cannot read it.
+- *A picture's texture let go of while a frame still reads it*: the source keeps every slot's
+  texture, a slot is only drawn into again once the renderer has released it after its own fence,
+  and the renderer holds the texture it is showing (`frame_texture_`).
+- *A descriptor changed under a frame still on the card*: each frame in flight has its own pair
+  for the picture, and its own set for a filter chain.
+- *A screenshot changing a texture's state while the renderer reads it*: the renderer finishes
+  its frames first (`Idle`).
+- *Streamline*: only ever given the native device for DLSS, as before; the rasteriser's queue and
+  lists are made on it, not through Streamline's proxy.
+
+**Checked.** `hw_raster_test --d3d12`: three more checks, 76 - a rasteriser given a WARP device
+hands over a texture on that device with the fence to wait on, the picture is the read-back one to
+the pixel, and it outlives the rasteriser. `boot_runner --one-device` at 4x: Ridge Racer, Final
+Fantasy VIII and Ace Combat 3 the same to the pixel as two devices'. In the emulator on the
+Radeon: the BIOS on Direct3D 12, then 11, OpenGL and Vulkan (the rasteriser following each onto a
+device of its own) and back, then the Direct3D 11 rasteriser and back - every picture right, on
+card; a screenshot right. On the RTX 4060: Ridge Racer with DLSS Quality and Frame Generation,
+right, at full speed.

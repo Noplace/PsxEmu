@@ -118,8 +118,14 @@ namespace psxemu {
             if (engine_->TakesOnlyNewPictures() && picture != 0 && picture == last_picture_ &&
                 !again)
                 return;
+            // One drawn on the renderer's own device is waited for on the card, by the renderer;
+            // one drawn on another device it is not using - the renderer just made again, and
+            // the rasteriser not yet - cannot be shown by it at all.
+            const void* device = frame.shared.source->device();
             if (engine_->SharedPictureAdapter() != frame.shared.source->adapter() ||
-                !frame.shared.source->WaitReady(frame.shared.serial, kSharedPictureWaitMs))
+                (device != nullptr && device != engine_->SharedPictureDevice()) ||
+                (device == nullptr &&
+                 !frame.shared.source->WaitReady(frame.shared.serial, kSharedPictureWaitMs)))
                 return;
             if (picture != last_picture_) {
                 last_picture_ = picture;

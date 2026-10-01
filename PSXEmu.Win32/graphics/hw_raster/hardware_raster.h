@@ -32,6 +32,8 @@
 #include <string>
 #include <vector>
 
+struct ID3D12Device;
+
 namespace psxemu {
 
     class HardwareRaster : public emulation::psx::RasterBackend {
@@ -43,13 +45,20 @@ namespace psxemu {
         // software Direct3D, which is deterministic and needs no graphics card: what the headless
         // comparisons run on. Null, with `error` saying why, if it cannot be made. Asked for
         // shared pictures and unable to make them, it reads back instead.
+        //
+        // Direct3D 12 can also be given `device`, the renderer's own (graphics/shared_device.h):
+        // it then draws on that rather than a device of its own, and hands its pictures over as
+        // they are, to that renderer only (SharedPictureSource::device). The card is the
+        // device's; `options`' adapter and `warp` say nothing then.
         static std::unique_ptr<HardwareRaster> Create(Api api, uint16_t* vram,
                                                       const emulation::psx::RasterOptions& options,
-                                                      bool warp, std::string* error);
+                                                      bool warp, std::string* error,
+                                                      ID3D12Device* device = nullptr);
 
         // A shared picture's pixels, 0xFFRRGGBB rows, read back through a device of its own on
-        // the picture's card - for a screenshot now and then, from any thread, whichever
-        // rasteriser made it. False if it cannot be opened, or is not drawn within a second.
+        // the picture's card - or, for one on the renderer's device, through that device - for
+        // a screenshot now and then, from any thread, whichever rasteriser made it. False if it
+        // cannot be opened, or is not drawn within a second.
         static bool ReadSharedPicture(const emulation::psx::SharedPicture& picture,
                                       std::vector<uint32_t>* pixels);
 

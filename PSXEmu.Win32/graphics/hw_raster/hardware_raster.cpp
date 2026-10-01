@@ -25,9 +25,9 @@ namespace psxemu {
 
     std::unique_ptr<HardwareRaster> HardwareRaster::Create(
         Api api, uint16_t* vram, const emulation::psx::RasterOptions& options, bool warp,
-        std::string* error) {
+        std::string* error, ID3D12Device* device) {
         if (api == Api::kD3D12)
-            return D3D12Raster::Create(vram, options, warp, error);
+            return D3D12Raster::Create(vram, options, warp, error, device);
         return D3D11Raster::Create(vram, options, warp, error);
     }
 

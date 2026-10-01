@@ -78,6 +78,14 @@ class SharedPictureSource {
   // way; Vulkan and OpenGL import the two by different handle types.
   virtual bool d3d12() const { return false; }
 
+  // The renderer's own Direct3D 12 device (an ID3D12Device), when the rasteriser draws on it
+  // too, or null. Then a picture's `texture` and `planes` are the resources themselves rather
+  // than handles, made for nothing but that device: only a renderer on it can show them, and
+  // it waits for one on the card - its queue waiting for `device_fence()` (an ID3D12Fence) to
+  // reach the picture's serial - rather than in WaitReady.
+  virtual void* device() const { return nullptr; }
+  virtual void* device_fence() const { return nullptr; }
+
  private:
   std::atomic<uint64_t> released_{0};
 };
@@ -86,7 +94,9 @@ class SharedPictureSource {
 struct SharedPicture {
   std::shared_ptr<SharedPictureSource> source;   // null: there is no picture on the card
   // The texture, by an NT handle any Direct3D 11 or 12 device on the adapter can open: 32-bit
-  // B8G8R8A8, exactly width x height, alpha opaque - the presenters' own 0xFFRRGGBB words.
+  // B8G8R8A8, exactly width x height, alpha opaque - the presenters' own 0xFFRRGGBB words. On
+  // the renderer's own device (SharedPictureSource::device) the ID3D12Resource itself, left
+  // readable by any shader (D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE); the source keeps it.
   void* texture = nullptr;
   // Different for every texture the source ever makes, so a presenter can keep what it opened.
   uint64_t texture_id = 0;
@@ -97,8 +107,9 @@ struct SharedPicture {
   int width = 0;
   int height = 0;
   // The plane beside the picture, when the rasteriser keeps one: the same display area of it,
-  // width x height, RGBA16F as above, by an NT handle like `texture`'s; null when it keeps none.
-  // Drawn with the picture, so the same fence says both are ready.
+  // width x height, RGBA16F as above, by an NT handle like `texture`'s - or the resource, as
+  // `texture` is - and null when it keeps none. Drawn with the picture, so the same fence says
+  // both are ready.
   void* planes = nullptr;
   uint64_t planes_id = 0;
   // Whether this is a new picture, not the last one shown again - a game at 30 frames a second

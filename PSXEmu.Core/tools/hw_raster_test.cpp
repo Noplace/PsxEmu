@@ -32,6 +32,13 @@
 #include "psx/psx.h"
 #include "graphics/hw_raster/hardware_raster.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <d3d12.h>
+#include <dxgi1_4.h>
+#include <wrl/client.h>
+
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -501,6 +508,58 @@ void SceneSharedPicture(Random& random) {
   sharing.reset();
   Check(SharedMatches(held[4], pixels),
         "a picture outlives the rasteriser that drew it");
+}
+
+// Direct3D 12 only: the rasteriser on a device it is given - the renderer's own, in the front
+// end (graphics/shared_device.h), here one of WARP's - handing its pictures over as they are,
+// with no handle, to be waited for on that device.
+void SceneOneDevice(Random& random) {
+  printf("one device\n");
+  std::vector<uint16_t> vram(1024 * 512);
+  for (uint16_t& pixel : vram)
+    pixel = static_cast<uint16_t>(random.Next());
+  Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
+  Microsoft::WRL::ComPtr<IDXGIAdapter1> warp;
+  Microsoft::WRL::ComPtr<ID3D12Device> device;
+  if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) ||
+      FAILED(factory->EnumWarpAdapter(IID_PPV_ARGS(&warp))) ||
+      FAILED(D3D12CreateDevice(warp.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
+    Check(false, "WARP makes a Direct3D 12 device to give the rasteriser");
+    return;
+  }
+  emulation::psx::RasterOptions options;
+  options.scale = 2;
+  std::string error;
+  std::unique_ptr<psxemu::HardwareRaster> reading = psxemu::HardwareRaster::Create(
+      psxemu::HardwareRaster::Api::kD3D12, vram.data(), options, true, &error);
+  options.shared_picture = true;
+  std::unique_ptr<psxemu::HardwareRaster> given = psxemu::HardwareRaster::Create(
+      psxemu::HardwareRaster::Api::kD3D12, vram.data(), options, true, &error, device.Get());
+  if (!reading || !given || !given->sharing_pictures()) {
+    Check(false, "given a device, the rasteriser draws on it and shares its pictures: " + error);
+    return;
+  }
+  reading->Written(0, 0, 1024, 512);
+  given->Written(0, 0, 1024, 512);
+
+  std::vector<uint32_t> pixels, unused;
+  emulation::psx::SharedPicture none, shared;
+  int scale = 0;
+  reading->ResolveDisplay(16, 8, 320, 240, &pixels, &none, &scale);
+  given->ResolveDisplay(16, 8, 320, 240, &unused, &shared, &scale);
+  // The texture is the resource itself, on the device given.
+  Microsoft::WRL::ComPtr<ID3D12Device> owner;
+  const bool on_device =
+      shared && shared.source->device() == device.Get() &&
+      shared.source->device_fence() != nullptr && shared.texture != nullptr &&
+      SUCCEEDED(static_cast<ID3D12Resource*>(shared.texture)->GetDevice(IID_PPV_ARGS(&owner))) &&
+      owner.Get() == device.Get();
+  Check(on_device, "the picture is a texture on the device given, with the fence to wait on");
+  Check(shared && SharedMatches(shared, pixels),
+        "on the device given, the picture is the read-back one to the pixel");
+  given.reset();
+  Check(shared && SharedMatches(shared, pixels),
+        "and it outlives the rasteriser that drew it, as one shared by handle does");
 }
 
 // ---- The plane beside VRAM (Docs/DLSS-Plan.md, phase 1) -----------------------------------------
@@ -1046,6 +1105,8 @@ int main(int argc, char** argv) {
   ScenePolygons(m, random, "after, in software, from where it was", 0x1F, 500, 60, false);
 
   SceneSharedPicture(random);
+  if (g_api == psxemu::HardwareRaster::Api::kD3D12)
+    SceneOneDevice(random);
   ScenePlanes();
   SceneJitter();
 

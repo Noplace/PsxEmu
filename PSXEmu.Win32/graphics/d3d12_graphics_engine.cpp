@@ -20,6 +20,7 @@
 
 #include "graphics/adapters.h"
 #include "graphics/dlss/streamline.h"
+#include "graphics/shared_device.h"
 #include "shaders/overlay_shaders.h"
 #include "tools/letterbox.h"
 
@@ -76,6 +77,9 @@ bool D3D12GraphicsEngine::Initialize(HWND window_handle, int width, int height) 
         CreateDlssTimers();
     SetUpGeneration(window_handle);
 
+    // The device for a Direct3D 12 rasteriser to draw on too - the native one, never
+    // Streamline's proxy.
+    psxemu::SharedD3D12Device::Get().Publish(device_.Get(), adapter_luid_);
     return true;
 }
 
@@ -227,7 +231,8 @@ void D3D12GraphicsEngine::DrawOverlay(const D3D12_CPU_DESCRIPTOR_HANDLE* target)
         D3D12_CPU_DESCRIPTOR_HANDLE frame_slot = cpu_slot;
         frame_slot.ptr += descriptor_size;
         view.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        device_->CreateShaderResourceView(fb_texture_.Get(), &view, frame_slot);
+        device_->CreateShaderResourceView(
+            frame_texture_ != nullptr ? frame_texture_.Get() : fb_texture_.Get(), &view, frame_slot);
     }
 
     // This frame's buffers, grown to the largest overlay so far. The fence MoveToNextFrame
@@ -435,6 +440,7 @@ void D3D12GraphicsEngine::BeginFrame() {
     command_list_->Reset(command_allocators_[frame_index_].Get(), nullptr);
     generation_this_frame_ = false;
     present_picture_ = 0;
+    picture_fence_ = nullptr;
 
     if (!render_targets_[frame_index_]) {
         // Can't render, just return early. EndFrame will close the list.
@@ -528,17 +534,50 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
         trail_source_.reset();
     }
 
+    ShowFbTexture();
     DrawFramebuffer(width, height);
 }
 
-// The hardware rasteriser's picture: copied on the card into fb_texture_ - a few hundred
+// The hardware rasteriser's picture. One drawn on this device (graphics/shared_device.h) is
+// shown where it is: this frame's queue waits for it on the card, and everything after reads it
+// as it reads fb_texture_. Any other is copied on the card into fb_texture_ - a few hundred
 // microseconds at 8x, against reading it back and uploading it again - and drawn from there as
-// any frame is. The source has already said it is drawn.
+// any frame is; its source has already said it is drawn.
 bool D3D12GraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
     if (!command_list_ || !render_targets_[frame_index_] || !picture || picture.width <= 0 ||
         picture.height <= 0 || picture.source->adapter() != adapter_luid_)
         return false;
     ReleasePictures(fence_->GetCompletedValue());
+    if (picture.source->device() != nullptr) {
+        if (picture.source->device() != device_.Get() || picture.texture == nullptr ||
+            picture.source->device_fence() == nullptr)
+            return false;
+        // This frame's own pair of descriptors for it: the fence MoveToNextFrame waited on says
+        // the card has finished with them since this slot's frame last came round.
+        ID3D12Resource* const texture = static_cast<ID3D12Resource*>(picture.texture);
+        const UINT increment =
+            device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        const UINT first = 2 + 2 * frame_index_;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart();
+        cpu.ptr += static_cast<SIZE_T>(first) * increment;
+        D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
+        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        view.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        view.Texture2D.MipLevels = 1;
+        for (int i = 0; i < 2; ++i) {
+            device_->CreateShaderResourceView(texture, &view, cpu);
+            cpu.ptr += increment;
+        }
+        frame_texture_ = texture;
+        frame_state_ = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+        frame_table_ = srv_heap_->GetGPUDescriptorHandleForHeapStart();
+        frame_table_.ptr += static_cast<UINT64>(first) * increment;
+        picture_fence_ = static_cast<ID3D12Fence*>(picture.source->device_fence());
+        picture_fence_value_ = picture.serial;
+        shown_texture_id_ = 0;   // fb_texture_ holds no shared picture now
+        return ShowPicture(picture);
+    }
     ID3D12Resource* const shared = OpenSharedPicture(picture);
     if (shared == nullptr)
         return false;
@@ -548,6 +587,7 @@ bool D3D12GraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPictur
             return false;
         shown_texture_id_ = 0;
     }
+    ShowFbTexture();
 
     // Shown again - under a moving overlay, or after a resize - it is already there.
     if (picture.texture_id != shown_texture_id_ || picture.serial != shown_serial_) {
@@ -571,6 +611,12 @@ bool D3D12GraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPictur
         shown_texture_id_ = picture.texture_id;
         shown_serial_ = picture.serial;
     }
+    return ShowPicture(picture);
+}
+
+// What drawing a shared picture is, wherever frame_texture_ has it: its hand-back, its frame for
+// Reflex and Frame Generation, and DLSS's picture of it or the picture itself.
+bool D3D12GraphicsEngine::ShowPicture(const emulation::psx::SharedPicture& picture) {
     // Every picture before this one is the rasteriser's again once this frame is done.
     pending_releases_.push_back({ fence_values_[frame_index_], picture.source, picture.serial });
     trail_source_ = picture.source;   // see RenderFramebuffer
@@ -669,8 +715,7 @@ void D3D12GraphicsEngine::DrawFramebuffer(int width, int height) {
         rect.height = snapped_height;
     }*/
 
-    DrawTexture(srv_heap_.Get(), srv_heap_->GetGPUDescriptorHandleForHeapStart(), width, height,
-                rect);
+    DrawTexture(srv_heap_.Get(), frame_table_, width, height, rect);
 }
 
 void D3D12GraphicsEngine::DrawTexture(ID3D12DescriptorHeap* heap,
@@ -708,6 +753,7 @@ void D3D12GraphicsEngine::EndFrame() {
         overlay_ = nullptr;
         command_list_->Close();
         dlss_query_pending_[frame_index_] = false;   // never run
+        picture_fence_ = nullptr;
         return;
     }
     // DLSS Frame Generation makes pictures after this one if it is a new picture DLSS has just
@@ -738,6 +784,12 @@ void D3D12GraphicsEngine::EndFrame() {
     const bool marked = generation_ready_ && present_picture_ != 0;
     if (marked)
         MarkLatency(static_cast<uint32_t>(sl::PCLMarker::eRenderSubmitStart));
+    // A picture drawn on this device is waited for here, on the card: nothing on this thread
+    // waits for the rasteriser (D3DPresenter leaves such pictures to this).
+    if (picture_fence_ != nullptr) {
+        command_queue_->Wait(picture_fence_, picture_fence_value_);
+        picture_fence_ = nullptr;
+    }
     ID3D12CommandList* pp_command_lists[] = { command_list_.Get() };
     command_queue_->ExecuteCommandLists(_countof(pp_command_lists), pp_command_lists);
     if (marked) {
@@ -827,6 +879,8 @@ void D3D12GraphicsEngine::Resize(int width, int height) {
 }
 
 void D3D12GraphicsEngine::Shutdown() {
+    // A rasteriser drawing on this device keeps it alive, and is made again on the next.
+    psxemu::SharedD3D12Device::Get().Withdraw(device_.Get());
     FlushGPU();
     // Nothing this device drew is still being read.
     ReleasePictures(UINT64_MAX);
@@ -999,8 +1053,10 @@ bool D3D12GraphicsEngine::CreateFramebufferResources(int fb_width, int fb_height
     for (UINT n = 0; n < kFrameCount; ++n)
         fb_upload_heap_[n].Reset();
 
+    // The framebuffer twice: t0 and t1 (see the root signature); then a pair per frame in flight
+    // for a picture drawn on this device (frame_table_).
     D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-    srv_heap_desc.NumDescriptors = 2;   // the framebuffer twice: t0 and t1 (see the root signature)
+    srv_heap_desc.NumDescriptors = 2 + 2 * kFrameCount;
     srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&srv_heap_))))
@@ -1019,11 +1075,18 @@ bool D3D12GraphicsEngine::CreateFramebufferResources(int fb_width, int fb_height
         device_->CreateShaderResourceView(fb_texture_.Get(), &srv_desc, srv_handle);
         srv_handle.ptr += srv_increment;
     }
+    ShowFbTexture();
 
     // A chain's descriptors point at the texture just replaced.
     chain_res_valid_ = false;
 
     return true;
+}
+
+void D3D12GraphicsEngine::ShowFbTexture() {
+    frame_texture_ = fb_texture_;
+    frame_state_ = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    frame_table_ = srv_heap_->GetGPUDescriptorHandleForHeapStart();
 }
 
 bool D3D12GraphicsEngine::EnsureUploadHeaps() {
@@ -1111,8 +1174,11 @@ bool D3D12GraphicsEngine::EnsureChainResources(const ShaderChain& chain, int src
     const size_t target_count = needs_blit ? pass_count : pass_count - 1;
     const size_t draw_count = pass_count + (needs_blit ? 1 : 0);
 
+    // A set of the draws' descriptors per frame in flight: RenderChain writes this frame's afresh,
+    // since what the first draw reads is this frame's picture - fb_texture_, or a texture of the
+    // rasteriser's (frame_texture_).
     D3D12_DESCRIPTOR_HEAP_DESC srv_heap_desc = {};
-    srv_heap_desc.NumDescriptors = static_cast<UINT>(draw_count * 2);
+    srv_heap_desc.NumDescriptors = static_cast<UINT>(draw_count * 2 * kFrameCount);
     srv_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     srv_heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(device_->CreateDescriptorHeap(&srv_heap_desc, IID_PPV_ARGS(&chain_srv_heap_))))
@@ -1209,9 +1275,32 @@ void D3D12GraphicsEngine::RenderChain(const LetterboxRect& rect) {
     D3D12_CPU_DESCRIPTOR_HANDLE back_buffer_rtv(rtv_heap_->GetCPUDescriptorHandleForHeapStart());
     back_buffer_rtv.ptr += static_cast<SIZE_T>(frame_index_) * rtv_descriptor_size_;
 
+    // This frame's set, written now - t0 the draw before's target, or this frame's picture for
+    // the first draw; t1 the picture for every draw. The fence MoveToNextFrame waited on says
+    // the card has finished with the set since this slot's frame last came round.
     const UINT srv_increment =
         device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const SIZE_T set = static_cast<SIZE_T>(frame_index_) * chain_draws_.size() * 2 * srv_increment;
+    {
+        ID3D12Resource* const frame = frame_texture_ != nullptr ? frame_texture_.Get()
+                                                                : fb_texture_.Get();
+        D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
+        view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        view.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        view.Texture2D.MipLevels = 1;
+        D3D12_CPU_DESCRIPTOR_HANDLE cpu = chain_srv_heap_->GetCPUDescriptorHandleForHeapStart();
+        cpu.ptr += set;
+        for (size_t d = 0; d < chain_draws_.size(); ++d) {
+            device_->CreateShaderResourceView(d == 0 ? frame : chain_targets_[d - 1].Get(), &view,
+                                              cpu);
+            cpu.ptr += srv_increment;
+            device_->CreateShaderResourceView(frame, &view, cpu);
+            cpu.ptr += srv_increment;
+        }
+    }
     D3D12_GPU_DESCRIPTOR_HANDLE srv_table = chain_srv_heap_->GetGPUDescriptorHandleForHeapStart();
+    srv_table.ptr += set;
 
     for (const ChainDraw& draw : chain_draws_) {
         const bool to_back_buffer = draw.target < 0;
