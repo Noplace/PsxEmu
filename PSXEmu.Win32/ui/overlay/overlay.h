@@ -103,6 +103,9 @@ namespace psxemu {
         void SetFastForward(bool on);
         void SetCounters(uint64_t frames_dropped, uint64_t audio_short, uint64_t audio_dropped);
         void SetRendererInfo(const std::string& renderer, const std::string& filter);
+        // The window's DPI: everything is sized as it would be at 100% scaling (96), then drawn
+        // that many times larger, so it looks the same size on any monitor and stays sharp.
+        void SetDpi(int dpi);
 
         // ---- drawing ------------------------------------------------------------------------
         // Whether anything is moving, or something changed since the last Build - the video
@@ -175,6 +178,7 @@ namespace psxemu {
         OverlayAtlas atlas_;
         bool atlas_failed_ = false;
         float s_ = 1.0f;   // the atlas's scale: everything is sized by it
+        int dpi_ = 96;
 
         std::vector<OverlayVertex> vertices_;
         std::vector<uint32_t> indices_;

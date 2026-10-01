@@ -191,6 +191,9 @@
     <ClInclude Include="graphics\dlss\dlss_choice.h">
       <Filter>graphics</Filter>
     </ClInclude>
+    <ClInclude Include="graphics\dlss\dlss_timing.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
     <ClInclude Include="graphics\dlss\streamline.h">
       <Filter>graphics</Filter>
     </ClInclude>

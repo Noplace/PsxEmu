@@ -28,12 +28,14 @@ namespace psxemu {
 
     D3DPresenter::D3DPresenter(const RenderWindows& windows,
                                std::function<void(std::function<void()>)> to_ui,
-                               FrameStatsRing* stats)
-        : window_(windows.main), windows_(windows), to_ui_(std::move(to_ui)), stats_(stats) {
+                               FrameStatsRing* stats, DlssTiming* dlss_timing)
+        : window_(windows.main), windows_(windows), to_ui_(std::move(to_ui)), stats_(stats),
+          dlss_timing_(dlss_timing) {
         RECT client = {};
         GetClientRect(window_, &client);
         width_ = client.right - client.left;
         height_ = client.bottom - client.top;
+        overlay_.SetDpi(static_cast<int>(GetDpiForWindow(window_)));
     }
 
     D3DPresenter::~D3DPresenter() {
@@ -77,6 +79,7 @@ namespace psxemu {
 
         renderer_ = opened;
         engine_->SetFrameGenerationAllowed(generation_allowed_);
+        engine_->SetDlssTiming(dlss_timing_);
         // What the caller hears of from here: not this, which it asks for itself.
         dlss_reported_ = engine_->dlss_status();
         last_picture_ = 0;

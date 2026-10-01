@@ -44,9 +44,10 @@ namespace psxemu {
         // `to_ui` runs a piece of work on the UI thread - App::PostToUi.
         // `windows` says where each engine draws (App::CreateRenderSurfaces).
         // `stats` is where the machine leaves its per-frame timings for the overlay's graphs;
-        // it outlives this.
+        // `dlss_timing` where each engine adds up DLSS's, for Show Timings. Both outlive this.
         D3DPresenter(const RenderWindows& windows,
-                     std::function<void(std::function<void()>)> to_ui, FrameStatsRing* stats);
+                     std::function<void(std::function<void()>)> to_ui, FrameStatsRing* stats,
+                     DlssTiming* dlss_timing);
         ~D3DPresenter() override;
 
         // Brings up `renderer` ("d3d11", "d3d12", "opengl" or "vulkan") with `filter` on it, at the window's
@@ -87,6 +88,12 @@ namespace psxemu {
         }
         // DLSS Frame Generation only at full speed (IGraphicsEngine::SetFrameGenerationAllowed).
         void SetFrameGenerationAllowed(bool allowed);
+        // The engine made again as it is - for NVIDIA's DLSS files put beside the emulator
+        // since it was made, which it loads as it starts.
+        void Reopen() {
+            if (engine_ != nullptr)
+                Rebuild(renderer_);
+        }
 
         // What is actually running, which is not always what was asked for.
         const std::string& renderer() const { return renderer_; }
@@ -142,6 +149,7 @@ namespace psxemu {
         static constexpr uint32_t kSharedPictureWaitMs = 250;
         Overlay overlay_;
         FrameStatsRing* stats_ = nullptr;
+        DlssTiming* dlss_timing_ = nullptr;
         // What is shown before the first frame, so the overlay has something to go over.
         std::vector<uint32_t> blank_;
     };

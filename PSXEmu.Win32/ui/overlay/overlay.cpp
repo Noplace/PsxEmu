@@ -285,6 +285,14 @@ namespace psxemu {
         dirty_ = true;
     }
 
+    void Overlay::SetDpi(int dpi) {
+        dpi = dpi > 0 ? dpi : 96;
+        if (dpi == dpi_)
+            return;
+        dpi_ = dpi;
+        dirty_ = true;
+    }
+
     void Overlay::AddSample(const emulation::host::FrameSample& sample) {
         if (sample.refresh_hz > 0.0f)
             last_refresh_hz_ = sample.refresh_hz;
@@ -355,12 +363,15 @@ namespace psxemu {
         return false;
     }
 
-    // Sized for the window: 1 at 720 lines, in steps of a quarter so a drag to resize does not
-    // rebuild the fonts on every pixel.
+    // Sized for the window as it looks rather than for its pixels: 1 at 720 lines at 100%
+    // scaling, in steps of a quarter so a drag to resize does not rebuild the fonts on every
+    // pixel - then the monitor's scaling times that. On a 200% screen a 960-line window is 480
+    // lines to the eye, so 0.75, drawn at 1.5: the size Windows' stretching used to make it, sharp.
     float Overlay::Scale(int height) const {
-        float scale = static_cast<float>(height) / 720.0f;
+        const float dpi = static_cast<float>(dpi_) / 96.0f;
+        float scale = static_cast<float>(height) / dpi / 720.0f;
         scale = std::round(scale * 4.0f) / 4.0f;
-        return (std::min)((std::max)(scale, 0.75f), 2.5f);
+        return (std::min)((std::max)(scale, 0.75f), 2.5f) * dpi;
     }
 
     const OverlayDrawData& Overlay::Build(int width, int height, int frame_width, int frame_height,

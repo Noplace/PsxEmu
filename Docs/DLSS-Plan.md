@@ -276,8 +276,10 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 - **Greyed with the reason**: not Direct3D 12, not an NVIDIA card, the software rasteriser, GPU
   scheduling off, the DLLs missing.
 - **Per game**: `dlss_mode`, `dlss_frame_generation`.
-- **Emulation > Show Timings** shows DLSS's milliseconds and whether frames are being generated.
-- **The About box** carries NVIDIA's attribution, as the licence requires.
+- **Emulation > Show Timings** shows DLSS's milliseconds and whether frames are being generated
+  (built 2026-10-01, Bugs-Found 134).
+- **The About box** carries NVIDIA's attribution, as the licence requires (Help > About, built
+  2026-10-01, Bugs-Found 134).
 
 ---
 
@@ -752,7 +754,9 @@ picture moved the other - and the plane's motion as it is. Both are the same on 
   on this laptop's 200% screen DLSS draws to the window's real 1280x960 rather than to 640x480
   stretched by Windows. Quality there picks 3x internal resolution, Performance 2x; the BIOS ran
   at full speed (59.3 fps) with Frame Generation on, its doubling not measured again.
-- **Emulation > Show Timings** does not show DLSS's milliseconds yet.
+- ~~**Emulation > Show Timings** does not show DLSS's milliseconds yet~~ - done 2026-10-01
+  (Bugs-Found 134): `dlss 1.44 ms  frame gen 2.0x` on Ridge Racer, the card's time for each picture
+  DLSS makes and the frames on the screen for each of ours.
 
 ### Phase 5, as built
 
@@ -886,7 +890,10 @@ a game's own keys.
    This project is MIT, which is not copyleft, so shipping NVIDIA's DLLs beside it under NVIDIA's own
    terms is allowed. **Fetched, never committed** (decided 2026-09-30): `graphics\dlss\
    fetch_streamline.ps1` downloads the SDK into `Temp\streamline\`, and the build copies the DLLs
-   and DLSS's licence beside the executable.
+   and DLSS's licence beside the executable. **A user's copy is the executable alone**
+   (2026-10-01, Bugs-Found 135): with an NVIDIA card in the machine and the files missing, the
+   Video Settings window offers "Get NVIDIA's DLSS files...", which sends them to NVIDIA's newest
+   Streamline release and remakes the renderer once they are copied in.
 3. **FSR: later.** AMD's FSR 3.1 (MIT) takes the same colour, depth, motion and jitter and would
    run on the Radeon. Not planned now.
 4. **Pacing: ours.** The machine's limiter keeps the console's rate under Frame Generation. Reflex

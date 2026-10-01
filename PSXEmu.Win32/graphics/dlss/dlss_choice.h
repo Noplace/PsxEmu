@@ -53,6 +53,20 @@ namespace psxemu {
         bool generating() const { return mode != DlssMode::kOff && frame_generation != 0; }
     };
 
+    // NVIDIA's files DLSS needs beside the executable, which PSXEmu does not include - they are
+    // NVIDIA's, under NVIDIA's licence (Docs/DLSS-Plan.md, decision 2). All in the bin\x64 folder
+    // of the Streamline SDK; the first four are Super Resolution's and DLAA's, the rest Frame
+    // Generation's. Users are sent to NVIDIA's newest release: Streamline takes applications
+    // built on an older SDK (its structures are versioned, and its own updater loads newer
+    // plugins into them), and this was built and tested with 2.14.1, the newest on 2026-10-01.
+    inline constexpr const wchar_t* kDlssFiles[] = {
+        L"sl.interposer.dll", L"sl.common.dll",   L"sl.dlss.dll",   L"nvngx_dlss.dll",
+        L"sl.dlss_g.dll",     L"nvngx_dlssg.dll", L"sl.reflex.dll", L"sl.pcl.dll",
+    };
+    inline constexpr wchar_t kStreamlineLatest[] =
+        L"https://github.com/NVIDIA-RTX/Streamline/releases/latest";
+    inline constexpr wchar_t kStreamlineBuiltWith[] = L"2.14.1";
+
     // Whether DLSS runs in a renderer, and if not why not - in words for the menu.
     struct DlssStatus {
         bool ready = false;

@@ -50,6 +50,7 @@ namespace psxemu {
         const int kIdClassic = 117;
         const int kIdGlass = 118;
         const int kIdClose = 119;
+        const int kIdDlssFiles = 120;
         const int kIdHintFirst = 300;   // the grey lines, which WM_CTLCOLORSTATIC finds by id
         const int kIdHintLast = 399;
 
@@ -123,7 +124,8 @@ namespace psxemu {
     bool VideoSettingsWindow::Create(HINSTANCE instance, HWND owner, Host host) {
         host_ = std::move(host);
 
-        INITCOMMONCONTROLSEX controls = { sizeof(controls), ICC_STANDARD_CLASSES };
+        // The link to NVIDIA's files is a SysLink, Common Controls 6's.
+        INITCOMMONCONTROLSEX controls = { sizeof(controls), ICC_STANDARD_CLASSES | ICC_LINK_CLASS };
         InitCommonControlsEx(&controls);
 
         WNDCLASSEXW window_class = {};
@@ -187,8 +189,12 @@ namespace psxemu {
             return group.top + height;
         };
         // A list `width` wide with its label, the first `label_width` of it.
-        auto list_at = [&](int x, int y, int label_width, int width, const wchar_t* label, int id) {
-            make(L"STATIC", label, SS_LEFT, 0, x, y + 4, label_width - 4, 20, font_);
+        // Its label kept in `label_out` too, for a list greyed with its label.
+        auto list_at = [&](int x, int y, int label_width, int width, const wchar_t* label, int id,
+                           HWND* label_out = nullptr) {
+            HWND text = make(L"STATIC", label, SS_LEFT, 0, x, y + 4, label_width - 4, 20, font_);
+            if (label_out != nullptr)
+                *label_out = text;
             return make(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, id,
                         x + label_width, y, width - label_width, 320, font_);
         };
@@ -201,9 +207,10 @@ namespace psxemu {
             return make(L"STATIC", text, SS_LEFT, id, x, y, width, kHintLine * lines, small_font_);
         };
         // Rows down one of the two groups side by side.
-        auto list_row = [&](Group& group, const wchar_t* label, int id) {
+        auto list_row = [&](Group& group, const wchar_t* label, int id,
+                            HWND* label_out = nullptr) {
             HWND list = list_at(group.x + kInset, group.y, kColumnLabel,
-                                group.width - kInset * 2, label, id);
+                                group.width - kInset * 2, label, id, label_out);
             group.y += kListRow;
             return list;
         };
@@ -258,15 +265,22 @@ namespace psxemu {
         raster_hint_ = text_row(raster, 2, L"", hint_id++);
 
         Group dlss = begin_group(L"NVIDIA DLSS", kMargin * 2 + kColumnWidth, kColumnWidth, middle);
-        dlss_mode_ = list_row(dlss, L"&Mode:", kIdDlssMode);
-        dlss_preset_ = list_row(dlss, L"&Preset:", kIdDlssPreset);
-        dlss_generation_ = list_row(dlss, L"Frame &generation:", kIdDlssGeneration);
+        dlss_labels_[0] = dlss.box;
+        dlss_mode_ = list_row(dlss, L"&Mode:", kIdDlssMode, &dlss_labels_[1]);
+        dlss_preset_ = list_row(dlss, L"&Preset:", kIdDlssPreset, &dlss_labels_[2]);
+        dlss_generation_ = list_row(dlss, L"Frame &generation:", kIdDlssGeneration,
+                                    &dlss_labels_[3]);
         dlss_status_ = text_row(dlss, 2, L"", 0);
         generation_status_ = text_row(dlss, 2, L"", 0);
+        // Shown only while NVIDIA's files are not all here (State::dlss_files_missing).
+        dlss_files_ = make(WC_LINK, L"<a>Get NVIDIA's DLSS files...</a>", WS_TABSTOP,
+                           kIdDlssFiles, dlss.x + kInset, dlss.y + 4, dlss.width - kInset * 2,
+                           20, font_);
+        dlss.y += 4 + 20;
         dlss.y += 4;
-        text_row(dlss, 2,
+        text_row(dlss, 3,
                  L"Needs an NVIDIA RTX graphics card, Direct3D 12 and the hardware rasteriser. "
-                 L"Frame generation runs at 100% speed only.",
+                 L"Frame generation runs at 100% speed only, with NVIDIA Reflex on.",
                  hint_id++);
 
         const int middle_height = std::max(raster.y, dlss.y) - middle + kGroupFooter;
@@ -414,8 +428,14 @@ namespace psxemu {
 
         // NVIDIA DLSS. Frame generation past 2x, and Dynamic, only once the card says it makes
         // them - and whatever is chosen, so the list never shows something else.
-        const bool dlss = state.dlss_mode != "off";
+        // The whole group greyed unless what DLSS draws with is in place; the status line, still
+        // in black, says what is missing.
+        const bool available = state.dlss_available;
+        const bool dlss = available && state.dlss_mode != "off";
+        for (HWND part : dlss_labels_)
+            EnableWindow(part, available);
         Select(dlss_mode_, IndexOf(kDlssModeChoices, state.dlss_mode));
+        EnableWindow(dlss_mode_, available);
         Select(dlss_preset_, IndexOf(kDlssPresetChoices, state.dlss_preset));
         EnableWindow(dlss_preset_, dlss);
         std::vector<std::string> generation;
@@ -441,6 +461,7 @@ namespace psxemu {
         EnableWindow(dlss_generation_, dlss);
         SetWindowTextW(dlss_status_, state.dlss_status.c_str());
         SetWindowTextW(generation_status_, state.generation_status.c_str());
+        ShowWindow(dlss_files_, state.dlss_files_missing ? SW_SHOWNA : SW_HIDE);
 
         // On-screen display.
         Select(stats_, std::clamp(state.stats_mode, 0, 2));
@@ -575,10 +596,13 @@ namespace psxemu {
 
         switch (message) {
             case WM_CTLCOLORSTATIC: {
-                // The hints in grey, so the settings read first.
+                // The hints in grey, so the settings read first - and anything greyed, the
+                // DLSS group's box among them, which would otherwise take the black here.
                 HDC dc = reinterpret_cast<HDC>(wparam);
-                const int id = GetDlgCtrlID(reinterpret_cast<HWND>(lparam));
-                SetTextColor(dc, GetSysColor(id >= kIdHintFirst && id <= kIdHintLast
+                const HWND control = reinterpret_cast<HWND>(lparam);
+                const int id = GetDlgCtrlID(control);
+                SetTextColor(dc, GetSysColor((id >= kIdHintFirst && id <= kIdHintLast) ||
+                                                     !IsWindowEnabled(control)
                                                  ? COLOR_GRAYTEXT
                                                  : COLOR_BTNTEXT));
                 SetBkColor(dc, GetSysColor(COLOR_BTNFACE));
@@ -588,6 +612,16 @@ namespace psxemu {
             case WM_COMMAND:
                 self->OnCommand(LOWORD(wparam), HIWORD(wparam));
                 return 0;
+
+            case WM_NOTIFY: {
+                // The link to NVIDIA's files, clicked or chosen with Enter.
+                const NMHDR* header = reinterpret_cast<const NMHDR*>(lparam);
+                if (header->idFrom == static_cast<UINT_PTR>(kIdDlssFiles) &&
+                    (header->code == NM_CLICK || header->code == NM_RETURN) &&
+                    self->host_.get_dlss_files)
+                    self->host_.get_dlss_files();
+                return 0;
+            }
 
             case WM_DPICHANGED: {
                 // Onto a monitor with another scaling: the same layout, at its DPI.

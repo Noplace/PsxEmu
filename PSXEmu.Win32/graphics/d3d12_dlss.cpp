@@ -593,6 +593,66 @@ bool D3D12GraphicsEngine::CreateDlssPipeline() {
                                                           IID_PPV_ARGS(&composite_pipeline_)));
 }
 
+void D3D12GraphicsEngine::CreateDlssTimers() {
+    D3D12_QUERY_HEAP_DESC queries = {};
+    queries.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    queries.Count = 2 * kFrameCount;
+    const CD3DX12_HEAP_PROPERTIES readback(D3D12_HEAP_TYPE_READBACK);
+    const CD3DX12_RESOURCE_DESC buffer =
+        CD3DX12_RESOURCE_DESC::Buffer(sizeof(UINT64) * 2 * kFrameCount);
+    const HRESULT frequency = command_queue_->GetTimestampFrequency(&timestamp_frequency_);
+    const HRESULT heap = SUCCEEDED(frequency) && timestamp_frequency_ != 0
+                             ? device_->CreateQueryHeap(&queries, IID_PPV_ARGS(&dlss_queries_))
+                             : E_FAIL;
+    const HRESULT made =
+        SUCCEEDED(heap) ? device_->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE,
+                                                           &buffer, D3D12_RESOURCE_STATE_COPY_DEST,
+                                                           nullptr,
+                                                           IID_PPV_ARGS(&dlss_query_readback_))
+                        : E_FAIL;
+    if (FAILED(made)) {
+        char line[160];
+        snprintf(line, sizeof(line),
+                 "Show Timings will not have DLSS's time: timestamp frequency 0x%08lX, query "
+                 "heap 0x%08lX, readback 0x%08lX",
+                 static_cast<unsigned long>(frequency), static_cast<unsigned long>(heap),
+                 static_cast<unsigned long>(made));
+        NoteDlss(line);
+        dlss_queries_.Reset();
+        dlss_query_readback_.Reset();
+    }
+}
+
+// After MoveToNextFrame's wait: this frame slot's last use is finished, so the timestamps it
+// took around DLSS are in the readback buffer.
+void D3D12GraphicsEngine::CollectDlssTiming() {
+    if (!dlss_query_pending_[frame_index_])
+        return;
+    dlss_query_pending_[frame_index_] = false;
+    const SIZE_T first = sizeof(UINT64) * 2 * frame_index_;
+    const D3D12_RANGE read = { first, first + sizeof(UINT64) * 2 };
+    void* mapped = nullptr;
+    if (dlss_timing_ == nullptr || FAILED(dlss_query_readback_->Map(0, &read, &mapped)))
+        return;
+    const UINT64* stamps = reinterpret_cast<const UINT64*>(static_cast<uint8_t*>(mapped) + first);
+    const UINT64 start = stamps[0];
+    const UINT64 end = stamps[1];
+    const D3D12_RANGE written = { 0, 0 };
+    dlss_query_readback_->Unmap(0, &written);
+    if (end <= start)
+        return;
+    const double ms =
+        static_cast<double>(end - start) * 1000.0 / static_cast<double>(timestamp_frequency_);
+    dlss_timing_->AddPicture(ms);
+    // The first is the slow one - NVIDIA's model loading - and worth seeing in the log.
+    if (!dlss_timing_noted_) {
+        dlss_timing_noted_ = true;
+        char line[96];
+        snprintf(line, sizeof(line), "the first picture took %.1f ms of the card", ms);
+        NoteDlss(line);
+    }
+}
+
 // The screen's rectangle when DLSS takes this picture for it; otherwise the mode's own ratio of
 // it, which is then scaled onto the screen (graphics/dlss/dlss_choice.h). DLSS's range for an
 // output is asked once per size.
@@ -768,6 +828,11 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
         }
     }
 
+    // Show Timings: the card's time from here to DLSS's end.
+    if (dlss_queries_ != nullptr)
+        command_list_->EndQuery(dlss_queries_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                                2 * frame_index_);
+
     // The plane into DLSS's inputs. The plane lives in the common state between the two
     // devices, and goes back to it.
     {
@@ -913,6 +978,15 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
                                              D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
     };
     command_list_->ResourceBarrier(_countof(back), back);
+
+    if (dlss_queries_ != nullptr) {
+        command_list_->EndQuery(dlss_queries_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                                2 * frame_index_ + 1);
+        command_list_->ResolveQueryData(dlss_queries_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                                        2 * frame_index_, 2, dlss_query_readback_.Get(),
+                                        sizeof(UINT64) * 2 * frame_index_);
+        dlss_query_pending_[frame_index_] = ok;
+    }
 
     // DLSS leaves the command list as it likes; the draw after it sets all it uses but the
     // target, which is the back buffer again.

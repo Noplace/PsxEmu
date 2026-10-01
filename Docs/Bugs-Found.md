@@ -8241,7 +8241,10 @@ work area is cut to fit: the debugger's 1200x900 is taller than this screen's 75
 the stretching had hidden. `WM_DPICHANGED` - a window dragged to a monitor with other scaling -
 moves each window to the rect Windows suggests; a fixed layout scales every control and swaps its
 fonts for ones made at the new DPI, and one that lays out on `WM_SIZE` swaps its fonts and is laid
-out again by the new size.
+out again by the new size. The overlay over the picture, which sized itself by the window's height
+alone, came out smaller than the stretching had made it - 1.33 where it had looked 1.5 - so it is
+now sized for the window at 100% scaling and drawn the DPI's times larger: 1.5 here again, sharp.
+The main window tells it of a new DPI, full screen included.
 
 **The Video Settings window.** Settings > Video was six popups - Renderer, Graphics Card, Rasteriser,
 NVIDIA DLSS, Filter, On-Screen Display - and is now one window, live like Emulation Settings (no OK
@@ -8267,3 +8270,67 @@ to provoke it is the user's to do.
 **A trap, designed around rather than hit.** A drop-down list's window is as tall as the list it
 drops, but `GetWindowRect` gives the closed box; scaling it by that would leave a list one row
 tall. `RescaleForDpi` takes the height from `CB_GETDROPPEDCONTROLRECT` instead.
+
+## 134. NVIDIA's attribution in an About box, and DLSS in Show Timings
+
+`app/app.*`, `app/menu.cpp`, `app/const.h`, `graphics/dlss/dlss_timing.h` (new),
+`graphics/igraphicsengine.h`, `graphics/d3d12_graphics_engine.*`, `graphics/d3d12_dlss.cpp`,
+`graphics/video_presenter.*`, `ui/video_settings_window.cpp`, `PSXEmu.Win32.vcxproj` and `.filters`
+
+Not a bug: two of DLSS's leftovers (DLSS-Plan.md, "Settings and the menus").
+
+**Help > About PSXEmu** is a task dialog: the program, and in its footer the attribution NVIDIA's
+licences ask for. The DLSS SDK's licence wants its use said "in the about box of the application
+(if present)" (Exhibit 7.1(b) of `nvngx_dlss.license.txt`), and Reflex's a reference to Reflex on
+the features made with it (3.1 of `reflex.license.txt`) - so the frame generation line in the Video
+Settings window says "with NVIDIA Reflex low latency" too. In words only: NVIDIA's logos need
+NVIDIA's written approval of each use first (7.2(c)), which is the user's to ask for. Where
+NVIDIA's files sit beside the program, a link opens that folder; the build now copies Streamline's
+own MIT licence there as `streamline.license.txt`, beside NVIDIA's two, since Streamline's DLLs go
+with it.
+
+**Emulation > Show Timings** adds, while DLSS draws, `dlss 1.44 ms` - the card's time for each
+picture DLSS makes, its inputs made from the plane and DLSS itself, measured by two timestamps
+around them and read back once the frame's fence has passed - and, under Frame Generation,
+`frame gen 2.0x`: the frames on the screen for each of ours, by the swap chain's own count of
+presents (which counts Streamline's, generated frames included). The renderer adds them up in a
+`DlssTiming` the App owns and takes once a second with the rest of the readout.
+
+**Checked** on the RTX 4060 with Ridge Racer: `dlss 1.44-2.45 ms  frame gen 2.0x`, and 1.9x while
+the About box covered part of the window; the DLSS log's count agreeing (240 presents for 120 of
+ours). The first picture took 52 ms - NVIDIA's model loading - which the log now says. The BIOS
+showed nothing: its menu is 480i, which DLSS leaves alone (phase 4), so there was nothing to time.
+The About box captured with and without NVIDIA's files beside the program.
+
+## 135. The emulator alone, NVIDIA's files fetched by the user, and DLSS greyed where it cannot run
+
+`app/app.*`, `graphics/dlss/dlss_choice.h`, `graphics/video_presenter.h`,
+`ui/video_settings_window.*`
+
+Not a bug: two requests - "I want users to just need the exe itself... an option to direct them
+to the link to download [NVIDIA's DLLs] if needed", and "since DLSS depends on the hardware
+rasteriser and an NVIDIA GPU, the DLSS box should be greyed out otherwise".
+
+**The executable alone runs.** Nothing links against NVIDIA's DLLs: Streamline is loaded by name
+only when a DLSS mode is chosen (`dumpbin /dependents` on the executable lists Windows' own DLLs
+and Microsoft's C++ runtime, nothing of NVIDIA's or Vulkan's). Its shaders are compiled in at startup;
+the `.cso` files in older folders are leftovers.
+
+**Getting the files.** With an NVIDIA card in the machine and any of the eight files missing
+(`kDlssFiles`), the DLSS group shows a link, "Get NVIDIA's DLSS files...". It opens a task dialog:
+which zip to take from NVIDIA's newest Streamline release (the one without aarch64 or arm64ec),
+which eight files to copy from its `bin\x64`, buttons to open the release page and PSXEmu's folder,
+and Check Again, which makes the renderer again so the files load with no restart (Streamline's
+loader tries again whenever it found nothing). The newest rather than 2.14.1: Streamline takes
+applications built on an older SDK, and 2.14.1 is the newest today (2026-09-08); the dialog says
+it is the one tested, for a future release that will not load.
+
+**Greyed.** The group's box, labels and lists are greyed unless the renderer is Direct3D 12 on an
+NVIDIA card and the hardware rasteriser draws, and the status line says what is missing - "Not
+available: needs the NVIDIA graphics card." The link stays live, since the files are wanted
+whichever card is drawing now.
+
+**Checked.** On the Radeon: greyed, with the reason and the link; the link's dialog; the files
+copied in and Check Again taking the link away. On the RTX 4060, the eight files moved aside: the
+group live, "NVIDIA's DLSS files are not beside the emulator", the link; the files put back and
+Check Again: "Running: NVIDIA DLSS 310.9.1, at 3x" and Frame Generation 2x, without a restart.

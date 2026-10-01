@@ -67,6 +67,7 @@
     <PostBuildEvent>
       <Command>set SL=$(SolutionDir)Temp\streamline\v2.14.1\bin\x64
 if exist "%SL%\sl.interposer.dll" for %%f in (sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll nvngx_dlss.license.txt sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll reflex.license.txt) do xcopy /y /d /q "%SL%\%%f" "$(OutDir)." &gt;nul
+if exist "%SL%\sl.interposer.dll" copy /y "%SL%\..\..\license.txt" "$(OutDir)streamline.license.txt" &gt;nul
 exit /b 0</Command>
       <Message>NVIDIA DLSS's DLLs, if fetched</Message>
     </PostBuildEvent>
@@ -148,6 +149,7 @@ exit /b 0</Command>
     <ClInclude Include="graphics\hw_raster\d3d11_raster.h" />
     <ClInclude Include="graphics\d3d12_graphics_engine.h" />
     <ClInclude Include="graphics\dlss\dlss_choice.h" />
+    <ClInclude Include="graphics\dlss\dlss_timing.h" />
     <ClInclude Include="graphics\dlss\streamline.h" />
     <ClInclude Include="graphics\dlss\reflex_markers.h" />
     <ClInclude Include="graphics\opengl_engine.h" />

@@ -127,6 +127,8 @@ namespace psxemu {
         // View > Video Settings and Settings > Video: the window with the renderer, the
         // rasteriser, NVIDIA DLSS and the on-screen display (ui/video_settings_window).
         kCommandVideoSettings,
+        // Help > About PSXEmu.
+        kCommandAbout,
     };
 
     // ---------------------------------------------------------------------------------------------

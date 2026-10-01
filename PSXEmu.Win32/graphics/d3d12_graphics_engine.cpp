@@ -72,6 +72,8 @@ bool D3D12GraphicsEngine::Initialize(HWND window_handle, int width, int height) 
         dlss_pipeline_.Reset();
         dlss_why_ = "its shaders could not be made";
     }
+    if (dlss_pipeline_ != nullptr)
+        CreateDlssTimers();
     SetUpGeneration(window_handle);
 
     return true;
@@ -705,6 +707,7 @@ void D3D12GraphicsEngine::EndFrame() {
     if (!render_targets_[frame_index_]) {
         overlay_ = nullptr;
         command_list_->Close();
+        dlss_query_pending_[frame_index_] = false;   // never run
         return;
     }
     // DLSS Frame Generation makes pictures after this one if it is a new picture DLSS has just
@@ -748,7 +751,22 @@ void D3D12GraphicsEngine::EndFrame() {
     if (marked)
         MarkLatency(static_cast<uint32_t>(sl::PCLMarker::ePresentEnd));
 
+    // Show Timings: under Frame Generation the swap chain counts Streamline's real presents,
+    // the frames it made as well as ours, so what it gained since our last present is what went
+    // to the screen for that one - roughly, as Frame Generation presents on a thread of its own,
+    // which a second of them averages out. Counted at every present, added up only for those it
+    // generated after.
+    if (generation_ready_ && dlss_timing_ != nullptr) {
+        UINT count = 0;
+        swap_chain_->GetLastPresentCount(&count);
+        if (timing_generated_)
+            dlss_timing_->AddGenerated(count - timing_present_count_);
+        timing_present_count_ = count;
+        timing_generated_ = generate;
+    }
+
     MoveToNextFrame();
+    CollectDlssTiming();
     if (generation_ready_ && ++generation_frames_ >= 120)
         ReadGenerationState();
 }

@@ -229,6 +229,7 @@ namespace psxemu {
             host.set_dlss_generation = [this](const std::string& key) {
                 SetDlssFrameGeneration(key);
             };
+            host.get_dlss_files = [this] { ShowDlssFiles(); };
             host.set_stats = [this](int mode) { SetStatsMode(static_cast<StatsMode>(mode)); };
             host.set_notifications = [this](bool on) { SetOverlayNotifications(on); };
             host.set_controllers_always = [this](bool on) { SetControllersAlwaysVisible(on); };
@@ -534,7 +535,7 @@ namespace psxemu {
                 auto presenter = std::make_unique<D3DPresenter>(
                     RenderWindows{ window_, gl_surface_, vk_surface_ },
                     [this](std::function<void()> work) { PostToUi(std::move(work)); },
-                    &frame_stats_);
+                    &frame_stats_, &dlss_timing_);
                 presenter->overlay().SetStatsMode(start_stats);
                 presenter->overlay().SetNotificationsEnabled(start_notifications);
                 presenter->overlay().SetControllersAlwaysVisible(start_controllers);
@@ -735,6 +736,12 @@ namespace psxemu {
                 present_ms_ = presents > 0 ? total_ms / static_cast<double>(presents) : 0.0;
                 presents_per_second_ = static_cast<double>(presents);
             }
+            const DlssTiming::Totals dlss = dlss_timing_.Take();
+            dlss_ms_ = dlss.pictures > 0 ? dlss.gpu_ms / static_cast<double>(dlss.pictures) : 0.0;
+            generated_per_present_ =
+                dlss.generating_presents > 0
+                    ? static_cast<double>(dlss.shown) / static_cast<double>(dlss.generating_presents)
+                    : 0.0;
             UpdateTitle();
         });
     }
@@ -767,6 +774,19 @@ namespace psxemu {
                          report_.shared_picture ? L" on card" : L"", report_.idle_ms, present_ms_,
                          report_.audio_queued_frames * 1000.0 / emulation::psx::Spu::kSampleRate);
                 title += timings;
+
+                // NVIDIA DLSS, while it draws: the card's time for each picture it makes, and
+                // under Frame Generation the frames on the screen for each of ours - 2.0x when
+                // it doubles, 1.0x when it makes none (another window over this one, say).
+                wchar_t dlss[80] = {};
+                if (dlss_ms_ > 0.0) {
+                    swprintf(dlss, std::size(dlss), L"  |  dlss %.2f ms", dlss_ms_);
+                    title += dlss;
+                }
+                if (generated_per_present_ > 0.0) {
+                    swprintf(dlss, std::size(dlss), L"  frame gen %.1fx", generated_per_present_);
+                    title += dlss;
+                }
 
                 // Only when there is something to say: a frame the video thread never showed, or
                 // sound the audio thread had to make up. Zero is the normal state and says
@@ -1387,6 +1407,31 @@ namespace psxemu {
         });
     }
 
+    void App::RetryDlss() {
+        UpdateVideoSettings();   // the link to the files goes once they are all there
+        // Running already, and Frame Generation too if it is asked for: nothing to load.
+        const bool running = dlss_status_.ready && (config_.dlss_frame_generation == "off" ||
+                                                    dlss_status_.generation_ready);
+        if (config_.dlss_mode == "off" || running || current_backend_ != "d3d12" ||
+            video_ == nullptr)
+            return;
+        video_->Post([this](VideoOutput& video) {
+            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            if (presenter == nullptr)
+                return;
+            presenter->Reopen();
+            const std::string renderer = presenter->renderer();
+            const uint64_t adapter = presenter->shared_adapter();
+            const uint64_t card = presenter->card_luid();
+            const DlssStatus status = presenter->dlss_status();
+            video.PresentAgain();
+            PostToUi([this, renderer, adapter, card, status] {
+                OnPresenterAdapter(adapter, renderer, card);
+                OnDlssStatus(status);
+            });
+        });
+    }
+
     void App::OnDlssStatus(const DlssStatus& status) {
         const DlssStatus before = dlss_status_;
         dlss_status_ = status;
@@ -1468,26 +1513,54 @@ namespace psxemu {
         state.dlss_generation = config_.dlss_frame_generation;
         state.generation_most = dlss_status_.generation_most;
         state.generation_dynamic = dlss_status_.generation_dynamic;
+        state.dlss_files_missing = !MissingDlssFiles().empty();
+
+        // Whether what DLSS draws with is in place: the renderer Direct3D 12, on an NVIDIA card,
+        // and the hardware rasteriser drawing. If not, the group is greyed and says what is
+        // missing, whatever mode is chosen.
+        auto is_nvidia = [](const GraphicsAdapter& adapter) {
+            return adapter.name.find("NVIDIA") != std::string::npos;
+        };
+        const bool computer_has_nvidia = std::any_of(adapters_.begin(), adapters_.end(), is_nvidia);
+        const bool renderer_on_nvidia =
+            std::any_of(adapters_.begin(), adapters_.end(), [&](const GraphicsAdapter& adapter) {
+                return adapter.luid == presenter_adapter_ && is_nvidia(adapter);
+            });
+        std::vector<std::wstring> needs;
+        if (current_backend_ != "d3d12")
+            needs.push_back(L"the Direct3D 12 renderer");
+        if (!renderer_on_nvidia)
+            needs.push_back(computer_has_nvidia ? L"the NVIDIA graphics card"
+                                                : L"an NVIDIA RTX graphics card, which this "
+                                                  L"computer does not have");
+        if (!drawing_hardware_)
+            needs.push_back(L"the hardware rasteriser");
+        state.dlss_available = needs.empty();
 
         // What DLSS is doing, or why it is not...
-        if (config_.dlss_mode == "off")
+        if (!state.dlss_available) {
+            state.dlss_status = L"Not available: needs ";
+            for (size_t i = 0; i < needs.size(); ++i)
+                state.dlss_status += (i == 0 ? L"" : i + 1 == needs.size() ? L" and " : L", ") +
+                                     needs[i];
+            state.dlss_status += L".";
+        } else if (config_.dlss_mode == "off") {
             state.dlss_status = L"Off.";
-        else if (!dlss_status_.ready)
+        } else if (!dlss_status_.ready) {
             state.dlss_status = L"Not running: " +
                                 (dlss_status_.why.empty()
                                      ? std::wstring(L"needs the Direct3D 12 renderer.")
                                      : Wide(dlss_status_.why));
-        else if (!drawing_hardware_)
-            state.dlss_status = L"Not running: needs the hardware rasteriser.";
-        else if (!raster_shared_.load(std::memory_order_acquire))
+        } else if (!raster_shared_.load(std::memory_order_acquire)) {
             state.dlss_status = L"Not running: the rasteriser is on another graphics card.";
-        else
+        } else {
             state.dlss_status = L"Running: NVIDIA DLSS " + Wide(dlss_status_.version) +
                                 L", at " + std::to_wstring(dlss_scale_) +
                                 L"x internal resolution.";
+        }
         // ...and Frame Generation, when it is asked for.
-        if (config_.dlss_mode != "off" && config_.dlss_frame_generation != "off" &&
-            dlss_status_.ready) {
+        if (state.dlss_available && config_.dlss_mode != "off" &&
+            config_.dlss_frame_generation != "off" && dlss_status_.ready) {
             if (!dlss_status_.generation_ready)
                 state.generation_status = L"Frame generation not running: " +
                                           (dlss_status_.generation_why.empty()
@@ -1498,8 +1571,9 @@ namespace psxemu {
             else
                 state.generation_status = L"Frame generation running: " +
                                           (config_.dlss_frame_generation == "dynamic"
-                                               ? std::wstring(L"dynamic.")
-                                               : Wide(config_.dlss_frame_generation) + L".");
+                                               ? std::wstring(L"dynamic")
+                                               : Wide(config_.dlss_frame_generation)) +
+                                          L", with NVIDIA Reflex low latency.";
         }
 
         state.stats_mode = static_cast<int>(stats_mode_);
@@ -2763,6 +2837,11 @@ namespace psxemu {
             // Windows suggests keeps the window the same size to the eye, and its WM_SIZE does
             // the rest. Full screen already covers its monitor, whatever the scaling.
             case WM_DPICHANGED:
+                // The overlay is sized for the scaling as well as the window, full screen or not.
+                if (app != nullptr) {
+                    const int dpi = HIWORD(wparam);
+                    app->PostToOverlay([dpi](Overlay& overlay) { overlay.SetDpi(dpi); });
+                }
                 if (app == nullptr || !app->fullscreen_)
                     MoveToSuggested(window, *reinterpret_cast<const RECT*>(lparam));
                 return 0;
@@ -2915,6 +2994,164 @@ namespace psxemu {
         if (on)
             Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"Full screen",
                    L"Alt+Enter, F11 or Esc to leave");
+    }
+
+    namespace {
+
+        // The folder the executable is in, ending in a backslash: where NVIDIA's files go.
+        std::wstring ProgramFolder() {
+            wchar_t path[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, path, MAX_PATH);
+            std::wstring folder = path;
+            folder.erase(folder.find_last_of(L'\\') + 1);
+            return folder;
+        }
+
+    }   // namespace
+
+    std::vector<std::wstring> App::MissingDlssFiles() const {
+        std::vector<std::wstring> missing;
+        const bool nvidia = std::any_of(adapters_.begin(), adapters_.end(),
+                                        [](const GraphicsAdapter& adapter) {
+                                            return adapter.name.find("NVIDIA") != std::string::npos;
+                                        });
+        if (!nvidia)
+            return missing;
+        const std::wstring folder = ProgramFolder();
+        for (const wchar_t* file : kDlssFiles) {
+            if (GetFileAttributesW((folder + file).c_str()) == INVALID_FILE_ATTRIBUTES)
+                missing.push_back(file);
+        }
+        return missing;
+    }
+
+    // The way to NVIDIA's files, which the emulator does not come with: where to download them,
+    // which to copy where, and then the renderer made again to load them. A task dialog, its
+    // buttons leaving it open but for Check Again.
+    void App::ShowDlssFiles() {
+        const std::vector<std::wstring> missing = MissingDlssFiles();
+        std::wstring needed;
+        for (size_t i = 0; i < std::size(kDlssFiles); ++i) {
+            needed += i == 0 ? L"  " : i == 4 ? L"\n  and for frame generation: " : L", ";
+            needed += kDlssFiles[i];
+        }
+        const std::wstring content =
+            L"NVIDIA DLSS needs eight of NVIDIA's files beside PSXEmu. They are NVIDIA's, under "
+            L"NVIDIA's licence, so PSXEmu does not come with them.\n\n"
+            L"1. From NVIDIA's newest Streamline release, download the streamline-sdk zip - the "
+            L"one without \"aarch64\" or \"arm64ec\" in its name (about 280 MB).\n"
+            L"2. From the bin\\x64 folder inside it, copy these into PSXEmu's folder:\n" + needed +
+            L"\n3. Choose Check again.";
+        std::wstring footer;
+        if (missing.empty()) {
+            footer = L"All eight are there.";
+        } else {
+            footer = L"Missing now: ";
+            for (size_t i = 0; i < missing.size(); ++i)
+                footer += (i == 0 ? L"" : L", ") + missing[i];
+            footer += L".";
+        }
+        footer += L"\nPSXEmu was built and tested with Streamline " +
+                  std::wstring(kStreamlineBuiltWith) +
+                  L", which is on the same page's list of releases if a newer one will not load.";
+
+        constexpr int kOpenPage = 100, kOpenFolder = 101, kCheckAgain = 102;
+        const TASKDIALOG_BUTTON buttons[] = {
+            { kOpenPage, L"Open NVIDIA's download page\nNVIDIA's newest Streamline release on "
+                         L"GitHub, in your browser" },
+            { kOpenFolder, L"Open PSXEmu's folder\nWhere the files go" },
+            { kCheckAgain, L"Check again\nNVIDIA DLSS starts if the files are there now" },
+        };
+        struct Links {
+            std::wstring folder;
+        } links = { ProgramFolder() };
+
+        TASKDIALOGCONFIG config = {};
+        config.cbSize = sizeof(config);
+        config.hwndParent = video_settings_.window() != nullptr &&
+                                    IsWindowVisible(video_settings_.window())
+                                ? video_settings_.window()
+                                : window_;
+        config.hInstance = GetModuleHandleW(nullptr);
+        config.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION |
+                         TDF_POSITION_RELATIVE_TO_WINDOW;
+        config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+        config.pszWindowTitle = L"NVIDIA DLSS files";
+        config.pszMainIcon = TD_INFORMATION_ICON;
+        config.pszMainInstruction = L"Get NVIDIA's DLSS files";
+        config.pszContent = content.c_str();
+        config.pButtons = buttons;
+        config.cButtons = static_cast<UINT>(std::size(buttons));
+        config.pszFooter = footer.c_str();
+        config.lpCallbackData = reinterpret_cast<LONG_PTR>(&links);
+        config.pfCallback = [](HWND, UINT note, WPARAM wparam, LPARAM, LONG_PTR data) -> HRESULT {
+            if (note != TDN_BUTTON_CLICKED)
+                return S_OK;
+            const Links* links = reinterpret_cast<const Links*>(data);
+            if (wparam == static_cast<WPARAM>(kOpenPage)) {
+                ShellExecuteW(nullptr, L"open", kStreamlineLatest, nullptr, nullptr, SW_SHOW);
+                return S_FALSE;   // stays open
+            }
+            if (wparam == static_cast<WPARAM>(kOpenFolder)) {
+                ShellExecuteW(nullptr, L"open", links->folder.c_str(), nullptr, nullptr, SW_SHOW);
+                return S_FALSE;
+            }
+            return S_OK;
+        };
+        int chosen = 0;
+        TaskDialogIndirect(&config, &chosen, nullptr, nullptr);
+        if (chosen == kCheckAgain)
+            RetryDlss();
+    }
+
+    // Help > About, as a task dialog: the program, and in its footer the attribution NVIDIA's
+    // licences ask for - the DLSS SDK's use said "in the about box of the application" (Exhibit
+    // 7.1(b) of nvngx_dlss.license.txt), and Reflex referred to (3.1 of reflex.license.txt). In
+    // words only: NVIDIA's logos need NVIDIA's written approval first (7.2(c)). The link opens
+    // the folder whose licence files go with NVIDIA's DLLs, when they are there.
+    void App::ShowAbout() {
+        const std::wstring folder = ProgramFolder();
+
+        // __DATE__ pads a single-digit day with a space: "Oct  1 2026".
+        std::wstring built = Wide(__DATE__);
+        for (size_t at = built.find(L"  "); at != std::wstring::npos; at = built.find(L"  "))
+            built.erase(at, 1);
+        const std::wstring content =
+            L"A PlayStation emulator.\n\nCopyright (c) 2012 Khalid Ali Al-Kooheji. Free software, "
+            L"under the MIT licence.\nBuilt " + built + L".";
+
+        std::wstring nvidia =
+            L"Uses NVIDIA DLSS - Super Resolution, DLAA and Frame Generation - and NVIDIA Reflex, "
+            L"through NVIDIA Streamline";
+        if (dlss_status_.ready && !dlss_status_.version.empty())
+            nvidia += L" (DLSS " + Wide(dlss_status_.version) + L" running now)";
+        nvidia += L". NVIDIA, NVIDIA RTX, GeForce RTX, DLSS and Reflex are trademarks and/or "
+                  L"registered trademarks of NVIDIA Corporation in the U.S. and other countries.";
+        if (GetFileAttributesW((folder + L"nvngx_dlss.license.txt").c_str()) !=
+            INVALID_FILE_ATTRIBUTES)
+            nvidia += L"\n\nNVIDIA's files beside the program are under NVIDIA's licences, and "
+                      L"Streamline under the MIT licence: <a href=\"" + folder +
+                      L"\">the licence files</a>.";
+
+        TASKDIALOGCONFIG config = {};
+        config.cbSize = sizeof(config);
+        config.hwndParent = window_;
+        config.hInstance = GetModuleHandleW(nullptr);
+        config.dwFlags = TDF_ENABLE_HYPERLINKS | TDF_USE_HICON_MAIN | TDF_ALLOW_DIALOG_CANCELLATION |
+                         TDF_POSITION_RELATIVE_TO_WINDOW;
+        config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+        config.pszWindowTitle = L"About PSXEmu";
+        config.hMainIcon = AppIcon(config.hInstance);
+        config.pszMainInstruction = L"PSXEmu";
+        config.pszContent = content.c_str();
+        config.pszFooter = nvidia.c_str();
+        config.pfCallback = [](HWND, UINT note, WPARAM, LPARAM lparam, LONG_PTR) -> HRESULT {
+            if (note == TDN_HYPERLINK_CLICKED)
+                ShellExecuteW(nullptr, L"open", reinterpret_cast<LPCWSTR>(lparam), nullptr,
+                              nullptr, SW_SHOW);
+            return S_OK;
+        };
+        TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
     }
 
     void App::OnKeyDown(WPARAM key, bool repeat) {
@@ -3464,6 +3701,12 @@ namespace psxemu {
             case kCommandVideoSettings:
                 video_settings_.Show();
                 break;
+
+            case kCommandAbout: {
+                MenuPause held(this);
+                ShowAbout();
+                break;
+            }
 
             case kCommandCheats:
                 cheats_window_.Show();

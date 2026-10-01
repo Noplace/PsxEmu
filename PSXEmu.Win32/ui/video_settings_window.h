@@ -60,6 +60,13 @@ namespace psxemu {
             bool generation_dynamic = false;
             std::wstring dlss_status;            // whether DLSS runs, or why not
             std::wstring generation_status;      // ...and Frame Generation, when asked for
+            // An NVIDIA card, and NVIDIA's files for DLSS not all beside the emulator: the
+            // window offers the way to get them.
+            bool dlss_files_missing = false;
+            // What DLSS draws with is in place - the renderer Direct3D 12 on an NVIDIA card,
+            // the hardware rasteriser drawing. Otherwise its group is greyed, and dlss_status
+            // says what is missing.
+            bool dlss_available = false;
             int stats_mode = 0;                  // the performance panel: off, compact, full
             bool notifications = true;
             bool controllers_always = false;
@@ -81,6 +88,8 @@ namespace psxemu {
             std::function<void(const std::string& key)> set_dlss_mode;
             std::function<void(const std::string& key)> set_dlss_preset;
             std::function<void(const std::string& key)> set_dlss_generation;
+            // "Get NVIDIA's DLSS files...": how to, and the way to check again.
+            std::function<void()> get_dlss_files;
             std::function<void(int mode)> set_stats;
             std::function<void(bool on)> set_notifications;
             std::function<void(bool on)> set_controllers_always;
@@ -129,6 +138,9 @@ namespace psxemu {
         HWND dlss_generation_ = nullptr;
         HWND dlss_status_ = nullptr;
         HWND generation_status_ = nullptr;
+        HWND dlss_files_ = nullptr;
+        // The group's box and the lists' labels, greyed with the lists when DLSS cannot run.
+        std::array<HWND, 4> dlss_labels_ = {};
         HWND stats_ = nullptr;
         HWND notifications_ = nullptr;
         HWND controllers_ = nullptr;

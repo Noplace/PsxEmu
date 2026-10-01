@@ -185,6 +185,15 @@ namespace psxemu {
         // Borderless full screen over the monitor the window is on, and back to the window as it
         // was. Alt+Enter or F11 toggles it, Escape leaves it, and so does View > Full Screen.
         void SetFullscreen(bool on);
+        // Help > About: what this is, and the attribution NVIDIA's licences ask for.
+        void ShowAbout();
+        // NVIDIA's files for DLSS not beside the emulator - none, if there is no NVIDIA card to
+        // run them - and how to get them, with the way to check again (RetryDlss).
+        std::vector<std::wstring> MissingDlssFiles() const;
+        void ShowDlssFiles();
+        // The renderer made again, which loads NVIDIA's files if they have arrived since -
+        // when DLSS is asked for on Direct3D 12 and is not running.
+        void RetryDlss();
         void SetMouseMotion(const std::string& key);
         void SetMouseDpi(int dpi);
         // On the machine's thread, after every frame: what the BIOS console gained, posted to the
@@ -523,6 +532,10 @@ namespace psxemu {
         std::atomic<bool> raster_shared_{ false };
         double present_ms_ = 0.0;      // mean, from the video thread's own timing
         double presents_per_second_ = 0.0;
+        // DLSS's card time per picture, and the frames on the screen per picture Frame
+        // Generation made them for - each 0 while there were none (dlss_timing_).
+        double dlss_ms_ = 0.0;
+        double generated_per_present_ = 0.0;
 
         // ---------------------------------------------------------------------------------------
         // The machine thread's own, touched in ApplyInput and in posted requests - never here
@@ -592,6 +605,9 @@ namespace psxemu {
         // Where the machine leaves each frame's timings for the overlay's graphs. Written on the
         // machine's thread, read on the video thread; outlives both.
         FrameStatsRing frame_stats_;
+        // Where the renderer adds up DLSS's time and Frame Generation's frames, for Show
+        // Timings. Written on the video thread, taken on this one; outlives both.
+        DlssTiming dlss_timing_;
     };
 
 }   // namespace psxemu

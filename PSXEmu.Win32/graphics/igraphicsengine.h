@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "graphics/dlss/dlss_choice.h"
+#include "graphics/dlss/dlss_timing.h"
 #include "psx/shared_picture.h"
 #include "ui/overlay/overlay_draw.h"
 
@@ -103,6 +104,9 @@ class IGraphicsEngine {
     // Whether each new picture is to be presented once and its repeats not at all - Frame
     // Generation making the pictures in between (SharedPicture::picture).
     virtual bool TakesOnlyNewPictures() const { return false; }
+    // Where DLSS's card time and Frame Generation's frames are added up, for Show Timings. Null
+    // for nowhere; it outlives the engine.
+    virtual void SetDlssTiming(psxemu::DlssTiming* timing) { (void)timing; }
     // Whether this engine has to be made again for DLSS to go from `from` to `to`: on or off,
     // for one that starts NVIDIA's Streamline with its device.
     virtual bool DlssNeedsRemaking(const psxemu::DlssChoice& from,

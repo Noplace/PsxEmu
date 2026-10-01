@@ -245,6 +245,12 @@ namespace psxemu {
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(emulation), L"&Emulation");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(view), L"&View");
         AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(settings), L"&Settings");
+
+        // What this is, and whose work it carries - NVIDIA's licences ask for DLSS's and
+        // Reflex's use to be said in an about box.
+        HMENU help = CreatePopupMenu();
+        AppendMenuW(help, MF_STRING, static_cast<UINT_PTR>(kCommandAbout), L"&About PSXEmu...");
+        AppendMenuW(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(help), L"&Help");
         return bar;
     }
 

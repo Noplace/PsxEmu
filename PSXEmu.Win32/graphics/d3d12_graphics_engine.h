@@ -90,6 +90,7 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
                            const psxemu::DlssChoice& to) const override;
     void SetFrameGenerationAllowed(bool allowed) override { generation_allowed_ = allowed; }
     bool TakesOnlyNewPictures() const override { return generation_ready_; }
+    void SetDlssTiming(psxemu::DlssTiming* timing) override { dlss_timing_ = timing; }
 
  private:
     // ---- the overlay (ui/overlay), drawn last in EndFrame ----------------------------------
@@ -356,6 +357,19 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     bool dlss_options_set_ = false;
     int dlss_options_width_ = 0, dlss_options_height_ = 0;
     psxemu::DlssChoice dlss_options_choice_;
+    // Show Timings: the card's time for each picture DLSS makes - two timestamps per frame in
+    // flight, around its inputs and itself, read back once the fence says that frame is done -
+    // and the frames Frame Generation puts on the screen, by the swap chain's count.
+    void CreateDlssTimers();   // without them DLSS runs, unmeasured
+    void CollectDlssTiming();
+    psxemu::DlssTiming* dlss_timing_ = nullptr;
+    ComPtr<ID3D12QueryHeap> dlss_queries_;
+    ComPtr<ID3D12Resource> dlss_query_readback_;
+    bool dlss_query_pending_[kFrameCount] = {};
+    UINT64 timestamp_frequency_ = 0;
+    UINT timing_present_count_ = 0;
+    bool timing_generated_ = false;   // the last present had frames generated after it
+    bool dlss_timing_noted_ = false;  // the first measure written to the DLSS log
     // What DLSS last did, for PSXEMU_DLSS_LOG (psxemu::DlssNote) - written when it changes, not
     // at every frame.
     void NoteDlss(const std::string& line);

@@ -134,8 +134,11 @@ PsxEmu/
         reflex_markers.h/.cpp  the machine's Reflex markers passed to whichever renderer runs
                                Frame Generation (host/latency_markers.h)
         dlss_choice.h          the modes, and the arithmetic of sizes; header-only, the tools use it
+        dlss_timing.h          DLSS's card time and Frame Generation's frames, added up for
+                               Emulation > Show Timings
         fetch_streamline.ps1   downloads the Streamline SDK into Temp\streamline\ - its DLLs are
-                               NVIDIA's, never committed; the build copies them beside the exe
+                               NVIDIA's, never committed; the build copies them beside the exe,
+                               with NVIDIA's licences and Streamline's
         streamline/            Streamline's headers, MIT, as they come in the SDK
       d3dx12.h                 Microsoft's D3D12 helpers, vendored as they come
       opengl_engine.h/.cpp     the same again in OpenGL 3.3, on a child window of its own
