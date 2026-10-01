@@ -1987,6 +1987,12 @@ void TestSettingsFile(const std::string& directory) {
     EmuConfig loaded;
     emulation::psx::LoadConfig(out, loaded);
     Check(loaded.gpu_rasteriser == "hardware", "the hardware rasteriser survives the round trip");
+    config.gpu_rasteriser = "hardware_d3d12";
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig twelve;
+    emulation::psx::LoadConfig(out, twelve);
+    Check(twelve.gpu_rasteriser == "hardware_d3d12" && twelve.hardware_raster(),
+          "the Direct3D 12 hardware rasteriser survives the round trip");
     out.SetString("gpu_rasteriser", "vulkan");
     EmuConfig rejected;
     emulation::psx::LoadConfig(out, rejected);

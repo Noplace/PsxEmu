@@ -38,6 +38,7 @@ namespace psxemu {
         const int kIdFilter = 103;
         const int kIdSoftware = 104;
         const int kIdHardware = 105;
+        const int kIdHardware12 = 121;
         const int kIdResolution = 106;
         const int kIdTrueColor = 107;
         const int kIdPgxpFirst = 108;   // three
@@ -250,8 +251,10 @@ namespace psxemu {
         Group raster = begin_group(L"Rasteriser", kMargin, kColumnWidth, middle);
         software_ = switch_row(raster, L"&Software: draws as the console does", BS_RADIOBUTTON,
                                kIdSoftware);
-        hardware_ = switch_row(raster, L"&Hardware: on the graphics card (Direct3D 11)",
+        hardware_ = switch_row(raster, L"&Hardware: on the graphics card, Direct3D 11",
                                BS_RADIOBUTTON, kIdHardware);
+        hardware12_ = switch_row(raster, L"Hardware: on the graphics card, Direct3D 1&2",
+                                 BS_RADIOBUTTON, kIdHardware12);
         raster.y += 4;
         resolution_ = list_row(raster, L"Internal r&esolution:", kIdResolution);
         true_color_ = switch_row(raster, L"&True colour (2x and above)", BS_AUTOCHECKBOX,
@@ -400,7 +403,8 @@ namespace psxemu {
         // while software draws, and still showing what switching would give. While DLSS runs it
         // has the resolution and precise vertices: shown, and greyed.
         Check(software_, !state.hardware);
-        Check(hardware_, state.hardware);
+        Check(hardware_, state.hardware && !state.hardware_d3d12);
+        Check(hardware12_, state.hardware && state.hardware_d3d12);
         int resolution = 0;
         for (size_t i = 0; i < std::size(kResolutionChoices); ++i) {
             if (kResolutionChoices[i].scale == state.resolution_scale)
@@ -547,11 +551,15 @@ namespace psxemu {
                 break;
             case kIdSoftware:
             case kIdHardware:
+            case kIdHardware12:
                 if (host_.set_rasteriser)
-                    host_.set_rasteriser(id == kIdHardware);
+                    host_.set_rasteriser(id == kIdSoftware   ? "software"
+                                         : id == kIdHardware ? "hardware"
+                                                             : "hardware_d3d12");
                 // The machine says what it ended up with later; until then, what was clicked.
                 Check(software_, id == kIdSoftware);
                 Check(hardware_, id == kIdHardware);
+                Check(hardware12_, id == kIdHardware12);
                 break;
             case kIdTrueColor:
                 if (host_.set_true_color)

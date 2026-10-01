@@ -85,7 +85,8 @@ PsxEmu/
     tools/                     headless harnesses, built by a .bat, not the solution
       build_tools.bat
       boot_runner.cpp          boots a BIOS or disc, reports everything; the checksum baselines.
-                               Also links the hardware rasteriser, for --hw-raster [--warp]
+                               Also links the hardware rasterisers, for --hw-raster or --d3d12
+                               [--warp]
       ppm_diff.cpp             two of boot_runner's pictures compared, and shown side by side
       hw_raster_test.cpp       the hardware rasteriser against the software one, pixel for
                                pixel, scene by scene on WARP
@@ -147,8 +148,13 @@ PsxEmu/
       vk_functions.h           the Vulkan the engine uses, declared here; vulkan-1.dll is loaded
                                at run time, nothing is linked
       hw_raster/               the hardware rasteriser (Docs/Hardware-Renderer-Plan.md)
+        hardware_raster.h/.cpp HardwareRaster: what both APIs' rasterisers offer beyond
+                               RasterBackend, and the one place either is made
+        raster_common.h        what both draw with: the HLSL, its compiler, vertex and constant
+                               layouts, colour, position and motion packing, the jitter
         d3d11_raster.h/.cpp    DrawJobs drawn on the graphics card with Direct3D 11, into a copy
                                of VRAM kept there; native VRAM brought up to date in 32x32 tiles
+        d3d12_raster.h/.cpp    the same with Direct3D 12 (gpu_rasteriser = hardware_d3d12)
     input/                     the host's devices, and what they press
       input_thread.h/.cpp      the input thread: pads, keyboard, raw mouse at 1 kHz
       sony_pads.h/.cpp         DualShock 4 and DualSense pads over HID, in the Gamepad slots XInput leaves

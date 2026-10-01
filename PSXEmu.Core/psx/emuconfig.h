@@ -210,12 +210,16 @@ struct EmuConfig {
   bool gpu_thread = true;
 
   // What puts the GPU's pixels down (Docs/Hardware-Renderer-Plan.md): "software", the
-  // rasteriser every baseline is measured with, or "hardware", Direct3D 11 on the host's
-  // GPU - which only a front end can provide, and which falls back to software when it
-  // cannot be made. The game's timing is the same either way: every draw is charged by the
-  // GPU itself, whichever draws it. Read when the GPU is initialised - a boot or a reset.
+  // rasteriser every baseline is measured with, or the hardware one on the host's GPU drawn
+  // with Direct3D 11 ("hardware") or 12 ("hardware_d3d12") - the same pictures either way,
+  // which only a front end can provide, and which falls back to software when it cannot be
+  // made. The game's timing is the same whichever draws: every draw is charged by the GPU
+  // itself. Read when the GPU is initialised - a boot or a reset.
   std::string gpu_rasteriser = "software";
-  static const std::array<const char*, 2> kValidGpuRasterisers;
+  static const std::array<const char*, 3> kValidGpuRasterisers;
+  bool hardware_raster() const {
+    return gpu_rasteriser == "hardware" || gpu_rasteriser == "hardware_d3d12";
+  }
 
   // The hardware rasteriser's internal resolution, as a multiple of the console's: 1 is
   // native, and draws exactly what the software rasteriser draws. At any scale the machine
@@ -450,8 +454,8 @@ inline const std::array<const char*, 4>
 inline const std::array<const char*, 2>
     EmuConfig::kValidAudioBackends = { "wasapi", "dsound" };
 
-inline const std::array<const char*, 2>
-    EmuConfig::kValidGpuRasterisers = { "software", "hardware" };
+inline const std::array<const char*, 3>
+    EmuConfig::kValidGpuRasterisers = { "software", "hardware", "hardware_d3d12" };
 
 inline const std::array<int, 7> EmuConfig::kValidResolutionScales = { 1, 2, 3, 4, 5, 6, 8 };
 

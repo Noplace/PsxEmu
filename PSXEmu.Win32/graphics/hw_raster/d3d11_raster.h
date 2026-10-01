@@ -48,7 +48,8 @@
 // back, or - for a presenter that can open it, on the same card - left on the card in a texture
 // the two devices share (psx/shared_picture.h), which costs nothing to hand over.
 
-#include "psx/raster.h"
+#include "graphics/hw_raster/hardware_raster.h"
+#include "graphics/hw_raster/raster_common.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -64,13 +65,10 @@ namespace psxemu {
 
     class CardPictures;
 
-    class D3D11Raster : public emulation::psx::RasterBackend {
+    class D3D11Raster : public HardwareRaster {
      public:
-        // A rasteriser drawing for `vram` (Gpu's native VRAM, 1024x512) at `options`' scale, on
-        // `options`' adapter or Windows' default - or on WARP, Windows' own software Direct3D,
-        // which is deterministic and needs no graphics card: what the headless comparisons run
-        // on. Null, with `error` saying why, if Direct3D 11 cannot be had or cannot hold VRAM
-        // that large. Asked for shared pictures and unable to make them, it reads back instead.
+        // See HardwareRaster::Create. Null, with `error` saying why, if Direct3D 11 cannot be had
+        // or cannot hold VRAM that large.
         static std::unique_ptr<D3D11Raster> Create(uint16_t* vram,
                                                    const emulation::psx::RasterOptions& options,
                                                    bool warp, std::string* error);
@@ -80,16 +78,11 @@ namespace psxemu {
                             std::vector<uint32_t>* picture,
                             emulation::psx::SharedPicture* shared, int* scale) override;
 
-        // Whether it hands the picture over on the card; false once it has fallen back to reading
-        // it back, or was never asked.
-        bool sharing_pictures() const { return pictures_ != nullptr; }
-        // How many textures a shared picture can be in at once (psx/shared_picture.h). With none
-        // free the picture is read back.
-        static constexpr int kSharedPictures = emulation::psx::kSharedTextureCount;
+        Api api() const override { return Api::kD3D11; }
+        bool sharing_pictures() const override { return pictures_ != nullptr; }
 
-        // A shared picture's pixels, 0xFFRRGGBB rows, read back through a device of its own on
-        // the picture's card - for a screenshot now and then, from any thread. False if it
-        // cannot be opened, or is not drawn within a second.
+        // A picture this rasteriser shared, read back through a Direct3D 11 device of its own
+        // (HardwareRaster::ReadSharedPicture).
         static bool ReadSharedPicture(const emulation::psx::SharedPicture& picture,
                                       std::vector<uint32_t>* pixels);
 
@@ -101,61 +94,29 @@ namespace psxemu {
         void NewPicture(bool reset) override;
         void set_motion_check(bool on) override { motion_check_ = on; }
         void SetJitter(int phases) override;
-        // The jitter being drawn with now, and the one the picture last handed over was drawn
-        // with: in the target's pixels. For hw_raster_test.
-        float jitter_x() const { return jitter_x_; }
-        float jitter_y() const { return jitter_y_; }
-
-        // Whether the plane beside VRAM is being drawn (psx/shared_picture.h).
-        bool planes() const {
+        float jitter_x() const override { return jitter_x_; }
+        float jitter_y() const override { return jitter_y_; }
+        bool planes() const override {
             return plane_target_ && (keep_planes_ || shown_plane_ != emulation::psx::PlaneView::kPicture);
         }
-        // The plane over a rectangle of VRAM, every sub-pixel of it as four floats - R, G, B, A,
-        // rows of w x scale - read back, for hw_raster_test. False if it is not being drawn.
-        bool ReadPlanes(uint32_t x, uint32_t y, uint32_t w, uint32_t h, std::vector<float>* rgba);
-        int scale() const { return scale_; }
+        bool ReadPlanes(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                        std::vector<float>* rgba) override;
+        int scale() const override { return scale_; }
         emulation::psx::RasterCounters& counters() override { return counters_; }
         const char* lost() const override { return lost_.empty() ? nullptr : lost_.c_str(); }
         std::string device() const override { return adapter_name_; }
 
-        // For hw_raster_test: from here on, report the device lost, as a driver reset would.
-        void SimulateLoss() { lost_ = "simulated for a test"; }
+        void SimulateLoss() override { lost_ = "simulated for a test"; }
         void set_watch(const emulation::psx::RasterWatch&) override {}
         void NoteWatchWrite(uint32_t, uint32_t) override {}
 
-        // A pixel as the card keeps it, and back: the 16-bit VRAM value <-> RGBA8, with alpha
-        // the mask bit. Exact both ways for every one of the 65,536 values.
-        static uint32_t ToCard(uint16_t pixel);
-        static uint16_t FromCard(uint32_t rgba);
-
      private:
-        // Words a vertex carries for the pixel shader: 16 for the primitive, and 4 for its
-        // motion, which only the plane takes (Docs/DLSS-Plan.md, phase 2).
-        static constexpr int kPayload = 20;
-
-        // A corner of what is drawn, and - the same at every corner - what the pixel shader
-        // needs to work out each pixel of the primitive: see the layout in d3d11_raster.cpp.
-        struct Vertex {
-            float x, y;
-            uint32_t p[kPayload];
-        };
-
-        // What the pixel shaders are told, per batch. The layout is the HLSL cbuffer's.
-        struct Constants {
-            int32_t skip_field;        // leave the rows of the displayed field alone
-            int32_t active_line_lsb;   // ...which are those with this low bit
-            int32_t force_mask;        // GP0(E6h) bit 0
-            int32_t check_mask;        // GP0(E6h) bit 1
-            int32_t tw_mask_x, tw_mask_y, tw_offset_x, tw_offset_y;   // the texture window
-            float jitter_x, jitter_y;  // a triangle's sample point within its sub-pixel (Begin)
-            int32_t pad[2];
-        };
-
-        enum Shader {
-            kShaderDraw, kShaderCopy, kShaderDownsample, kShaderExpand, kShaderDisplay,
-            kShaderDisplayDepth, kShaderDisplayMotion,
-            kShaderCount
-        };
+        // What both rasterisers draw with (raster_common.h).
+        static constexpr int kPayload = raster::kPayload;
+        using Vertex = raster::Vertex;
+        using Constants = raster::Constants;
+        using Shader = raster::Shader;
+        static constexpr int kShaderCount = raster::kShaderCount;
 
         // What one batch shares. A job needing anything different flushes first.
         struct BatchKey {
@@ -203,8 +164,6 @@ namespace psxemu {
         // `payload`, and marks it drawn.
         void AddBox(int32_t left, int32_t top, int32_t right, int32_t bottom,
                     const uint32_t (&payload)[kPayload]);
-        static uint32_t Attributes(const emulation::psx::RasterState& state, uint32_t kind,
-                                   bool textured, bool dither);
 
         void AddTriangle(const emulation::psx::DrawJob& job);
         void AddPreciseTriangle(const emulation::psx::DrawJob& job, const BatchKey& key);

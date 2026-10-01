@@ -257,6 +257,7 @@ namespace psxemu {
     inline constexpr VkFlags VK_ACCESS_TRANSFER_READ_BIT = 0x800;
     inline constexpr VkFlags VK_ACCESS_TRANSFER_WRITE_BIT = 0x1000;
     inline constexpr VkFlags VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT = 0x8;
+    inline constexpr VkFlags VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT = 0x40;
     inline constexpr VkFlags VK_COLOR_COMPONENT_RGBA_BITS = 0xF;
     inline constexpr VkFlags VK_CULL_MODE_NONE = 0;
     inline constexpr VkFlags VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT = 0x2;

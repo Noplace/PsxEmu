@@ -107,6 +107,8 @@ exit /b 0</Command>
     <ClCompile Include="ui\debugger_window.cpp" />
     <ClCompile Include="graphics\d3d11_presenter.cpp" />
     <ClCompile Include="graphics\hw_raster\d3d11_raster.cpp" />
+    <ClCompile Include="graphics\hw_raster\d3d12_raster.cpp" />
+    <ClCompile Include="graphics\hw_raster\hardware_raster.cpp" />
     <ClCompile Include="graphics\d3d12_graphics_engine.cpp" />
     <ClCompile Include="graphics\d3d12_dlss.cpp" />
     <ClCompile Include="graphics\dlss\streamline.cpp" />
@@ -147,6 +149,9 @@ exit /b 0</Command>
     <ClInclude Include="graphics\d3d11_presenter.h" />
     <ClInclude Include="graphics\adapters.h" />
     <ClInclude Include="graphics\hw_raster\d3d11_raster.h" />
+    <ClInclude Include="graphics\hw_raster\d3d12_raster.h" />
+    <ClInclude Include="graphics\hw_raster\hardware_raster.h" />
+    <ClInclude Include="graphics\hw_raster\raster_common.h" />
     <ClInclude Include="graphics\d3d12_graphics_engine.h" />
     <ClInclude Include="graphics\dlss\dlss_choice.h" />
     <ClInclude Include="graphics\dlss\dlss_timing.h" />

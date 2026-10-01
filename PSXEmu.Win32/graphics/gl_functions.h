@@ -63,6 +63,8 @@ namespace psxemu {
     typedef struct __GLsync* GLsync;
     inline constexpr GLenum kGlNumExtensions = 0x821D;
     inline constexpr GLenum kGlHandleTypeD3D11ImageExt = 0x958B;
+    inline constexpr GLenum kGlHandleTypeD3D12ResourceExt = 0x958A;
+    inline constexpr GLenum kGlDedicatedMemoryObjectExt = 0x9581;
     inline constexpr GLenum kGlDeviceLuidExt = 0x9599;
     inline constexpr size_t kGlLuidSize = 8;
 
@@ -152,12 +154,18 @@ namespace psxemu {
                                                     GLsizei height, GLuint memory,
                                                     uint64_t offset);
         typedef void(APIENTRY* GetUnsignedBytevProc)(GLenum name, GLubyte* data);
+        typedef void(APIENTRY* MemoryObjectParameterivProc)(GLuint memory, GLenum name,
+                                                            const GLint* params);
         GetStringiProc GetStringi = nullptr;
         CreateMemoryObjectsProc CreateMemoryObjects = nullptr;
         DeleteMemoryObjectsProc DeleteMemoryObjects = nullptr;
         ImportMemoryWin32HandleProc ImportMemoryWin32Handle = nullptr;
         TexStorageMem2DProc TexStorageMem2D = nullptr;
         GetUnsignedBytevProc GetUnsignedBytev = nullptr;
+        // Marks a memory object dedicated, which a Direct3D 12 resource has to be imported as.
+        // Null on a driver without it: pictures the Direct3D 12 rasteriser drew are then not
+        // imported, and come by read-back.
+        MemoryObjectParameterivProc MemoryObjectParameteriv = nullptr;
 
         // Needs a current context. True if the driver lists both extensions and has all the
         // functions; then the card the context is on, as the LUID Direct3D knows it by, is
@@ -175,6 +183,8 @@ namespace psxemu {
                 reinterpret_cast<TexStorageMem2DProc>(Find("glTexStorageMem2DEXT"));
             GetUnsignedBytev =
                 reinterpret_cast<GetUnsignedBytevProc>(Find("glGetUnsignedBytevEXT"));
+            MemoryObjectParameteriv = reinterpret_cast<MemoryObjectParameterivProc>(
+                Find("glMemoryObjectParameterivEXT"));
             if (GetStringi == nullptr || CreateMemoryObjects == nullptr ||
                 DeleteMemoryObjects == nullptr || ImportMemoryWin32Handle == nullptr ||
                 TexStorageMem2D == nullptr || GetUnsignedBytev == nullptr)

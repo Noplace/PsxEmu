@@ -73,6 +73,11 @@ class SharedPictureSource {
   // the same one.
   virtual uint64_t adapter() const = 0;
 
+  // Whether the textures are Direct3D 12 resources rather than Direct3D 11 textures: the
+  // hardware rasteriser drew them with Direct3D 12. Direct3D 11 and 12 open either the same
+  // way; Vulkan and OpenGL import the two by different handle types.
+  virtual bool d3d12() const { return false; }
+
  private:
   std::atomic<uint64_t> released_{0};
 };
@@ -85,6 +90,9 @@ struct SharedPicture {
   void* texture = nullptr;
   // Different for every texture the source ever makes, so a presenter can keep what it opened.
   uint64_t texture_id = 0;
+  // A Direct3D 12 texture's allocation on the card, in bytes, which OpenGL has to be told to
+  // import one (SharedPictureSource::d3d12); 0 for a Direct3D 11 texture.
+  uint64_t texture_bytes = 0;
   uint64_t serial = 0;   // which picture this is, counting up
   int width = 0;
   int height = 0;

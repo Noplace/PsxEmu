@@ -217,6 +217,9 @@ namespace psx {
     // Whether what shows the picture can take it on the card (SharedPicture) rather than as
     // pixels.
     bool shared_picture = false;
+    // Drawn with Direct3D 12 rather than 11 (EmuConfig::gpu_rasteriser "hardware_d3d12"): the
+    // front end's choice of which hardware rasteriser to make. The same pictures either way.
+    bool d3d12 = false;
   };
 
   // Makes a hardware rasteriser for `vram` - Gpu's native VRAM, which it must keep in step

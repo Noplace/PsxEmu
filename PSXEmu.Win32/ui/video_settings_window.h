@@ -47,6 +47,7 @@ namespace psxemu {
             int card = -1;                       // the one chosen, or -1 for automatic
             std::string filter;                  // running: a kFilterChoices key
             bool hardware = false;               // the hardware rasteriser is drawing
+            bool hardware_d3d12 = false;         // ...the Direct3D 12 one, asked for
             int resolution_scale = 1;            // as drawing: DLSS's own while it runs
             bool true_color = false;
             bool pgxp_vertices = false;
@@ -80,7 +81,8 @@ namespace psxemu {
             std::function<void(const std::string& key)> set_renderer;
             std::function<void(int card)> set_card;   // an index into State::cards, or -1
             std::function<void(const std::string& key)> set_filter;
-            std::function<void(bool hardware)> set_rasteriser;
+            // "software", "hardware" (Direct3D 11) or "hardware_d3d12" (EmuConfig).
+            std::function<void(const std::string& key)> set_rasteriser;
             std::function<void(int scale)> set_resolution;
             std::function<void(bool on)> set_true_color;
             // `which`: 0 precise vertices, 1 perspective-correct textures, 2 precise culling.
@@ -129,6 +131,7 @@ namespace psxemu {
         HWND filter_ = nullptr;
         HWND software_ = nullptr;
         HWND hardware_ = nullptr;
+        HWND hardware12_ = nullptr;
         HWND resolution_ = nullptr;
         HWND true_color_ = nullptr;
         std::array<HWND, 3> pgxp_ = {};

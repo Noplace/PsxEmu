@@ -46,6 +46,7 @@
 //     --save-state <f>   write a save state after the run finishes
 //     --hw-raster        draw with the Direct3D 11 hardware rasteriser rather than the software
 //                        one (Docs/Hardware-Renderer-Plan.md)
+//     --d3d12            ...the Direct3D 12 one instead; on its own it means --hw-raster too
 //     --warp             ...on WARP, Windows' software Direct3D: no graphics card needed, and
 //                        the same pictures every run
 //     --scale <n>        ...at n times the console's resolution (1-8); --ppm writes that
@@ -93,7 +94,7 @@
 #include "psx/disasm.h"
 #ifdef PSXEMU_HW_RASTER
 #include "graphics/adapters.h"
-#include "graphics/hw_raster/d3d11_raster.h"
+#include "graphics/hw_raster/hardware_raster.h"
 #endif
 
 #include <cstdio>
@@ -274,6 +275,7 @@ struct Options {
   // same pictures every run. Only in a build that compiles it in (PSXEMU_HW_RASTER).
   bool hw_raster;
   bool warp;
+  bool d3d12;   // --d3d12: the Direct3D 12 rasteriser rather than 11 (implies --hw-raster)
   // --scale n: its internal resolution; --no-true-color: at it, the console's colours exactly,
   // dithering and all - which keeps even the upscaled run's checksums the software ones.
   int scale;
@@ -641,6 +643,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->save_state = nullptr;
   options->hw_raster = false;
   options->warp = false;
+  options->d3d12 = false;
   options->scale = 1;
   options->shown_only = false;
   options->shared_picture = false;
@@ -733,6 +736,9 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->gpu_thread = true;
     } else if (strcmp(arg, "--hw-raster") == 0) {
       options->hw_raster = true;
+    } else if (strcmp(arg, "--d3d12") == 0) {
+      options->hw_raster = true;
+      options->d3d12 = true;
     } else if (strcmp(arg, "--warp") == 0) {
       options->warp = true;
     } else if (strcmp(arg, "--scale") == 0 && i + 1 < argc) {
@@ -1166,14 +1172,16 @@ int main(int argc, char** argv) {
       }
       adapter = card->luid;
     }
-    system->set_hardware_raster([warp, shared, adapter](uint16_t* vram,
-                                                        const emulation::psx::RasterOptions& raster,
-                                                        std::string* error)
+    const psxemu::HardwareRaster::Api api =
+        options.d3d12 ? psxemu::HardwareRaster::Api::kD3D12 : psxemu::HardwareRaster::Api::kD3D11;
+    system->set_hardware_raster([warp, shared, adapter, api](uint16_t* vram,
+                                                             const emulation::psx::RasterOptions& raster,
+                                                             std::string* error)
                                     -> std::unique_ptr<emulation::psx::RasterBackend> {
       emulation::psx::RasterOptions shown = raster;
       shown.shared_picture = shared;
       shown.adapter = adapter;
-      return psxemu::D3D11Raster::Create(vram, shown, warp, error);
+      return psxemu::HardwareRaster::Create(api, vram, shown, warp, error);
     });
     system->config().gpu_rasteriser = "hardware";
     system->config().resolution_scale = options.scale;
@@ -2182,7 +2190,7 @@ int main(int argc, char** argv) {
     // Left on the card, it is read back the way a screenshot is.
     std::vector<uint32_t> shared_pixels;
     if (const emulation::psx::SharedPicture& shared = system->gpu().shared_picture()) {
-      if (psxemu::D3D11Raster::ReadSharedPicture(shared, &shared_pixels)) {
+      if (psxemu::HardwareRaster::ReadSharedPicture(shared, &shared_pixels)) {
         shown = shared_pixels.data();
         shown_width = shared.width;
         shown_height = shared.height;

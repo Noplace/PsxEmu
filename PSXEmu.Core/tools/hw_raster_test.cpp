@@ -1,9 +1,10 @@
 // hw_raster_test - the hardware rasteriser against the software one (Docs/Hardware-Renderer-Plan.md).
 //
 // Two machines, no BIOS: one draws with SoftwareRaster, the other with the front end's
-// D3D11Raster on WARP - Windows' own software Direct3D, so this needs no graphics card and gives
-// the same answer every run. Each scene writes the same GP0 words to both - random primitives of
-// one kind, from a fixed seed - and then compares all of VRAM, pixel for pixel.
+// hardware rasteriser - Direct3D 11's, or 12's with --d3d12 - on WARP, Windows' own software
+// Direct3D, so this needs no graphics card and gives the same answer every run. Each scene
+// writes the same GP0 words to both - random primitives of one kind, from a fixed seed - and then
+// compares all of VRAM, pixel for pixel.
 //
 // The software rasteriser is the reference: it has been checked against real hardware through
 // bugs 58-105. At native size the hardware one does the same integer arithmetic, so every scene
@@ -15,7 +16,7 @@
 // rasteriser sees its own writes as it goes, the card sees VRAM as it was before, and the console
 // has a texture cache - there is no right answer to compare against (RandomTexture).
 //
-//   hw_raster_test [--seed n] [--scale n] [--planes] [--verbose] [--bisect]
+//   hw_raster_test [--seed n] [--scale n] [--planes] [--d3d12] [--verbose] [--bisect]
 //
 // --scale draws the hardware side at n times the resolution, without true colour. Native VRAM
 // is taken from each console pixel's own sub-pixel, so it must still match to the pixel.
@@ -29,7 +30,7 @@
 // Built only by build_tools.bat, with PSXEmu.Win32 on the include path.
 
 #include "psx/psx.h"
-#include "graphics/hw_raster/d3d11_raster.h"
+#include "graphics/hw_raster/hardware_raster.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -45,6 +46,8 @@ namespace {
 int g_checks = 0;
 int g_failures = 0;
 bool g_verbose = false;
+// Which hardware rasteriser is under test: Direct3D 11, or 12 with --d3d12.
+psxemu::HardwareRaster::Api g_api = psxemu::HardwareRaster::Api::kD3D11;
 bool g_bisect = false;
 
 void Check(bool condition, const std::string& what) {
@@ -426,7 +429,7 @@ void SceneFillsAndCopies(Machines& m, Random& random, int count) {
 bool SharedMatches(const emulation::psx::SharedPicture& picture,
                    const std::vector<uint32_t>& pixels) {
   std::vector<uint32_t> read;
-  return psxemu::D3D11Raster::ReadSharedPicture(picture, &read) && read == pixels;
+  return psxemu::HardwareRaster::ReadSharedPicture(picture, &read) && read == pixels;
 }
 
 // Phase 6 (psx/shared_picture.h): the picture left on the card, against the one read back. Two
@@ -440,11 +443,11 @@ void SceneSharedPicture(Random& random) {
   emulation::psx::RasterOptions options;
   options.scale = 2;
   std::string error;
-  std::unique_ptr<psxemu::D3D11Raster> reading =
-      psxemu::D3D11Raster::Create(vram.data(), options, true, &error);
+  std::unique_ptr<psxemu::HardwareRaster> reading =
+      psxemu::HardwareRaster::Create(g_api, vram.data(), options, true, &error);
   options.shared_picture = true;
-  std::unique_ptr<psxemu::D3D11Raster> sharing =
-      psxemu::D3D11Raster::Create(vram.data(), options, true, &error);
+  std::unique_ptr<psxemu::HardwareRaster> sharing =
+      psxemu::HardwareRaster::Create(g_api, vram.data(), options, true, &error);
   if (!reading || !sharing || !sharing->sharing_pictures()) {
     Check(false, "WARP makes a rasteriser that shares its pictures: " + error);
     return;
@@ -465,7 +468,7 @@ void SceneSharedPicture(Random& random) {
         "the picture on the card is the read-back one to the pixel");
 
   // A fixed number of textures: with every picture still held, the next comes back as pixels.
-  const int kTextures = psxemu::D3D11Raster::kSharedPictures;
+  const int kTextures = psxemu::HardwareRaster::kSharedPictures;
   std::vector<emulation::psx::SharedPicture> held = { shared };
   bool all_shared = true;
   for (int i = 1; i < kTextures; ++i) {
@@ -539,7 +542,7 @@ struct PlaneTexel {
 };
 
 // Console pixel (x, y)'s own sub-pixel of the plane - and whether all its sub-pixels agree.
-PlaneTexel PlaneAt(psxemu::D3D11Raster& raster, uint32_t x, uint32_t y, bool* uniform = nullptr) {
+PlaneTexel PlaneAt(psxemu::HardwareRaster& raster, uint32_t x, uint32_t y, bool* uniform = nullptr) {
   std::vector<float> rgba;
   PlaneTexel texel = { -1.0f, -1.0f, -1.0f, -1.0f };
   if (!raster.ReadPlanes(x, y, 1, 1, &rgba))
@@ -571,8 +574,8 @@ void ScenePlanes() {
   options.scale = 2;
   options.shared_picture = true;
   std::string error;
-  std::unique_ptr<psxemu::D3D11Raster> raster =
-      psxemu::D3D11Raster::Create(vram.data(), options, true, &error);
+  std::unique_ptr<psxemu::HardwareRaster> raster =
+      psxemu::HardwareRaster::Create(g_api, vram.data(), options, true, &error);
   if (!raster) {
     Check(false, "WARP makes a rasteriser at 2x: " + error);
     return;
@@ -702,13 +705,13 @@ void ScenePlanes() {
             shared.planes_id != shared.texture_id,
         "kept, the plane goes beside the shared picture");
   std::vector<uint32_t> picture, depth;
-  const bool read = psxemu::D3D11Raster::ReadSharedPicture(shared, &picture);
+  const bool read = psxemu::HardwareRaster::ReadSharedPicture(shared, &picture);
   shared.source->Release(shared.serial + 1);
   raster->SetPlanes(false, PlaneView::kDepth);
   emulation::psx::SharedPicture shown;
   raster->ResolveDisplay(0, 0, 640, 480, &pixels, &shown, &scale);
   Check(read && shown && shown.planes == nullptr &&
-            psxemu::D3D11Raster::ReadSharedPicture(shown, &depth) && depth != picture,
+            psxemu::HardwareRaster::ReadSharedPicture(shown, &depth) && depth != picture,
         "only shown, it is the picture instead - and not handed over beside it");
 
   // Motion (phase 2): where each corner was in the last picture minus where it is, in console
@@ -817,7 +820,7 @@ float HaltonExpected(uint32_t index, uint32_t base) {
 }
 
 // Native VRAM's pixel (x, y) - each console pixel's own sub-pixel - brought up to date.
-uint16_t NativeAt(psxemu::D3D11Raster& raster, const std::vector<uint16_t>& vram, uint32_t x,
+uint16_t NativeAt(psxemu::HardwareRaster& raster, const std::vector<uint16_t>& vram, uint32_t x,
                   uint32_t y) {
   raster.PrepareRead(x, y, 1, 1);
   return vram[y * 1024 + x];
@@ -832,8 +835,8 @@ void SceneJitter() {
   options.scale = 2;
   options.shared_picture = true;
   std::string error;
-  std::unique_ptr<psxemu::D3D11Raster> raster =
-      psxemu::D3D11Raster::Create(vram.data(), options, true, &error);
+  std::unique_ptr<psxemu::HardwareRaster> raster =
+      psxemu::HardwareRaster::Create(g_api, vram.data(), options, true, &error);
   if (!raster) {
     Check(false, "WARP makes a rasteriser at 2x: " + error);
     return;
@@ -928,18 +931,20 @@ int main(int argc, char** argv) {
       scale = atoi(argv[++i]);
     else if (strcmp(argv[i], "--planes") == 0)
       planes = true;
+    else if (strcmp(argv[i], "--d3d12") == 0)
+      g_api = psxemu::HardwareRaster::Api::kD3D12;
   }
 
   Machines m;
   m.software = new System();
   m.software->InitializeWithoutBios();
   m.hardware = new System();
-  static psxemu::D3D11Raster* made = nullptr;   // for the lost-card scene
+  static psxemu::HardwareRaster* made = nullptr;   // for the lost-card scene
   m.hardware->set_hardware_raster([](uint16_t* vram, const emulation::psx::RasterOptions& options,
                                      std::string* error)
                                       -> std::unique_ptr<emulation::psx::RasterBackend> {
-    std::unique_ptr<psxemu::D3D11Raster> raster =
-        psxemu::D3D11Raster::Create(vram, options, true, error);
+    std::unique_ptr<psxemu::HardwareRaster> raster =
+        psxemu::HardwareRaster::Create(g_api, vram, options, true, error);
     made = raster.get();
     return raster;
   });
@@ -956,7 +961,8 @@ int main(int argc, char** argv) {
   // --planes: the plane beside VRAM kept all along, which must change no pixel of VRAM.
   if (planes)
     m.hardware->gpu().SetPlanes(true, PlaneView::kPicture);
-  printf("seed %u, the hardware rasteriser at %dx%s\n\n", seed, scale,
+  printf("seed %u, the Direct3D %s hardware rasteriser at %dx%s\n\n", seed,
+         g_api == psxemu::HardwareRaster::Api::kD3D12 ? "12" : "11", scale,
          planes ? ", the plane beside VRAM kept" : "");
   Random random{seed ? seed : 1};
 

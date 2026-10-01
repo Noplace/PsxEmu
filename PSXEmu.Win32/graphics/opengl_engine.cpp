@@ -511,8 +511,21 @@ void main() {
             while (glGetError() != GL_NO_ERROR) {
             }
             gl_.CreateMemoryObjects(1, &fresh.memory);
-            gl_.ImportMemoryWin32Handle(fresh.memory, 0, kGlHandleTypeD3D11ImageExt,
-                                        picture.texture);
+            if (picture.source->d3d12()) {
+                // A Direct3D 12 resource: imported dedicated, with its allocation's size.
+                if (gl_.MemoryObjectParameteriv == nullptr) {
+                    gl_.DeleteMemoryObjects(1, &fresh.memory);
+                    return false;
+                }
+                const GLint dedicated = GL_TRUE;
+                gl_.MemoryObjectParameteriv(fresh.memory, kGlDedicatedMemoryObjectExt,
+                                            &dedicated);
+                gl_.ImportMemoryWin32Handle(fresh.memory, picture.texture_bytes,
+                                            kGlHandleTypeD3D12ResourceExt, picture.texture);
+            } else {
+                gl_.ImportMemoryWin32Handle(fresh.memory, 0, kGlHandleTypeD3D11ImageExt,
+                                            picture.texture);
+            }
             glGenTextures(1, &fresh.texture);
             glBindTexture(GL_TEXTURE_2D, fresh.texture);
             gl_.TexStorageMem2D(GL_TEXTURE_2D, 1, GL_RGBA8, picture.width, picture.height,

@@ -47,10 +47,16 @@ set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
  /I PSXEmu.Core\lib\zlib /I PSXEmu.Core\lib\lzma
 set LIBS=/link /SUBSYSTEM:CONSOLE user32.lib psapi.lib Temp\tools\thirdparty.lib
 
-rem boot_runner alone also has the front end's Direct3D 11 rasteriser, for --hw-raster.
+rem The front end's hardware rasterisers, Direct3D 11's and 12's, for the tools that draw with
+rem them (--hw-raster, and --d3d12 for the second).
+set HWRASTER=PSXEmu.Win32\graphics\hw_raster\d3d11_raster.cpp ^
+ PSXEmu.Win32\graphics\hw_raster\d3d12_raster.cpp ^
+ PSXEmu.Win32\graphics\hw_raster\hardware_raster.cpp
+
+rem boot_runner alone also has the front end's hardware rasteriser, for --hw-raster.
 cl %FLAGS% /DPSXEMU_HW_RASTER /I PSXEmu.Win32 /Fo:Temp\tools\obj_boot\ ^
    /Fe:Temp\tools\boot_runner.exe PSXEmu.Core\tools\boot_runner.cpp ^
-   PSXEmu.Win32\graphics\hw_raster\d3d11_raster.cpp %CORE% %LIBS%
+   %HWRASTER% %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_media mkdir Temp\tools\obj_media
@@ -108,7 +114,7 @@ if not exist Temp\tools\obj_gpu mkdir Temp\tools\obj_gpu
 rem With the hardware rasteriser too, for gpu_test --hw-raster.
 cl %FLAGS% /DPSXEMU_HW_RASTER /I PSXEmu.Win32 /Fo:Temp\tools\obj_gpu\ ^
    /Fe:Temp\tools\gpu_test.exe PSXEmu.Core\tools\gpu_test.cpp ^
-   PSXEmu.Win32\graphics\hw_raster\d3d11_raster.cpp %CORE% %LIBS%
+   %HWRASTER% %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_mdec mkdir Temp\tools\obj_mdec
@@ -189,7 +195,7 @@ if errorlevel 1 exit /b 1
 rem The hardware rasteriser against the software one, scene by scene, on WARP.
 if not exist Temp\tools\obj_hwr mkdir Temp\tools\obj_hwr
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_hwr\ /Fe:Temp\tools\hw_raster_test.exe ^
-   PSXEmu.Core\tools\hw_raster_test.cpp PSXEmu.Win32\graphics\hw_raster\d3d11_raster.cpp ^
+   PSXEmu.Core\tools\hw_raster_test.cpp %HWRASTER% ^
    %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 

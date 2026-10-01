@@ -26,7 +26,7 @@
 #include "app/win32_dialogs.h"
 #include "app/win32_paths.h"
 #include "graphics/dlss/reflex_markers.h"
-#include "graphics/hw_raster/d3d11_raster.h"
+#include "graphics/hw_raster/hardware_raster.h"
 #include "ui/dpi.h"
 
 #include <shellapi.h>   // ShellExecuteA, to open the BIOS folder from its menu
@@ -202,9 +202,7 @@ namespace psxemu {
             host.set_renderer = [this](const std::string& key) { SetRenderer(key); };
             host.set_card = [this](int card) { SetGraphicsCard(card); };
             host.set_filter = [this](const std::string& key) { SetFilter(key); };
-            host.set_rasteriser = [this](bool hardware) {
-                SetRasteriser(hardware ? "hardware" : "software");
-            };
+            host.set_rasteriser = [this](const std::string& key) { SetRasteriser(key); };
             host.set_resolution = [this](int scale) { SetResolutionScale(scale); };
             host.set_true_color = [this](bool on) { SetTrueColour(on); };
             host.set_pgxp = [this](int which, bool on) {
@@ -373,10 +371,10 @@ namespace psxemu {
         adapters_ = EnumerateGraphicsAdapters();
         chosen_adapter_ = FindGraphicsAdapter(adapters_, config_.graphics_adapter);
         raster_adapter_.store(chosen_adapter_);
-        // The hardware rasteriser, for when Settings > Video > Rasteriser asks for it. Its own
-        // Direct3D 11 device, whichever renderer shows the picture: on the card chosen, or with
-        // none chosen the renderer's, handing its pictures over there when that is the renderer's
-        // card too (UpdateRasteriserCard).
+        // The hardware rasteriser, for when Settings > Video's rasteriser asks for it - drawn with
+        // Direct3D 11 or 12, as it asks. Its own device, whichever renderer shows the picture: on
+        // the card chosen, or with none chosen the renderer's, handing its pictures over there
+        // when that is the renderer's card too (UpdateRasteriserCard).
         system_->set_hardware_raster([this](uint16_t* vram,
                                              const emulation::psx::RasterOptions& options,
                                              std::string* error)
@@ -384,7 +382,9 @@ namespace psxemu {
             emulation::psx::RasterOptions shown = options;
             shown.adapter = raster_adapter_.load(std::memory_order_acquire);
             shown.shared_picture = raster_shared_.load(std::memory_order_acquire);
-            return D3D11Raster::Create(vram, shown, false, error);
+            return HardwareRaster::Create(shown.d3d12 ? HardwareRaster::Api::kD3D12
+                                                      : HardwareRaster::Api::kD3D11,
+                                          vram, shown, false, error);
         });
         if (system_->Initialize(bios_path_.c_str()) != 0) {
             ShowError(window_,
@@ -1502,6 +1502,7 @@ namespace psxemu {
         }
         state.filter = current_filter_;
         state.hardware = drawing_hardware_;
+        state.hardware_d3d12 = config_.gpu_rasteriser == "hardware_d3d12";
         state.resolution_scale = dlss_active_ ? dlss_scale_ : config_.resolution_scale;
         state.true_color = config_.true_color;
         state.pgxp_vertices = config_.pgxp_vertices;
@@ -1642,7 +1643,7 @@ namespace psxemu {
             return;
         raster_adapter_.store(adapter, std::memory_order_release);
         raster_shared_.store(shared, std::memory_order_release);
-        if (config_.gpu_rasteriser != "hardware")
+        if (!config_.hardware_raster())
             return;
         PostToMachine([this](Machine& machine) {
             machine.system().gpu().ChooseRasteriser();
@@ -1704,9 +1705,12 @@ namespace psxemu {
         if (!error.empty())
             Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"Hardware rasteriser unavailable",
                    Wide(error) + L" - drawing in software");
+        else if (announce && !hardware)
+            Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"Rasteriser: software");
         else if (announce)
             Notify(OverlayIcon::kScreen, ToastKind::kInfo,
-                   hardware ? L"Rasteriser: hardware" : L"Rasteriser: software");
+                   config_.gpu_rasteriser == "hardware_d3d12" ? L"Rasteriser: hardware, Direct3D 12"
+                                                              : L"Rasteriser: hardware, Direct3D 11");
     }
 
     // The Memory Cards items for a multitap's cards B-D are greyed out for a port without one.
@@ -3222,7 +3226,7 @@ namespace psxemu {
             if (frame != nullptr && !frame->is_vram) {
                 // The hardware rasteriser's picture may still be on the card.
                 if (frame->shared)
-                    D3D11Raster::ReadSharedPicture(frame->shared, &pixels);
+                    HardwareRaster::ReadSharedPicture(frame->shared, &pixels);
                 else
                     pixels = frame->pixels;
             }
@@ -3401,7 +3405,7 @@ namespace psxemu {
             std::vector<uint32_t> pixels;
             if (frame != nullptr && !frame->is_vram) {
                 if (frame->shared)
-                    D3D11Raster::ReadSharedPicture(frame->shared, &pixels);
+                    HardwareRaster::ReadSharedPicture(frame->shared, &pixels);
                 else
                     pixels = frame->pixels;
             }

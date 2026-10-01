@@ -5,7 +5,9 @@ Video > Rasteriser, draws at 1x to 8x the console's resolution, with true colour
 draws polygons at their unrounded positions with perspective-correct textures, under the
 interpreter or the recompiler; it hands its picture to every renderer on the graphics card, with
 nothing read back. At native size it is identical to the software rasteriser, and at every scale,
-PGXP on or off, what the machine sees still is.**
+PGXP on or off, what the machine sees still is. Since 2026-10-01 there is a Direct3D 12 one
+beside it, chosen in the same place, drawing the same pictures
+([below](#after-phase-6-a-direct3d-12-rasteriser-beside-the-direct3d-11-one)).**
 
 The PlayStation draws at 256-640 pixels across, with integer vertex coordinates
 and textures mapped without perspective. On a modern display that shows as three
@@ -858,6 +860,57 @@ with RivaTuner - which hooks every process's graphics calls and polls the cards'
 state - was running on it, and was closed afterward. Runs since have been on the Radeon
 only, and with neither running the OpenGL handle growth above still reproduced, so that is
 not RivaTuner's.
+
+### After phase 6: a Direct3D 12 rasteriser beside the Direct3D 11 one
+
+**Settings > Video > Rasteriser** offers three: Software, **Hardware, Direct3D 11** (what there
+was) and **Hardware, Direct3D 12**. The two hardware ones draw the same things the same way -
+one shader source, one set of helpers - and either can be switched to live, keeping VRAM, as
+any change of rasteriser is. `gpu_rasteriser` is `software`, `hardware` (Direct3D 11, the key
+kept so settings files already written mean what they meant) or `hardware_d3d12`;
+`EmuConfig::hardware_raster()` is true for either.
+
+- **`hw_raster/raster_common.h`**: what both draw with - the vertex and constants layouts, the
+  HLSL (moved out of `d3d11_raster.cpp` unchanged), `CompileShader`, the colour and position
+  packing, the motion vectors, the piece splitting, the jitter sequence and the warp check's
+  sums. Direct3D 11 compiles it as shader model 4.0, as before; Direct3D 12 as 5.0, the
+  lowest it takes.
+- **`hw_raster/hardware_raster.*`**: `HardwareRaster`, the interface both implement beyond
+  `RasterBackend` (the jitter, the planes, the scale, sharing), with `Create(api, ...)` and
+  `ReadSharedPicture`, which dispatch on the API. The App, `boot_runner`, `gpu_test` and
+  `hw_raster_test` make one through it.
+- **`hw_raster/d3d12_raster.*`**: `D3D12Raster`, a port of every Direct3D 11 function: one
+  command list and three frames of allocators and upload space, each fenced; resource states
+  tracked per texture; a root signature of twelve constants and a two-texture table; eleven
+  pipeline states for what Direct3D 11 set as separate state; read-backs through placed
+  footprints. Its device is feature level 11_0, on the card chosen, Windows' default or WARP.
+- **Its pictures are Direct3D 12 resources**, made shared and handed over in the common
+  state, after a fence of their own. `SharedPictureSource::d3d12()` says so, and
+  `SharedPicture::texture_bytes` carries the allocation's size, which OpenGL needs: Direct3D
+  11 and 12 open them as they open Direct3D 11's; Vulkan imports them with the Direct3D 12
+  resource handle type; OpenGL imports them as a dedicated memory object of that type
+  (`glMemoryObjectParameterivEXT`).
+- **`hw_raster_test`, `gpu_test` and `boot_runner` take `--d3d12`** (in `boot_runner` it implies
+  `--hw-raster`).
+
+**Verified**, on WARP and on the Radeon 780M:
+
+- `hw_raster_test --d3d12`: 73 of 73 at 1x, 2x, 4x with the planes, 8x, 3x with the planes
+  and seed 7, and seed 99; `gpu_test` 80 of 80 on each API.
+- The twelve-disc table at 4x with PGXP, 3,000 frames each, on both: eleven discs identical
+  in every report line and every pixel of the last picture. Ridge Racer differed in one VRAM
+  checksum (frame 2000) and 2 of 1,228,800 pixels, each by less than one 5-bit step - every
+  run, so not noise. It is the shader model: the Direct3D 11 rasteriser compiled as 5.0
+  instead of 4.0 matches Direct3D 12 exactly, in that checksum and every pixel. Its
+  sub-pixel PGXP positions round one way in one compiler's code and the other way in the
+  other's; Direct3D 11 was left on 4.0, so it draws exactly what it drew before.
+- The emulator, the BIOS at 4x: the Direct3D 12 rasteriser's pictures shown on the card
+  ("on card" in Show Timings) by each of Direct3D 12, Direct3D 11, OpenGL and Vulkan,
+  switched to live, at full speed; then switched live to the Direct3D 11 rasteriser and back.
+- On the RTX 4060, once: Ridge Racer at DLSS Quality with Frame Generation, on Direct3D 12
+  drawing from the Direct3D 12 rasteriser - on card, DLSS 1.4 ms a picture, frame generation
+  2.0x, full speed, the picture right. Streamline is given only the renderer's device, so
+  the rasteriser's own Direct3D 12 device passes it by, as the Direct3D 11 one does.
 
 ---
 

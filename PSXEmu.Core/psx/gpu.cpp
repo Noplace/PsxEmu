@@ -154,11 +154,12 @@ namespace emulation {
             std::unique_ptr<RasterBackend> next;
             bool hardware = false;
             raster_error_.clear();
-            if (system().config().gpu_rasteriser == "hardware") {
+            if (system().config().hardware_raster()) {
                 const RasterFactory& factory = system().hardware_raster();
                 RasterOptions options;
                 options.scale = system().config().resolution_scale;
                 options.true_color = system().config().true_color;
+                options.d3d12 = system().config().gpu_rasteriser == "hardware_d3d12";
                 if (!factory)
                     raster_error_ = "no hardware rasteriser in this build";
                 else if ((next = factory(vram_, options, &raster_error_)) != nullptr)

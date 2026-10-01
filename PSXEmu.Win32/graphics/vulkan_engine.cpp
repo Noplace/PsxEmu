@@ -1194,10 +1194,14 @@ namespace psxemu {
         imported_source_ = picture.source.get();
 
         // An image exactly like the Direct3D texture - which is what importing one asks - with
-        // its memory the texture's own, allocated for it alone.
+        // its memory the texture's own, allocated for it alone. A Direct3D 12 rasteriser's
+        // texture is a Direct3D 12 resource, and imported as one.
+        const VkFlags handle_type = picture.source->d3d12()
+                                        ? VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE_BIT
+                                        : VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
         VkExternalMemoryImageCreateInfo external = {};
         external.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
-        external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+        external.handleTypes = handle_type;
         VkImageCreateInfo info = {};
         info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         info.pNext = &external;
@@ -1222,7 +1226,7 @@ namespace psxemu {
         handle.sType = VK_STRUCTURE_TYPE_MEMORY_WIN32_HANDLE_PROPERTIES_KHR;
         const bool typed =
             vk_.GetMemoryWin32HandlePropertiesKHR(
-                device_, VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT,
+                device_, handle_type,
                 static_cast<HANDLE>(picture.texture), &handle) == VK_SUCCESS;
         const int type = typed ? FindMemory(needs.memoryTypeBits & handle.memoryTypeBits, 0) : -1;
         VkMemoryDedicatedAllocateInfo dedicated = {};
@@ -1231,7 +1235,7 @@ namespace psxemu {
         VkImportMemoryWin32HandleInfoKHR import = {};
         import.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_WIN32_HANDLE_INFO_KHR;
         import.pNext = &dedicated;
-        import.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
+        import.handleType = handle_type;
         import.handle = static_cast<HANDLE>(picture.texture);
         VkMemoryAllocateInfo allocate = {};
         allocate.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;

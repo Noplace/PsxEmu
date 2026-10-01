@@ -69,6 +69,12 @@
     <ClCompile Include="graphics\hw_raster\d3d11_raster.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
+    <ClCompile Include="graphics\hw_raster\d3d12_raster.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\hw_raster\hardware_raster.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
     <ClCompile Include="graphics\d3d12_graphics_engine.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
@@ -183,6 +189,15 @@
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\hw_raster\d3d11_raster.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\hw_raster\d3d12_raster.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\hw_raster\hardware_raster.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\hw_raster\raster_common.h">
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\d3d12_graphics_engine.h">

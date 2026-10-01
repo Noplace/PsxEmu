@@ -10,7 +10,7 @@
 
 #include "psx/psx.h"
 #ifdef PSXEMU_HW_RASTER
-#include "graphics/hw_raster/d3d11_raster.h"
+#include "graphics/hw_raster/hardware_raster.h"
 #endif
 
 #include <cstdio>
@@ -946,13 +946,18 @@ void TestBurstDmaStartsOnTheDevicesRequest(System* system) {
 int main(int argc, char** argv) {
   System* system = new System();
   // --hw-raster: every scene drawn by the Direct3D 11 rasteriser on WARP instead, which must
-  // give the same answers (Docs/Hardware-Renderer-Plan.md). In a build that has it.
-  if (argc > 1 && strcmp(argv[1], "--hw-raster") == 0) {
+  // give the same answers (Docs/Hardware-Renderer-Plan.md); --d3d12, by the Direct3D 12 one. In
+  // a build that has them.
+  const bool d3d12 = argc > 1 && strcmp(argv[1], "--d3d12") == 0;
+  if (argc > 1 && (strcmp(argv[1], "--hw-raster") == 0 || d3d12)) {
 #ifdef PSXEMU_HW_RASTER
-    system->set_hardware_raster([](uint16_t* vram, const emulation::psx::RasterOptions& options,
-                                   std::string* error)
+    system->set_hardware_raster([d3d12](uint16_t* vram,
+                                        const emulation::psx::RasterOptions& options,
+                                        std::string* error)
                                     -> std::unique_ptr<emulation::psx::RasterBackend> {
-      return psxemu::D3D11Raster::Create(vram, options, true, error);
+      return psxemu::HardwareRaster::Create(d3d12 ? psxemu::HardwareRaster::Api::kD3D12
+                                                  : psxemu::HardwareRaster::Api::kD3D11,
+                                            vram, options, true, error);
     });
     system->config().gpu_rasteriser = "hardware";
 #else
@@ -966,7 +971,7 @@ int main(int argc, char** argv) {
       printf("--hw-raster: %s\n", system->gpu().raster_error().c_str());
       return 1;
     }
-    printf("drawing with the hardware rasteriser, on WARP\n\n");
+    printf("drawing with the Direct3D %s hardware rasteriser, on WARP\n\n", d3d12 ? "12" : "11");
   }
 
   TestResetStartsIdle(system);

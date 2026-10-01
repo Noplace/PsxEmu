@@ -154,7 +154,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 420 checks, 0 failures.**
+**Current: 421 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -450,6 +450,7 @@ What it does not measure:
 | `--load-state <file>` | Resume from a save state instead of booting - skips `--disc`/`--boot-disc`/`--auto-boot`/`--exe` entirely |
 | `--save-state <file>` | Write a save state after the run finishes |
 | `--hw-raster` | Draw with the Direct3D 11 hardware rasteriser rather than the software one (Docs/Hardware-Renderer-Plan.md). Everything the machine does is unchanged; the GPU's pixel, clip and texel counters read zero, since that rasteriser does not keep them, and the report says so. `--watch-vram` is refused with it: which command wrote each pixel is the software rasteriser's own accounting |
+| `--d3d12` | Draw with the Direct3D 12 hardware rasteriser instead - `--hw-raster` with the other API, and implying it; every option below that takes `--hw-raster` takes this too. The twelve-disc table at 4x with PGXP gives the Direct3D 11 one's reports and pictures (Docs/Hardware-Renderer-Plan.md) |
 | `--warp` | With `--hw-raster`: on WARP, Windows' own software Direct3D - no graphics card needed, and the same picture every run, inline or threaded |
 | `--scale <n>` | With `--hw-raster`: at n times the console's resolution, 1-8. `--ppm` writes the picture at that size; the checksums and everything else measured stay the native picture's |
 | `--no-true-color` | With `--scale`: the console's colours exactly, dithered - then the checksums at any scale are the software rasteriser's |
@@ -624,12 +625,13 @@ person using it.
 
 ## hw_raster_test
 
-    hw_raster_test [--seed n] [--scale n] [--planes] [--verbose] [--bisect]
+    hw_raster_test [--seed n] [--scale n] [--planes] [--d3d12] [--verbose] [--bisect]
 
 The hardware rasteriser against the software one (Docs/Hardware-Renderer-Plan.md,
 bug 122). Two machines with no BIOS, one drawing with `SoftwareRaster` and one
-with the front end's `D3D11Raster` on WARP - Windows' own software Direct3D, so
-it needs no graphics card and gives the same answer every run. Each scene writes
+with the front end's `D3D11Raster` - or with `--d3d12` its `D3D12Raster` - on WARP,
+Windows' own software Direct3D, so it needs no graphics card and gives the same
+answer every run. Each scene writes
 the same GP0 words to both, thousands of random primitives of one kind from a
 fixed seed, and then compares all of VRAM:
 
@@ -684,13 +686,16 @@ times the resolution (true colour off): native VRAM is downloaded from each
 console pixel's own sub-pixel, so every scene must still match to the pixel -
 and does, at 1x-6x and 8x (bug 124). `--planes` keeps the plane beside VRAM
 through every scene, which must change no pixel - and does not, at 1x, 2x and 4x.
+The Direct3D 12 rasteriser passes all 73 the same, at 1x, 2x, 4x with `--planes`,
+8x, and 3x with `--planes` and `--seed 7`.
 
 No primitive samples a texture from the pixels it is drawing itself: the
 software rasteriser sees its own writes as it goes and the card sees VRAM as it
 was, and the console has a texture cache - there is no right answer to check.
 
 **`gpu_test --hw-raster`** runs gpu_test's own scenes through the hardware
-rasteriser the same way: all 80 checks pass.
+rasteriser the same way, and **`gpu_test --d3d12`** through the Direct3D 12 one:
+all 80 checks pass on each.
 
 ## Baselines
 
@@ -714,11 +719,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 80 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 420 |
+| `timer_test` | 80 | | `media_test` | 421 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,700 checks, 0 failures**, all ten green. Each harness's own section above
+**1,701 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -727,7 +732,8 @@ every setting in `EmuConfig` round-trips through the file, and those are
 settings. It gained twenty-three more with the pregaps of a music track that
 follows music on a CloneCD dump that did not keep them, bug 131, and four with
 DLSS's mode and preset: their defaults, the round trip, values the menu does not
-offer ignored, and the mode among a game's own keys.)
+offer ignored, and the mode among a game's own keys - and one with the Direct3D 12
+rasteriser's key, which must round-trip and count as hardware.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
