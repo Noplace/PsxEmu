@@ -8679,3 +8679,45 @@ errors; bug 139's fix stays, since the controller was wrong regardless.
 
 All twenty-four harness runs green after bugs 141 and 142 (`gpu_test` 90, and 90 again through each
 hardware rasteriser; `host_test` 34 with its BIOS count moved, above).
+
+## 143. One corridor of Silent Hill crawled: polygons too large to draw were charged as drawn
+
+`psx/gpu.cpp`, `tools/gpu_test.cpp`
+
+Reported: Silent Hill (Europe), save slot 3 - one dark corridor becomes very slow; the other four saves
+are fine.
+
+**What it was doing.** 600 frames of each save: slots 1, 2, 4 and 5 charged the rasteriser 27-56% of
+its time; slot 3 charged it **120%** - 1,360,667 draw ticks a frame against the 1,130,090 a frame holds -
+while sending only 444,773 GP0 words, a fifth of what the others send. A few primitives, each enormously
+dear. Counting draw ticks by command: 777 of the 816 million were `2E`, a textured semi-transparent quad,
+4,788 of them at 162,277 each - and the costliest all the same shape, corners at (1023,1023),
+(1023,-1022), (-1022,1023) and (-1022,-1022): a quad about 2,045 pixels each way, several times a frame,
+each charged 243,340 ticks.
+
+**Why.** The hardware does not draw a polygon spanning 1024 or more pixels across or 512 or more down,
+and every rasteriser here already rejects such a triangle (`SoftwareRaster::RasterTriangle`, and the same
+test in both hardware rasterisers) - which is why nothing showed. `Gpu::TriangleDrawTicks` had no such
+test: it clamped the corners to the drawing area (bug 87) and charged what was left, the whole viewport,
+doubled for the texture and half as much again for the blending, for a triangle that never put down a
+pixel. The GPU fell behind, and the game waited for it.
+
+**Fix.** A triangle the rasterisers reject costs nothing to draw; its quad still pays setup. The same
+rule, the same comparison, as the rasterisers and as DuckStation, which culls before it charges.
+
+**Verified.**
+- Slot 3: 34% of the GPU's time instead of 120%, and 2,520,840 GP0 words in 600 frames instead of
+  444,773 - 99.65% of what a build with no drawing time at all sends (2,529,671), so the game is no
+  longer waiting on the GPU. The picture is the same scene, the one with no drawing time a match for it.
+  Slots 1, 2 and 4 unchanged; slot 5, which shows the same quads now and then, 48% -> 43%.
+- The twelve discs: every picture and every GP0 word count identical at all three checkpoints - none of
+  them sends such a polygon early on.
+- `gpu_test` 90 -> 95: 1024 across and 512 down cost setup only, 1023 and 511 are charged; Silent Hill's
+  quad, its own nine words, costs 262 - a textured quad's setup. Three fail against the old cost, which
+  charged that quad 720,262 ticks in the test's 600x400 drawing area.
+
+**Not done.** Lines have no such limit in the rasterisers here (DuckStation culls those past 1024 or 512
+too); nothing seen needs it yet.
+
+All twenty-four harness runs green after bug 143 (`gpu_test` 95, and 95 through each hardware
+rasteriser).

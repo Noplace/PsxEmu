@@ -93,7 +93,7 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 90 checks, 0 failures.**
+**Current: 95 checks, 0 failures.**
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
@@ -152,6 +152,13 @@ MADR at the next node; it stays stopped while the machine runs, so the fills bef
 break are drawn and none after; and starting the channel again from MADR draws the rest,
 every fill exactly once (ten checks). Against the old channel-2 write, which ignored a
 write to a busy channel, four fail - the list ran on and six fills went twice.
+
+And a polygon too large to draw (bug 143): a triangle 1024 across or 512 down costs its
+46 of setup and nothing more, one 1023 across or 511 down is charged its area, and
+Silent Hill's own corridor quad - its nine words as the game sends them, corners at
+-1022 and 1023 both ways - costs a textured quad's 262 of setup alone (five checks).
+Three fail against the old cost, which charged that quad 720,262 ticks for drawing
+nothing.
 
 ## media_test
 
@@ -719,7 +726,7 @@ was, and the console has a texture cache - there is no right answer to check.
 
 **`gpu_test --hw-raster`** runs gpu_test's own scenes through the hardware
 rasteriser the same way, and **`gpu_test --d3d12`** through the Direct3D 12 one:
-all 90 checks pass on each.
+all 95 checks pass on each.
 
 ## Baselines
 
@@ -741,13 +748,13 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 297 | | `gpu_test` | 90 |
+| `cpu_test` | 297 | | `gpu_test` | 95 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 429 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,719 checks, 0 failures**, all ten green. Each harness's own section above
+**1,724 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -793,7 +800,7 @@ correctness count: it records how far off the timing is), `host_test` (34 checks
 threads and the channels between them - its own section above), and `hw_raster_test` (78
 checks, 81 with `--d3d12`, bugs 122-123, 127, 137 and 138 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
-which runs gpu_test's 90 through it), and `dlss_choice_test` (42 checks, the
+which runs gpu_test's 95 through it), and `dlss_choice_test` (42 checks, the
 arithmetic of sizes around DLSS in `graphics/dlss/dlss_choice.h` - the rasteriser's
 scale for each mode and window, never 1x, always inside the range DLSS 310.9.1 gave
 on the RTX 4060; the jitter's length; and the output asked for, the screen's or the

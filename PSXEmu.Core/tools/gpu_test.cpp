@@ -259,6 +259,55 @@ void TestDrawingCostIsClipped(System* system) {
   RunGpu(system);
 }
 
+// A triangle spanning 1024 or more across, or 512 or more down, is not drawn -
+// hardware rejects it, and so does every rasteriser here - so it costs setup
+// and nothing more. Silent Hill lays a quad about 2,045 pixels across over one
+// of its corridors several times a frame, and each was charged the whole
+// drawing area, textured and semi-transparent: 120% of the GPU's time, and the
+// game crawled (bug 143).
+void TestCulledPolygonCostsSetupOnly(System* system) {
+  printf("a polygon too large to draw costs its setup and nothing more\n");
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (400u << 10) | 600u);
+
+  // Draws a flat untextured triangle and returns what it was charged.
+  auto Cost = [system](int32_t x0, int32_t y0, int32_t x1, int32_t y1, int32_t x2,
+                       int32_t y2) -> uint64_t {
+    auto Word = [](int32_t x, int32_t y) {
+      return (static_cast<uint32_t>(y & 0x7FF) << 16) | static_cast<uint32_t>(x & 0x7FF);
+    };
+    // Caught up before and after, so the command is neither queued behind the
+    // last one's drawing nor still waiting when it is counted.
+    RunGpu(system);
+    const uint64_t before = system->gpu().stats().draw_ticks;
+    system->gpu().WriteData(0x20000000 | 0x808080);
+    system->gpu().WriteData(Word(x0, y0));
+    system->gpu().WriteData(Word(x1, y1));
+    system->gpu().WriteData(Word(x2, y2));
+    RunGpu(system);
+    return system->gpu().stats().draw_ticks - before;
+  };
+  CheckEqual(static_cast<uint32_t>(Cost(-400, 100, 624, 100, 100, 300)), 46u,
+             "1024 across is culled: setup only");
+  Check(Cost(-399, 100, 624, 100, 100, 300) > 46u, "1023 across is drawn and charged");
+  CheckEqual(static_cast<uint32_t>(Cost(100, -200, 300, 312, 200, 100)), 46u,
+             "512 down is culled: setup only");
+  Check(Cost(100, -199, 300, 312, 200, 100) > 46u, "511 down is drawn and charged");
+
+  // Silent Hill's own quad, word for word: corners at -1022 and 1023 both ways,
+  // textured and semi-transparent. 262 is a textured flat quad's setup.
+  const uint32_t quad[] = { 0x2E808080, 0x03FF03FF, 0x7C7B70C0, 0x040203FF, 0x004C7FC0,
+                            0x03FF0402, 0x7C7B70D0, 0x04020402, 0x004C7FD0 };
+  RunGpu(system);
+  const uint64_t before = system->gpu().stats().draw_ticks;
+  for (uint32_t word : quad)
+    system->gpu().WriteData(word);
+  RunGpu(system);
+  CheckEqual(static_cast<uint32_t>(system->gpu().stats().draw_ticks - before), 262u,
+             "Silent Hill's corridor quad costs its setup alone");
+}
+
 // In 480-line interlace with drawing to the display area prohibited, hardware
 // puts down only the active field, so a primitive costs half (bug 88). GP1(08)
 // sets the display mode; GP0(E1) bit 10 is the draw-to-display bit.
@@ -1072,6 +1121,7 @@ int main(int argc, char** argv) {
   TestVisibleWidthFollowsTheDisplayWindow(system);
   TestBurstDmaStartsOnTheDevicesRequest(system);
   TestBreakDrawStopsAPausedList(system);
+  TestCulledPolygonCostsSetupOnly(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

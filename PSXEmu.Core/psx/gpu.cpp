@@ -992,6 +992,21 @@ namespace emulation {
         // blending and mask-checking both do.
         int32_t Gpu::TriangleDrawTicks(const Vertex& a, const Vertex& b, const Vertex& c,
             const DrawState& state) const {
+            // A triangle spanning 1024 or more across, or 512 or more down, is not
+            // drawn at all - the hardware rejects it, and so does every rasteriser
+            // here - so it costs nothing to draw. Charging it the whole drawing area
+            // anyway is what made one corridor of Silent Hill crawl: the game puts a
+            // quad about 2,045 pixels across over it several times a frame, textured
+            // and semi-transparent, and each was charged 243,000 ticks for drawing
+            // nothing - 120% of the GPU's time (bug 143). DuckStation skips the cost
+            // of a culled triangle the same way.
+            const int32_t min_x = std::min(a.x, std::min(b.x, c.x));
+            const int32_t max_x = std::max(a.x, std::max(b.x, c.x));
+            const int32_t min_y = std::min(a.y, std::min(b.y, c.y));
+            const int32_t max_y = std::max(a.y, std::max(b.y, c.y));
+            if (max_x - min_x >= 1024 || max_y - min_y >= 512)
+                return 0;
+
             // Clamped to the drawing area first: what a primitive costs is what it
             // actually rasterises, and a game that throws big polygons at a small
             // viewport - Silent Hill's 3D view is one - pays only for the part that
