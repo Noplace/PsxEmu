@@ -42,18 +42,25 @@ namespace {
     //   hint    how far to trust this picture over DLSS's history (the bias-current-colour hint):
     //           wholly where the motion is unknown, half where the last thing drawn was
     //           translucent, which the motion underneath it does not describe
+    // A filled 480-line picture's console samples on its filled rows hold the last field
+    // (SharedPicture::filled_rows): the plane just below each, this frame's, is taken in its
+    // place - not a mean, which would blend motion and depth across an edge.
     const char kDlssInputsHlsl[] = R"HLSL(
 Texture2D<float4> planes : register(t0);
 RWTexture2D<float2> motion : register(u0);
 RWTexture2D<float> depth : register(u1);
 RWTexture2D<float> hint : register(u2);
-cbuffer Size : register(b0) { uint width; uint height; };
+cbuffer Size : register(b0) { uint width; uint height; uint filled_rows; uint scale; };
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
     if (id.x >= width || id.y >= height)
         return;
-    const float4 plane = planes[id.xy];
+    uint2 at = id.xy;
+    if (filled_rows != 0 && scale > 1 && at.x % scale == 0 && at.y % scale == 0 &&
+        ((at.y / scale) & 1) == filled_rows - 1 && at.y + 1 < height)
+        at.y += 1;
+    const float4 plane = planes[at];
     const bool unknown = plane.r >= 16384.0;   // kUnknownMotion, 32768
     motion[id.xy] = unknown ? float2(0.0, 0.0) : plane.rg;
     depth[id.xy] = plane.b / 256.0;             // kPlaneDepthScale
@@ -530,7 +537,7 @@ bool D3D12GraphicsEngine::CreateDlssPipeline() {
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0);   // u0-u2 motion, depth, hint
     CD3DX12_ROOT_PARAMETER parameters[2];
     parameters[0].InitAsDescriptorTable(2, ranges);
-    parameters[1].InitAsConstants(2, 0);   // b0: the size
+    parameters[1].InitAsConstants(4, 0);   // b0: the size, and the filled rows and scale
     CD3DX12_ROOT_SIGNATURE_DESC description;
     description.Init(2, parameters);
     ComPtr<ID3DBlob> serialized, errors;
@@ -851,8 +858,10 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
         ID3D12DescriptorHeap* heaps[] = { dlss_heap_.Get() };
         command_list_->SetDescriptorHeaps(1, heaps);
         command_list_->SetComputeRootDescriptorTable(0, gpu);
-        const UINT size[2] = { static_cast<UINT>(width), static_cast<UINT>(height) };
-        command_list_->SetComputeRoot32BitConstants(1, 2, size, 0);
+        const UINT size[4] = { static_cast<UINT>(width), static_cast<UINT>(height),
+                               static_cast<UINT>(picture.filled_rows),
+                               static_cast<UINT>((std::max)(picture.scale, 1)) };
+        command_list_->SetComputeRoot32BitConstants(1, 4, size, 0);
         command_list_->Dispatch((static_cast<UINT>(width) + 7) / 8,
                                 (static_cast<UINT>(height) + 7) / 8, 1);
         if (!planes_here) {

@@ -99,6 +99,7 @@ namespace psxemu {
         bool planes() const override {
             return plane_target_ && (keep_planes_ || shown_plane_ != emulation::psx::PlaneView::kPicture);
         }
+        bool FillsSkippedFields() const override { return scale_ > 1 && planes(); }
         bool ReadPlanes(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                         std::vector<float>* rgba) override;
         int scale() const override { return scale_; }
@@ -158,8 +159,15 @@ namespace psxemu {
         void Begin(const BatchKey& key, size_t count);
         // A key for drawing `job` inside its drawing area - false if that is empty - with its
         // field, mask and texture-window rules.
-        static bool KeyFor(const emulation::psx::DrawJob& job, D3D11_PRIMITIVE_TOPOLOGY topology,
-                           BatchKey* key);
+        bool KeyFor(const emulation::psx::DrawJob& job, D3D11_PRIMITIVE_TOPOLOGY topology,
+                    BatchKey* key);
+        // The shaders' skip_field for `job` (Constants), noting which rows a filled picture's
+        // console samples kept the last field on (fill_parity_).
+        int32_t SkipField(const emulation::psx::DrawJob& job);
+        // SharedPicture::filled_rows for a picture whose top is VRAM row `y`.
+        int FilledRows(uint32_t y) const {
+            return fill_parity_ != 0 ? 1 + ((fill_parity_ - 1 - static_cast<int>(y)) & 1) : 0;
+        }
         // Batches a rectangle of pixels - right and bottom exclusive - as two triangles carrying
         // `payload`, and marks it drawn.
         void AddBox(int32_t left, int32_t top, int32_t right, int32_t bottom,
@@ -262,6 +270,10 @@ namespace psxemu {
         // what copies and 15-bit texels carry along, made current tile by tile with VRAM's.
         bool keep_planes_ = false;
         emulation::psx::PlaneView shown_plane_ = emulation::psx::PlaneView::kPicture;
+        // 1 + the VRAM row parity the last primitive left alone and filled around
+        // (FillsSkippedFields), whose console samples still hold the last field; 0 when it left
+        // no rows alone, or left them alone whole.
+        int fill_parity_ = 0;
         Microsoft::WRL::ComPtr<ID3D11Texture2D> plane_target_;
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> plane_target_view_;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> plane_source_;   // for showing it

@@ -199,7 +199,9 @@ showing the other, and what DLSS gets with a picture must be what was drawn into
 - **Presets**: Auto (K, M, L by mode, as NVIDIA's defaults), or K, L or M chosen.
 - **Once per new picture.** A repeated vblank shows the last output again, so a 30 fps game does not
   feed DLSS the same frame twice.
-- **Films and 480i are not upscaled**: shown as now, with the history reset.
+- **Films are not upscaled**: shown as now, with the history reset. 480i is, since 2026-10-01: a
+  field-at-a-time picture is filled into a whole frame
+  ([below](#after-phase-5-480-lines-interlaced)).
 - **Filters**: multi-pass chains are already skipped for pictures this wide; single-pass ones apply
   after DLSS.
 - **Screenshots** stay the game's picture, as now.
@@ -680,7 +682,8 @@ PGXP to follow - halfword stores, most likely - are depth gained as well.
   included.
 - **Shown as they are**: pictures without the plane, interlaced 480 lines, films (which come as
   pixels), and anything DLSS will not take. The Gpu stops jittering while interlaced, so they do not
-  shake (`Gpu::NextPicture`).
+  shake (`Gpu::NextPicture`). *Since 2026-10-01 only 480-line pictures that still mix two fields -
+  none while DLSS runs - see below.*
 
 **The sizes** (`graphics/dlss/dlss_choice.h`, `tools/dlss_choice_test.cpp`, 35 checks). What DLSS
 310.9.1 takes on the 4060 (`sl_probe --optimal`): Quality, Balanced and Performance anything from
@@ -836,7 +839,81 @@ a game's own keys.
 - **The game's own HUD** cannot be told from the picture and will waver in the generated frames;
   the experiment in the design (2D after the last 3D polygon as the UI mask) is not built.
 - **One burst of dropped sound** when Frame Generation first starts (NVIDIA loading its model),
-  16,500 samples once, then none; without Frame Generation, none.
+  16,500 samples once, then none; without Frame Generation, none. *Not Frame Generation's, it
+  turned out (2026-10-01): a disc started paused from the command line drops 18,700-21,000
+  samples in the first second after it is un-paused with no DLSS at all (Air Combat and Ridge
+  Racer on the Radeon), and the BIOS with Frame Generation running drops none. Left as its own
+  question.*
+
+### After phase 5: 480 lines interlaced
+
+Until 2026-10-01 every 480-line interlaced picture started DLSS afresh, unjittered, and was shown
+as it was - and every disc's BIOS intro, most of Final Fantasy VIII's first minutes, Ace Combat
+3's and Vagrant Story's menus and the BIOS's own menu are 480i. The reason: a game drawing 480i a
+field at a time (480 lines, interlace on, drawing to the display area off - `DrawsOneFieldOnly`)
+has the GPU leave the displayed field's rows alone, so each picture is this frame's rows and the
+last frame's between them, which no motion describes.
+
+**Filled.** Above 1x, while the plane is kept, such a draw now leaves alone only each console
+pixel's own sample on those rows - the top-left sub-pixel, which native VRAM is taken from - and
+draws this frame into the rest (`skip_field` 2 in the shaders, `RasterBackend::FillsSkippedFields`).
+Native VRAM is the console's to the pixel; the sharper picture is one whole frame. The console
+samples still holding the last field are shown taken from this frame's sub-pixels around them:
+the one to the right when left and right are more alike than above and below, else the one below
+- both in the same pixel, so edges inside a pixel stay put and no colour is made up (a first try,
+always the one to the right, notched every vertical edge on alternate rows). The plane beside
+them is taken from below, and the DLSS input pass does the same (`SharedPicture::filled_rows`).
+
+**Then like any other picture.** `Gpu::MixesFields` - drawn a field at a time and *not* filled -
+is now what starts afresh, stops the jitter and keeps DLSS off (`SharedPicture::interlaced`); a
+480-line picture drawn whole, or filled, goes through DLSS. While DLSS runs nothing is left that
+mixes.
+
+**Checked.**
+
+- `hw_raster_test`, five checks more (78, 81 with `--d3d12`): with the plane kept at 2x, a frame
+  drawn a field at a time leaves native VRAM the console's two fields, the picture this frame on
+  every row, and says which rows were filled; without the plane the picture is the two fields, as
+  before. With `--planes` the existing 480i scene runs filled: native VRAM still the software
+  rasteriser's at 2x, 3x and 4x, on both APIs.
+- The 26 discs, 6,000 frames at 2x with the plane kept (`boot_runner` reports `interlaced`): every
+  disc's 480-line pictures - 518 to 5,811 - none mixing, and pictures starting afresh down from
+  thousands to tens: Final Fantasy VIII 5,815 → 9, Ace Combat 3 2,110 → 15, Driver 2 2,030 → 12,
+  Vagrant Story 2,657 → 11. Most 480i pictures are drawn a field at a time: Ace Combat 3 1,933 of
+  2,101, Vagrant Story 2,522 of 2,651, the BIOS 1,240 of 1,424 by its menu.
+- The warp check on nine 480i-heavy discs now has pictures to compare (915-5,679, where most had
+  none): motion helps where there is any - Valkyrie Profile 0.45, Air Combat 0.60, Ace Combat 3
+  0.96 - and still pictures stay still (0.3-0.45 apart).
+- Pictures: the BIOS fading in, filled, has exactly half its pixels - the skipped field's - a
+  fade step ahead of unfilled; on the BIOS menu the moving sphere's edge, combed unfilled, is one
+  clean outline filled, and the lettering is the unfilled one's to the pixel. The Direct3D 11
+  rasteriser fills the same picture as 12's (7 pixels apart by one level, the shader model).
+- On the RTX 4060: the BIOS menu - which DLSS used to leave alone - runs DLSS at 3.35 ms a picture
+  with Frame Generation 2.0x, at full speed, the picture right.
+
+### What DLSS is given, checked (2026-10-01)
+
+- **Motion**: every convention scored on the same real pictures - the last picture sampled where
+  each pixel's motion says it was, against the picture now, over pixels moving a pixel or more -
+  and the one shipped (where it was minus where it is, in the picture's own pixels, `mvecScale`
+  1/size) is best on every disc with motion in its first 6,000 frames, by far: Ridge Racer 21.0
+  against 48.1 for the best of x flipped, y flipped, both, x and y swapped, half and double scale
+  (57.1 with no motion at all), Crash 3 16.3 against 36.5, Wild Arms 2 0.9 against 49.8; every
+  wrong one worse than none. Streamline's own guide gives the scale; the direction is ours,
+  measured.
+- **Depth**: 1/z, nearer larger, `depthInverted` - which Streamline turns back into linear depth
+  as 1/depth, so DLSS sees the GTE's z itself. Never above 1, never malformed. Unknown (0, as far
+  away as can be) wherever nothing PGXP drew it: 2D, fills, films - most of most discs' first
+  minutes, half of Crash 3's.
+- **`minRelativeLinearDepthObjectSeparation`** left at NVIDIA's 40: in linear depth that is 40 GTE
+  units, and the GTE's z runs 64-65,000 much as a game's depth over its near plane does - the
+  proportion the default was made for. Changing it would want a way to score DLSS's output.
+- **The camera**: identity matrices, fixed right, up and forward, the camera's motion in the
+  motion vectors (`cameraMotionIncluded`) - consistent by the guide, and orthonormal, which Frame
+  Generation's scene-change detection needs. There is no one camera matrix in a PlayStation game
+  to give it.
+- **Open**: 2D drawn over 3D - a HUD - has depth 0, the farthest there is, so at its edges DLSS,
+  which takes the nearest surface's motion, may take the scene's. The HUD experiment above.
 
 ---
 
@@ -863,7 +940,7 @@ a game's own keys.
   unknown and why phase 2 is scored before anything is shown. Some games will be better with DLSS
   off, per game.
 - **2D games**: sprites stay on their grid, but DLSS softens pixel art. Probably off for them.
-- **480i and films**: not upscaled, above.
+- **Films**: not upscaled, above. **480i**: upscaled since 2026-10-01, filled into whole frames.
 - **Jitter in framebuffer effects**: a texture drawn under one picture's offset and used under
   another's is off by a fraction of a sub-pixel. Expected to be invisible; the 26 discs will say.
 - **The 4060's health**: it has not come back since the restart, and the cause is unknown.

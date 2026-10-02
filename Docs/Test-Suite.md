@@ -93,7 +93,7 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 80 checks, 0 failures.**
+**Current: 90 checks, 0 failures.**
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
@@ -146,6 +146,13 @@ later, and seeing which parity of its rows stayed clear); and a VRAM read sees a
 queued behind a large triangle, where it used to read the stale latch (two checks). Four
 of the seven fail on the code before the fix.
 
+And libgpu's BreakDraw (bug 142): a linked list of one big triangle and 24 one-row fills
+pauses behind the busy rasteriser; clearing channel 2's start bit stops it there, with
+MADR at the next node; it stays stopped while the machine runs, so the fills before the
+break are drawn and none after; and starting the channel again from MADR draws the rest,
+every fill exactly once (ten checks). Against the old channel-2 write, which ignored a
+write to a busy channel, four fail - the list ran on and six fills went twice.
+
 ## media_test
 
     media_test [work-directory]
@@ -154,7 +161,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 421 checks, 0 failures.**
+**Current: 429 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -189,6 +196,12 @@ Covers, in the order it runs:
   bytes with no status byte in front (bug 51); Getparam reads back the mode
   and the Setfilter file and channel, with the always-zero byte between them
   (bug 64)
+- **A sector held until its interrupt is cleared** (bug 139): with a
+  data-ready interrupt left raised for four sectors' time, the interrupt stays
+  raised and the buffer still holds its sector after the acknowledge - not the
+  next one; the next arrives soon after, under a quarter of a sector, and is the
+  next on the disc. Two of these fail with the old controller, which handed
+  over sector 51 for 50's interrupt
 - **Where the head is inside a pregap** (bug 110): GetlocP 54 sectors before a
   track's index 1 answers that track, index 0, with the time counting down -
   00:02:00 on the pregap's first sector, the sector before it still the track
@@ -460,7 +473,7 @@ What it does not measure:
 | `--gpu <name>` | With `--hw-raster`: draw on the graphics card with `<name>` anywhere in its name, any case - what Settings > Video > Graphics Card does (bug 128). The report's `gpu` line names the card. An unknown name is refused with a hint to `--list-gpus` |
 | `--list-gpus` | Print the graphics cards and their LUIDs, and exit. The LUID is spelt as Windows' `\GPU Engine` and `\GPU Process Memory` performance counters spell it, for finding which card a process is really using |
 | `--shared-picture` | With `--scale`: hand the sharper picture over on the graphics card (psx/shared_picture.h, phase 6, bug 127), as to a renderer that can take it there, rather than reading it back - for timing that path. `--ppm` reads the last picture back the way a screenshot does; the report adds how many frames' pictures were shared |
-| `--planes` | With `--hw-raster`: keep the plane beside VRAM that DLSS will use - depth and motion per sub-pixel (Docs/DLSS-Plan.md, phase 1) - and with `--shared-picture` hand it over beside each picture; the report adds how many were. The machine runs exactly as without it, and not a pixel of the picture changes |
+| `--planes` | With `--hw-raster`: keep the plane beside VRAM that DLSS will use - depth and motion per sub-pixel (Docs/DLSS-Plan.md, phase 1) - and with `--shared-picture` hand it over beside each picture; the report adds how many were. The machine runs exactly as without it, and not a pixel of native VRAM changes. Above 1x a 480-line picture drawn a field at a time is filled into a whole frame (bug 138); the report's `interlaced` line counts the 480-line pictures, those drawn a field at a time, and those still half the last field's |
 | `--view depth\|motion` | With `--hw-raster` above 1x: the plane shown in place of the picture, as View > Depth and Motion do, so `--ppm` writes it. Depth is brighter nearer, dark blue where there is none; motion's hue is its direction, dim purple where it is not known |
 | `--motion` | With `--hw-raster` above 1x, and `--pgxp` for 3D: keep the plane, and run the warp check (Docs/DLSS-Plan.md, phase 2) - each new picture compared with the last one moved by its motion and left still. The report's `warp` line gives both, per pixel and channel in 8-bit steps, and their ratio: below 1 the motion helps. Slow, since it reads every new picture back. The `motion` line says how many new pictures there were and how many started afresh, and how many vertices and 2D primitives were found in the picture before |
 | `--motion-log` | A `picture` line for each new picture: its frame, vertices found of those looked for, and whether it started afresh |
@@ -591,7 +604,7 @@ side, with a sequence number in every item.
   to the rasteriser); mouse motion adding up exactly across a racing
   publisher and taker; a doorbell that does not lose a ring that came first.
 - **The machine's thread.** A threaded BIOS boot lands on **boot_runner's own
-  instruction count and checksum** - 93,049,815 and `435bad9a6c5e4004` - which
+  instruction count and checksum** - 92,822,656 and `435bad9a6c5e4004` - which
   is the assertion that threading changed nothing about what the machine
   computes. Then again with pause and resume requests thrown at it from another
   thread as fast as it will take them (432 of them, same numbers), and again
@@ -677,18 +690,25 @@ fixed seed, and then compares all of VRAM:
   triangle's edge left out without jitter and taken in with it; a rectangle not
   jittered; the picture carrying the offset it was drawn with, not the next; and
   with jitter off, nothing jittered
+- 480 lines drawn a field at a time, filled (Docs/DLSS-Plan.md, after phase 5,
+  bug 138): with the plane kept at 2x the rasteriser fills the skipped field,
+  native VRAM keeps the console's two fields, and the picture is this frame on
+  every row and says which rows were filled; without the plane it is the two
+  fields, as before
 
 At native size the two do the same integer arithmetic, so **every pixel must
-match** - 73 checks, two a scene, the lost card's own, six for the shared picture, sixteen for the plane, six for its motion and six for jitter. A scene that does not says how many pixels
+match** - 78 checks, two a scene, the lost card's own, six for the shared picture, sixteen for the plane, six for its motion, five for the filled field and six for jitter. A scene that does not says how many pixels
 differ and how many by more than one 5-bit step, which tells rounding from a
 wrong texel. `--bisect` compares after every primitive and stops at the first
 one to differ, printing its GP0 words. `--scale n` draws the hardware side at n
 times the resolution (true colour off): native VRAM is downloaded from each
 console pixel's own sub-pixel, so every scene must still match to the pixel -
 and does, at 1x-6x and 8x (bug 124). `--planes` keeps the plane beside VRAM
-through every scene, which must change no pixel - and does not, at 1x, 2x and 4x.
-The Direct3D 12 rasteriser passes all 73 the same, at 1x, 2x, 4x with `--planes`,
-8x, and 3x with `--planes` and `--seed 7` - and three more of its own, 76: given a
+through every scene, which must change no pixel - and does not, at 1x, 2x and 4x;
+above 1x that runs the 480i scene filled (bug 138), so native VRAM staying the
+software rasteriser's there is the fill leaving the machine alone, at 2x, 3x and 4x.
+The Direct3D 12 rasteriser passes all 78 the same, at 1x, 2x, 4x with `--planes`,
+8x, and 3x with `--planes` and `--seed 7` - and three more of its own, 81: given a
 device, as the Direct3D 12 renderer gives it its own (bug 137), it hands over a texture
 on that device with the fence to wait on, the read-back picture to the pixel, and one
 that outlives the rasteriser.
@@ -699,7 +719,7 @@ was, and the console has a texture cache - there is no right answer to check.
 
 **`gpu_test --hw-raster`** runs gpu_test's own scenes through the hardware
 rasteriser the same way, and **`gpu_test --d3d12`** through the Direct3D 12 one:
-all 80 checks pass on each.
+all 90 checks pass on each.
 
 ## Baselines
 
@@ -721,13 +741,13 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 297 | | `gpu_test` | 80 |
+| `cpu_test` | 297 | | `gpu_test` | 90 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 421 |
+| `timer_test` | 80 | | `media_test` | 429 |
 | `sio_test` | 203 | | `spu_test` | 144 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,701 checks, 0 failures**, all ten green. Each harness's own section above
+**1,719 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -737,7 +757,8 @@ settings. It gained twenty-three more with the pregaps of a music track that
 follows music on a CloneCD dump that did not keep them, bug 131, and four with
 DLSS's mode and preset: their defaults, the round trip, values the menu does not
 offer ignored, and the mode among a game's own keys - and one with the Direct3D 12
-rasteriser's key, which must round-trip and count as hardware.)
+rasteriser's key, which must round-trip and count as hardware. The eight after that are
+not settings: a sector held in the buffer until its interrupt is acknowledged, bug 139.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
@@ -769,10 +790,10 @@ copies; and DuckStation's and RetroArch's cheat files, the manual-activation and
 non-GameShark cheats left out, written and read back), `timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is), `host_test` (34 checks, the
-threads and the channels between them - its own section above), and `hw_raster_test` (73
-checks, bugs 122-123 and 127 - the hardware rasteriser against the software one, every pixel of VRAM
+threads and the channels between them - its own section above), and `hw_raster_test` (78
+checks, 81 with `--d3d12`, bugs 122-123, 127, 137 and 138 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
-which runs gpu_test's 80 through it), and `dlss_choice_test` (42 checks, the
+which runs gpu_test's 90 through it), and `dlss_choice_test` (42 checks, the
 arithmetic of sizes around DLSS in `graphics/dlss/dlss_choice.h` - the rasteriser's
 scale for each mode and window, never 1x, always inside the range DLSS 310.9.1 gave
 on the RTX 4060; the jitter's length; and the output asked for, the screen's or the
@@ -790,7 +811,7 @@ come out at 0.025 and 0.043, the others at 0.12-0.25); `--cost` does that and th
 times DLSS at the sizes the emulator gives it. Each makes one device, once: on the
 4060, never in a loop.
 
-`rec_test` (467 checks) is not counted either, and for a different reason: it
+`rec_test` (513 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
 `psx/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,
@@ -799,7 +820,11 @@ continue at are compared against a reference interpreter written from the
 instruction set rather than from the compiler. Its engine checks do the same
 thing to whole programs: a loop, code that rewrites itself, and a load left in
 flight across a block boundary are each run interpreted and then recompiled,
-and the two machines compared. Everything that compiles or runs guest code runs
+and the two machines compared. Since bug 140 it also checks that a store takes
+only the blocks compiled from the words it wrote - data beside code in the same
+page leaves the code compiled, end to end and in the cache alone - and that
+code rewritten forty times keeps as many jumps as code rewritten twice; 18 of
+those checks fail against the old page-wide invalidation. Everything that compiles or runs guest code runs
 twice, once with the register allocator off and once on. See
 `Docs/Recompiler-Plan.md`.
 
@@ -832,20 +857,20 @@ and what they decided, are in the plan's step 6.
 
 | Measure | Value |
 |---|---|
-| instructions | 93,049,815 |
+| instructions | 92,822,656 |
 | resolution | 640x478 |
 | framebuffer checksum | `435bad9a6c5e4004` |
 | non-black (visible) | 305,920 of 305,920 |
 | unimplemented paths | 0 |
 | GTE commands | 0 - the shell menu is entirely 2D |
-| RFEs executed | 920 |
-| interrupts taken | 908 (vblank 335, dma 508, cdrom 3, timer2 62) |
+| RFEs executed | 919 |
+| interrupts taken | 907 (vblank 335, dma 508, cdrom 3, timer2 61) |
 | final I_STAT / I_MASK / SR | `00000001` / `0000000D` / `40000401` |
 | GP0 words / GP1 words | 16,913 / 2,320 |
-| primitives / pixels | 1,153 / 84,637,573 |
+| primitives / pixels | 1,153 / 42,416,188 |
 | texels 4-bit / 15-bit | 3,159,000 / 0 |
 | CD-ROM commands | 3 |
-| SPU | 297,483 frames, 64 key-ons, peak 27,547/23,860 |
+| SPU | 297,483 frames, 64 key-ons, peak 28,916/24,337 |
 
 **The checksum moved to `435bad9a6c5e4004`** with bug 105, the fill rule applied to
 opaque triangles too, and nothing else did: the same instructions, the same
@@ -853,7 +878,13 @@ opaque triangles too, and nothing else did: the same instructions, the same
 the shell's orange diamond, which lose the one-pixel fringe - and the single
 pixel at its apex - that an edge pixel drawn by both sides gave it.
 
-**And then to 93,049,815** (bug 88), with the checksum, every pixel, all 16,913
+**Now 92,822,656** (bug 141): the rasteriser pays its drawing off at two ticks a CPU
+cycle, not at the 53.2 MHz video clock, so the shell waits 0.24% less for it - one
+timer-2 interrupt and one RFE fewer, the checksum, every pixel and all 16,913 GP0 words
+the same. Re-recorded at the same time, because the build before it already gave
+different figures: pixels plotted and the SPU peak.
+
+**Before that, 93,049,815** (bug 88), with the checksum, every pixel, all 16,913
 GP0 words, all 1,153 primitives, the 908 interrupts and every register
 unchanged. The shell runs 480-line interlaced, so its per-pixel drawing cost
 halves - 89,653,406 GPU clocks to 45,132,122, 25% of a frame's GPU time down to

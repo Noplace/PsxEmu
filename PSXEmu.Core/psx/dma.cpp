@@ -324,6 +324,24 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f8010a0:   channels[2].madr=data;  break;
      case 0x1f8010a4:   channels[2].bcr=data;  break;
      case 0x1f8010a8:
+      // Clearing the start bit stops a transfer still in progress - one paused
+      // on a full GP0 port (bug 86) has not finished its list - and leaves MADR
+      // at the next node, with no interrupt: the transfer did not complete. It
+      // is libgpu's BreakDraw: clear the bit, read MADR for where drawing got
+      // to, draw something else, and ContinueDraw from there. Final Fantasy
+      // VII's battle does that every 3D frame, with interrupts off, to put its
+      // windows up. Ignoring the write left the list running underneath - the
+      // windows' words mixed into the scene's, GPUSTAT bit 26 stayed low while
+      // the rest of the scene went in, and ContinueDraw sent it all a second
+      // time - so the windows came out wrong and the wait cost a vblank one
+      // frame in five (bug 142). Channels 0 and 1 already stopped this way.
+      if ((channels[2].chcr & 0x01000000) != 0 &&
+          channels[2].busy_cycles == DmaChannel::kAwaitingRequest &&
+          (data & 0x01000000) == 0) {
+        channels[2].chcr = data;
+        channels[2].busy_cycles = 0;
+        break;
+      }
       if (!(channels[2].chcr&0x01000000)) {
         channels[2].chcr=data;
         if (ShouldStart(channels[2].chcr, channels[2].enable, DeviceRequest(2))) {

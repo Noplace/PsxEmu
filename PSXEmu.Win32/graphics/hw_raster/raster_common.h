@@ -90,7 +90,8 @@ namespace raster {
     // What the pixel shaders are told, per batch. The layout is the HLSL cbuffer's - and twelve
     // words, which Direct3D 12 passes as root constants.
     struct Constants {
-        int32_t skip_field;        // leave the rows of the displayed field alone
+        int32_t skip_field;        // leave the rows of the displayed field alone: 1, or 2 all
+                                   // but each pixel's console sample (FillsSkippedFields)
         int32_t active_line_lsb;   // ...which are those with this low bit
         int32_t force_mask;        // GP0(E6h) bit 0
         int32_t check_mask;        // GP0(E6h) bit 1
@@ -253,7 +254,11 @@ namespace raster {
         "  // every corner's is known (p[16-19]).\n"
         "  bool motion_known = (input.p4.w & 7u) == 7u;\n"
         "  float2 motion = float2(0.0, 0.0);\n"
-        "  if (skip_field != 0 && (pixel.y & 1) == active_line_lsb)\n"
+        "  // The displayed field's rows, 480 lines interlaced (skip_field 1): left alone, as the\n"
+        "  // console leaves them. Filled (2): all but the console's own sample, which native\n"
+        "  // VRAM is taken from - so native VRAM is the console's, and the rest of each pixel\n"
+        "  // is this frame, making the sharper picture one whole frame.\n"
+        "  if (skip_field != 0 && (pixel.y & 1) == active_line_lsb && (skip_field == 1 || exact))\n"
         "    discard;\n"
         "  uint a0 = input.p2.x;\n"
         "  uint kind = (a0 >> 27) & 3u;\n"
@@ -490,16 +495,54 @@ namespace raster {
         "  return source.Load(int3(int2(input.position.xy) / scale, 0));\n"
         "}\n"
         "\n"
+        "// Where in the target a pixel of the display area is: p0.x the area's corner. p0.y,\n"
+        "// when a field-at-a-time picture was filled (skip_field 2), is 1 + the parity of the\n"
+        "// rows whose console samples - each pixel's top-left sub-pixel - still hold the last\n"
+        "// field; Filled says whether `at` is one of them. Every sub-pixel around one is this\n"
+        "// frame's: left and right were filled, above and below drawn or filled.\n"
+        "int2 At(VsOut input) { return int2(input.position.xy) + XY(input.p0.x); }\n"
+        "bool Filled(VsOut input, int2 at) {\n"
+        "  if (input.p0.y == 0u || scale < 2)\n"
+        "    return false;\n"
+        "  int2 pixel = at / scale;\n"
+        "  int2 sub = at - pixel * scale;\n"
+        "  return (uint)(pixel.y & 1) == input.p0.y - 1u && sub.x == 0 && sub.y == 0;\n"
+        "}\n"
+        "// The picture there: a console sample of the last field is taken from this frame's\n"
+        "// sub-pixels around it, along an edge rather than across one - the one to its right\n"
+        "// when left and right are more alike than above and below, else the one below; both\n"
+        "// inside the same pixel, and no colour made up. Edges inside a pixel stay where they\n"
+        "// are, and a corner, alike both ways, goes with below. Left and above, on the display\n"
+        "// area's edge, are outside it, and are taken as right and below.\n"
+        "float4 Picture(VsOut input) {\n"
+        "  int2 at = At(input);\n"
+        "  if (!Filled(input, at))\n"
+        "    return source.Load(int3(at, 0));\n"
+        "  int2 corner = XY(input.p0.x);\n"
+        "  float4 r = source.Load(int3(at + int2(1, 0), 0));\n"
+        "  float4 d = source.Load(int3(at + int2(0, 1), 0));\n"
+        "  float4 l = at.x > corner.x ? source.Load(int3(at - int2(1, 0), 0)) : r;\n"
+        "  float4 u = at.y > corner.y ? source.Load(int3(at - int2(0, 1), 0)) : d;\n"
+        "  float across = dot(abs(l.rgb - r.rgb), 1.0), down = dot(abs(u.rgb - d.rgb), 1.0);\n"
+        "  return across < down ? r : d;\n"
+        "}\n"
+        "// The plane there: one of this frame's sub-pixels, not a mean - motion and depth are not\n"
+        "// averaged across an edge - the one below, inside the same pixel.\n"
+        "float4 Plane(VsOut input) {\n"
+        "  int2 at = At(input);\n"
+        "  return source.Load(int3(Filled(input, at) ? at + int2(0, 1) : at, 0));\n"
+        "}\n"
+        "\n"
         "// Showing, above 1x: the display area out of the target, alpha opaque.\n"
         "float4 PsDisplay(VsOut input) : SV_TARGET {\n"
-        "  return float4(source.Load(int3(int2(input.position.xy) + XY(input.p0.x), 0)).rgb, 1.0);\n"
+        "  return float4(Picture(input).rgb, 1.0);\n"
         "}\n"
         "\n"
         "// View > Depth: the plane's depth in place of the picture, nearer brighter, on a scale of\n"
         "// powers of two from about 100 to 100,000 GTE units. Dark blue where there is no depth;\n"
         "// reddened where the last thing drawn was translucent.\n"
         "float4 PsDisplayDepth(VsOut input) : SV_TARGET {\n"
-        "  float4 p = source.Load(int3(int2(input.position.xy) + XY(input.p0.x), 0));\n"
+        "  float4 p = Plane(input);\n"
         "  if (!(p.b > 0.0))\n"
         "    return float4(0.05, 0.05, 0.3, 1.0);\n"
         "  float g = saturate((log2(p.b / depth_scale) + 16.5) / 10.0);\n"
@@ -510,7 +553,7 @@ namespace raster {
         "// View > Motion: which way each sub-pixel moved, as the hue, and how far - up to eight\n"
         "// console pixels - as the brightness. Black is still; dim purple, not known.\n"
         "float4 PsDisplayMotion(VsOut input) : SV_TARGET {\n"
-        "  float4 p = source.Load(int3(int2(input.position.xy) + XY(input.p0.x), 0));\n"
+        "  float4 p = Plane(input);\n"
         "  if (p.r >= unknown_motion * 0.5 || p.g >= unknown_motion * 0.5)\n"
         "    return float4(0.25, 0.0, 0.3, 1.0);\n"
         "  float2 m = p.rg / scale;\n"
@@ -681,11 +724,19 @@ namespace raster {
     // `width` wide - against `last`, the last new picture, moved by the plane's motion (`plane`,
     // RGBA16F rows `plane_pitch` bytes apart) and left still, into `counters`. Nothing when
     // there is no last picture, or `reset` says this one has nothing to do with it.
+    //
+    // A filled picture's console samples on its `filled_rows` (SharedPicture::filled_rows) still
+    // hold the last field, and are shown from beside rather than as they are: they are left out.
     inline void WarpSums(const std::vector<uint8_t>& now, const std::vector<uint8_t>& last,
                          const uint8_t* plane, size_t plane_pitch, uint32_t width,
-                         uint32_t height, bool reset, emulation::psx::RasterCounters* counters) {
+                         uint32_t height, bool reset, emulation::psx::RasterCounters* counters,
+                         int filled_rows = 0, int scale = 1) {
         if (last.empty() || reset)
             return;
+        auto left_out = [filled_rows, scale](uint32_t col, uint32_t row) {
+            return filled_rows != 0 && scale > 1 && col % scale == 0 && row % scale == 0 &&
+                   static_cast<int>((row / scale) & 1) == filled_rows - 1;
+        };
         // The last new picture at (fx, fy) - the nearest pixel, held to its edges. Not blended
         // between pixels: that blurs sharp edges, and on motion under a pixel, as a waving flag's,
         // the blur costs more than the motion saves - the check would count right motion wrong.
@@ -708,6 +759,8 @@ namespace raster {
         for (uint32_t row = 0; row < height; ++row) {
             const uint16_t* motion = reinterpret_cast<const uint16_t*>(plane + row * plane_pitch);
             for (uint32_t col = 0; col < width; ++col) {
+                if (left_out(col, row))
+                    continue;
                 const uint8_t* here = &now[(static_cast<size_t>(row) * width + col) * 4];
                 float there[3];
                 sample(static_cast<float>(col), static_cast<float>(row), there);

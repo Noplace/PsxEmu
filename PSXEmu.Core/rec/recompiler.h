@@ -75,6 +75,7 @@
 #include "rec/block_decoder.h"
 #include "rec/runtime.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -245,20 +246,11 @@ class Recompiler {
   // this machine that is how a game loads an overlay: the CD channel drops new
   // code into RAM and jumps to it. Compiled code built from whatever was there
   // before has to go, and nothing else in the system would have said so.
+  //
+  // Only the blocks compiled from the bytes written go - not the rest of the
+  // page, which on this machine is as often data as code (bug 140).
   void NoteStoreRange(uint32_t address, uint32_t bytes) {
     if (!cache_.RangeTouchesCode(address, bytes))
-      return;
-    const uint32_t first = BlockCache::Normalise(address) >> BlockCache::kPageShift;
-    const uint32_t last =
-        BlockCache::Normalise(address + bytes - 1) >> BlockCache::kPageShift;
-    for (uint32_t page = first; page <= last; ++page)
-      NoteStore(page << BlockCache::kPageShift);
-  }
-
-  // Every guest store has to come through here, including the interpreter's.
-  // Cheap when it is not a code page, which is almost always.
-  void NoteStore(uint32_t address) {
-    if (!cache_.IsCodePage(address))
       return;
 
     // Which blocks are about to go, so the jumps into them can be taken apart
@@ -266,26 +258,19 @@ class Recompiler {
     // the worst failure this design can produce: the code is still there and
     // still runnable, so nothing crashes - it just quietly runs what the game
     // has already replaced.
-    const uint32_t page = BlockCache::Normalise(address) >> BlockCache::kPageShift;
-    std::vector<uint32_t> going;
-    for (const auto& entry : incoming_) {
-      const uint32_t target = entry.first;
-      const Block* block = cache_.Find(target);
-      if (block == nullptr)
-        continue;
-      const uint32_t first = BlockCache::Normalise(target) >> BlockCache::kPageShift;
-      const uint32_t bytes = block->guest_bytes;
-      const uint32_t last =
-          (BlockCache::Normalise(target) + (bytes == 0 ? 0 : bytes - 1)) >>
-          BlockCache::kPageShift;
-      if (page >= first && page <= last)
-        going.push_back(target);
-    }
-    for (uint32_t target : going)
+    going_.clear();
+    cache_.CollectWritten(address, bytes, &going_);
+    for (const uint32_t target : going_) {
       BreakLinksTo(target);
-
-    stats_.blocks_invalidated += cache_.InvalidatePage(address);
+      DropLinksFrom(target);
+      cache_.Remove(target);
+    }
+    stats_.blocks_invalidated += going_.size();
   }
+
+  // Every guest store has to come through here, including the interpreter's.
+  // Cheap when it is not a code page, which is almost always.
+  void NoteStore(uint32_t address) { NoteStoreRange(address & ~3u, 4); }
 
   // The write to the cache-control register at 0xFFFE0130: software saying it
   // has replaced code, which on this machine is usually an overlay arriving off
@@ -297,6 +282,7 @@ class Recompiler {
   void Reset() {
     cache_.Clear();
     incoming_.clear();   // the code those links live in is about to be released
+    outgoing_.clear();
     reclaim_pending_ = true;
   }
 
@@ -339,6 +325,15 @@ class Recompiler {
   const Stats& stats() const { return stats_; }
   const BlockCache& cache() const { return cache_; }
   size_t arena_count() const { return arenas_.size(); }
+
+  // How many jumps between blocks are being kept track of. Each live block's
+  // own, and no more: a block thrown away takes its jumps with it.
+  size_t links_held() const {
+    size_t held = 0;
+    for (const auto& entry : incoming_)
+      held += entry.second.size();
+    return held;
+  }
 
  private:
   // One patchable jump at the end of one block, and where it goes when it is
@@ -401,23 +396,57 @@ class Recompiler {
 
   // Remember every slot this block has, indexed by where it wants to go, and
   // point the ones whose destination already exists straight at it.
+  //
+  // Both ends are kept by the block cache's own key - the address normalised,
+  // as Find takes it - since that is what a store reports going, and a jump
+  // to 8000101C has to be found when the block at 0000101C goes.
   void RecordLinks(uint32_t pc, const CompiledBlock& compiled) {
+    const uint32_t owner = BlockCache::Normalise(pc);
+    DropLinksFrom(owner);   // anything left over from a block that was here before
     uint8_t* const code = static_cast<uint8_t*>(compiled.code);
     for (int i = 0; i < compiled.link_count; ++i) {
       const CompiledBlock::LinkSlot& slot = compiled.links[i];
+      const uint32_t target = BlockCache::Normalise(slot.target);
       Link link;
-      link.owner = pc;
+      link.owner = owner;
       link.site = code + slot.site;
       link.after = code + slot.after;
       link.unlinked = slot.unlinked;
-      incoming_[slot.target].push_back(link);
-      Point(link, slot.target);
+      incoming_[target].push_back(link);
+      outgoing_[owner].push_back(target);
+      Point(link, target);
     }
+  }
+
+  // Forget the jumps out of a block that is going. Its host code stays where it
+  // is until the next Reset, but nothing will enter it again, so its slots need
+  // no repointing - and keeping them did harm: every recompile of a block added
+  // its slots again beside the dead ones, and each later break or relink of the
+  // target walked them all. In Final Fantasy VII's battle, whose blocks were
+  // recompiled every frame (bug 140), that came to 71,000 slots rewritten per
+  // store, on average.
+  void DropLinksFrom(uint32_t address) {
+    const uint32_t owner = BlockCache::Normalise(address);
+    const auto out = outgoing_.find(owner);
+    if (out == outgoing_.end())
+      return;
+    for (const uint32_t target : out->second) {
+      const auto in = incoming_.find(target);
+      if (in == incoming_.end())
+        continue;
+      std::vector<Link>& links = in->second;
+      links.erase(std::remove_if(links.begin(), links.end(),
+                                 [owner](const Link& link) { return link.owner == owner; }),
+                  links.end());
+      if (links.empty())
+        incoming_.erase(in);
+    }
+    outgoing_.erase(out);
   }
 
   // Point every slot that wants this address at the block now sitting there.
   void Relink(uint32_t target) {
-    const auto it = incoming_.find(target);
+    const auto it = incoming_.find(BlockCache::Normalise(target));
     if (it == incoming_.end())
       return;
     for (const Link& link : it->second)
@@ -444,7 +473,7 @@ class Recompiler {
   // Send every jump into this address back to its own block's `ret`. Called
   // just before the block there is thrown away.
   void BreakLinksTo(uint32_t target) {
-    const auto it = incoming_.find(target);
+    const auto it = incoming_.find(BlockCache::Normalise(target));
     if (it == incoming_.end())
       return;
     for (const Link& link : it->second) {
@@ -523,6 +552,11 @@ class Recompiler {
   // Jumps indexed by the guest address they want to reach, which is the
   // direction invalidation needs: "this block is going, who points at it?"
   std::unordered_map<uint32_t, std::vector<Link>> incoming_;
+  // And the other way: each block's targets, so its slots can be found again
+  // in `incoming_` when it goes.
+  std::unordered_map<uint32_t, std::vector<uint32_t>> outgoing_;
+  // Scratch for NoteStoreRange, kept to save an allocation per store into code.
+  std::vector<uint32_t> going_;
   bool link_blocks_ = true;
   bool track_moves_ = false;
 

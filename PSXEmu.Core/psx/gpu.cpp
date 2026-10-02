@@ -34,6 +34,7 @@ namespace emulation {
             const uint32_t kGpuClockNumerator = Gpu::kGpuClockNumerator;
             const uint32_t kGpuClockDenominator = Gpu::kGpuClockDenominator;
             const uint32_t kDotsPerScanline = Gpu::kDotsPerScanline;
+            const uint32_t kDrawTicksPerCycle = Gpu::kDrawTicksPerCycle;
             const uint32_t kScanlinesNtsc = 263;
             const uint32_t kScanlinesPal = 314;
 
@@ -241,14 +242,22 @@ namespace emulation {
             const bool changed = display_width_ != shown_width_ ||
                                  display_height_ != shown_height_ ||
                                  (status_.display_depth != 0) != shown_depth_;
-            // 480 lines interlaced: each picture is half new lines and half the last field's,
-            // which no motion describes - Air Combat's title screen, 640x480. Every one starts
-            // afresh; DLSS leaves them as they are (Docs/DLSS-Plan.md).
-            const bool interlaced = status_.vres && status_.vertical_interlace;
-            *reset = cut || cut_before_ || changed || interlaced || motion_fresh_;
+            // 480 lines interlaced and drawn a field at a time, with the rasteriser not filling
+            // the other: each picture is half new lines and half the last field's, which no
+            // motion describes. Every one starts afresh; DLSS leaves them as they are
+            // (Docs/DLSS-Plan.md). Filled, or drawn whole, a 480-line picture is a frame like
+            // any other.
+            const bool mixed = MixesFields();
+            if (status_.vres && status_.vertical_interlace)
+                ++stats_.pictures_interlaced;
+            if (DrawsOneFieldOnly())
+                ++stats_.pictures_one_field;
+            if (mixed)
+                ++stats_.pictures_mixed;
+            *reset = cut || cut_before_ || changed || mixed || motion_fresh_;
             // ...and since they are shown as they are, they are not jittered either, which would
             // show as a shake. Back on from the first picture that is not.
-            const int jitter = interlaced ? 0 : jitter_phases_;
+            const int jitter = mixed ? 0 : jitter_phases_;
             if (jitter != jitter_drawn_) {
                 backend_->SetJitter(jitter);
                 jitter_drawn_ = jitter;
@@ -265,6 +274,10 @@ namespace emulation {
             system().gte().NewPicture();
             sprite_motion_.NewPicture();
             backend_->NewPicture(*reset);
+        }
+
+        bool Gpu::MixesFields() const {
+            return DrawsOneFieldOnly() && !(backend_ && backend_->FillsSkippedFields());
         }
 
         bool Gpu::FindSprite(uint64_t key, float x, float y, float* dx, float* dy) {
@@ -922,8 +935,7 @@ namespace emulation {
         void Gpu::AdvanceDrawing(uint32_t cpu_cycles) {
             if (cpu_cycles == 0)
                 return;
-            const uint32_t ticks =
-                (cpu_cycles * kGpuClockNumerator) / kGpuClockDenominator;
+            const uint32_t ticks = cpu_cycles * kDrawTicksPerCycle;
             // Only what the rasteriser actually had work for is remembered. Time it
             // spent idle is not bankable: crediting it here would have Tick spend its
             // whole budget paying the bank back instead of drawing, and since the
@@ -1629,7 +1641,7 @@ namespace emulation {
             }
             shared_picture_.new_picture = new_picture;
             shared_picture_.reset = reset;
-            shared_picture_.interlaced = status_.vres && status_.vertical_interlace;
+            shared_picture_.interlaced = MixesFields();
             if (new_picture)
                 ++picture_number_;
             shared_picture_.picture = motion_ ? picture_number_ : 0;
@@ -1732,8 +1744,7 @@ namespace emulation {
             const uint64_t owed = static_cast<uint64_t>(prepaid_ticks_) +
                                   (pending_draw_ticks_ > 0 ? pending_draw_ticks_ : 0);
             if (pending_draw_ticks_ > 0) {
-                const uint64_t draw = (owed * kGpuClockDenominator + kGpuClockNumerator - 1) /
-                                      kGpuClockNumerator;
+                const uint64_t draw = (owed + kDrawTicksPerCycle - 1) / kDrawTicksPerCycle;
                 if (draw < cycles)
                     cycles = draw;
             }
@@ -1819,13 +1830,13 @@ namespace emulation {
                 }
                 was_in_vblank_ = now_in_vblank;
             }
-            // Burn down whatever drawing is still owed. `gpu_clocks` above is this
-            // call's elapsed time in the GPU's own clock, already carried across calls,
-            // so it is what the rasteriser gets through too.
+            // Burn down whatever drawing is still owed: kDrawTicksPerCycle for each
+            // CPU cycle of this call - the rasteriser's rate, which is not the video
+            // clock above (bug 141).
             // Whatever a transfer already paid for (AdvanceDrawing) comes off first,
             // so these cycles are not spent on the rasteriser twice. The display
             // timing above is not affected: that time passed either way.
-            uint32_t payable = gpu_clocks;
+            uint32_t payable = cycles * kDrawTicksPerCycle;
             if (prepaid_ticks_ > 0) {
                 const uint32_t used =
                     (prepaid_ticks_ < payable) ? prepaid_ticks_ : payable;

@@ -195,6 +195,13 @@ namespace psx {
     // (2, 3) sequence - 0 for none. The picture carries the offset it was drawn with
     // (SharedPicture::jitter_x). It gives up the exact sub-pixel native VRAM is taken from.
     virtual void SetJitter(int phases) { (void)phases; }
+    // Whether a primitive drawn with the displayed field's rows left alone (480 lines
+    // interlaced, Gpu::DrawsOneFieldOnly) still draws this frame into those rows - every
+    // sub-pixel of them but the console's own sample, which keeps the last field as the console
+    // does, so native VRAM is what it would be. The sharper picture is then one whole frame
+    // rather than two fields from two frames, which DLSS can take (Docs/DLSS-Plan.md). The
+    // hardware rasteriser does, above 1x, while the plane is kept.
+    virtual bool FillsSkippedFields() const { return false; }
 
     // The counters since the last call, which `Gpu` merges into its stats and clears.
     virtual RasterCounters& counters() = 0;

@@ -943,6 +943,84 @@ void TestBurstDmaStartsOnTheDevicesRequest(System* system) {
   io.Write32(0x1F8010F0, 0x00000000);
 }
 
+// libgpu's BreakDraw: software clears channel 2's start bit while a linked list
+// is still going, reads MADR for where drawing got to, draws something of its
+// own, and ContinueDraw starts the channel again from there. Since bug 86 a list
+// can be paused half way, waiting for the GP0 port, and a write to the busy
+// channel was ignored - the list ran on underneath and ContinueDraw sent its
+// tail a second time. Final Fantasy VII's battle does this every 3D frame
+// (bug 142).
+void TestBreakDrawStopsAPausedList(System* system) {
+  printf("clearing channel 2's start bit stops a paused list where it is\n");
+  auto& io = system->io();
+  auto& ram = io.ram_buffer;
+  system->gpu().WriteStatus(0x00000000);
+  system->gpu().WriteData(0xE3000000);
+  system->gpu().WriteData(0xE4000000 | (400u << 10) | 600u);
+  RunGpu(system);
+  system->gpu().WriteStatus(0x04000002);     // DMA direction: CPU to GP0
+  const uint64_t fills_before = system->gpu().stats().gp0_commands[0x02];
+
+  // A list: one big triangle to keep the rasteriser busy, then 24 nodes of one
+  // fill each, a 16x1 row at y=300 - node i at x=16i - so what was drawn says
+  // which nodes went.
+  const uint32_t kList = 0x5000;
+  const int kFills = 24;
+  ram.u32[kList >> 2] = (4u << 24) | (kList + 0x10);
+  ram.u32[(kList >> 2) + 1] = 0x20808080;
+  ram.u32[(kList >> 2) + 2] = 0;
+  ram.u32[(kList >> 2) + 3] = 600u;
+  ram.u32[(kList >> 2) + 4] = 250u << 16;
+  for (int i = 0; i < kFills; ++i) {
+    const uint32_t node = kList + 0x10 + i * 0x10;
+    const uint32_t next = (i + 1 < kFills) ? node + 0x10 : 0xFFFFFF;
+    ram.u32[node >> 2] = (3u << 24) | next;
+    ram.u32[(node >> 2) + 1] = 0x02F8F8F8;
+    ram.u32[(node >> 2) + 2] = (300u << 16) | static_cast<uint32_t>(i * 16);
+    ram.u32[(node >> 2) + 3] = (1u << 16) | 16u;
+  }
+  io.Write32(0x1F8010F0, 0x00000800);        // DPCR: channel 2 on
+  io.Write32(0x1F8010A0, kList);
+  io.Write32(0x1F8010A4, 0);
+  io.Write32(0x1F8010A8, 0x01000401);        // start, linked list, from RAM
+
+  const uint32_t madr = io.Read32(0x1F8010A0) & 0xFFFFFF;
+  Check((io.Read32(0x1F8010A8) & 0x01000000) != 0 && madr != 0xFFFFFF,
+        "the list pauses part way, behind the busy rasteriser");
+
+  io.Write32(0x1F8010A8, io.Read32(0x1F8010A8) & ~0x01000000u);
+  CheckEqual(io.Read32(0x1F8010A8) & 0x01000000, 0, "clearing the start bit stops it");
+  CheckEqual(io.Read32(0x1F8010A0) & 0xFFFFFF, madr, "with MADR at the next node");
+
+  for (int i = 0; i < 64; ++i)
+    io.Tick(1024);
+  RunGpu(system);
+  CheckEqual(io.Read32(0x1F8010A0) & 0xFFFFFF, madr,
+             "and it stays stopped while the GPU catches up");
+  VramView vram{system};
+  const int first_unsent = static_cast<int>((madr - (kList + 0x10)) / 0x10);
+  Check(first_unsent > 0 && first_unsent < kFills, "the break fell among the fills");
+  CheckEqual(vram[300 * 1024 + (first_unsent - 1) * 16], 0x7FFF,
+             "what went before the break is drawn");
+  CheckEqual(vram[300 * 1024 + first_unsent * 16], 0,
+             "and nothing from the break on");
+
+  // ContinueDraw.
+  io.Write32(0x1F8010A0, madr);
+  io.Write32(0x1F8010A8, 0x01000401);
+  for (int i = 0; i < 64; ++i)
+    io.Tick(1024);
+  RunGpu(system);
+  CheckEqual(vram[300 * 1024 + (kFills - 1) * 16], 0x7FFF,
+             "starting again from MADR draws the rest");
+  CheckEqual(io.Read32(0x1F8010A8) & 0x01000000, 0, "and the list finishes");
+  CheckEqual(static_cast<uint32_t>(system->gpu().stats().gp0_commands[0x02]),
+             static_cast<uint32_t>(fills_before + kFills),
+             "every fill sent once, none twice");
+  io.Write32(0x1F8010F0, 0x00000000);
+  system->gpu().WriteStatus(0x04000000);
+}
+
 int main(int argc, char** argv) {
   System* system = new System();
   // --hw-raster: every scene drawn by the Direct3D 11 rasteriser on WARP instead, which must
@@ -993,6 +1071,7 @@ int main(int argc, char** argv) {
   TestSemiTransparentSharedEdgeBlendsOnce(system);
   TestVisibleWidthFollowsTheDisplayWindow(system);
   TestBurstDmaStartsOnTheDevicesRequest(system);
+  TestBreakDrawStopsAPausedList(system);
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

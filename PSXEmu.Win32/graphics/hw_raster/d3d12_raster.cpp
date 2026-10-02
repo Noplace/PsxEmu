@@ -968,7 +968,7 @@ namespace psxemu {
                    static_cast<const uint8_t*>(colour) + static_cast<size_t>(row) * colour_pitch,
                    width * 4);
         WarpSums(now, warp_last_, static_cast<const uint8_t*>(plane), plane_pitch, width, height,
-                 picture_reset_, &counters_);
+                 picture_reset_, &counters_, FilledRows(y), scale_);
         const D3D12_RANGE none = { 0, 0 };
         warp_plane_->Unmap(0, &none);
         warp_colour_->Unmap(0, &none);
@@ -1092,6 +1092,16 @@ namespace psxemu {
         batch_key_ = keyed;
     }
 
+    int32_t D3D12Raster::SkipField(const DrawJob& job) {
+        if (!job.env.skip_field) {
+            fill_parity_ = 0;
+            return 0;
+        }
+        const bool fill = FillsSkippedFields();
+        fill_parity_ = fill ? 1 + static_cast<int>(job.env.active_line_lsb & 1) : 0;
+        return fill ? 2 : 1;
+    }
+
     bool D3D12Raster::KeyFor(const DrawJob& job, D3D_PRIMITIVE_TOPOLOGY topology, BatchKey* key) {
         memset(key, 0, sizeof(BatchKey));
         key->topology = topology;
@@ -1104,7 +1114,7 @@ namespace psxemu {
             return false;
         key->shader = raster::kShaderDraw;
         Constants& constants = key->constants;
-        constants.skip_field = job.env.skip_field ? 1 : 0;
+        constants.skip_field = SkipField(job);
         constants.active_line_lsb = static_cast<int32_t>(job.env.active_line_lsb & 1);
         constants.force_mask = job.env.force_set_mask ? 1 : 0;
         constants.check_mask = job.env.check_mask ? 1 : 0;
@@ -1383,7 +1393,7 @@ namespace psxemu {
         key.scissor.right = kWidth;
         key.scissor.bottom = kHeight;
         key.shader = raster::kShaderDraw;
-        key.constants.skip_field = job.env.skip_field ? 1 : 0;
+        key.constants.skip_field = SkipField(job);
         key.constants.active_line_lsb = static_cast<int32_t>(job.env.active_line_lsb & 1);
         uint32_t payload[kPayload] = {};
         payload[3] = ToCard(job.fill_colour) & 0x00FFFFFF;
@@ -1765,7 +1775,8 @@ namespace psxemu {
     void D3D12Raster::DrawDisplay(D3D12_CPU_DESCRIPTOR_HANDLE into, Texture& texture, uint32_t x,
                                   uint32_t y, UINT width, UINT height) {
         // One box over the whole viewport - which is the picture's size - carrying where in
-        // the target the picture starts.
+        // the target the picture starts, and which rows' console samples a filled picture
+        // makes again from the sub-pixels around them (raster_common.h, Picture).
         Vertex corners[6] = {};
         const float points[6][2] = { { 0, 0 }, { kWidth, 0 }, { 0, kHeight },
                                      { kWidth, 0 }, { kWidth, kHeight }, { 0, kHeight } };
@@ -1774,6 +1785,7 @@ namespace psxemu {
             corners[i].y = points[i][1];
             corners[i].p[0] = PackXy(static_cast<int32_t>(x) * scale_,
                                      static_cast<int32_t>(y) * scale_);
+            corners[i].p[1] = static_cast<uint32_t>(fill_parity_);
         }
         const UploadSpace vertices = Allocate(sizeof(corners), 16);
         if (vertices.cpu == nullptr)
@@ -1915,6 +1927,8 @@ namespace psxemu {
         shared->planes_id = with_planes ? chosen.planes_id : 0;
         shared->jitter_x = jitter_phases_ > 0 ? shown_jitter_x_ : 0.0f;
         shared->jitter_y = jitter_phases_ > 0 ? shown_jitter_y_ : 0.0f;
+        shared->filled_rows = FilledRows(y);
+        shared->scale = scale_;
         return true;
     }
 

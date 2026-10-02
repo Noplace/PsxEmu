@@ -25,6 +25,27 @@ code is only part of it:
 So: dynamic. The interesting question is not that, it is what to invalidate on
 and how much of the interpreter to keep.
 
+## Correction, 2026-10-02: invalidation is by the word, and a block takes its links with it
+
+"Track which pages hold compiled code ... a store into such a page throws away
+the blocks in it", below, was wrong for this machine, and so was keeping a
+discarded block's jumps (bug 140). PSX games keep data in the same 4 KB as
+code: Final Fantasy VII's battle writes a data word at physical `000D3544`,
+beside thirty-odd blocks, about sixteen times a frame, and the recompiler threw
+the page away and compiled it again each time - 515 blocks a frame - while
+every discard walked the whole cache, and every recompile added the block's
+jumps again beside the dead ones (71,000 rewritten per store, on average, over
+ten seconds of the battle menu). The recompiler ran that scene
+at 45 fps, slower than the interpreter.
+
+Now the page bitmap is only the first question a store asks. A page with code
+in it also knows which of its words blocks were compiled from and which blocks
+they are, so a store takes out exactly the blocks whose words it wrote - and
+looks at that page's blocks only. A block that goes drops its own jumps from
+the link index. Same scene: 205 fps, 0 blocks thrown away, the same picture.
+The compiled prefix is still the only part of a block that depends on memory -
+the interpreter reads the rest afresh - so the word is the right unit.
+
 ## Correction, 2026-09-16: RecCore is x64-capable, and step 0 has now run
 
 Two things in the sections below are out of date. They are kept because the

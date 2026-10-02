@@ -123,9 +123,18 @@ struct SharedPicture {
   // it, and a number skipped is a picture it never saw. It is also the picture's frame for
   // NVIDIA Reflex (host/latency_markers.h).
   uint32_t picture = 0;
-  // 480 lines interlaced: half of each picture is the last field's lines, which no motion
-  // describes. DLSS leaves such pictures as they are.
+  // 480 lines interlaced, drawn a field at a time and not filled: half of each picture is the
+  // last field's lines, which no motion describes (Gpu::MixesFields). DLSS leaves such
+  // pictures as they are.
   bool interlaced = false;
+  // Filled (RasterBackend::FillsSkippedFields): the console's own sample of every pixel on the
+  // rows a field-at-a-time draw left alone still holds the last field, as native VRAM does -
+  // the top-left sub-pixel of each `scale` x `scale` block on the console rows, counted from
+  // the picture's top, whose parity is `filled_rows` - 1. The picture shows each made again
+  // from this frame's sub-pixels around it; the plane beside it does not, and whatever reads
+  // the plane takes the sub-pixel just below instead. 0 when there are none.
+  int filled_rows = 0;
+  int scale = 1;
   // Where the picture's triangles were sampled within each of its pixels, when jittered for DLSS
   // (Docs/DLSS-Plan.md, phase 3): in its own pixels, each within [-0.5, 0.5). A pixel shows what
   // is at itself plus this - the sample point moved, not the picture. 0 when not jittered.

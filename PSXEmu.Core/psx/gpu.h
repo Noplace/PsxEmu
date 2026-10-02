@@ -149,7 +149,7 @@ class Gpu : public GpuCore {
     uint64_t gp1_words;
     uint64_t primitives;
     uint64_t pixels;
-    // GPU clocks charged for drawing, and how many of them the CPU actually
+    // Draw ticks charged for drawing, and how many of them the CPU actually
     // had to wait through - the second is zero unless something asked. See
     // Gpu::AddDrawTicks.
     uint64_t draw_ticks;
@@ -173,6 +173,10 @@ class Gpu : public GpuCore {
     // picture, and found; 2D primitives likewise (sprite matching); and the warp check's sums
     // (RasterCounters).
     uint64_t pictures, picture_resets;
+    // ...of the new pictures, those 480 lines interlaced; of them those drawn a field at a time
+    // (Gpu::DrawsOneFieldOnly); and of those the ones that are half the last field's lines
+    // (Gpu::MixesFields) - not filled, so not DLSS's.
+    uint64_t pictures_interlaced, pictures_one_field, pictures_mixed;
     uint64_t motion_vertices, motion_vertices_found;
     uint64_t motion_sprites, motion_sprites_found;
     uint64_t warp_pictures, warp_pixels, warp_moved_pixels;
@@ -264,6 +268,16 @@ class Gpu : public GpuCore {
   static const uint32_t kGpuClockNumerator   = 11;
   static const uint32_t kGpuClockDenominator = 7;
   static const uint32_t kDotsPerScanline     = 3413;
+
+  // How fast the rasteriser gets through what drawing costs: two ticks of the
+  // cost table (AddDrawTicks) every CPU cycle - two pixels a clock. Not the
+  // 11/7 video clock above. The table is DuckStation's, and it is in these
+  // units: DuckStation pays it off at two a system clock, and the measurements
+  // behind it were made that way. Paying it off at the video clock instead ran
+  // the rasteriser 21% slow, and Final Fantasy VII's battle, which waits for the
+  // GPU with interrupts off after every 3D frame, missed one vblank in five and
+  // ran in slow motion (bug 141).
+  static const uint32_t kDrawTicksPerCycle = 2;
 
   // How many frames a second the emulated display is actually producing:
   // 33868800 * 11/7 GPU clocks, divided by a frame's worth of them. 59.29 Hz
@@ -433,8 +447,8 @@ class Gpu : public GpuCore {
   // and a barrier can happen inside a const read of the stats.
   mutable Stats stats_;
 
-  // How much drawing the GPU still owes, in its own 53.2 MHz clocks. Charged
-  // per primitive (AddDrawTicks) and burnt down by Tick. A real GPU takes time
+  // How much drawing the GPU still owes, in draw ticks - kDrawTicksPerCycle to
+  // a CPU cycle. Charged per primitive (AddDrawTicks) and burnt down by Tick. A real GPU takes time
   // to rasterise, and software can see that: it is why GPUSTAT's ready bits
   // exist and why the DMA request line drops. See Docs/Gaps.md.
   int32_t pending_draw_ticks_;
@@ -453,7 +467,7 @@ class Gpu : public GpuCore {
   PreciseVertex queue_precise_[kQueueCapacity];   // and each queue_ word's
   int queue_head_, queue_size_;
 
-  // GPU clocks already paid to the rasteriser out of time a DMA transfer was
+  // Draw ticks already paid to the rasteriser out of time a DMA transfer was
   // spending anyway - see AdvanceDrawing - so that Tick does not pay for the
   // same cycles a second time.
   uint32_t prepaid_ticks_;
@@ -486,7 +500,7 @@ class Gpu : public GpuCore {
   bool drawing() const { return pending_draw_ticks_ > 0; }
   void AddDrawTicks(int32_t ticks);
 
-  // What one primitive costs, in GPU clocks. The shapes and the constants are
+  // What one primitive costs, in draw ticks. The shapes and the constants are
   // DuckStation's, which are community measurements rather than anything
   // Sony published - see Docs/Bugs-Found.md's entry for this work. Declared
   // below Vertex and DrawState, which they take.
@@ -557,6 +571,11 @@ class Gpu : public GpuCore {
   // At vblank, with the rasteriser idle: whether what is about to be shown is a new picture,
   // and whether it has nothing to do with the last - and if new, ages the motion tables.
   void NextPicture(bool* is_new, bool* reset);
+  // Whether the picture shown now is half this frame's lines and half the last field's: 480
+  // lines interlaced, drawn a field at a time (DrawsOneFieldOnly), and the rasteriser not
+  // filling the other field (RasterBackend::FillsSkippedFields). No motion describes such a
+  // picture, so it starts afresh, is not jittered, and DLSS leaves it as it is.
+  bool MixesFields() const;
   // A 2D primitive's motion: the same one in the last picture, by `key`, nearest to (x, y) -
   // taken from the drawing offset, which moves with the buffer drawn into.
   bool FindSprite(uint64_t key, float x, float y, float* dx, float* dy);

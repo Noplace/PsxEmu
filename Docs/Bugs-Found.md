@@ -8440,3 +8440,242 @@ Radeon: the BIOS on Direct3D 12, then 11, OpenGL and Vulkan (the rasteriser foll
 device of its own) and back, then the Direct3D 11 rasteriser and back - every picture right, on
 card; a screenshot right. On the RTX 4060: Ridge Racer with DLSS Quality and Frame Generation,
 right, at full speed.
+
+## 138. DLSS on 480 lines interlaced, and what DLSS is given, checked
+
+`psx/gpu.*`, `psx/raster.h`, `psx/shared_picture.h`, `graphics/hw_raster/` (`raster_common.h`,
+`d3d11_raster.*`, `d3d12_raster.*`), `graphics/d3d12_dlss.cpp`, `tools/boot_runner.cpp`,
+`tools/hw_raster_test.cpp`
+
+Asked for: "do Interlaced pictures, then the small tunings" - after "how sure are you of your
+depth and motion vector used in dlss, just do a check". Docs/DLSS-Plan.md has both in full.
+
+**The check.** A scratch rasteriser scored every way of reading the motion on the same real
+pictures - the last picture moved by each pixel's motion against the picture now - and the
+shipped one won on every disc with motion in its first 6,000 frames, by a factor of two or more
+over the best wrong one (Ridge Racer 21.0 against 48.1; 57.1 with no motion at all). Depth is
+1/z, which Streamline turns back into the GTE's own z; never out of range. It turned up the real
+gap: most discs had no pictures to compare at all, because they were 480i.
+
+**Symptom.** Every 480-line interlaced picture started DLSS afresh, unjittered, and was shown
+without DLSS - the BIOS intro and menu on every disc, Final Fantasy VIII's first minutes (5,815
+of 5,982 pictures starting afresh), Ace Combat 3's and Vagrant Story's menus.
+
+**Cause.** By design: a game drawing 480i a field at a time has the GPU leave the displayed
+field's rows alone, so each picture is this frame's rows between the last frame's, and no motion
+describes that.
+
+**Fix.** Above 1x, while the plane is kept, such a draw leaves alone only each console pixel's own
+sample - the top-left sub-pixel native VRAM is taken from - and draws this frame into the rest,
+so native VRAM stays the console's to the pixel and the sharper picture is one whole frame. The
+console samples left holding the last field are shown taken from this frame's sub-pixels around
+them, along the edge rather than across it; the plane, from the one below. Only a picture drawn a
+field at a time and *not* filled (`Gpu::MixesFields`) still starts afresh and goes without DLSS -
+none, while DLSS runs.
+
+**On the way.** The first version showed each such sample's right-hand neighbour: at 2x edges
+fall inside a pixel, so every vertical edge moved one sub-pixel on alternate rows - notches down
+the BIOS menu's lettering, found by looking. Then a mean of the more alike pair, which blended
+corners; then a pick, which does not. And taking the left and above neighbours at the picture's
+top-left corner read the stale sample itself - `hw_raster_test`'s new check caught it.
+
+**Checked.** `hw_raster_test` five more checks (78; 81 with `--d3d12`), and its 480i scene with
+`--planes` - now filled - still the software rasteriser's VRAM at 2x, 3x and 4x on both APIs. On
+the 26 discs every 480-line picture whole, and pictures starting afresh from thousands to tens.
+The warp check on nine 480i-heavy discs: pictures to compare where most had none, and motion
+helping where there is any (Valkyrie Profile 0.45, Air Combat 0.60). The BIOS menu's moving
+sphere one clean outline where it was combed. On the RTX 4060 the BIOS menu runs DLSS - 3.35 ms,
+Frame Generation 2.0x, full speed.
+
+**The tunings, and what came of them.** DLSS's object separation left at 40 - in the GTE's z it is
+in the proportion NVIDIA chose it for. The camera left as identity, with the camera's motion in
+the motion vectors, which is consistent and all a PlayStation game has. And the burst of dropped
+sound blamed on Frame Generation starting is not Frame Generation's: a disc started paused from
+the command line drops 18,700-21,000 samples in the first second after it is un-paused with no
+DLSS at all, and the BIOS with Frame Generation running drops none. Not chased here.
+
+## 139. Final Fantasy VII's battles loaded nothing: a sector swapped under its interrupt
+
+`psx/cdrom.cpp`, `tools/media_test.cpp`
+
+Reported: Final Fantasy VII disc 1, the user's save slot 2 - the fight crawls, and neither the enemies
+nor the party are ever drawn.
+
+**What it was doing.** The battle loads its models with libcd's `CdRead`, whole-sector mode (`A0`, 2x),
+which takes twelve bytes of each sector's header and then its 2,048 bytes of data, and compares the
+header's position with the one it asked for (`80051A40`). In 1,500 frames from the save it printed
+"CdRead: sector error" 307 times, each followed by a retry: 1,299 commands and 2,962 sectors where the fixed
+build needs 78 and 239. The headers it was handed ran 30226 to 30232 and then 30234 - a
+sector skipped, under a handler that had been told about 30233.
+
+**Why.** `StepRead` held a new sector back only while another response was *queued*
+(`!pending_.empty()`); one *delivered* and not yet acknowledged did not count. So a handler that got to
+its interrupt more than a sector late found the next sector already waiting behind it: acknowledging
+let the queued interrupt through, the queue was empty again, and the next tick loaded the sector after
+into the buffer - before the handler read the one it had just acknowledged. Software acknowledges first
+and reads second, so it read the wrong header, and the retry hit the same timing again.
+
+**Fix.** A sector does not take the buffer while the last interrupt is still raised, and not until
+`kAcknowledgeToSector` (1,000 cycles) after the acknowledge - DuckStation's `MINIMUM_INTERRUPT_DELAY`, for
+the same reason. Nothing is lost: the drive delivers the held sector a moment after the acknowledge
+rather than a sector later, and in order. No state format change.
+
+**Since when.** The hold check is as old as the controller - the initial commit, b0dc991 (2026-08-28).
+It did no harm until **6e05614, "performance fix" (2026-09-23)**, found by bisecting the 40 commits from
+9e86d4e (good, 0 errors) with the save: that commit made drawing take time (bugs 85-87), and with it FF7
+keeps interrupts waiting more than twice as long - 5.49 million blocked instructions in those 1,500 frames
+against 2.28 million - while the GPU is only 23% busy. HEAD before this fix, with only the drawing time
+switched off, reads the battle cleanly: 0 errors, 238 sectors.
+
+*Corrected after bug 142:* what that commit really did to FF7 was not the drawing time as such but the
+paused channel-2 transfer it introduced, which libgpu's BreakDraw could not stop - FF7 then waited with
+interrupts off for the rest of each scene to go in. With bug 142 fixed and this controller put back as it
+was, the save reads cleanly too (0 errors, 238 sectors, the same picture). So the long waits were a bug of
+their own, and this one is a flaw they exposed: the controller still must not swap a sector under an
+unacknowledged interrupt, and the fix stays.
+
+**Verified.**
+- The save with the user's options, with the recompiler alone and with the interpreter: 0 sector errors,
+  239-240 sectors, and the guards and Cloud drawn at frame 1500.
+- The twelve discs at frames 1000, 2000 and 3000: every picture identical. Area 51, Bomberman and Tsubasa
+  read a few more sectors in the same time, which changes their instruction counts slightly.
+- `media_test` 421 -> 429 (a sector held until its interrupt is cleared); against the old controller two
+  of the eight fail - it hands over sector 51 for 50's interrupt.
+
+All twenty-four harness runs green after bug 139.
+
+## 140. Final Fantasy VII's battles crawled on the recompiler: a data word beside code
+
+`rec/block_cache.h`, `rec/recompiler.h`, `tools/rec_test.cpp`
+
+Found while chasing the report after bug 139 - the battle still slows down, the more so with the menus
+up. That slowdown turned out to be bug 142 and happened on the interpreter as well; this is a separate
+fault the same scene showed up, real on its own.
+
+**What it was doing.** Headless from the battle menu, 600 frames: the interpreter 55-70 fps, the
+recompiler **45** - slower than what it exists to beat, and under 60, so the game slowed. With the
+user's settings (6x, software rasteriser on its thread, PGXP, true colour) 47 fps: the emulated GPU was
+38% busy, and it was the CPU side that could not keep up. A sampling profiler (a scratch one - suspend
+the threads every millisecond or so, read RIP, resolve against the PDB) put 38% of the time in
+`Recompiler::NoteStore`, 15% in `Compile` and 8% in `BlockCache::InvalidatePage`. In those 600 frames
+309,325 blocks were thrown away and 699,854,056 links rewritten.
+
+**Why.** Every one of the 9,837 stores into a code page in that run went to one word, physical
+`000D3544` - and none of them into an instruction. It is data that shares its 4 KB page with about 31
+blocks, written about sixteen times a frame (thirteen before the menu comes up). Invalidation was by the
+page, so each write threw all of them away and they were compiled again at once. And each throw was
+dear: `NoteStore` walked every link target in the engine to find the page's blocks, `InvalidatePage`
+walked every block and then rebuilt the page bitmap from all of them, and a discarded block's own jumps
+stayed in the link index - every recompile added them again beside the dead ones, so breaking or
+relinking a target rewrote an ever longer list, 71,000 slots a store on average. 276,875 were held after
+those 600 frames, 524,324 after the 1,400 before them: a battle got slower the longer it lasted.
+
+**Fix.** A store takes out the blocks compiled from the bytes it wrote, and nothing else. The page bitmap
+stays as the first, cheap question; a page with code also keeps the list of its blocks and a mask of
+which of its words they were compiled from (`BlockCache::CollectWritten`, `Remove`), so a store into it
+looks at that page alone, and a store beside the code costs a lookup. A block that goes drops its own
+jumps (`Recompiler::DropLinksFrom`, with `outgoing_` as the index back). The compiled prefix is the only
+part of a block that depends on memory - the interpreter reads the rest afresh - so the word is the right
+unit, as `Block::guest_bytes` already said.
+
+**On the way.** The first version failed the self-modifying-code tests, and only with linking on: the
+link index was keyed by the address a branch names (`8000101C`), the cache by the normalised one
+(`0000101C`), and a store now reported the cache's - so the dying block's jump to itself was never
+taken apart, and it ran its own stale code again. The old walk had dodged it by reading the index's own
+keys. Both ends of the index are now kept by the cache's key.
+
+**Verified.**
+- FF7's battle menu, matching builds: **47.8 -> 218.4 fps** plain, **46.9 -> 220.4** with the user's
+  settings; the same picture. 3,812 blocks compiled where there were 189,862, none thrown away. The whole
+  save, field into battle, 1,500 frames: 219 fps.
+- The twelve discs on the recompiler, 3,000 frames: every checksum at 1,000, 2,000 and 3,000 identical,
+  with a quarter of the blocks compiled (Wild Arms 35,998 -> 8,509). Speed, the two builds alternated:
+  Air Combat 233 -> 276 fps, Bomberman 210 -> 230, Legend of Mana 231 -> 236, Final Fantasy VIII the same
+  within noise.
+- `rec_test` 467 -> 513: a store beside a block, before it, after it and a byte into its last word;
+  blocks sharing words going only for their own; a DMA range across a page; a program writing data in its
+  own page keeping its code (no block thrown away, under ten compiled); code rewritten forty times keeping
+  as many jumps as code rewritten twice. 18 of them fail against the old page-wide invalidation (51 blocks
+  thrown away where none should be; 82 jumps held after forty rewrites where 6 are live).
+
+All twenty-four harness runs green after bug 140.
+
+## 141. The rasteriser paid for its drawing at the video clock, 21% slow
+
+`psx/gpu.h`, `psx/gpu.cpp`, `tools/boot_runner.cpp`
+
+Found chasing bug 142. Bug 85 charges each primitive DuckStation's cost - setup, then about a tick a
+pixel - and `Gpu::Tick` paid it off against "the same GPU clock the dot clock already runs on", 53.2 MHz,
+11/7 of the CPU's. DuckStation, whose table it is, pays it off at **two ticks a CPU cycle**, 67.7 MHz
+(`SystemTicksToGPUTicks`: "it just draws two pixels per clock") - the units the numbers were measured in,
+and close to the 66 megapixels a second quoted for the console. Mixing the two ran our rasteriser at 79%
+of the speed its own cost table describes: FF7's battle scene, 750,000 ticks, took 14.1 ms where it should
+take 11.1.
+
+**Fix.** `Gpu::kDrawTicksPerCycle = 2`: `Tick`, `AdvanceDrawing` and the next-event estimate all convert
+at that rate; the video clock still runs the beam, the dot clock and the counters, as before.
+`boot_runner`'s "a frame of" is now 1,130,090 ticks.
+
+**On its own it was not FF7's fault** - with only this, the battle took 1,293 vblanks in 1,500 frames
+instead of 1,171, still short of 1,510 - but it is wrong for every game. The twelve discs: every picture
+identical at 1,000, 2,000 and 3,000 frames with and without it; Ridge Racer sends four GP0 words more by
+frame 3,000, nothing else moves. The BIOS boot draws the same picture in 92,822,656 instructions rather
+than 93,049,815 - the shell waits 0.24% less - with one timer-2 interrupt and one RFE fewer; `host_test`
+pins that count and is moved with it.
+
+## 142. Final Fantasy VII's battles ran in slow motion: BreakDraw could not stop a paused DMA
+
+`psx/dma.cpp`, `tools/gpu_test.cpp`
+
+Reported after bugs 139 and 140: the battle intro runs at normal speed, then the fight slows down, with
+something like an extra dialog box at the top - on the recompiler and on the interpreter alike.
+
+**What it was doing.** From the user's slot 2, the frames every 100 from 600 to 1,300, against 0becf9d
+(the last build before drawing time, bug 85) and against today's code with drawing time switched off:
+those two agree exactly - one translucent "Machine Gun" box centred at the top, the guard's shot landing at
+frame 800, Cloud on 290 HP at 1,300. Today's code drew an opaque box at the top left, the attack name in a
+second box beside it with its first letters covered, a frame with no menu at all, and later stray text and
+gauges across the top; it fell behind - the shot at 900, not 800. In 1,300 frames the game read the pad
+1,009 times, not 1,299: its main loop ran one frame in five late, and FF7 counts its battle time in loop
+passes, so everything slowed by a fifth.
+
+Every frame after a 3D frame carried 786 GP0 words more (1,241 against 455). Interrupts sat pending behind
+IEc for 161.7 million instructions in 1,500 frames, against 28.2 million without drawing time, and the
+CPU was in one place for nearly all of it: `80048540`, spinning on GPUSTAT bit 26 with interrupts off,
+called from `80026210` straight after `800484A8`. That function is libgpu's **BreakDraw**: if channel 2
+is running a linked list it clears CHCR's start bit and returns MADR, where drawing got to; the game then
+waits for the GPU, uploads and draws its battle windows, and later **ContinueDraw**s from that address -
+every 3D frame, from inside its frame handler.
+
+**Why.** `Dma::Write` for channel 2's CHCR began `if (!(channels[2].chcr & 0x01000000))` - a write to a
+busy channel was ignored outright. Before bug 86 that never mattered: channel 2 moved its whole list at
+once and was only "busy" while its time ran out. Since bug 86 a list can be **paused half way**, waiting for
+room in the GP0 port, and BreakDraw's write did not stop it. So the rest of the scene kept going in under
+the game: bit 26 stayed low while it did, which is the long wait with interrupts off and the late frames;
+the windows' own words went into the port among the scene's; and ContinueDraw sent the scene's tail a second
+time - 55% more GP0 words over the run. Channels 0 and 1 already stopped when their start bit was cleared
+mid-transfer; channel 2 was missed when bug 86 gave it a paused state.
+
+**Fix.** Clearing channel 2's start bit while its transfer is paused stops it, leaving MADR at the next
+node and raising no interrupt - the transfer did not complete. DuckStation does the same: a CHCR write
+always lands, and a channel without its start bit simply stops transferring. A second start written to a
+busy channel is still dropped (media_test's "a busy channel 2 refuses a new trigger").
+
+**This was also what exposed bug 139.** The long waits with interrupts off are what made FF7's CD handler
+a sector late. With this fixed and bug 139's controller put back as it was, the save reads with no sector
+errors; bug 139's fix stays, since the controller was wrong regardless.
+
+**Verified.**
+- The save, 1,500 frames: 1,510 vblanks taken (1,171 before), 28.07 million instructions blocked behind
+  IEc (161.7 million before; 28.15 million with no drawing time at all), 4.23 million GP0 words (6.36
+  million; 4.10 million), 455 words on the frames between 3D frames. Frames 600-1,300 are the pictures of
+  0becf9d and of the no-drawing-time build. The same with bug 141 left out, down to the final checksum.
+- The twelve discs, before and after: every picture identical at all three checkpoints; Ridge Racer sends
+  6,895 GP0 words fewer by frame 3,000 for the same picture.
+- `gpu_test` 80 -> 90: a list of one big triangle and 24 fills pauses behind the rasteriser, clearing the
+  start bit stops it with MADR at the next node, it stays stopped while the machine runs, the fills before
+  the break are drawn and none after, and starting it again from MADR draws the rest, each fill once. Four
+  of the ten fail against the old write - the list ran on, and six fills went twice.
+
+All twenty-four harness runs green after bugs 141 and 142 (`gpu_test` 90, and 90 again through each
+hardware rasteriser; `host_test` 34 with its BIOS count moved, above).

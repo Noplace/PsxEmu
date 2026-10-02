@@ -1943,11 +1943,14 @@ int main(int argc, char** argv) {
   printf("               %llu primitives, %llu pixels plotted\n",
          static_cast<unsigned long long>(gpu_stats.primitives),
          static_cast<unsigned long long>(gpu_stats.pixels));
-  // What the rasteriser was charged, against what a frame actually holds: the
-  // GPU runs at 53.2224 MHz and a frame is 1/59.94 of a second, so a little
-  // under 890,000 of these. Over that, on average, and the GPU cannot keep up
-  // with what the game is asking for and the game waits (bugs 85, 86).
-  const double kTicksPerFrame = 53222400.0 / 59.94;
+  // What the rasteriser was charged, against what a frame actually holds: it
+  // gets through two draw ticks a CPU cycle and a frame is 1/59.94 of a second,
+  // so a little over 1,130,000 of them (bug 141; before that they were paid at
+  // the 53.2 MHz video clock, 888,000 a frame). Over that, on average, and the
+  // GPU cannot keep up with what the game is asking for and the game waits
+  // (bugs 85, 86).
+  const double kTicksPerFrame =
+      33868800.0 * emulation::psx::Gpu::kDrawTicksPerCycle / 59.94;
   const uint64_t frames_drawn = system->gpu().frame_count() - first_frame;
   printf("               %llu draw ticks, %.0f a frame of %.0f (%.0f%% of the "
          "GPU's time)\n",
@@ -2015,6 +2018,14 @@ int main(int argc, char** argv) {
            static_cast<unsigned long long>(gpu_stats.motion_sprites_found),
            static_cast<unsigned long long>(gpu_stats.motion_sprites),
            percent(gpu_stats.motion_sprites_found, gpu_stats.motion_sprites));
+    // 480 lines interlaced: how many new pictures were, how many of them were drawn a field at
+    // a time, and how many of those were half the last field's - not filled (Gpu::MixesFields).
+    if (gpu_stats.pictures_interlaced != 0)
+      printf("interlaced     %llu of the new pictures 480 lines interlaced, %llu drawn a field "
+             "at a time, %llu of those half the last field's\n",
+             static_cast<unsigned long long>(gpu_stats.pictures_interlaced),
+             static_cast<unsigned long long>(gpu_stats.pictures_one_field),
+             static_cast<unsigned long long>(gpu_stats.pictures_mixed));
   }
   if (options.motion) {
     // Per pixel and channel, in 8-bit steps: how far each new picture was from the last one

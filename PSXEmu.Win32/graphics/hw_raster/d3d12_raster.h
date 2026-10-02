@@ -102,6 +102,7 @@ namespace psxemu {
             return plane_target_.resource &&
                    (keep_planes_ || shown_plane_ != emulation::psx::PlaneView::kPicture);
         }
+        bool FillsSkippedFields() const override { return scale_ > 1 && planes(); }
         bool ReadPlanes(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                         std::vector<float>* rgba) override;
         int scale() const override { return scale_; }
@@ -230,8 +231,15 @@ namespace psxemu {
         void ForgetPlanes(int32_t x, int32_t y, int32_t w, int32_t h);
         void Flush();
         void Begin(const BatchKey& key, size_t count);
-        static bool KeyFor(const emulation::psx::DrawJob& job, D3D_PRIMITIVE_TOPOLOGY topology,
-                           BatchKey* key);
+        bool KeyFor(const emulation::psx::DrawJob& job, D3D_PRIMITIVE_TOPOLOGY topology,
+                    BatchKey* key);
+        // The shaders' skip_field for `job` (Constants), noting which rows a filled picture's
+        // console samples kept the last field on (fill_parity_).
+        int32_t SkipField(const emulation::psx::DrawJob& job);
+        // SharedPicture::filled_rows for a picture whose top is VRAM row `y`.
+        int FilledRows(uint32_t y) const {
+            return fill_parity_ != 0 ? 1 + ((fill_parity_ - 1 - static_cast<int>(y)) & 1) : 0;
+        }
         void AddBox(int32_t left, int32_t top, int32_t right, int32_t bottom,
                     const uint32_t (&payload)[kPayload]);
         void AddTriangle(const emulation::psx::DrawJob& job);
@@ -306,6 +314,10 @@ namespace psxemu {
 
         bool keep_planes_ = false;
         emulation::psx::PlaneView shown_plane_ = emulation::psx::PlaneView::kPicture;
+        // 1 + the VRAM row parity the last primitive left alone and filled around
+        // (FillsSkippedFields), whose console samples still hold the last field; 0 when it left
+        // no rows alone, or left them alone whole.
+        int fill_parity_ = 0;
         Texture plane_target_;
         Texture plane_read_copy_;
 

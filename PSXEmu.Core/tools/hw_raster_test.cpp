@@ -626,6 +626,71 @@ bool Near(float value, float expected) {
 // Each rule the plane follows, on one rasteriser at 2x with it kept: what a fill, a triangle, a
 // precise one, something translucent, the mask check, an upload and a copy each leave in it, and
 // the plane handed over beside a shared picture.
+// 480 lines interlaced, drawn a field at a time (RasterBackend::FillsSkippedFields): with the
+// plane kept at 2x the rows the console leaves alone are drawn this frame in all but each
+// pixel's console sample, so native VRAM is the console's and the picture one whole frame;
+// without it, the picture is two fields from two frames, as the console's.
+void SceneFilledField() {
+  printf("480 lines, a field at a time, filled\n");
+  const uint16_t first = 0x001F, second = 0x7C00;   // red, then blue
+  const uint32_t first_shown = 0xFFFF0000u, second_shown = 0xFF0000FFu;
+  for (int kept = 1; kept >= 0; --kept) {
+    std::vector<uint16_t> vram(1024 * 512, 0);
+    emulation::psx::RasterOptions options;
+    options.scale = 2;
+    options.shared_picture = true;
+    std::string error;
+    std::unique_ptr<psxemu::HardwareRaster> raster =
+        psxemu::HardwareRaster::Create(g_api, vram.data(), options, true, &error);
+    if (!raster) {
+      Check(false, "WARP makes a rasteriser at 2x: " + error);
+      return;
+    }
+    raster->Written(0, 0, 1024, 512);
+    if (kept)
+      raster->SetPlanes(true, PlaneView::kPicture);
+    Check(raster->FillsSkippedFields() == (kept != 0),
+          kept ? "with the plane kept above 1x, the skipped field is filled"
+               : "without it, it is not");
+    // The last frame, both fields; then this one, the field on even rows being shown.
+    DrawJob whole = Job(DrawJob::kFill);
+    whole.w = 320;
+    whole.h = 480;
+    whole.fill_colour = first;
+    raster->Apply(whole);
+    DrawJob field = whole;
+    field.fill_colour = second;
+    field.env.skip_field = true;
+    field.env.active_line_lsb = 0;
+    raster->Apply(field);
+    raster->PrepareRead(0, 0, 320, 480);
+    bool console = true;
+    for (int y = 0; y < 480; ++y)
+      for (int x = 0; x < 320; ++x)
+        console = console && vram[y * 1024 + x] == ((y & 1) ? second : first);
+    std::vector<uint32_t> unused, pixels;
+    emulation::psx::SharedPicture shared;
+    int scale = 0;
+    raster->ResolveDisplay(0, 0, 320, 480, &unused, &shared, &scale);
+    const bool read = shared && psxemu::HardwareRaster::ReadSharedPicture(shared, &pixels) &&
+                      pixels.size() == 640u * 960u;
+    bool whole_frame = read, two_fields = read;
+    for (size_t i = 0; read && i < pixels.size(); ++i) {
+      const int console_row = static_cast<int>(i / 640) / 2;
+      whole_frame = whole_frame && pixels[i] == second_shown;
+      two_fields = two_fields && pixels[i] == ((console_row & 1) ? second_shown : first_shown);
+    }
+    if (kept) {
+      Check(console, "filled: native VRAM is the console's, the shown field's rows kept");
+      Check(whole_frame && shared.filled_rows == 1 && shared.scale == 2,
+            "filled: the picture is this frame on every row, and says which rows were filled");
+    } else {
+      Check(console && two_fields && shared.filled_rows == 0,
+            "not filled: the picture is two fields from two frames, as the console's");
+    }
+  }
+}
+
 void ScenePlanes() {
   printf("the plane beside VRAM\n");
   std::vector<uint16_t> vram(1024 * 512, 0);
@@ -1108,6 +1173,7 @@ int main(int argc, char** argv) {
   if (g_api == psxemu::HardwareRaster::Api::kD3D12)
     SceneOneDevice(random);
   ScenePlanes();
+  SceneFilledField();
   SceneJitter();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);

@@ -270,6 +270,49 @@ void TestABlockSpanningTwoPages() {
   Check(!cache.IsCodePage(0x80000FF0), "and the first page is clean again");
 }
 
+// A store goes after the blocks compiled from the bytes it wrote, and no
+// others. PSX games keep data in the same page as code, and Final Fantasy
+// VII's battle writes one such word sixteen times a frame: taking the page's
+// code with it recompiled thirty-odd blocks for each (bug 140).
+void TestAStoreBesideCodeLeavesIt() {
+  printf("a store beside a block, in the same page, leaves it alone\n");
+
+  BlockCache cache;
+  cache.Insert(MakeBlock(0x80001000, 64));   // 80001000 to 8000103F
+  std::vector<uint32_t> going;
+  cache.CollectWritten(0x80001040, 4, &going);
+  CheckEqual(static_cast<int64_t>(going.size()), 0,
+             "the word after the block is not the block's");
+  CheckEqual(cache.InvalidateRange(0x80001800, 4), 0,
+             "nor is a word further down the page");
+  CheckEqual(cache.InvalidateRange(0x80000FFC, 4), 0,
+             "nor the word before it, in the page before");
+  Check(cache.Find(0x80001000) != nullptr, "the block is still there");
+  Check(cache.IsCodePage(0x80001800), "and the page is still known as code");
+
+  CheckEqual(cache.InvalidateRange(0x8000103E, 1), 1,
+             "a byte of its last word is the block's");
+  Check(cache.Find(0x80001000) == nullptr, "and it is gone");
+  Check(!cache.IsCodePage(0x80001000), "with the page clean again");
+
+  // Two blocks can share words - jumping into the middle of one compiles
+  // another from there - and each goes only when words of its own are written.
+  cache.Insert(MakeBlock(0x80002000, 64));   // 80002000 to 8000203F
+  cache.Insert(MakeBlock(0x80002020, 32));   // 80002020 to 8000203F
+  CheckEqual(cache.InvalidateRange(0x80002004, 4), 1,
+             "a word only the outer block covers takes only that one");
+  Check(cache.Find(0x80002020) != nullptr, "the one entered in the middle stays");
+  CheckEqual(cache.InvalidateRange(0x80002030, 4), 1,
+             "and a word of its own still takes it");
+  Check(!cache.IsCodePage(0x80002000), "leaving the page clean");
+
+  // A DMA writes a range at once, across pages.
+  cache.Insert(MakeBlock(0x80003010, 16));
+  CheckEqual(cache.InvalidateRange(0x80002FF0, 0x40), 1,
+             "a range from the page before reaches a block in the next");
+  CheckEqual(static_cast<int64_t>(cache.size()), 0, "and the cache is empty");
+}
+
 void TestClearThrowsEverythingAway() {
   printf("the cache-control write throws everything away\n");
 
@@ -1821,6 +1864,74 @@ void TestAStoreFromTheInterpreterInvalidatesToo() {
              "and without that hook it runs the code it has already replaced");
 }
 
+// The pattern behind bug 140, end to end: a loop writing a data word in its
+// own page, which must keep the code it is running compiled.
+void TestDataBesideCodeKeepsTheCode() {
+  printf("a program writing data in its own page keeps its compiled code\n");
+
+  const uint32_t data_address = kProgramBase + 0x200;   // same page, past the code
+  const std::vector<uint32_t> program = {
+      ADDIU(5, 0, 50),                                 // 0: fifty passes
+      LUI_(1, static_cast<uint16_t>(data_address >> 16)),
+      ORI_(1, 1, static_cast<uint16_t>(data_address & 0xFFFF)),
+      BEQ(0, 0, 1),             // 3: to index 5, so a block starts there
+      NOP(),                    // 4: the delay slot
+      SW(5, 1, 0),              // 5: the data word
+      ADDIU(5, 5, 0xFFFF),      // 6: one pass down
+      BNE(5, 0, 0xFFFD),        // 7: back to index 5
+      NOP(),                    // 8
+      JR(0),                    // 9
+      NOP(),                    // 10
+  };
+
+  emulation::rec::Recompiler::Stats stats;
+  Check(RunProgramBothWays(program, "data beside code", &stats), "the two agree");
+  CheckEqual(stats.blocks_invalidated, 0, "nothing compiled was thrown away");
+  Check(stats.blocks_compiled < 10, "nor compiled again for each pass");
+}
+
+// A block thrown away takes its own jumps with it. They were kept, and each
+// recompile added its jumps again beside the dead ones, so a block recompiled
+// every frame made every later break and relink slower (bug 140).
+void TestRewrittenCodeDoesNotPileUpLinks() {
+  printf("code rewritten again and again keeps only its live blocks' jumps\n");
+
+  const uint32_t patch_address = kProgramBase + 28;   // index 7
+  const uint32_t patched_word = ADDIU(4, 0, 22);
+  auto LinksAfter = [&](uint16_t passes) -> size_t {
+    std::vector<uint32_t> program = {
+        ADDIU(5, 0, passes),                           // 0
+        LUI_(1, static_cast<uint16_t>(patch_address >> 16)),
+        ORI_(1, 1, static_cast<uint16_t>(patch_address & 0xFFFF)),
+        LUI_(2, static_cast<uint16_t>(patched_word >> 16)),
+        ORI_(2, 2, static_cast<uint16_t>(patched_word & 0xFFFF)),
+        BEQ(0, 0, 1),             // 5: to index 7, so a block starts there
+        NOP(),                    // 6
+        ADDIU(4, 0, 11),          // 7: rewritten every pass
+        SW(2, 1, 0),              // 8: rewrite it
+        ADDIU(5, 5, 0xFFFF),      // 9
+        BNE(5, 0, 0xFFFC),        // 10: back to index 7
+        NOP(),                    // 11
+        JR(0),                    // 12
+        NOP(),                    // 13
+    };
+    Engine engine;
+    engine.bus.WriteProgram(kProgramBase, program);
+    engine.AttachRecompiler();
+    engine.Run(kProgramBase);
+    CheckEqual(engine.machine.r[4], 22, "the rewritten instruction is what ran");
+    if (passes > 2) {
+      Check(engine.recompiler()->stats().blocks_invalidated >= passes - 1u,
+            "the block was thrown away on every pass");
+    }
+    return engine.recompiler()->links_held();
+  };
+  const size_t after_two = LinksAfter(2);
+  const size_t after_forty = LinksAfter(40);
+  CheckEqual(static_cast<int64_t>(after_forty), static_cast<int64_t>(after_two),
+             "as many jumps kept after forty rewrites as after two");
+}
+
 void TestTheCacheControlWriteThrowsEverythingAway() {
   printf("the cache-control write empties the cache and releases the arenas\n");
 
@@ -2149,6 +2260,8 @@ void RunEverythingThatCompiles() {
   TestAWholeProgramRunsTheSameWayBothWays();
   TestCodeThatRewritesItselfIsNoticed();
   TestAStoreFromTheInterpreterInvalidatesToo();
+  TestDataBesideCodeKeepsTheCode();
+  TestRewrittenCodeDoesNotPileUpLinks();
   TestTheCacheControlWriteThrowsEverythingAway();
   TestABlockIsNotEnteredWithALoadInFlight();
   TestAnUncompilableInstructionIsCachedAsOne();
@@ -2362,6 +2475,7 @@ int main() {
   TestTheThreeViewsOfRamAreOneBlock();
   TestAStoreIntoCodeThrowsItAway();
   TestABlockSpanningTwoPages();
+  TestAStoreBesideCodeLeavesIt();
   TestClearThrowsEverythingAway();
 
   TestStraightLineStopsAtTheCap();

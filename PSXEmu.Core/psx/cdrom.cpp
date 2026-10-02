@@ -38,6 +38,14 @@ const int32_t kGetIdDelay = 33868;
 // One sector at single speed, in CPU cycles: 33868800 / 75.
 const int32_t kSectorCyclesSingleSpeed = 451584;
 
+// The least time from software acknowledging an interrupt to the next sector
+// taking the buffer it reads from. The drive's controller does not hand over a
+// sector the instant the last interrupt is cleared, and software clears it
+// before it reads the sector that interrupt was for - the twelve bytes of
+// header, then the data. DuckStation's MINIMUM_INTERRUPT_DELAY, for the same
+// reason (Docs/Bugs-Found.md, bug 139).
+const int32_t kAcknowledgeToSector = 1000;
+
 // The mechanical costs, charged only when EmuConfig::cdrom_mechanical_timing
 // is on. Everything above describes a controller answering a command;
 // everything here describes a motor and a sled, which the delays above model
@@ -398,9 +406,16 @@ void Cdrom::Write(uint32_t address, uint8_t data) {
       } else if (index_ == 1) {
         // Acknowledging an interrupt clears the bits written, and frees the
         // controller to deliver whatever is queued behind it.
+        const bool was_set = interrupt_flag_ != 0;
         interrupt_flag_ &= ~(data & 0x1F);
-        if (interrupt_flag_ == 0)
+        if (interrupt_flag_ == 0) {
           system().io().ClearInterrupt(kInterruptCDROM);
+          // ...but not to put the next sector in the buffer at once: software
+          // clears a data-ready interrupt and then reads its sector, and a
+          // sector waiting behind the interrupt would take the buffer first.
+          if (was_set && reading_ && read_timer_ < kAcknowledgeToSector)
+            read_timer_ = kAcknowledgeToSector;
+        }
         if (data & 0x40)
           ClearParameters();
       }
@@ -921,10 +936,20 @@ void Cdrom::StepRead(uint32_t cycles) {
     return;
   }
 
-  // Do not stack sectors up behind an unacknowledged one; the real drive would
-  // simply overwrite its buffer, and queuing without bound is worse.
-  if (!pending_.empty())
+  // Do not stack sectors up behind an unacknowledged one; queuing without
+  // bound is worse. Nor put one in the buffer while software has not yet
+  // acknowledged the last interrupt - delivered and not cleared is not the same
+  // as read: the real drive keeps that sector where software reads it, and
+  // gives it the next only with the next data-ready interrupt. Loading here
+  // regardless swapped the sector under software's handler whenever it ran a
+  // sector late, so it read the next one's header instead, and Final Fantasy
+  // VII's battle loads called that a sector error and retried for ever, with no
+  // models and the battle crawling (bug 139). The sector is the drive's already;
+  // it goes into the buffer soon after the acknowledge, not a whole sector later.
+  if (!pending_.empty() || interrupt_flag_ != 0) {
+    read_timer_ = kAcknowledgeToSector;
     return;
+  }
 
   LoadSector();
 }

@@ -1615,6 +1615,94 @@ void TestControllerWithDisc(emulation::psx::System* system,
   remove(path.c_str());
 }
 
+// A sector whose data-ready interrupt software has not yet acknowledged stays
+// in the buffer however long the drive runs on, and the next one takes the
+// buffer only after the acknowledge. Software acknowledges and then reads -
+// the header, then the data - and Final Fantasy VII's battle loads, handed
+// the next sector at that point, called it a sector error and retried for
+// ever (bug 139).
+void TestUnacknowledgedSectorHolds(emulation::psx::System* system,
+                                   const std::string& directory) {
+  printf("cd-rom controller, a sector held until its interrupt is cleared\n");
+
+  const std::string path = directory + "media_test_hold.iso";
+  if (!WriteImage(path, 2048, 200)) {
+    printf("  FAIL  could not write %s\n", path.c_str());
+    ++g_failures;
+    return;
+  }
+  Check(system->LoadDisc(path.c_str()), "mount the disc");
+
+  Cdrom& cdrom = system->cdrom();
+  ControllerHarness harness(system);
+  uint8_t response[16];
+  int length = 0;
+
+  uint8_t m, s, f;
+  Disc::LbaToMsf(Disc::kLeadInSectors + 50, &m, &s, &f);
+  const uint8_t location[3] = { m, s, f };
+  harness.Command(0x02, location, 3);       // Setloc
+  harness.WaitForInterrupt(response, &length, 16);
+  harness.Command(0x06, nullptr, 0);        // ReadN
+  CheckEqual(harness.WaitForInterrupt(response, &length, 16),
+             Cdrom::kIntAcknowledge, "ReadN acknowledges");
+
+  // Runs the clock until an interrupt is raised, leaving it raised, and
+  // returns its kind; *cycles is how long that took.
+  auto RunUntilInterrupt = [&](uint32_t* cycles) -> uint8_t {
+    *cycles = 0;
+    for (int step = 0; step < 4000; ++step) {
+      cdrom.Tick(1000);
+      *cycles += 1000;
+      cdrom.Write(0x1F801800, 1);
+      const uint8_t flags = cdrom.Read(0x1F801803) & 0x07;
+      cdrom.Write(0x1F801800, 0);
+      if (flags != 0)
+        return flags;
+    }
+    return 0;
+  };
+  auto Acknowledge = [&]() {
+    cdrom.Write(0x1F801800, 1);
+    cdrom.Write(0x1F801803, 0x07);
+    cdrom.Write(0x1F801800, 0);
+  };
+
+  uint32_t cycles = 0;
+  CheckEqual(RunUntilInterrupt(&cycles), Cdrom::kIntDataReady,
+             "the first sector arrives");
+
+  // Four sectors' time at single speed with the interrupt left raised.
+  const uint32_t kSector = 451584;
+  for (uint32_t run = 0; run < 4 * kSector; run += 1000)
+    cdrom.Tick(1000);
+  cdrom.Write(0x1F801800, 1);
+  CheckEqual(cdrom.Read(0x1F801803) & 0x07, Cdrom::kIntDataReady,
+             "the interrupt stays raised while software is busy");
+  cdrom.Write(0x1F801800, 0);
+
+  Acknowledge();
+  CheckEqual(cdrom.ReadDataWord(), 50,
+             "after the acknowledge, the buffer still holds that interrupt's sector");
+
+  CheckEqual(RunUntilInterrupt(&cycles), Cdrom::kIntDataReady,
+             "the next sector arrives");
+  Check(cycles < kSector / 4,
+        "soon after the acknowledge, not a whole sector later");
+  CheckEqual(cdrom.ReadDataWord(), 51, "and it is the next one on the disc");
+  Acknowledge();
+
+  // Stop the drive and take every answer, so nothing is left queued for the
+  // tests after this one.
+  harness.Command(0x09, nullptr, 0);        // Pause
+  for (int i = 0; i < 8; ++i) {
+    if (harness.WaitForInterrupt(response, &length, 16) == Cdrom::kIntComplete)
+      break;
+  }
+  system->EjectDisc();
+  remove(path.c_str());
+}
+
 // ---------------------------------------------------------------------------
 // ISO9660, SYSTEM.CNF and the disc boot
 // ---------------------------------------------------------------------------
@@ -2570,6 +2658,7 @@ int main(int argc, char** argv) {
   system->InitializeWithoutBios();
   TestControllerWithoutDisc(system);
   TestControllerWithDisc(system, directory);
+  TestUnacknowledgedSectorHolds(system, directory);
   TestCdAudioControl(system, directory);
   TestPregapPosition(system, directory);
   TestAssumedPregaps(system, directory);

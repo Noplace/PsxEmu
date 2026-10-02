@@ -28,6 +28,7 @@
 //
 // See Docs/Recompiler-Plan.md.
 
+#include <algorithm>
 #include <cstdint>
 #include <unordered_map>
 #include <vector>
@@ -48,16 +49,28 @@ struct Block {
   uint32_t compiled_instructions = 0;
 };
 
-// A guest address to Block map with page-granular invalidation.
+// A guest address to Block map, and what a store has to throw away.
 //
 // Invalidation is the part that goes wrong in a recompiler, so it is the part
 // that exists first. Two things throw a block away on this machine:
 //
-//   - a store into a page a block was compiled from, which Cpu::Store will
-//     check against `IsCodePage` once this is wired up; and
+//   - a store into a word a block was compiled from, which Cpu::Store checks
+//     against `IsCodePage` first and `CollectWritten` second; and
 //   - a write to the cache-control register at 0xFFFE0130, which is how
 //     software tells the hardware it has replaced code - overlays, which is
 //     the common case on the PSX - and which maps to Clear().
+//
+// The word, not the page. PSX games keep data beside their code - a counter or
+// a flag in the same 4 KB as the routine that reads it - and Final Fantasy
+// VII's battle writes one such word about sixteen times a frame: discarding
+// the page each time recompiled thirty-odd blocks for every write, and with
+// the whole cache walked per discard the recompiler ran slower than the
+// interpreter (bug 140). The page bitmap stays as the cheap first question
+// every store asks; only a store into a page that has code goes on to ask
+// about the word.
+//
+// And each page keeps its own list of the blocks compiled from it, so
+// throwing some away looks at those and not at every block there is.
 class BlockCache {
  public:
   // 4 KB, which is the granularity the page bitmap below tracks. Small enough
@@ -73,14 +86,64 @@ class BlockCache {
 
   void Insert(const Block& block) {
     const uint32_t key = Normalise(block.guest_address);
+    Remove(key);   // a block replaced in place leaves nothing of itself behind
     blocks_[key] = block;
     blocks_[key].guest_address = key;
 
-    const uint32_t first = key >> kPageShift;
-    const uint32_t last =
-        (key + (block.guest_bytes == 0 ? 0 : block.guest_bytes - 1)) >> kPageShift;
-    for (uint32_t page = first; page <= last; ++page)
+    const uint32_t end = End(blocks_[key]);
+    for (uint32_t page = key >> kPageShift; page <= (end - 1) >> kPageShift; ++page) {
+      Page& entry = pages_[page];
+      entry.blocks.push_back(key);
+      MarkWords(&entry, page, key, end);
       MarkCodePage(page);
+    }
+  }
+
+  // Takes the block starting at this address out, if there is one.
+  bool Remove(uint32_t address) {
+    const uint32_t key = Normalise(address);
+    const auto it = blocks_.find(key);
+    if (it == blocks_.end())
+      return false;
+    const uint32_t end = End(it->second);
+    blocks_.erase(it);
+    for (uint32_t page = key >> kPageShift; page <= (end - 1) >> kPageShift; ++page)
+      ForgetInPage(page, key);
+    return true;
+  }
+
+  // The blocks compiled from any of these bytes, appended to `out` by their
+  // guest address. A store into code asks this before taking them out, since
+  // the jumps into them have to be taken apart first.
+  void CollectWritten(uint32_t address, uint32_t bytes,
+                      std::vector<uint32_t>* out) const {
+    if (bytes == 0)
+      return;
+    const uint32_t begin = Normalise(address);
+    const uint32_t end = begin + bytes;
+    for (uint32_t page = begin >> kPageShift; page <= (end - 1) >> kPageShift; ++page) {
+      if (!IsCodePage(page << kPageShift))
+        continue;
+      const auto found = pages_.find(page);
+      if (found == pages_.end() || !AnyWordMarked(found->second, page, begin, end))
+        continue;
+      for (const uint32_t key : found->second.blocks) {
+        const Block& block = blocks_.at(key);
+        if (key < end && begin < End(block) &&
+            std::find(out->begin(), out->end(), key) == out->end())
+          out->push_back(key);
+      }
+    }
+  }
+
+  // Throws away every block compiled from any of these bytes, and nothing
+  // else. Returns how many went.
+  uint32_t InvalidateRange(uint32_t address, uint32_t bytes) {
+    std::vector<uint32_t> going;
+    CollectWritten(address, bytes, &going);
+    for (const uint32_t key : going)
+      Remove(key);
+    return static_cast<uint32_t>(going.size());
   }
 
   // The block starting exactly at this address, or nullptr. A block is only
@@ -124,39 +187,94 @@ class BlockCache {
   // Returns how many went, which is what a stats line wants.
   uint32_t InvalidatePage(uint32_t address) {
     const uint32_t page = Normalise(address) >> kPageShift;
-    if (!IsCodePage(address))
+    const auto found = pages_.find(page);
+    if (found == pages_.end())
       return 0;
-
-    uint32_t removed = 0;
-    for (auto it = blocks_.begin(); it != blocks_.end();) {
-      const uint32_t first = it->second.guest_address >> kPageShift;
-      const uint32_t bytes = it->second.guest_bytes;
-      const uint32_t last =
-          (it->second.guest_address + (bytes == 0 ? 0 : bytes - 1)) >> kPageShift;
-      if (page >= first && page <= last) {
-        it = blocks_.erase(it);
-        ++removed;
-      } else {
-        ++it;
-      }
-    }
-
-    // The page is only clear once nothing is left in it. A block that spans two
-    // pages keeps both marked, so this rebuilds rather than just clearing the
-    // bit - wrongly clearing it would let a later store through unnoticed,
-    // which is the failure mode that produces a game running stale code.
-    RebuildCodePages();
-    return removed;
+    // A copy: taking each block out edits this page's list.
+    const std::vector<uint32_t> going = found->second.blocks;
+    for (const uint32_t key : going)
+      Remove(key);
+    return static_cast<uint32_t>(going.size());
   }
 
   void Clear() {
     blocks_.clear();
+    pages_.clear();
     code_pages_.clear();
   }
 
   size_t size() const { return blocks_.size(); }
 
  private:
+  static const uint32_t kWordsPerPage = kPageSize / 4;
+
+  // One page with code in it: the blocks compiled from it, and which of its
+  // words those blocks were compiled from.
+  struct Page {
+    std::vector<uint32_t> blocks;
+    uint64_t words[kWordsPerPage / 64] = {};
+  };
+
+  // Where a block's guest code ends, exclusive. A block of no bytes is
+  // treated as its first word, so it still has a page to be found in.
+  static uint32_t End(const Block& block) {
+    return block.guest_address + (block.guest_bytes == 0 ? 4 : block.guest_bytes);
+  }
+
+  // The part of [begin, end) inside this page, as word indices within it.
+  static void WordsInPage(uint32_t page, uint32_t begin, uint32_t end,
+                          uint32_t* first, uint32_t* last) {
+    const uint32_t page_begin = page << kPageShift;
+    const uint32_t from = begin > page_begin ? begin : page_begin;
+    const uint32_t to = end < page_begin + kPageSize ? end : page_begin + kPageSize;
+    *first = (from - page_begin) >> 2;
+    *last = (to - 1 - page_begin) >> 2;
+  }
+
+  static void MarkWords(Page* entry, uint32_t page, uint32_t begin, uint32_t end) {
+    uint32_t first, last;
+    WordsInPage(page, begin, end, &first, &last);
+    for (uint32_t w = first; w <= last; ++w)
+      entry->words[w >> 6] |= 1ull << (w & 63);
+  }
+
+  static bool AnyWordMarked(const Page& entry, uint32_t page, uint32_t begin,
+                            uint32_t end) {
+    uint32_t first, last;
+    WordsInPage(page, begin, end, &first, &last);
+    for (uint32_t w = first; w <= last; ++w) {
+      if (entry.words[w >> 6] & (1ull << (w & 63)))
+        return true;
+    }
+    return false;
+  }
+
+  // A block has gone from this page: drop it from the list and work the
+  // page's words out again from the blocks still there. Rebuilt rather than
+  // cleared, because two blocks can share words - one entered in the middle
+  // of another - and clearing what one covered would let a later store into
+  // the other through unnoticed, which is the failure that has a game running
+  // stale code. Only this page's blocks are looked at.
+  void ForgetInPage(uint32_t page, uint32_t key) {
+    const auto found = pages_.find(page);
+    if (found == pages_.end())
+      return;
+    Page& entry = found->second;
+    entry.blocks.erase(std::remove(entry.blocks.begin(), entry.blocks.end(), key),
+                       entry.blocks.end());
+    if (entry.blocks.empty()) {
+      pages_.erase(found);
+      ClearCodePage(page);
+      return;
+    }
+    for (uint64_t& bits : entry.words)
+      bits = 0;
+    for (const uint32_t other : entry.blocks) {
+      const Block& block = blocks_.at(other);
+      MarkWords(&entry, page, other, End(block));
+    }
+  }
+
   void MarkCodePage(uint32_t page) {
     const size_t word = page >> 6;
     if (word >= code_pages_.size())
@@ -164,19 +282,14 @@ class BlockCache {
     code_pages_[word] |= (1ull << (page & 63));
   }
 
-  void RebuildCodePages() {
-    code_pages_.clear();
-    for (const auto& entry : blocks_) {
-      const uint32_t bytes = entry.second.guest_bytes;
-      const uint32_t first = entry.second.guest_address >> kPageShift;
-      const uint32_t last =
-          (entry.second.guest_address + (bytes == 0 ? 0 : bytes - 1)) >> kPageShift;
-      for (uint32_t page = first; page <= last; ++page)
-        MarkCodePage(page);
-    }
+  void ClearCodePage(uint32_t page) {
+    const size_t word = page >> 6;
+    if (word < code_pages_.size())
+      code_pages_[word] &= ~(1ull << (page & 63));
   }
 
   std::unordered_map<uint32_t, Block> blocks_;
+  std::unordered_map<uint32_t, Page> pages_;
   std::vector<uint64_t> code_pages_;
 };
 
