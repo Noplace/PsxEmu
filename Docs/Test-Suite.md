@@ -168,7 +168,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 429 checks, 0 failures.**
+**Current: 446 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -209,6 +209,14 @@ Covers, in the order it runs:
   next one; the next arrives soon after, under a quarter of a sector, and is the
   next on the disc. Two of these fail with the old controller, which handed
   over sector 51 for 50's interrupt
+- **SPU DMA in request mode** (bug 145): four 16-word blocks to sound RAM go one
+  at a time - the first at once, with MADR and BCR's block count moving past it and
+  SPUSTAT's busy bit set, the next 512 cycles later - the channel busy and its
+  interrupt not raised until the fourth, then MADR at the end, SPUSTAT idle and
+  every word in sound RAM; clearing the start bit part way stops it with no
+  interrupt and leaves the SPU idle; burst mode still moves everything at once.
+  Eight of the seventeen fail with the old channel, which moved the lot inside the
+  CHCR write
 - **Where the head is inside a pregap** (bug 110): GetlocP 54 sectors before a
   track's index 1 answers that track, index 0, with the time counting down -
   00:02:00 on the pregap's first sector, the sector before it still the track
@@ -750,11 +758,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 95 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 429 |
+| `timer_test` | 80 | | `media_test` | 446 |
 | `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,730 checks, 0 failures**, all ten green. Each harness's own section above
+**1,747 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -996,17 +1004,28 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 | Disc | f1000 | f2000 | f3000 | non-black | res | macroblocks | sectors |
 |---|---|---|---|---|---|---|---|
 | Air Combat | `a1e228e8a2ee662c` | `51080ad999e88621` | `5109d78c91007c12` | 51,200 | 320x240 | 241,800 | 5,262 |
-| Wild Arms | `a94d9bb38769a360` | `e53c89cb43c0075b` | `b828d822ec27badf` | 61,440 | 320x240 | 92,363 | 3,715 |
-| Wild Arms 2 (cd1) | `55565300d8dc9411` | `81007d90c767846a` | `1742c42883771622` | 76,800 | 320x240 | 0 | 100 |
-| Vandal Hearts | `eac4dfab83da3880` | `7c1297df773e7342` | `fc66e49c14bf8861` | 76,725 | 320x240 | 127,500 | 5,230 |
-| Legend of Mana | `e13bb6ec78144cc9` | `9797912c492383e1` | `b16eaf3906c9d6dd` | 76,312 | 320x240 | 154,500 | 5,313 |
-| Ridge Racer | `a727da8b232bddfd` | `615989b7725635c2` | `fc77d928fb3c4159` | 76,461 | 320x240 | 0 | 1,578 |
-| Bomberman Party Ed. | `4a31d7a6c52734a4` | `45e058b70ed827c2` | `3ba049eea7e64970` | 68,913 | 320x240 | 145,800 | 4,652 |
-| Area 51 | `d7e8093204d0085b` | `5b1c23ab7d41b7d0` | `c20fec6d8f189e8d` | 51,855 | 256x240 | 100,080 | 5,490 |
-| Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `fb1d8340ba2617e0` | 75,943 | 320x240 | 0 | 668 |
+| Wild Arms | `a94d9bb38769a360` | `e53c89cb43c0075b` | `b828d822ec27badf` | 61,440 | 320x240 | 92,363 | 3,716 |
+| Wild Arms 2 (cd1) | `30340af3ef2d5cb5` | `6447bd01ce847491` | `5a867a4b2db9bf7a` | 76,800 | 320x240 | 0 | 100 |
+| Vandal Hearts | `eac4dfab83da3880` | `bfe5fadefb61e2e4` | `e80a7b8eb0b41ca6` | 76,772 | 320x240 | 127,200 | 5,219 |
+| Legend of Mana | `45d5d2b44c07b562` | `9797912c492383e1` | `b16eaf3906c9d6dd` | 76,312 | 320x240 | 154,465 | 5,310 |
+| Ridge Racer | `f265695832f0679b` | `cf3e36606c4d8e97` | `902df9f582d0c892` | 76,458 | 320x240 | 0 | 1,578 |
+| Bomberman Party Ed. | `4a31d7a6c52734a4` | `45e058b70ed827c2` | `3ba049eea7e64970` | 68,913 | 320x240 | 145,800 | 4,650 |
+| Area 51 | `d7e8093204d0085b` | `5b1c23ab7d41b7d0` | `e33d8019d0abfc22` | 51,855 | 256x240 | 100,080 | 5,651 |
+| Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `04e1e2cfb9649a5e` | 75,942 | 320x240 | 0 | 668 |
 | Final Fantasy VIII | `aedac3154f8a0383` | `f3ee4d06bf3e0383` | `c184351a7e528d32` | 4,002 | 640x480 | 0 | 1,187 |
-| Ace Combat 3 | `2d039a3114a00858` | `8b98ad87bd86ef11` | `b7d1c35c356ae822` | 54,862 | 320x240 | 80,864 | 2,255 |
-| Captain Tsubasa J | `f0779890ee9b1bb0` | `add4d55f3196ad03` | `816d516f2ba1d3f8` | 76,800 | 320x240 | 59,100 | 3,759 |
+| Ace Combat 3 | `f1839d675ff2720f` | `fb65d8a672a9fa31` | `2e6db11119920d31` | 51,183 | 320x240 | 79,268 | 2,229 |
+| Captain Tsubasa J | `f0779890ee9b1bb0` | `add4d55f3196ad03` | `816d516f2ba1d3f8` | 76,800 | 320x240 | 59,100 | 3,763 |
+
+**Re-recorded after bug 145, 2026-10-02.** SPU uploads in request mode now take the
+SPU's time - 16 cycles a halfword, the CPU running between blocks - where they finished
+inside the write that started them, so a game that waits for its sound data reaches
+the next thing a little later. Seven discs' checksums moved, every one checked by eye
+against the build before: the same screens a moment apart (Ridge Racer's and Area 51's
+"press start" mid-blink, FF7's credits and Ace Combat 3's intro film a little further
+on, Wild Arms 2's trainer scroller moved), nothing missing or wrong. Some sector
+counts were already stale before it and are brought up to date here: the build just
+before gave Wild Arms 3,716, Bomberman 4,650, Area 51 5,657 and Tsubasa 3,764 where
+the table said 3,715, 4,652, 5,490 and 3,759.
 
 Re-recorded after bug 105 (the fill rule on opaque triangles too): three
 checkpoints moved, and no instruction count - it is a change of pixels only.

@@ -66,6 +66,14 @@ class Dma : public Component {
   uint32_t Read(uint32_t address);
   void Write(uint32_t address,uint32_t data);
   DmaChannel& channel(int i) { return channels[i]; }
+  // Whether channel 4 is part way through a request-mode transfer, the SPU
+  // taking it a block at a time - what SPUSTAT's busy bit reports (Dma4).
+  // Moving, not merely started: a transfer the channel's DPCR enable holds
+  // back never reaches the SPU, which is not busy with it - JaCzekanski's
+  // dma/dpcr reads the bit then and calls it stuck high if it is set.
+  bool spu_transfer_running() const {
+    return SpuBlocksLeft() && channels[4].busy_cycles > 0;
+  }
   // The MDEC's data-out request: it has decoded output to hand over, and a
   // channel 1 transfer started before there was any takes it now.
   void MdecOutputReady();
@@ -112,6 +120,23 @@ class Dma : public Component {
   static const uint32_t kBlockCycles = 10;
   // Accrued while a transfer runs, charged to the CPU once it finishes.
   uint32_t transfer_cycles_ = 0;
+
+  // The SPU moves a halfword between its transfer FIFO and its RAM every 16
+  // cycles, so a request-mode block of N words is asked for 32N cycles after
+  // the last (DuckStation's TRANSFER_TICKS_PER_HALFWORD; see Dma4).
+  static const uint32_t kSpuCyclesPerHalfword = 16;
+  // Set by FeedSpuBlock when blocks are left: what the channel's countdown is
+  // armed with instead of the bus time. Only ever non-zero between the feed
+  // and the arming, so it is not part of the saved state.
+  int32_t armed_busy_cycles_ = 0;
+  void FeedSpuBlock();
+  // A request-mode channel 4 transfer started and not yet finished: blocks
+  // left to feed.
+  bool SpuBlocksLeft() const {
+    const DmaChannel& ch = channels[4];
+    return (ch.chcr & 0x01000000) != 0 && ((ch.chcr >> 9) & 3) == 1 &&
+           (ch.bcr >> 16) != 0;
+  }
   void ChargeWords(uint32_t words) { transfer_cycles_ += RamCycles(words); }
   void ChargeCycles(uint32_t cycles) { transfer_cycles_ += cycles; }
   // Runs one channel's transfer - moving the data is still immediate, only

@@ -8772,3 +8772,62 @@ and voices 1 and 3 into the capture buffers at the bottom of sound RAM, touch th
 models both. Nothing seen needs them yet.
 
 All twenty-four harness runs green after bug 144 (`spu_test` 150).
+
+## 145. SPU DMA finished inside the write that started it
+
+`psx/dma.cpp`, `psx/dma.h`, `psx/spu.cpp`, `tools/media_test.cpp`
+
+Reported: JaCzekanski's `spu/memory-transfer` fails `testDMAWriteTiming` and `testDMAReadTiming`, two
+checks each - "DMA in mode 1 should allow for code execution between block transfers" and "DMA transfer
+was too fast" - where the console's log passes them.
+
+**What the test does**, read off its code: 1 KB between RAM and sound RAM at 1000h in request mode
+(sync 1), 16-word blocks; it writes CHCR = 01000201h, sets timer 2 to the system clock over 8 and zeroes
+it, then polls CHCR's busy bit, counting the polls that find it busy, and reads the timer when it clears.
+No poll finding it busy is "finished immediately"; the time, times 8, must lie between 1,638.4 and
+18,022.4 cycles - 1024 x 16 x 0.1 and x 1.1.
+
+**Why.** `Dma::Dma4` moved the whole transfer inside the CHCR write and kept the busy bit for its bus time
+- 256 words, about 270 cycles, gone before the test's first poll. On the console the SPU takes a block
+only when its 32-halfword FIFO has room (or, reading, is full), and moves a halfword between the FIFO and
+its RAM every 16 cycles - DuckStation's `TRANSFER_TICKS_PER_HALFWORD` - so each 16-word block is asked for
+512 cycles after the last, and the CPU runs in between.
+
+**Fix.** Channel 4 in request mode goes a block at a time, as channel 0 feeds the MDEC: the first in the
+CHCR write, each next one from `Dma::Tick` a block's SPU time (32 cycles a word) after the last, the bus
+time of each charged as before. MADR advances and BCR's block count runs down as they go, as on the
+hardware, so a transfer part done is described by its own registers and nothing new goes into a save
+state. Clearing the start bit stops it between blocks with no interrupt, as channels 0-2 already did.
+SPUSTAT's bit 10 - "transfer busy", which read idle always - is set while one is moving, so software that
+waits on it rather than on CHCR does not start the next transfer under this one. Burst mode still moves
+everything at once.
+
+**On the way.** The first version set bit 10 for a transfer merely started: JaCzekanski's `dma/dpcr`
+starts one with the channel disabled in DPCR, so it never moves, and then reads the bit - "SPUSTAT bit10
+(DMA busy flag) is stuck high, fix your emulator". It is set only while blocks are actually being fed now.
+
+**Verified.**
+- `spu/memory-transfer`: all nine pass - on the interpreter and the recompiler, with DMA stopping the CPU,
+  with exact event timing, and with all of them at once. Before: the four failures reported.
+- The rest of JaCzekanski's DMA and SPU tests here - `dma/chain-looping`, `chopping`, `dpcr`, `otc-test`,
+  `spu/test`, `stereo`, `ram-sandbox` - print exactly what they printed before.
+- The BIOS boot unchanged: 92,822,656 instructions, `435bad9a6c5e4004`. Thousand Arms' opening (bug 144)
+  still reaches its dialogue, the SPU interrupt firing as often.
+- The twelve discs: seven checkpoints' pictures moved, each the same screen a moment later - games that
+  wait for their sound data now wait as long as a console makes them - and the table in Test-Suite.md
+  re-recorded. Area 51 has 720 macroblocks of film decoded at frame 1,000 rather than 960 and is level by
+  2,000; Ace Combat 3's attract film is 2% behind at 3,000.
+- `media_test` 429 -> 446: four blocks going one at a time, 512 cycles apart, busy and SPUSTAT busy until
+  the fourth, the interrupt then, every word in sound RAM; stopping part way; burst mode at once. Eight of
+  the seventeen fail against the old channel.
+
+**Not done.** SPUSTAT's DMA request bits (7-9), and the FIFO's last 512 cycles of writing out after the
+final block - the data is in sound RAM already, so only timing that reads bit 10 then could tell. A state
+saved by an earlier build inside a request-mode SPU transfer's old busy window (a cycle a word) would be
+taken as having its blocks still to go.
+
+All twenty-four harness runs green after bug 145 (`media_test` 446), bar `host_test`'s two wall-clock
+checks - the frame limiter holding the display's rate, and three seconds of sound with no underrun - on a
+laptop running on battery: they failed one run in three, and a `host_test` built with the old `dma.cpp`,
+alternated with the new, failed the same run. The machine they time is identical (92,822,656
+instructions, `435bad9a6c5e4004`).

@@ -1169,9 +1169,14 @@ uint16_t Spu::Read(uint32_t address) {
     case 0x1AA: return control_;
     case 0x1AC: return transfer_control_;
     case 0x1AE:
-      // The status register mirrors the low bits of the control register, and
-      // reports the transfer as always idle: this core completes them at once.
-      return static_cast<uint16_t>((status_ & 0xFFC0) | (control_ & 0x3F));
+      // The status register mirrors the low bits of the control register.
+      // Bit 10 is the transfer busy flag: set while a request-mode DMA is
+      // still feeding the SPU its blocks (bug 145, Dma::Dma4) - software
+      // that waits on it before starting the next transfer must not find the
+      // last one still running. Manual transfers complete at once.
+      return static_cast<uint16_t>(
+          (status_ & 0xFBC0) | (control_ & 0x3F) |
+          (system().io().dma.spu_transfer_running() ? 0x0400 : 0));
     case 0x1B0: return cd_volume_left_;
     case 0x1B2: return cd_volume_right_;
     case 0x1B4: return external_volume_left_;

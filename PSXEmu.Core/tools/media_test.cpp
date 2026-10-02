@@ -1173,6 +1173,77 @@ void TestDmaBusyBit(emulation::psx::System* system) {
              "with the completion interrupt landing at the same moment");
 }
 
+// Channel 4 in request mode (sync 1) is paced by the SPU: a block whenever its
+// FIFO has been written out, at 16 cycles a halfword - 512 cycles for a
+// 16-word block - with the CPU running in between. It used to move the whole
+// transfer inside the CHCR write; JaCzekanski's spu/memory-transfer times 1 KB
+// at 1638-18022 cycles and expects to find the channel busy (bug 145).
+void TestSpuDmaIsPacedBySpu(emulation::psx::System* system) {
+  BeginTest("an SPU transfer in request mode goes a block at a time");
+
+  emulation::psx::IOInterface& io = system->io();
+  const uint32_t kMadr = 0x1F8010C0, kBcr = 0x1F8010C4, kChcr = 0x1F8010C8;
+  const uint32_t kDpcr = 0x1F8010F0, kDicr = 0x1F8010F4;
+  const uint32_t kSpuControl = 0x1F801DAA, kSpuStatus = 0x1F801DAE;
+  const uint32_t kSpuTransferAddress = 0x1F801DA6;
+
+  for (uint32_t i = 0; i < 64; ++i)
+    io.ram_buffer.u32[(0x10000 >> 2) + i] = 0xA5000000u | i;
+  io.Write32(kDpcr, 1u << 19);                    // channel 4 on
+  io.Write32(kDicr, (1u << 20) | (1u << 23));     // its interrupt, and the master
+  io.Write16(kSpuControl, 0x8000);                // transfers stopped
+  io.Write16(kSpuTransferAddress, 0x1000 / 8);
+  io.Write16(kSpuControl, 0x8000 | (2u << 4));    // DMA write
+
+  io.Write32(kMadr, 0x10000);
+  io.Write32(kBcr, (4u << 16) | 16u);             // four blocks of sixteen words
+  io.Write32(kChcr, 0x01000201);                  // start, request mode, from RAM
+
+  CheckEqual(io.Read32(kChcr) & 0x01000000, 0x01000000, "busy once started");
+  CheckEqual(io.Read32(kBcr) >> 16, 3, "the first block went at once");
+  CheckEqual(io.Read32(kMadr), 0x10040, "and MADR moved past it");
+  CheckEqual(io.Read16(kSpuStatus) & 0x0400, 0x0400, "SPUSTAT says the transfer is busy");
+
+  io.Tick(256);
+  CheckEqual(io.Read32(kBcr) >> 16, 3, "the next waits while the SPU writes the last out");
+  io.Tick(300);
+  CheckEqual(io.Read32(kBcr) >> 16, 2, "and goes 512 cycles after it");
+  io.Tick(512 * 2 - 100);
+  CheckEqual(io.Read32(kChcr) & 0x01000000, 0x01000000, "still busy with a block to go");
+  CheckEqual(io.Read32(kDicr) & (1u << 28), 0, "with no interrupt yet");
+  io.Tick(200);
+  CheckEqual(io.Read32(kChcr) & 0x01000000, 0, "done after the fourth block");
+  CheckEqual(io.Read32(kDicr) & (1u << 28), 1u << 28, "and its interrupt raised");
+  CheckEqual(io.Read32(kMadr), 0x10100, "MADR at the end of the buffer");
+  CheckEqual(io.Read16(kSpuStatus) & 0x0400, 0, "SPUSTAT idle again");
+  const uint8_t* spu_ram = system->spu().ram();
+  uint32_t last = 0;
+  memcpy(&last, spu_ram + 0x1000 + 63 * 4, 4);
+  CheckEqual(last, 0xA500003Fu, "and every word landed in sound RAM");
+
+  // Clearing the start bit stops it between blocks, with no interrupt.
+  io.Write32(kDicr, (1u << 20) | (1u << 23) | (1u << 28));   // acknowledge
+  io.Write32(kMadr, 0x10000);
+  io.Write32(kBcr, (4u << 16) | 16u);
+  io.Write32(kChcr, 0x01000201);
+  io.Write32(kChcr, 0x00000201);
+  io.Tick(4096);
+  CheckEqual(io.Read32(kBcr) >> 16, 3, "stopped, no further block goes");
+  CheckEqual(io.Read32(kDicr) & (1u << 28), 0, "and nothing completes");
+  CheckEqual(io.Read16(kSpuStatus) & 0x0400, 0, "nor is the SPU left busy");
+
+  // Burst mode is unchanged: everything at once.
+  io.Write32(kMadr, 0x10000);
+  io.Write32(kBcr, 64);
+  io.Write32(kChcr, 0x01000001);                  // start, burst, from RAM
+  CheckEqual(io.Read32(kMadr), 0x10100, "burst mode still moves the whole buffer at once");
+  io.Tick(512);
+
+  io.Write16(kSpuControl, 0x8000);
+  io.Write32(kDicr, 0);
+  io.Write32(kDpcr, 0);
+}
+
 // Channel 2 (and 5 and 6) explicitly refuse a new trigger while their own
 // busy bit is still set. That guard existed before this change, but it was
 // checking a bit that was always already clear by the time any second write
@@ -2665,6 +2736,7 @@ int main(int argc, char** argv) {
   TestCdExtraCommands(system, directory);
   TestDmaBusyBit(system);
   TestDmaChannel2RefusesWhileBusy(system);
+  TestSpuDmaIsPacedBySpu(system);
   TestDiscBoot(system, directory);
   system->Deinitialize();
   delete system;

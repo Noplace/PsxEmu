@@ -153,6 +153,13 @@ void Dma::RunChannel(int channel, bool acknowledge) {
     return;
   // At least one tick's worth, so even a free (zero-word) transfer stays
   // busy for one batch rather than completing before anything could check.
+  // A request-mode SPU transfer with blocks still to go is armed instead with
+  // the SPU's time over the block it just took (FeedSpuBlock).
+  if (armed_busy_cycles_ > 0) {
+    channels[channel].busy_cycles = armed_busy_cycles_;
+    armed_busy_cycles_ = 0;
+    return;
+  }
   channels[channel].busy_cycles =
       transfer_cycles_ > 0 ? static_cast<int32_t>(transfer_cycles_) : 1;
 }
@@ -171,8 +178,27 @@ void Dma::Tick(uint32_t cycles) {
     if (channels[channel].busy_cycles <= 0)
       continue;
     channels[channel].busy_cycles -= static_cast<int32_t>(cycles);
-    if (channels[channel].busy_cycles <= 0)
-      CompletePending(channel);
+    if (channels[channel].busy_cycles > 0)
+      continue;
+    // A request-mode SPU transfer with blocks left: the SPU has got through
+    // the last one and asks for the next (Dma4) - each a block's time after
+    // the one before, however long a batch this is.
+    if (channel == 4) {
+      while (channels[4].busy_cycles <= 0 && SpuBlocksLeft()) {
+        transfer_cycles_ = 0;
+        FeedSpuBlock();
+        if (transfer_cycles_ > 0)
+          HoldBus(transfer_cycles_);
+        channels[4].busy_cycles +=
+            armed_busy_cycles_ > 0
+                ? armed_busy_cycles_
+                : (transfer_cycles_ > 0 ? static_cast<int32_t>(transfer_cycles_) : 1);
+        armed_busy_cycles_ = 0;
+      }
+      if (channels[4].busy_cycles > 0)
+        continue;
+    }
+    CompletePending(channel);
   }
 
   // Channel 2 feeding the GPU, waiting on a full GP0 port. MADR and BCR
@@ -372,6 +398,10 @@ void Dma::Write(uint32_t address,uint32_t data) {
      case 0x1f8010c0:   channels[4].madr=data;  break;
      case 0x1f8010c4:   channels[4].bcr=data;  break;
      case 0x1f8010c8:
+      // Clearing the start bit stops a request-mode transfer between blocks,
+      // with no interrupt - it did not complete - as for channels 0, 1 and 2.
+      if (SpuBlocksLeft() && (data & 0x01000000) == 0)
+        channels[4].busy_cycles = 0;
       channels[4].chcr = data;
       if (ShouldStart(channels[4].chcr, channels[4].enable, DeviceRequest(4))) {
         RunChannel(4);
@@ -906,7 +936,32 @@ void Dma::Dma3() {
 // Sound RAM, in either direction. Sample data is far too big to move a
 // halfword at a time through the data port, so every game uploads it this way -
 // which is why a channel that did nothing meant a machine with no sound.
+// Sound RAM, in and out.
+//
+// In request mode - sync 1, which is what libspu uses - the SPU asks for a
+// block only when its 32-halfword FIFO is empty (writing) or full (reading),
+// and it moves one halfword between the FIFO and its RAM every 16 cycles. So
+// each block takes the bus for its words and then the SPU's time over it,
+// 512 cycles for libspu's 16-word blocks, before the next is asked for - and
+// the CPU runs in between. Moving the whole transfer inside the CHCR write
+// finished 1 KB in about 270 cycles where a console takes thousands, with the
+// busy bit already clear by the first time software looked: JaCzekanski's
+// spu/memory-transfer measures 1638-18022 cycles and expects to see it busy
+// (bug 145). The blocks are fed from Tick as the SPU asks, as channel 0 feeds
+// the MDEC; MADR advances and BCR's block count runs down as they go, as on
+// the hardware, so a transfer part done is described by its own registers.
+//
+// Burst mode still moves everything at once.
 void Dma::Dma4() {
+  if (((channels[4].chcr >> 9) & 3) == 1) {
+    const uint32_t words = TransferWords(channels[4].bcr, 1);
+    const int32_t step = (channels[4].chcr & 0x02) ? -4 : 4;
+    NoteTransfer(4, words,
+                 (channels[4].madr + static_cast<uint32_t>(step) * words) & 0x1FFFFC);
+    FeedSpuBlock();
+    return;
+  }
+
   auto& ram = system_->io().ram_buffer;
   auto& spu = system_->spu();
 
@@ -933,6 +988,46 @@ void Dma::Dma4() {
     NoteRamWritten(channels[4].madr & 0x1FFFFC, words, step);
   NoteTransfer(4, words, address);
   channels[4].madr = address;
+}
+
+// One block of channel 4's request-mode transfer, and when the SPU will ask for
+// the next: its bus time is charged as any transfer's is, and if blocks are
+// left the channel's countdown is armed with the SPU's time over this one, so
+// Tick feeds the next when it runs out (see Dma4).
+void Dma::FeedSpuBlock() {
+  DmaChannel& ch = channels[4];
+  auto& ram = system_->io().ram_buffer;
+  auto& spu = system_->spu();
+
+  uint32_t block_words = ch.bcr & 0xFFFF;
+  if (block_words == 0)
+    block_words = 0x10000;
+  uint32_t blocks = ch.bcr >> 16;
+  if (blocks == 0)
+    blocks = 0x10000;
+
+  const bool to_spu = (ch.chcr & 1) != 0;
+  const int32_t step = (ch.chcr & 0x02) ? -4 : 4;
+  const uint32_t start = ch.madr & 0x1FFFFC;
+  uint32_t address = start;
+  for (uint32_t i = 0; i < block_words; ++i) {
+    if (to_spu) {
+      spu.WriteDataWord(ram.u32[address >> 2]);
+    } else {
+      const uint32_t word = spu.ReadDataWord();
+      system_->cpu().NoteExternalWrite(0xD4, address, word);
+      ram.u32[address >> 2] = word;
+    }
+    address = static_cast<uint32_t>(address + step) & 0x1FFFFC;
+  }
+  ChargeWords(block_words);
+  if (!to_spu)
+    NoteRamWritten(start, block_words, step);
+  --blocks;
+  ch.madr = address;
+  ch.bcr = (ch.bcr & 0xFFFF) | ((blocks & 0xFFFF) << 16);
+  armed_busy_cycles_ =
+      (blocks != 0) ? static_cast<int32_t>(block_words * 2 * kSpuCyclesPerHalfword) : 0;
 }
 
 void Dma::Dma6() {
