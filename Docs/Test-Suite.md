@@ -242,7 +242,7 @@ Unit tests for the sound unit. No BIOS, no window, no audio device. Sample
 data is written into sound RAM, voices are keyed on through their real
 registers, and the frames that come out are checked.
 
-**Current: 144 checks, 0 failures.**
+**Current: 150 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -255,7 +255,7 @@ registers, and the frames that come out are checked.
 | `sweep` | volume sweeps (bug 101): a fixed level taking effect at once, linear increase and decrease by the rate's step and stopping at the top and at zero, a slow rate stepping every other sample and a write starting it afresh, an exponential decrease shrinking with the level to zero, an exponential increase slowing above 6000h, the phase bit turning an increase toward -8000h and a decrease up to zero but leaving an exponential decrease alone, rate 7Fh never moving, each voice's current volume reading back, and a voice mixed at its sweep's level |
 | `reverb` | the reverb (bug 102), through a network plain enough to follow by hand: silence in and out, a steady tone coming back at the level it went in, the reverb volume at zero giving exactly the dry sound, one halfword step every two samples, a small work area at the top of RAM wrapping without touching the RAM below it, and the master enable off writing nothing but still playing what the work area holds |
 | `timing` | one frame per 768 cycles, and the frame count over a known run |
-| `noiseirq` | the noise generator running, the IRQ address compare |
+| `noiseirq` | the noise generator running, the IRQ address compare; and a voice whose sample has ended still running, silent, to a looping block at the IRQ address and raising the interrupt there - once until acknowledged, again once re-armed, never while disabled (bug 144; four of the six fail with off voices left standing) |
 | `cdvolume` | the CD input volume as a plain signed level, not a sweep register (bug 36) |
 | `xaparams` `xacounts` `xashift` `xastereo` `xafilter` `xasat` | XA-ADPCM: parameter offsets, frame counts, silence and shift, mono and stereo, the filter carrying across sectors, saturation |
 
@@ -751,10 +751,10 @@ the most likely answer is the network share rather than the emulator.
 | `cpu_test` | 297 | | `gpu_test` | 95 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 429 |
-| `sio_test` | 203 | | `spu_test` | 144 |
+| `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,724 checks, 0 failures**, all ten green. Each harness's own section above
+**1,730 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,

@@ -586,7 +586,17 @@ void Spu::StepNoise() {
 }
 
 int16_t Spu::StepVoice(Voice& voice, int index, int16_t previous_output) {
-  if (!voice.active && voice.phase == kOff)
+  // A voice that is off makes no sound, but the hardware still runs it: its
+  // address keeps moving through sample RAM, through the flags' jumps, and a
+  // block it reads at the IRQ address raises the interrupt. Games use exactly
+  // that to hear when a sample has finished - point the voice's repeat
+  // address at a silent looping block, put the IRQ address in it, and the
+  // interrupt arrives when the voice parks there. Thousand Arms' opening
+  // waits for it before its first dialogue; skipping off voices left the game
+  // walking Meis on the spot for ever (bug 144). Only while the IRQ is
+  // enabled, as DuckStation does - with it off nothing can tell, and stepping
+  // 24 silent voices would be time for nothing.
+  if (!voice.active && voice.phase == kOff && (control_ & 0x0040) == 0)
     return 0;
 
   // Pitch, optionally modulated by the previous voice's output.
@@ -1080,7 +1090,11 @@ int Spu::QueuedFrames() const {
 }
 
 void Spu::CheckIrq(uint32_t byte_address) {
-  if ((control_ & 0x0040) == 0)
+  // Raised once, then held until software acknowledges it by clearing the
+  // enable bit: the flag is what interrupts, and a flag already set makes no
+  // new edge. With off voices now stepping (bug 144), one parked on a looping
+  // block at the IRQ address would otherwise raise it again every block.
+  if ((control_ & 0x0040) == 0 || (status_ & 0x0040) != 0)
     return;
   const uint32_t irq = static_cast<uint32_t>(irq_address_) * 8;
   // The address is checked against the 16-byte block being read, which is the

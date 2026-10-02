@@ -8721,3 +8721,54 @@ too); nothing seen needs it yet.
 
 All twenty-four harness runs green after bug 143 (`gpu_test` 95, and 95 through each hardware
 rasteriser).
+
+## 144. Thousand Arms never got past its opening: a silent voice stopped running
+
+`psx/spu.cpp`, `tools/spu_test.cpp`
+
+Reported: Thousand Arms (`SLUS-00845`, the `.ccd`), save slot 1 - Meis walks and never stops, nothing
+happens; in DuckStation the game goes on into dialogue.
+
+**What it was doing.** From the save, he walks down the village road for about a minute, stops at a house
+and stays in his walking pose for good. The game itself was healthy: its frame loop and VSync wait ran,
+the pad read idle, the CD answered Getstat every 64 frames (the game's own lid check, `8001F234`, which
+only runs while its CD manager is idle) and read nothing. The memory cards were empty and made a minute
+before the save, so this is a new game's opening - and it reproduces from a cold boot: Start, Cross,
+Cross, and the same walk, the same stop, at the same house - on 0becf9d as on today's build, and with
+mechanical CD timing or exact event timing.
+
+What was left was the SPU. I_MASK had the SPU interrupt (bit 9) enabled, and in 9,000 frames from boot
+it fired once. Logging the game's SPU writes: at frame 3,079 it uploads a sample to 01010h-03FCFh, keys on
+voice 23 there, sets the IRQ address to 02F90h and enables the interrupt; at 3,116 the voice reaches
+02F90h, the interrupt fires, the handler acknowledges it, moves the IRQ address to **04F08h** and enables
+it again - and nothing ever reaches 04F08h. The sample's last block, at 03FC0h, is flagged loop-end
+without repeat; 04F00h holds a silent block that loops on itself. The game had pointed the voice's repeat
+address there: when the sample ends the voice jumps to the silent block, its envelope forced to zero,
+and on hardware keeps running - it parks on that block and raises the interrupt, which is how the game
+learns the line has finished playing.
+
+**Why.** `Spu::StepVoice` returned at once for a voice that was off, so once the end flag had silenced
+voice 23 its address never moved again and the block at the IRQ address was never read. DuckStation
+skips an off voice only while the SPU interrupt is disabled (`SampleVoice`), for exactly this.
+
+**Fix.** A voice that is off keeps stepping - silently, its envelope at zero - while the SPU interrupt is
+enabled. And the interrupt is raised once and then held until software acknowledges it by clearing the
+enable bit, as the hardware's flag works (DuckStation's `IsRAMIRQTriggerable`): a voice parked on a
+looping block at the IRQ address would otherwise raise it again every block.
+
+**Verified.**
+- From a new game: the dialogue starts - "I said stop it! But, I'm starving..." at frame 4,200, the
+  villagers, "A few weeks ago at the Triumph Estate...", the butler - and the SPU interrupt fires 29 times
+  by frame 9,000 where it fired once. From the user's save slot 1, Villager A is talking by 1,800 frames.
+- The twelve discs: every picture and GP0 count identical at all three checkpoints. Legend of Mana and
+  Area 51, the two that use the SPU interrupt, raise it exactly as often as before (474 and 25).
+- `spu_test` 144 -> 150: a sample ending without repeat, its repeat address on a silent looping block with
+  the IRQ address in it - no interrupt while it plays, its envelope zero once it ends, the interrupt once
+  when it parks, not again however long it sits there, again once acknowledged and re-armed, never while
+  disabled. Four of the six fail with off voices left standing.
+
+**Not done.** The hardware also raises this interrupt when a transfer, or the SPU's own writes of CD audio
+and voices 1 and 3 into the capture buffers at the bottom of sound RAM, touch the IRQ address; DuckStation
+models both. Nothing seen needs them yet.
+
+All twenty-four harness runs green after bug 144 (`spu_test` 150).

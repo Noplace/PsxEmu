@@ -913,6 +913,50 @@ void TestNoiseAndIrq(Machine& m) {
   m.Run(64);
   CheckEqual(static_cast<int64_t>(m.spu().stats().irqs), 0,
              "no interrupt was raised");
+
+  // How a game hears that a sample has finished (bug 144): the sample ends
+  // without repeating, its repeat address points at a silent block that loops
+  // on itself, and the IRQ address is in that block. The voice is off - its
+  // envelope forced to zero by the end - but the hardware keeps running it, so
+  // it parks on the silent block and raises the interrupt. Thousand Arms' opening
+  // waits for exactly this before its first line of dialogue.
+  BeginTest("a voice that has ended still reaches the IRQ address");
+  m.Reset();
+  {
+    std::vector<uint8_t> sample = LoudBlock(0x00);
+    const std::vector<uint8_t> middle = LoudBlock(0x00);
+    const std::vector<uint8_t> last = LoudBlock(0x01);   // end, no repeat
+    sample.insert(sample.end(), middle.begin(), middle.end());
+    sample.insert(sample.end(), last.begin(), last.end());
+    m.Upload(0x1000, sample);
+  }
+  m.Upload(0x2000, SilentBlock(0x07));                  // loops on itself
+  m.WriteVoice(0, 0x6, 0x1000 / 8);
+  m.WriteVoice(0, 0x4, 0x1000);
+  m.WriteVoice(0, 0x8, 0x00FF);
+  m.Write(kKeyOnLow, 0x0001);
+  m.WriteVoice(0, 0xE, 0x2000 / 8);                    // repeat: the silent block
+  m.Write(kIrqAddress, 0x2008 / 8);
+  m.Write(kControl, kControlEnable | kControlUnmute | kControlIrq);
+  m.Run(32);
+  CheckEqual(static_cast<int64_t>(m.spu().stats().irqs), 0,
+             "not while it is still playing its sample");
+  m.Run(512);
+  CheckEqual(m.ReadVoice(0, 0xC), 0, "the voice is silent once its sample has ended");
+  CheckEqual(static_cast<int64_t>(m.spu().stats().irqs), 1,
+             "parked on the silent block it raises the interrupt, once");
+  m.Run(2048);
+  CheckEqual(static_cast<int64_t>(m.spu().stats().irqs), 1,
+             "and not again while the flag is still set, however often it reads the block");
+  m.Write(kControl, kControlEnable | kControlUnmute);   // acknowledge
+  m.Write(kControl, kControlEnable | kControlUnmute | kControlIrq);
+  m.Run(64);
+  CheckEqual(static_cast<int64_t>(m.spu().stats().irqs), 2,
+             "acknowledged and enabled again, the next read raises it again");
+  m.Write(kControl, kControlEnable | kControlUnmute);   // disabled
+  m.Run(512);
+  CheckEqual(static_cast<int64_t>(m.spu().stats().irqs), 2,
+             "and with the enable bit clear it raises nothing");
 }
 
 struct Group {
