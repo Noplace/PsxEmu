@@ -1686,6 +1686,114 @@ void TestControllerWithDisc(emulation::psx::System* system,
   remove(path.c_str());
 }
 
+// GetlocL answers with the last header the drive decoded, and fails when there
+// is none: since the disc went in, while a seek is under way, after a physical
+// seek or a failed one. Init keeps it. A read that seeks first says so in its
+// status until the first sector. And a seek past the end of what was pressed
+// fails with 04h, 04h and stops the drive (JaCzekanski's cdrom/getloc, bug 146).
+void TestHeaderValidAndSeekLimits(emulation::psx::System* system,
+                                  const std::string& directory) {
+  printf("cd-rom controller, the decoded header and how far a seek reaches\n");
+  BeginTest("the decoded header and seek limits");
+
+  const std::string path = directory + "media_test_getloc.iso";
+  if (!WriteImage(path, 2048, 200)) {
+    printf("  FAIL  could not write %s\n", path.c_str());
+    ++g_failures;
+    return;
+  }
+  Check(system->LoadDisc(path.c_str()), "mount the disc");
+
+  ControllerHarness harness(system);
+  uint8_t response[16];
+  int length = 0;
+  auto Seek = [&](uint8_t command, uint8_t m, uint8_t s, uint8_t f, uint8_t* second) {
+    const uint8_t location[3] = { m, s, f };
+    harness.Command(0x02, location, 3);                       // Setloc
+    harness.WaitForInterrupt(response, &length, 16);
+    harness.Command(command, nullptr, 0);
+    harness.WaitForInterrupt(response, &length, 16);          // acknowledged
+    const uint8_t result = harness.WaitForInterrupt(response, &length, 16);
+    if (second != nullptr)
+      memcpy(second, response, 2);
+    return result;
+  };
+  auto Getloc = [&](uint8_t command) {
+    harness.Command(command, nullptr, 0);
+    return harness.WaitForInterrupt(response, &length, 16);
+  };
+
+  CheckEqual(Getloc(0x10), Cdrom::kIntError, "GetlocL fails before any header is decoded");
+  CheckEqual(response[1], 0x80, "with error 80h");
+  CheckEqual(Getloc(0x11), Cdrom::kIntAcknowledge, "GetlocP answers all the same");
+
+  uint8_t second[2] = {};
+  CheckEqual(Seek(0x15, 0x00, 0x02, 0x16, second), Cdrom::kIntComplete, "SeekL completes");
+  CheckEqual(Getloc(0x10), Cdrom::kIntAcknowledge, "and GetlocL answers");
+  Check(response[0] == 0x00 && response[1] == 0x02 && response[2] == 0x16,
+        "with the header at the target, 00:02:16");
+
+  CheckEqual(Seek(0x16, 0x00, 0x02, 0x20, second), Cdrom::kIntComplete, "SeekP completes");
+  CheckEqual(Getloc(0x10), Cdrom::kIntError, "but decodes no header: GetlocL fails");
+
+  // A read that has to seek first is seeking until its first sector.
+  const uint8_t read_at[3] = { 0x00, 0x04, 0x00 };
+  harness.Command(0x02, read_at, 3);
+  harness.WaitForInterrupt(response, &length, 16);
+  harness.Command(0x06, nullptr, 0);                          // ReadN
+  harness.WaitForInterrupt(response, &length, 16);
+  harness.Command(0x01, nullptr, 0);                          // Getstat
+  harness.WaitForInterrupt(response, &length, 16);
+  CheckEqual(response[0], 0x42, "seeking straight after ReadN, not reading");
+  CheckEqual(harness.WaitForInterrupt(response, &length, 16), Cdrom::kIntDataReady,
+             "then the first sector arrives");
+  CheckEqual(response[0], 0x22, "and the drive is reading");
+  harness.Command(0x09, nullptr, 0);                          // Pause
+  for (int i = 0; i < 8; ++i) {
+    if (harness.WaitForInterrupt(response, &length, 16) == Cdrom::kIntComplete)
+      break;
+  }
+
+  harness.Command(0x0A, nullptr, 0);                          // Init
+  for (int i = 0; i < 4; ++i) {
+    if (harness.WaitForInterrupt(response, &length, 16) == Cdrom::kIntComplete)
+      break;
+  }
+  CheckEqual(Getloc(0x10), Cdrom::kIntAcknowledge, "Init keeps the header the read decoded");
+
+  CheckEqual(Seek(0x15, 0x00, 0x00, 0x30, second), Cdrom::kIntComplete,
+             "SeekL into the pregap before track 1 completes");
+  CheckEqual(Getloc(0x10), Cdrom::kIntAcknowledge, "and finds a header there");
+  Check(response[0] == 0x00 && response[1] == 0x00 && response[2] == 0x30,
+        "made up for 00:00:30, which the image does not hold");
+
+  CheckEqual(Seek(0x15, 0x74, 0x00, 0x00, second), Cdrom::kIntComplete,
+             "SeekL into the lead-out, to 74:00:00, completes");
+  CheckEqual(Getloc(0x11), Cdrom::kIntAcknowledge, "GetlocP answers there");
+  CheckEqual(response[0], 0xAA, "track AA, the lead-out");
+  CheckEqual(response[1], 0x01, "index 1");
+  Check(response[5] == 0x74 && response[6] == 0x00 && response[7] == 0x00,
+        "at 74:00:00 on the disc");
+
+  CheckEqual(Seek(0x15, 0x74, 0x30, 0x00, second), Cdrom::kIntError,
+             "SeekL to 74:30:00, past what was pressed, fails");
+  CheckEqual(second[0], 0x04, "04h: the seek error, the motor stopped");
+  CheckEqual(second[1], 0x04, "and error 04h");
+  CheckEqual(Getloc(0x10), Cdrom::kIntError, "GetlocL fails after it");
+  CheckEqual(Getloc(0x11), Cdrom::kIntError, "and GetlocP");
+  harness.Command(0x01, nullptr, 0);
+  harness.WaitForInterrupt(response, &length, 16);
+  CheckEqual(response[0], 0x04, "Getstat says so too");
+
+  harness.Command(0x07, nullptr, 0);                          // MotorOn
+  harness.WaitForInterrupt(response, &length, 16);
+  harness.WaitForInterrupt(response, &length, 16);
+  CheckEqual(Getloc(0x11), Cdrom::kIntAcknowledge, "spun up again, GetlocP answers");
+
+  system->EjectDisc();
+  remove(path.c_str());
+}
+
 // A sector whose data-ready interrupt software has not yet acknowledged stays
 // in the buffer however long the drive runs on, and the next one takes the
 // buffer only after the acknowledge. Software acknowledges and then reads -
@@ -2730,6 +2838,7 @@ int main(int argc, char** argv) {
   TestControllerWithoutDisc(system);
   TestControllerWithDisc(system, directory);
   TestUnacknowledgedSectorHolds(system, directory);
+  TestHeaderValidAndSeekLimits(system, directory);
   TestCdAudioControl(system, directory);
   TestPregapPosition(system, directory);
   TestAssumedPregaps(system, directory);

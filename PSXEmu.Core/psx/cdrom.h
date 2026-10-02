@@ -241,6 +241,21 @@ class Cdrom : public Component {
   void StepRead(uint32_t cycles);
   void LoadSector();
   void GetPosition(uint8_t* data);   // 8 subchannel bytes, no status
+
+  // The last sector header the drive decoded, and whether it has one - what
+  // GetlocL answers with, or fails for want of (bug 146). The header is the
+  // front of sector_ and "has one" is its sync pattern being there, so both are
+  // in the saved state already and nothing is added to it.
+  bool HeaderValid() const;
+  void ForgetHeader();
+  // Decodes the header at `lba` into sector_, as a logical seek does on
+  // arriving: from the image where it has the sector, made up where it does
+  // not - the pregap before track 1 and the lead-out are data on a pressed
+  // disc, with headers like any other sector.
+  void DecodeHeaderAt(uint32_t lba);
+  // The furthest a seek can go: the lead-out runs on past the last track,
+  // and beyond it there is nothing to find (bug 146).
+  uint32_t ReachableEnd() const;
   // The INT1 packet: status first, and one of the two times depending on
   // `relative` - the drive alternates between them.
   void GetReport(uint8_t* data, bool relative);

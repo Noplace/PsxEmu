@@ -179,8 +179,10 @@ bool Cdrom::OpenDisc(const char* path) {
   status_ = kStatusMotorOn;
   seek_lba_ = Disc::kLeadInSectors;
   read_lba_ = Disc::kLeadInSectors;
-  // A new disc has to come up to speed, the same as one put in at power-on.
+  // A new disc has to come up to speed, the same as one put in at power-on,
+  // and nothing has been decoded off it yet (bug 146).
   spun_up_ = false;
+  ForgetHeader();
   return true;
 }
 
@@ -191,6 +193,7 @@ void Cdrom::CloseDisc() {
   shell_open_ = true;
   status_ = 0;              // no disc, no motor
   spun_up_ = false;
+  ForgetHeader();
 }
 
 void Cdrom::Serialise(StateIO& io) {
@@ -594,6 +597,23 @@ void Cdrom::GetPosition(uint8_t* data) {
   Disc::LbaToMsf(read_lba_, &absolute_minute, &absolute_second,
                  &absolute_frame);
 
+  // Past the last track: the lead-out, which the subchannel calls track AA,
+  // index 1, with its own time counting up from where it begins (bug 146).
+  if (read_lba_ >= disc_.total_sectors() && disc_.track_count() > 0) {
+    uint8_t relative_minute, relative_second, relative_frame;
+    Disc::LbaToMsf(read_lba_ - disc_.total_sectors(), &relative_minute,
+                   &relative_second, &relative_frame);
+    data[0] = 0xAA;
+    data[1] = 0x01;
+    data[2] = relative_minute;
+    data[3] = relative_second;
+    data[4] = relative_frame;
+    data[5] = absolute_minute;
+    data[6] = absolute_second;
+    data[7] = absolute_frame;
+    return;
+  }
+
   // The last track whose pregap has begun. Tracks are in order, so looking
   // from the end finds it first.
   uint8_t current_track = 1;
@@ -628,6 +648,77 @@ void Cdrom::GetPosition(uint8_t* data) {
   data[5] = absolute_minute;
   data[6] = absolute_second;
   data[7] = absolute_frame;
+}
+
+// The header GetlocL answers with is the one the drive last decoded, and there
+// is not always one: none since the power came on or a disc went in, none while
+// a seek is under way or after one has failed, none while CD audio plays (bug
+// 146). It is the front of sector_ - the sync pattern, then the header and
+// subheader - so whether it is there is whether the sync is: a sector read
+// puts one there, ForgetHeader takes it away, and Init leaves it alone, as
+// the console does - JaCzekanski's cdrom/getloc finds GetlocL failing after
+// the first Init and working after one that follows a read.
+namespace {
+const uint8_t kSync[12] = { 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
+}  // namespace
+
+bool Cdrom::HeaderValid() const {
+  return memcmp(sector_, kSync, sizeof(kSync)) == 0;
+}
+
+void Cdrom::ForgetHeader() {
+  // Only the sync: the data FIFO starts at byte 12 or 24, never in it.
+  memset(sector_, 0, sizeof(kSync));
+}
+
+void Cdrom::DecodeHeaderAt(uint32_t lba) {
+  uint8_t raw[Disc::kRawSectorSize];
+  if (disc_.ReadSector(lba, raw)) {
+    if (memcmp(raw, kSync, sizeof(kSync)) == 0)
+      memcpy(sector_, raw, 24);        // sync, header, subheader
+    else
+      ForgetHeader();                  // audio: there is no header to decode
+    return;
+  }
+  // No sector in the image here. Before track 1 and after the last track a
+  // pressed disc still has sectors - the pregap and the lead-out are encoded
+  // like the track they adjoin - and a data disc's carry headers: the console
+  // answers GetlocL at 00:00:29 and at 73:59:74 with mode 2.
+  if (disc_.track_count() == 0) {
+    ForgetHeader();
+    return;
+  }
+  const Disc::Track& track = (lba < disc_.track(0).start_lba)
+                                 ? disc_.track(0)
+                                 : disc_.track(disc_.track_count() - 1);
+  if (track.type != Disc::kTrackData) {
+    ForgetHeader();
+    return;
+  }
+  uint8_t mode = 2;
+  if (disc_.ReadSector(track.start_lba, raw) &&
+      memcmp(raw, kSync, sizeof(kSync)) == 0)
+    mode = raw[15];
+  memcpy(sector_, kSync, sizeof(kSync));
+  Disc::LbaToMsf(lba, &sector_[12], &sector_[13], &sector_[14]);
+  sector_[15] = mode;
+  memset(sector_ + 16, 0, 8);          // an empty subheader
+}
+
+// How far a seek can reach. After the last track the lead-out runs on - 6,750
+// sectors, 90 seconds, at the least - and past the end of what was pressed there
+// is nothing to read, so the seek fails (bug 146). How far a disc was pressed is
+// not in any image. The one measurement there is is the console's own run of
+// JaCzekanski's cdrom/getloc, on a disc whose data ended at 70:25:16: a seek to
+// 74:00:00 found the lead-out there, one to 74:30:00 found nothing. So a disc
+// reaches 74:15:00, between the two, or 90 seconds past its end if that is
+// further - a disc as long as a CD gets.
+uint32_t Cdrom::ReachableEnd() const {
+  const uint32_t kMinimumLeadOut = 6750;
+  const uint32_t kPressedTo = (74 * 60 + 15) * 75;   // 74:15:00
+  const uint32_t lead_out_end = disc_.total_sectors() + kMinimumLeadOut;
+  return lead_out_end > kPressedTo ? lead_out_end : kPressedTo;
 }
 
 // The unsolicited position packet the drive sends while playing audio, which
@@ -936,6 +1027,11 @@ void Cdrom::StepRead(uint32_t cycles) {
     return;
   }
 
+  // The first sector of a read that began with a seek: the head is there, and
+  // the drive is reading now (bug 146).
+  if (status_ & kStatusSeeking)
+    status_ = (status_ & ~kStatusSeeking) | kStatusReading;
+
   // Do not stack sectors up behind an unacknowledged one; queuing without
   // bound is worse. Nor put one in the buffer while software has not yet
   // acknowledged the last interrupt - delivered and not cleared is not the same
@@ -1020,6 +1116,8 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       }
       if (play_from_here && !seek_pending_)
         seek_lba_ = read_lba_;
+      else
+        ForgetHeader();   // a seek, and audio has no headers to decode (bug 146)
       seek_pending_ = false;
       const uint32_t from = read_lba_;
       read_lba_ = seek_lba_;
@@ -1063,20 +1161,33 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       // the implicit seek, the one the boot makes most of and the one that has
       // always been free.
       const uint32_t from = read_lba_;
+      bool seeking = false;
       if (seek_pending_) {
         read_lba_ = seek_lba_;
         seek_pending_ = false;
+        seeking = true;
       }
       reading_ = true;
       playing_ = false;
-      status_ = kStatusMotorOn | kStatusReading;
+      // A read that has to go somewhere first is seeking until its first
+      // sector comes round, and says so: the console reports 42h straight
+      // after ReadN, not 22h (JaCzekanski's cdrom/getloc, bug 146). StepRead
+      // turns it into reading with that sector. The seek takes the header
+      // with it, as any seek does.
+      if (seeking) {
+        ForgetHeader();
+        status_ = kStatusMotorOn | kStatusSeeking;
+      } else {
+        status_ = kStatusMotorOn | kStatusReading;
+      }
       read_timer_ = FirstSectorCycles(from, read_lba_);
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       break;
     }
 
     case 0x07: {  // MotorOn
-      status_ |= kStatusMotorOn;
+      // Spinning up again clears the seek error a failed seek stopped it with.
+      status_ = (status_ & ~kStatusSeekError) | kStatusMotorOn;
       const int32_t spin_up = SpinUpCycles();
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       QueueStatus(kIntComplete, kSecondResponseDelay + spin_up);
@@ -1089,6 +1200,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       scan_rate_ = 0;
       audio_peak_ = 0;
       status_ = 0;
+      ForgetHeader();   // a stopped disc decodes nothing (bug 146)
       // The motor is off now, so whatever starts it again pays to spin it up.
       spun_up_ = false;
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
@@ -1162,11 +1274,23 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       // the mode, 02h, a drive with its motor on. Shifted it was the frame
       // number, and frame 70h has the shell-open bit set - so the game decided
       // the lid had been opened and waited for ever for the drive to stop.
+      //
+      // With no header decoded it fails, as the console's does (bug 146).
+      if (!HeaderValid() || (status_ & kStatusSeekError) != 0) {
+        QueueError(0x80, kAcknowledgeDelay);
+        break;
+      }
       QueueResponse(kIntAcknowledge, kAcknowledgeDelay, sector_ + 12, 8);
       break;
     }
 
     case 0x11: {  // GetlocP - where the head is, in track and disc terms
+      // Nothing to read the subchannel off: no disc, or a drive stopped by a
+      // seek it could not complete (bug 146).
+      if (!disc_.loaded() || (status_ & kStatusSeekError) != 0) {
+        QueueError(0x80, kAcknowledgeDelay);
+        break;
+      }
       uint8_t data[8];
       GetPosition(data);
       QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 8);
@@ -1219,10 +1343,29 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       playing_ = false;
       scan_rate_ = 0;
       const uint32_t from = read_lba_;
-      read_lba_ = seek_lba_;
+      const uint32_t target = seek_lba_;
       seek_pending_ = false;
+      // The seek empties the sector buffer and the header goes with it; a
+      // logical seek decodes the one at the target on arriving, a physical one
+      // finds its place by the subchannel and decodes none (bug 146).
+      data_read_ = data_size_;
+      data_fifo_loaded_ = false;
+      ForgetHeader();
       status_ = kStatusMotorOn | kStatusSeeking;
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      if (target >= ReachableEnd()) {
+        // Past the end of what was pressed: nothing to find, and the drive
+        // stops. The console answers 04h, 04h - the seek-error bit and no
+        // motor - and both Getlocs fail until something spins it up again.
+        status_ = kStatusSeekError;
+        spun_up_ = false;
+        const uint8_t data[2] = { kStatusSeekError, 0x04 };
+        QueueResponse(kIntError, SeekCycles(from, target), data, 2);
+        break;
+      }
+      read_lba_ = target;
+      if (command == 0x15)
+        DecodeHeaderAt(target);
       status_ = kStatusMotorOn;
       QueueStatus(kIntComplete, SeekCycles(from, read_lba_));
       break;
@@ -1243,6 +1386,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         const uint32_t from = read_lba_;
         seek_lba_ = Disc::kLeadInSectors;
         read_lba_ = seek_lba_;
+        ForgetHeader();   // a seek like any other (bug 146)
         status_ = kStatusMotorOn | kStatusSeeking;
         QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
         status_ = kStatusMotorOn;
@@ -1381,8 +1525,10 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       read_lba_ = Disc::kLeadInSectors;
       status_ = disc_.loaded() ? kStatusMotorOn : 0;
       // A power-on is a power-on: the disc has stopped and has to come back up
-      // to speed, which InitCycles charges for below.
+      // to speed, which InitCycles charges for below - and nothing it decoded
+      // before is remembered (bug 146).
       spun_up_ = false;
+      ForgetHeader();
       QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
       QueueStatus(kIntComplete, InitCycles());
       break;
