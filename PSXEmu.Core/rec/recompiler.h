@@ -68,6 +68,15 @@
 //     block charges its length to `BlockState::budget` on the way out and
 //     returns when it runs out; the host sets the budget to however long it
 //     can afford not to hear from the CPU.
+//
+// And loads that read RAM themselves (HostInterface::ram_bytes) one more:
+//
+//   - **Whether they may is decided per step, not per compile.** What makes a
+//     RAM load more than a read and a stall - in the emulator PGXP, a debugger
+//     watchpoint, the write queue, an isolated cache - can change between any
+//     two steps. Each load checks `BlockState::ram` as it runs and calls out
+//     when it is null, so switching costs nothing; recompiling on every change
+//     would cost more than the reads save.
 
 #include "rec/emitter.h"
 #include "rec/block_cache.h"
@@ -104,6 +113,14 @@ struct HostInterface {
   // Told of every register copy compiled code makes, while set_track_moves is on.
   MoveFn move = nullptr;
 
+  // Main RAM, for loads compiled to read it directly: the first `ram_bytes` of
+  // physical memory, reached through KUSEG, KSEG0 or KSEG1, and what reading it
+  // costs beyond the instruction's own cycle - the stall load32/16/8 would have
+  // charged. Which memory, and whether it may be read at all right now, is
+  // set_ram's. Zero bytes compiles every load as a call, as before.
+  uint32_t ram_bytes = 0;
+  uint8_t ram_read_cycles = 0;
+
   // Runs the instruction at `pc` and returns the address of the next one.
   //
   // "The instruction" includes its delay slot when it has one: a branch and
@@ -134,6 +151,7 @@ class Recompiler {
     uint64_t blocks_with_allocation = 0;   // blocks that cached any register
     uint64_t faults = 0;                   // accesses that raised an exception
     uint64_t cycles_compiled = 0;          // what compiled code owes the machine
+    uint64_t ram_reads_direct = 0;         // loads that read RAM without a call
 
     // `blocks_executed` counts entries into compiled code, not blocks run: a
     // chain of linked blocks is one entry. So instructions_compiled divided by
@@ -163,6 +181,7 @@ class Recompiler {
     state_.store16 = &StoreThunk16;
     state_.store8 = &StoreThunk8;
     state_.move = &MoveThunk;
+    compiler_.set_direct_ram(host.ram_bytes, host.ram_read_cycles);
   }
 
   ~Recompiler() {
@@ -206,6 +225,7 @@ class Recompiler {
     state_.next_pc = pc + block.guest_bytes;
     state_.budget = budget_;
     state_.fault = 0;
+    state_.extra_cycles = 0;
     ++executing_;
     reinterpret_cast<void (*)(BlockState*)>(block.code)(&state_);
     --executing_;
@@ -216,9 +236,13 @@ class Recompiler {
     // One cycle an instruction. Not because that is exactly what the
     // interpreter charges - see block_decoder.h - but because it is what the
     // measurements say reproduces its pacing, and a model nobody has measured
-    // is worse than a flat one everybody can see.
-    last_cycles_ = static_cast<uint32_t>(budget_ - state_.budget);
+    // is worse than a flat one everybody can see. On top of that, the stall of
+    // every load that read RAM directly: through the callback it would have
+    // charged that itself.
+    last_cycles_ = static_cast<uint32_t>(budget_ - state_.budget) + state_.extra_cycles;
     stats_.cycles_compiled += last_cycles_;
+    if (host_.ram_read_cycles != 0)
+      stats_.ram_reads_direct += state_.extra_cycles / host_.ram_read_cycles;
 
     // A memory access raised a guest exception and the block stopped where it
     // was. Whoever raised it has already moved the CPU's pc, so there is
@@ -312,6 +336,13 @@ class Recompiler {
     compiler_.set_track_moves(on);
     Reset();
   }
+
+  // The RAM compiled loads read directly (HostInterface::ram_bytes), or nullptr
+  // for every load to go through the callbacks. Read by the loads themselves as
+  // they run, so the host can change it before any Step and nothing has to be
+  // compiled again - the emulator does, whenever something makes a RAM load
+  // more than a read and a stall (psx/recompiler_bridge.h).
+  void set_ram(uint8_t* ram) { state_.ram = ram; }
 
   // For tests: see BlockCompiler::set_minimum_block_instructions.
   void set_minimum_block_instructions(uint32_t instructions) {

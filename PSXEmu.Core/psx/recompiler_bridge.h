@@ -33,7 +33,7 @@
 // so it is opt-in and verified against the regression baselines rather than
 // assumed to be equivalent.
 //
-// Four things it has to get right, none of which are the recompiler's own
+// Five things it has to get right, none of which are the recompiler's own
 // problem:
 //
 //   1. **Ticking.** The interpreter ticks the rest of the machine once per
@@ -56,6 +56,13 @@
 //   4. **Entering compiled code at all.** Not while the interpreter has a load
 //      in flight, and not when an interrupt is pending: both are states a block
 //      has no way to be told about.
+//   5. **Loads that read RAM themselves.** A compiled load from main RAM reads
+//      it directly instead of calling Cpu::Load, and the chain is charged
+//      Cpu::kRamLoadStall for it - the stall Load would have ticked out inside
+//      the call - so the machine advances exactly as far either way. Only while
+//      that is all Load would do: Step gives the engine no RAM, and every load
+//      calls out, while PGXP wants the word's shadow, the debugger watches
+//      loads, the write queue is modelled or the cache is isolated.
 
 #include "psx/cpu.h"
 #include "psx/system.h"
@@ -82,6 +89,8 @@ class RecompilerBridge {
     host.move = &Move;
     host.interpret = [this](uint32_t pc) { return Interpret(pc); };
     host.load_in_flight = [this]() { return cpu()->LoadInFlight(); };
+    host.ram_bytes = kRamBytes;
+    host.ram_read_cycles = Cpu::kRamLoadStall;
 
     recompiler_.reset(new emulation::rec::Recompiler(
         host, system_->cpu().context()->gp.reg));
@@ -101,6 +110,9 @@ class RecompilerBridge {
   // over, so this is also how coarse the CPU's timing is allowed to get.
   static const int32_t kBudget = 64;
 
+  // Main RAM, IOInterface::ram_buffer: 2 MB from physical address zero.
+  static const uint32_t kRamBytes = 0x200000;
+
   // Runs one step of the machine at the current pc, and returns how many guest
   // instructions ran *as compiled code*.
   //
@@ -119,7 +131,17 @@ class RecompilerBridge {
 
     // PGXP's shadows travel with register copies in compiled code only while it is on - the
     // interpreter's moves carry them the same way (psx/pgxp.h).
-    recompiler_->set_track_moves(system_->pgxp().enabled());
+    const bool pgxp = system_->pgxp().enabled();
+    recompiler_->set_track_moves(pgxp);
+
+    // Compiled loads read RAM themselves only while a load of it is a read and a stall and
+    // nothing more (item 5 above). PGXP's shadow comes through Access, below; the rest is
+    // Cpu::Load's own. Deciding here decides for the whole chain, which is right: the cache is
+    // isolated only by MTC0, which is never compiled; PGXP is settled at the top of every step;
+    // a watchpoint arms the debugger, which keeps the machine interpreted. The write queue's
+    // setting is latched once a batch, so switching it reaches compiled loads at the next step.
+    recompiler_->set_ram(!pgxp && processor->RamLoadIsPlain()
+                             ? system_->io().ram_buffer.u8 : nullptr);
 
     const uint32_t next = recompiler_->Step(pc);
 
@@ -130,7 +152,8 @@ class RecompilerBridge {
 
     // Cycles, not instructions: a load ticks this machine twice and everything
     // else once, so charging one per instruction would run the machine fast by
-    // however many loads the code contains.
+    // however many loads the code contains. A load that read RAM directly ticked
+    // nothing, and last_cycles carries its stall instead.
     return recompiler_->last_cycles();
   }
 
@@ -163,7 +186,7 @@ class RecompilerBridge {
     if (physical == 0xA0 || physical == 0xB0 || physical == 0xC0)
       return false;
     IOInterface& io = system_->io();
-    if (physical <= 0x001FFFFF) {
+    if (physical < kRamBytes) {
       *word = io.ram_buffer.u32[physical >> 2];
       return true;
     }

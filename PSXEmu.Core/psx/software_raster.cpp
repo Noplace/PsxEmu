@@ -273,12 +273,21 @@ namespace emulation {
                 return;
             }
             // The field being displayed is left alone (bug 89). Every primitive
-            // goes through here, so this is the one place it has to be said.
+            // but a triangle comes through here; RasterTriangle settles it a
+            // whole row at a time.
             if (SkipsVramRow(y)) {
                 ++counters_.field_skipped;
                 return;
             }
 
+            WritePixel(x, y, r, g, b, state, from_texture, texture_mask);
+        }
+
+        // A pixel already known to be inside the drawing area and on a row that is
+        // drawn: the mask check, the blend and the write.
+        void SoftwareRaster::WritePixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
+            const RasterState& state, bool from_texture,
+            bool texture_mask) {
             uint16_t& target = VramAt(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
             if (env_.check_mask && (target & 0x8000)) {
                 ++counters_.mask_rejected;
@@ -378,57 +387,112 @@ namespace emulation {
             const int32_t bias1 = EdgeBias(c.x - b.x, c.y - b.y);
             const int32_t bias2 = EdgeBias(a.x - c.x, a.y - c.y);
 
-            // Inclusive now: `right` and `bottom` are the last pixel to draw, not one past it.
-            for (int32_t y = top; y <= bottom; ++y) {
-                for (int32_t x = left; x <= right; ++x) {
-                    const int32_t w0 = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
-                    const int32_t w1 = (c.x - b.x) * (y - b.y) - (c.y - b.y) * (x - b.x);
-                    const int32_t w2 = (a.x - c.x) * (y - c.y) - (a.y - c.y) * (x - c.x);
-                    if (w0 + bias0 < 0 || w1 + bias1 < 0 || w2 + bias2 < 0)
-                        continue;
+            // The three edge functions, and every quantity interpolated between the corners, are
+            // linear in x and y: each is its value at the first pixel of a row plus a fixed step
+            // per pixel, and per row. Stepped in integers that is exact - the numbers each pixel
+            // used to work out from scratch, with all its multiplications, every time.
+            struct Linear {
+                int32_t at;   // at (left, top), and then at the start of each row
+                int32_t dx;   // what one pixel to the right adds
+                int32_t dy;   // what one row down adds
+            };
+            Linear e0{ (b.x - a.x) * (top - a.y) - (b.y - a.y) * (left - a.x), a.y - b.y, b.x - a.x };
+            Linear e1{ (c.x - b.x) * (top - b.y) - (c.y - b.y) * (left - b.x), b.y - c.y, c.x - b.x };
+            Linear e2{ (a.x - c.x) * (top - c.y) - (a.y - c.y) * (left - c.x), c.y - a.y, a.x - c.x };
 
-                    // Barycentric weights: w1 belongs to a, w2 to b, w0 to c.
-                    uint8_t r, g, bl;
-                    if (state.gouraud) {
-                        r = Clamp8((w1 * a.r + w2 * b.r + w0 * c.r) / double_area);
-                        g = Clamp8((w1 * a.g + w2 * b.g + w0 * c.g) / double_area);
-                        bl = Clamp8((w1 * a.b + w2 * b.b + w0 * c.b) / double_area);
-                    }
-                    else {
-                        r = a.r; g = a.g; bl = a.b;
-                    }
+            // A quantity's barycentric sum - w1 belongs to a, w2 to b, w0 to c - which divided
+            // by the doubled area is its value at the pixel.
+            auto weighted = [&](int32_t at_a, int32_t at_b, int32_t at_c) {
+                return Linear{ e1.at * at_a + e2.at * at_b + e0.at * at_c,
+                               e1.dx * at_a + e2.dx * at_b + e0.dx * at_c,
+                               e1.dy * at_a + e2.dy * at_b + e0.dy * at_c };
+            };
+            Linear red{}, green{}, blue{}, tex_u{}, tex_v{};
+            if (state.gouraud) {
+                red = weighted(a.r, b.r, c.r);
+                green = weighted(a.g, b.g, c.g);
+                blue = weighted(a.b, b.b, c.b);
+            }
+            if (state.textured) {
+                tex_u = weighted(a.u, b.u, c.u);
+                tex_v = weighted(a.v, b.v, c.v);
+            }
 
-                    if (state.dither) {
-                        const int8_t offset = kDitherTable[y & 3][x & 3];
-                        r = Clamp8(r + offset);
-                        g = Clamp8(g + offset);
-                        bl = Clamp8(bl + offset);
-                    }
-
-                    if (!state.textured) {
-                        PlotPixel(x, y, r, g, bl, state, false, false);
-                        continue;
-                    }
-
-                    const int32_t u = (w1 * a.u + w2 * b.u + w0 * c.u) / double_area;
-                    const int32_t v = (w1 * a.v + w2 * b.v + w0 * c.v) / double_area;
-                    const uint16_t texel = SampleTexture(static_cast<uint32_t>(u),
-                        static_cast<uint32_t>(v), state);
-                    if (texel == 0) {  // fully transparent texel
-                        ++counters_.transparent_texels;
-                        continue;
-                    }
-
-                    uint8_t tr = From5Bit(texel & 0x1F);
-                    uint8_t tg = From5Bit((texel >> 5) & 0x1F);
-                    uint8_t tb = From5Bit((texel >> 10) & 0x1F);
-                    if (!state.raw_texture) {
-                        tr = Clamp8((tr * r) >> 7);
-                        tg = Clamp8((tg * g) >> 7);
-                        tb = Clamp8((tb * bl) >> 7);
-                    }
-                    PlotPixel(x, y, tr, tg, tb, state, true, (texel & 0x8000) != 0);
+            // One covered pixel: its colour, dithered, then its texel if it has one, then the
+            // write. Inside the drawing area and on a row that is drawn, both of which the loop
+            // below has already settled.
+            auto shade = [&](int32_t x, int32_t y, int32_t sum_r, int32_t sum_g, int32_t sum_b,
+                             int32_t sum_u, int32_t sum_v) {
+                uint8_t r, g, bl;
+                if (state.gouraud) {
+                    r = Clamp8(sum_r / double_area);
+                    g = Clamp8(sum_g / double_area);
+                    bl = Clamp8(sum_b / double_area);
                 }
+                else {
+                    r = a.r; g = a.g; bl = a.b;
+                }
+
+                if (state.dither) {
+                    const int8_t offset = kDitherTable[y & 3][x & 3];
+                    r = Clamp8(r + offset);
+                    g = Clamp8(g + offset);
+                    bl = Clamp8(bl + offset);
+                }
+
+                if (!state.textured) {
+                    WritePixel(x, y, r, g, bl, state, false, false);
+                    return;
+                }
+
+                const int32_t u = sum_u / double_area;
+                const int32_t v = sum_v / double_area;
+                const uint16_t texel = SampleTexture(static_cast<uint32_t>(u),
+                    static_cast<uint32_t>(v), state);
+                if (texel == 0) {  // fully transparent texel
+                    ++counters_.transparent_texels;
+                    return;
+                }
+
+                uint8_t tr = From5Bit(texel & 0x1F);
+                uint8_t tg = From5Bit((texel >> 5) & 0x1F);
+                uint8_t tb = From5Bit((texel >> 10) & 0x1F);
+                if (!state.raw_texture) {
+                    tr = Clamp8((tr * r) >> 7);
+                    tg = Clamp8((tg * g) >> 7);
+                    tb = Clamp8((tb * bl) >> 7);
+                }
+                WritePixel(x, y, tr, tg, tb, state, true, (texel & 0x8000) != 0);
+            };
+
+            // Inclusive now: `right` and `bottom` are the last pixel to draw, not one past it -
+            // and both are inside the drawing area, so no pixel here needs PlotPixel's clip.
+            for (int32_t y = top; y <= bottom; ++y) {
+                int32_t w0 = e0.at, w1 = e1.at, w2 = e2.at;
+                if (SkipsVramRow(y)) {
+                    // The displayed field's row, which hardware leaves alone (bug 89): what the
+                    // triangle covers of it is counted, and nothing is worked out for it - no
+                    // colour, and no texel fetched, so a transparent one counts as skipped too.
+                    for (int32_t x = left; x <= right; ++x) {
+                        if (w0 + bias0 >= 0 && w1 + bias1 >= 0 && w2 + bias2 >= 0)
+                            ++counters_.field_skipped;
+                        w0 += e0.dx; w1 += e1.dx; w2 += e2.dx;
+                    }
+                }
+                else {
+                    int32_t sum_r = red.at, sum_g = green.at, sum_b = blue.at;
+                    int32_t sum_u = tex_u.at, sum_v = tex_v.at;
+                    for (int32_t x = left; x <= right; ++x) {
+                        if (w0 + bias0 >= 0 && w1 + bias1 >= 0 && w2 + bias2 >= 0)
+                            shade(x, y, sum_r, sum_g, sum_b, sum_u, sum_v);
+                        w0 += e0.dx; w1 += e1.dx; w2 += e2.dx;
+                        sum_r += red.dx; sum_g += green.dx; sum_b += blue.dx;
+                        sum_u += tex_u.dx; sum_v += tex_v.dx;
+                    }
+                }
+                e0.at += e0.dy; e1.at += e1.dy; e2.at += e2.dy;
+                red.at += red.dy; green.at += green.dy; blue.at += blue.dy;
+                tex_u.at += tex_u.dy; tex_v.at += tex_v.dy;
             }
         }
 

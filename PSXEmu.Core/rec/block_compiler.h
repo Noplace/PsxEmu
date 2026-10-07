@@ -33,6 +33,14 @@
 //     starts disagreeing with its own interpreter. The call goes through a
 //     function pointer in BlockState (see rec/runtime.h), so this file still
 //     does not know psx/ exists.
+//
+//     Bar one case, added later and measured (Docs/Recompiler-Plan.md, "Loads
+//     from RAM read it"): a load from main RAM, which is most of them, is a read
+//     and a fixed stall and nothing else, and the call cost more than both. So
+//     while the host allows it (set_direct_ram, BlockState::ram) a load reads
+//     RAM itself and adds the stall to what the chain owes, and only falls back
+//     on the call for anything else - another region, a misaligned address, the
+//     host saying not now.
 //   - **Branches do not jump.** Every guest branch is "one of two addresses",
 //     which is a compare and a conditional move into `next_pc`. No host branch
 //     is emitted for the guest's own control flow.
@@ -216,6 +224,17 @@ class BlockCompiler {
   // not a byte of it is emitted.
   void set_track_moves(bool on) { track_moves_ = on; }
 
+  // Loads from the first `bytes` of physical memory - main RAM - read
+  // BlockState::ram directly instead of calling out, and add `read_cycles` to
+  // BlockState::extra_cycles for each read: the stall the callback would have
+  // charged. Zero bytes, the default, compiles every load as a call. Blocks keep
+  // what they were compiled with; the host switches between the two at run time
+  // through BlockState::ram, not through this.
+  void set_direct_ram(uint32_t bytes, uint8_t read_cycles) {
+    direct_ram_bytes_ = bytes;
+    direct_ram_read_cycles_ = read_cycles;
+  }
+
   CompiledBlock Compile(const DecodedBlock& block, CodeBlock* code) {
     CompiledBlock result;
     if (code == nullptr)
@@ -238,6 +257,7 @@ class BlockCompiler {
     pending_reg_ = 0;
     ends_with_branch_ = false;
     successor_count_ = 0;
+    rel8_out_of_reach_ = false;
 
     const uint32_t count = CompilablePrefix(block);
     PlanAllocation(block, count);
@@ -267,9 +287,11 @@ class BlockCompiler {
     EmitTail(code, start, count, &result);
     EmitFaultExit(code);
 
-    result.compiled = count;
+    // A jump that could not reach (PatchRel8) means the code is wrong, so none
+    // of it is claimed.
+    result.compiled = rel8_out_of_reach_ ? 0 : count;
     result.host_bytes = static_cast<uint32_t>(code->cursor - start);
-    result.complete = (count == block.instructions.size());
+    result.complete = !rel8_out_of_reach_ && (count == block.instructions.size());
     result.ends_with_branch = ends_with_branch_;
     result.registers_allocated = allocated_count_;
     return result;
@@ -421,6 +443,13 @@ class BlockCompiler {
   static const int8_t kOffBudget = static_cast<int8_t>(offsetof(BlockState, budget));
   static const int8_t kOffFault = static_cast<int8_t>(offsetof(BlockState, fault));
   static const int8_t kOffMove = static_cast<int8_t>(offsetof(BlockState, move));
+  static const int8_t kOffRam = static_cast<int8_t>(offsetof(BlockState, ram));
+  static const int8_t kOffExtraCycles =
+      static_cast<int8_t>(offsetof(BlockState, extra_cycles));
+  // The cast above would wrap a field past 127 into a negative displacement
+  // without a word, and the code would read whatever sits before the state.
+  static_assert(offsetof(BlockState, extra_cycles) <= 127,
+                "every BlockState field has to be in reach of a disp8");
 
   // How far into the block the compiled code gets. Computed backwards, because
   // whether an instruction can be compiled depends on whether the one after it
@@ -648,9 +677,19 @@ class BlockCompiler {
 
   // The displacement of a jump is measured from the end of the instruction, and
   // a rel8 jump is two bytes long.
-  static void PatchRel8(CodeBlock* code, size_t jump_at, size_t target) {
+  //
+  // Every rel8 here jumps forward over a short stretch of fixed code, but
+  // "short" is a fact about today's encodings, not a guarantee. One that would
+  // not reach marks the whole block as not compiled - Compile then claims none
+  // of it and the engine leaves it to the interpreter - rather than leaving a
+  // jump that lands somewhere else.
+  void PatchRel8(CodeBlock* code, size_t jump_at, size_t target) {
+    const ptrdiff_t displacement = static_cast<ptrdiff_t>(target) -
+                                   static_cast<ptrdiff_t>(jump_at + 2);
+    if (displacement < -128 || displacement > 127)
+      rel8_out_of_reach_ = true;
     code->ptr8bit[jump_at + 1] =
-        static_cast<uint8_t>(static_cast<int8_t>(target - (jump_at + 2)));
+        static_cast<uint8_t>(static_cast<int8_t>(displacement));
   }
 
   static void PatchRel32(CodeBlock* code, size_t site, int32_t value) {
@@ -979,8 +1018,13 @@ class BlockCompiler {
     FlushPendingBeforeMemory();
 
     EmitAddress(rs, immediate);
+    size_t past_call = 0;
+    if (direct_ram_bytes_ != 0)
+      past_call = EmitDirectRamRead(opcode);
     EmitCall(function, instruction.pc, kArg3);   // (context, address, pc)
     EmitFaultCheck(code_, block_start_);
+    if (direct_ram_bytes_ != 0)
+      PatchRel8(code_, past_call, code_->cursor);
 
     switch (opcode) {
       case 0x20: x86::MovsxRegReg8(emitter_, kScratchA, kScratchA); break;   // lb
@@ -1019,6 +1063,77 @@ class BlockCompiler {
     LoadReg(kArg3, rt);        // the value, whole; the callback narrows it
     EmitCall(function, instruction.pc, kArg4);   // (context, address, value, pc)
     EmitFaultCheck(code_, block_start_);
+  }
+
+  // A load reading main RAM itself, with the address in EDX: the value lands in
+  // EAX, zero-extended as a callback returns it, and the stall the callback
+  // would have charged goes on BlockState::extra_cycles. The call EmitLoad
+  // emits next is the way out for everything else, and the returned offset is
+  // the jump over it, for EmitLoad to point past the call once it is emitted.
+  //
+  // The read is only right when Cpu::Load would have done nothing but read, so
+  // anything it would decode differently goes to the call:
+  //   - the host saying not now - BlockState::ram is null;
+  //   - an address outside KUSEG's first 512 MB, KSEG0 and KSEG1, the three
+  //     views of the physical memory (KSEG2, and the rest of KUSEG, are the
+  //     callback's to decode);
+  //   - a physical address at or past the end of RAM - another region, or a
+  //     mirror;
+  //   - a misaligned word or halfword, an address error the callback raises.
+  //
+  // Only EAX, ECX and EDX are touched, which a call would have clobbered
+  // anyway, and only forward rel8 jumps are emitted - PatchRel8 checks them.
+  size_t EmitDirectRamRead(uint32_t opcode) {
+    size_t to_call[5];
+    int to_call_count = 0;
+    auto jump_to_call = [&](x86::Cc condition) {
+      to_call[to_call_count++] = code_->cursor;
+      x86::JccRel8(emitter_, condition, 0);
+    };
+
+    x86::Mov64RegMem(emitter_, kScratchA, kStatePtr, kOffRam);   // mov rax, [rbx+ram]
+    x86::Test64RegReg(emitter_, kScratchA);
+    jump_to_call(x86::Cc::kEqual);
+
+    x86::MovRegReg(emitter_, kScratchB, kScratchC);              // the segment
+    x86::ShiftRegImm(emitter_, x86::ShiftOp::kShr, kScratchB, 29);
+    const size_t kuseg = code_->cursor;
+    x86::JccRel8(emitter_, x86::Cc::kEqual, 0);                  // the shift set ZF
+    x86::AluRegImm(emitter_, x86::AluImmOp::kCmp, kScratchB, 4);
+    const size_t kseg0 = code_->cursor;
+    x86::JccRel8(emitter_, x86::Cc::kEqual, 0);
+    x86::AluRegImm(emitter_, x86::AluImmOp::kCmp, kScratchB, 5);
+    jump_to_call(x86::Cc::kNotEqual);
+    PatchRel8(code_, kuseg, code_->cursor);
+    PatchRel8(code_, kseg0, code_->cursor);
+
+    x86::MovRegReg(emitter_, kScratchB, kScratchC);              // the physical address
+    x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 0x1FFFFFFF);
+    x86::AluRegImm(emitter_, x86::AluImmOp::kCmp, kScratchB, direct_ram_bytes_);
+    jump_to_call(x86::Cc::kAboveEqual);
+
+    if (opcode == 0x23 || opcode == 0x21 || opcode == 0x25) {
+      x86::TestRegImm(emitter_, kScratchC, opcode == 0x23 ? 3 : 1);
+      jump_to_call(x86::Cc::kNotEqual);
+    }
+
+    x86::Add64RegReg(emitter_, kScratchA, kScratchB);            // RAM + physical
+    if (opcode == 0x20 || opcode == 0x24)
+      x86::MovzxRegMem8(emitter_, kScratchA, kScratchA, 0);
+    else if (opcode == 0x21 || opcode == 0x25)
+      x86::MovzxRegMem16(emitter_, kScratchA, kScratchA, 0);
+    else
+      x86::MovRegMem(emitter_, kScratchA, kScratchA, 0);
+    if (direct_ram_read_cycles_ != 0) {
+      x86::AddMemImm8(emitter_, kStatePtr, kOffExtraCycles,
+                      direct_ram_read_cycles_);
+    }
+
+    const size_t past_call = code_->cursor;
+    x86::JmpRel8(emitter_, 0);
+    for (int i = 0; i < to_call_count; ++i)
+      PatchRel8(code_, to_call[i], code_->cursor);
+    return past_call;
   }
 
   // See EmitLoad. The pending load is written out before a memory access so
@@ -1166,6 +1281,14 @@ class BlockCompiler {
   bool track_moves_ = false;
   uint32_t successors_[2] = {};
   int successor_count_ = 0;
+
+  // set_direct_ram: how much of physical memory loads may read themselves, and
+  // the cycles each read owes. Zero bytes compiles every load as a call.
+  uint32_t direct_ram_bytes_ = 0;
+  uint8_t direct_ram_read_cycles_ = 0;
+
+  // Set by PatchRel8 when a jump would not reach, for Compile to see.
+  bool rel8_out_of_reach_ = false;
 
   // The block being emitted, and the jumps out of it that a faulting memory
   // access leaves behind for EmitFaultExit to point somewhere.

@@ -826,7 +826,7 @@ come out at 0.025 and 0.043, the others at 0.12-0.25); `--cost` does that and th
 times DLSS at the sizes the emulator gives it. Each makes one device, once: on the
 4060, never in a loop.
 
-`rec_test` (513 checks) is not counted either, and for a different reason: it
+`rec_test` (941 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
 `psx/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,
@@ -840,8 +840,14 @@ only the blocks compiled from the words it wrote - data beside code in the same
 page leaves the code compiled, end to end and in the cache alone - and that
 code rewritten forty times keeps as many jumps as code rewritten twice; 18 of
 those checks fail against the old page-wide invalidation. Everything that compiles or runs guest code runs
-twice, once with the register allocator off and once on. See
-`Docs/Recompiler-Plan.md`.
+eight times, in every combination of block linking, the register allocator and
+loads reading RAM directly. And since 2026-10-07 four tests of the direct reads
+themselves: every width through KUSEG, KSEG0 and KSEG1, with no call and the
+stall owed; a misaligned word and halfword, the first byte past RAM, KSEG2 and
+the rest of KUSEG still calling out and owing nothing; a chain run with the RAM
+given and withheld coming out the same and owing exactly the stalls apart; and a
+misaligned load still faulting. Without the stall 3 of those fail, without the
+segment test 2, without the alignment test 5. See `Docs/Recompiler-Plan.md`.
 
 `boot_runner --recompiler` runs the machine on the recompiler instead of the
 interpreter, which is how the baselines below get checked against it, and

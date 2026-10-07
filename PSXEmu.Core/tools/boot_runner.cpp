@@ -1626,6 +1626,8 @@ int main(int argc, char** argv) {
     printf("rec links      %llu made, %llu broken\n",
            static_cast<unsigned long long>(rec.links_made),
            static_cast<unsigned long long>(rec.links_broken));
+    printf("rec ram        %llu loads read RAM directly\n",
+           static_cast<unsigned long long>(rec.ram_reads_direct));
   }
   {
     const double seconds =

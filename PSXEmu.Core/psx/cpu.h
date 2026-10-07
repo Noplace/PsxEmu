@@ -385,6 +385,21 @@ class Cpu : public Component {
     return pending_load_.active || armed_load_.active;
   }
 
+  // What a load from main RAM stalls for beyond the one cycle every instruction
+  // costs - charged in Load, measured against a console by JaCzekanski's
+  // cpu/access-time. Named because the recompiler charges it too, for the loads
+  // it compiles to read RAM itself (psx/recompiler_bridge.h).
+  static const uint32_t kRamLoadStall = 4;
+
+  // Whether a load from main RAM is, right now, nothing but the read and
+  // kRamLoadStall - which is when compiled code may do it without calling Load.
+  // Not with the cache isolated (the read comes from the cache, as zero), not
+  // while the debugger watches loads, and not with the write queue modelled (a
+  // load waits for the stores ahead of it first). PGXP is the bridge's to ask.
+  bool RamLoadIsPlain() const {
+    return !context_->ctrl.SR.IsC && !debug_watch_ && !write_queue_;
+  }
+
   // The load that will reach its register at the start of the next
   // instruction, for a harness comparing this CPU against another at an
   // instruction boundary. The two are not in the same state there even when

@@ -608,6 +608,11 @@ class FakeBus {
 
   int calls = 0;   // how many times the compiled code called out
 
+  // The bytes themselves, as the RAM loads may read directly (BlockState::ram).
+  // Physical address p is bytes_[p] for p inside the bus, the same byte Index()
+  // finds through KUSEG, KSEG0 or KSEG1, so a direct read and a callback agree.
+  uint8_t* ram() { return bytes_; }
+
   // Whether the stack was aligned the way the calling convention promises at
   // every call the compiled code made. A callee is entitled to assume RSP was
   // 16-byte aligned before the call pushed the return address, so the return
@@ -700,6 +705,7 @@ emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
   state.store16 = &FakeBus::Store16;
   state.store8 = &FakeBus::Store8;
   state.move = &FakeBus::Move;
+  state.ram = bus->ram();   // read only by code compiled with direct RAM on
   return state;
 }
 
@@ -712,11 +718,18 @@ void RunBlock(CodeBlock* code, emulation::rec::BlockState* state) {
 // step, and running the suite twice is what makes the claim that it does not.
 bool g_allocate_registers = true;
 bool g_link_blocks = true;
+// And loads reading RAM directly, with the whole bus as RAM, which is a switch
+// of the same kind: it changes what every load compiles to.
+bool g_direct_ram = false;
+// What each direct read owes - Cpu::kRamLoadStall's value, though nothing here
+// depends on which number it is.
+const uint8_t kRamReadCycles = 4;
 
 emulation::rec::BlockCompiler MakeCompiler(Emitter* emitter) {
   emulation::rec::BlockCompiler compiler(emitter);
   compiler.set_allocate_registers(g_allocate_registers);
   compiler.set_link_blocks(g_link_blocks);
+  compiler.set_direct_ram(g_direct_ram ? kBusBytes : 0, kRamReadCycles);
   // Allocate however short the block is. In the emulator a block has to be
   // long enough for allocation to pay; here it has to happen at all, or the
   // second pass over the suite would compile the same thing as the first and
@@ -1521,7 +1534,11 @@ void TestTheCallingConventionIsHonoured() {
   CheckEqual(clobbered, 0, "rbx, rsi and rdi all came back unchanged");
 
   CheckEqual(regs[4], 0x1234ABCD, "and the block did its work");
-  Check(bus.calls == 4, "all four memory operations went through the callbacks");
+  if (g_direct_ram) {
+    Check(bus.calls == 2, "the two stores went through the callbacks, the two loads read RAM");
+  } else {
+    Check(bus.calls == 4, "all four memory operations went through the callbacks");
+  }
   Check(bus.alignment_ok, "the stack was aligned at every call");
 
   emitter.destroy_block(caller);
@@ -1633,10 +1650,13 @@ class Engine {
     host.store8 = &FakeBus::Store8;
     host.interpret = [this](uint32_t pc) { return machine.Run(pc); };
     host.load_in_flight = [this]() { return machine.LoadInFlight(); };
+    host.ram_bytes = g_direct_ram ? kBusBytes : 0;
+    host.ram_read_cycles = kRamReadCycles;
     recompiler_.reset(new emulation::rec::Recompiler(host, machine.r));
     recompiler_->set_allocate_registers(g_allocate_registers);
     recompiler_->set_minimum_block_instructions(1);
     recompiler_->set_link_blocks(g_link_blocks);
+    recompiler_->set_ram(bus.ram());
 
     // The interpreter's own stores have to invalidate too.
     emulation::rec::Recompiler* rec = recompiler_.get();
@@ -2268,22 +2288,25 @@ void RunEverythingThatCompiles() {
   TestManyBlocksShareOneArena();
 }
 
-// The two switches the last two steps added, in every combination. Linking
-// changes what runs between blocks and allocation changes what runs inside
-// them, and the pair interacting is exactly the kind of thing neither one's
-// own tests would catch.
+// The switches the later steps added, in every combination. Linking changes
+// what runs between blocks, allocation what runs inside them, and reading RAM
+// directly what a load is, and any two of them interacting is exactly the kind
+// of thing none of their own tests would catch.
 void RunTheMatrix() {
   static const bool kOff = false;
   static const bool kOn = true;
-  const bool settings[4][2] = {
-      { kOff, kOff }, { kOff, kOn }, { kOn, kOff }, { kOn, kOn },
+  const bool settings[8][3] = {
+      { kOff, kOff, kOff }, { kOff, kOn, kOff }, { kOn, kOff, kOff }, { kOn, kOn, kOff },
+      { kOff, kOff, kOn },  { kOff, kOn, kOn },  { kOn, kOff, kOn },  { kOn, kOn, kOn },
   };
   for (const auto& setting : settings) {
     g_link_blocks = setting[0];
     g_allocate_registers = setting[1];
-    printf("\n--- linking %s, allocation %s ---\n",
+    g_direct_ram = setting[2];
+    printf("\n--- linking %s, allocation %s, RAM read %s ---\n",
            g_link_blocks ? "on" : "off",
-           g_allocate_registers ? "on" : "off");
+           g_allocate_registers ? "on" : "off",
+           g_direct_ram ? "directly" : "through the callbacks");
     RunEverythingThatCompiles();
   }
 }
@@ -2463,6 +2486,196 @@ void TestRegisterCopiesAreReportedWhenAsked() {
         "the copies compute what the interpreter computes");
 }
 
+// Compiles `program` with loads reading RAM directly, as the emulator compiles them, and runs it
+// once over `bus` with the host giving it the RAM or withholding it (BlockState::ram): what the
+// block left behind.
+struct DirectRun {
+  uint32_t regs[32] = {};
+  uint32_t extra_cycles = 0;
+  uint32_t compiled = 0;
+};
+
+DirectRun RunWithDirectRam(const std::vector<uint32_t>& program, const uint32_t initial[32],
+                           FakeBus* bus, bool ram_given) {
+  FakeMemory memory;
+  memory.Write(kProgramBase, program);
+  BlockDecoder decoder(memory.Fetch());
+  const DecodedBlock decoded =
+      decoder.Decode(kProgramBase, static_cast<uint32_t>(program.size()));
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+  compiler.set_direct_ram(kBusBytes, kRamReadCycles);
+  const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
+
+  DirectRun run;
+  for (int i = 0; i < 32; ++i)
+    run.regs[i] = initial[i];
+  emulation::rec::BlockState state = MakeState(run.regs, bus);
+  state.ram = ram_given ? bus->ram() : nullptr;
+  RunBlock(code, &state);
+  run.extra_cycles = state.extra_cycles;
+  run.compiled = compiled.compiled;
+  emitter.destroy_block(code);
+  return run;
+}
+
+bool SameRegisters(const uint32_t a[32], const uint32_t b[32]) {
+  for (int i = 0; i < 32; ++i) {
+    if (a[i] != b[i])
+      return false;
+  }
+  return true;
+}
+
+void TestRamIsReadDirectlyWhenGiven() {
+  printf("a load from RAM reads it directly when the host gives it, and owes the stall\n");
+
+  // Every width, through all three views of the same bytes - E0 F0 81 80 at physical 100h,
+  // chosen so that the sign extension shows.
+  uint32_t initial[32] = {};
+  initial[1] = kBusBase + 0x100;   // KSEG0
+  initial[2] = 0xA0000100;         // KSEG1
+  initial[3] = 0x00000100;         // KUSEG
+  const std::vector<uint32_t> program = {
+      LW(4, 1, 0),  NOP(),
+      LB(5, 2, 1),  NOP(),
+      LBU(6, 3, 1), NOP(),
+      LH(7, 1, 2),  NOP(),
+      LHU(8, 2, 2), NOP(),
+  };
+  FakeBus given, withheld;
+  given.Write(kBusBase + 0x100, 4, 0x8081F0E0);
+  withheld.Write(kBusBase + 0x100, 4, 0x8081F0E0);
+  const DirectRun direct = RunWithDirectRam(program, initial, &given, true);
+  const DirectRun called = RunWithDirectRam(program, initial, &withheld, false);
+
+  CheckEqual(direct.compiled, static_cast<int64_t>(program.size()), "the whole block compiled");
+  CheckEqual(direct.regs[4], 0x8081F0E0, "lw through KSEG0");
+  CheckEqual(direct.regs[5], 0xFFFFFFF0, "lb through KSEG1, sign-extended");
+  CheckEqual(direct.regs[6], 0x000000F0, "lbu through KUSEG, zero-extended");
+  CheckEqual(direct.regs[7], 0xFFFF8081, "lh, sign-extended");
+  CheckEqual(direct.regs[8], 0x00008081, "lhu, zero-extended");
+  CheckEqual(given.calls, 0, "and not one of them called out");
+  CheckEqual(direct.extra_cycles, 5 * kRamReadCycles,
+             "each owing the stall the callback would have charged");
+
+  // The same code with the RAM withheld, which is how the host keeps a load whole while it needs
+  // to: every load calls out, the callback charges its own stall, and the values are the same.
+  Check(SameRegisters(called.regs, direct.regs), "withheld, every register the same");
+  CheckEqual(withheld.calls, 5, "every load through the callback");
+  CheckEqual(called.extra_cycles, 0, "and nothing extra owed");
+}
+
+void TestEverythingElseStillCallsOut() {
+  printf("a load a direct read would get wrong still calls out, and owes nothing extra\n");
+
+  // Each of these is one Cpu::Load decodes as something other than a plain read, so each has to
+  // reach the callback with RAM given: a misaligned word and halfword, which are address errors;
+  // the first byte past RAM, another region (the bus wraps it); KSEG2, where the cache control
+  // register is; and KUSEG past its first 512 MB.
+  uint32_t initial[32] = {};
+  initial[1] = kBusBase + 0x101;
+  initial[2] = kBusBase + kBusBytes;
+  initial[3] = 0xFFFE0130;
+  initial[4] = 0x20000100;
+  const std::vector<uint32_t> program = {
+      LW(10, 1, 0),  NOP(),
+      LH(11, 1, 0),  NOP(),
+      LBU(12, 2, 0), NOP(),
+      LW(13, 3, 0),  NOP(),
+      LW(14, 4, 0),  NOP(),
+  };
+  FakeBus given, withheld;
+  const DirectRun direct = RunWithDirectRam(program, initial, &given, true);
+  const DirectRun called = RunWithDirectRam(program, initial, &withheld, false);
+  CheckEqual(direct.compiled, static_cast<int64_t>(program.size()), "the whole block compiled");
+  CheckEqual(given.calls, 5, "all five went through the callback");
+  CheckEqual(direct.extra_cycles, 0, "and none of them owes anything extra");
+  Check(SameRegisters(direct.regs, called.regs),
+        "reading what they read with the RAM withheld");
+}
+
+void TestTheChainIsChargedForWhatItRead() {
+  printf("a chain that read RAM directly is charged the stalls with its instructions\n");
+
+  // Four times round a loop with a load in it, through the engine as the emulator runs it, once
+  // with the RAM given and once withheld. The machine has to come out the same, and what the
+  // chains owe has to differ by exactly the stalls the direct reads skipped - which the callback
+  // charges for itself when it does the reading.
+  const std::vector<uint32_t> program = {
+      ADDIU(1, 0, 4),           // 0: r1 = 4, the counter
+      LUI_(2, 0x8000),          // 1:
+      ORI_(2, 2, 0x4000),       // 2: r2 = 0x80004000
+      LW(3, 2, 0),              // 3: loop: r3 = *r2
+      NOP(),                    // 4: the load's delay slot
+      ADDU(4, 4, 3),            // 5: r4 += r3
+      ADDIU(2, 2, 4),           // 6: r2 += 4
+      ADDIU(1, 1, 0xFFFF),      // 7: r1 -= 1
+      BNE(1, 0, 0xFFFA),        // 8: if r1 != 0 go back to 3
+      NOP(),                    // 9: the delay slot
+      JR(0),                    // 10: jump to zero, which ends the run
+      NOP(),                    // 11
+  };
+
+  g_direct_ram = true;
+  Engine given;
+  Engine withheld;
+  for (Engine* engine : { &given, &withheld }) {
+    engine->bus.WriteProgram(kProgramBase, program);
+    for (uint32_t i = 0; i < 4; ++i)
+      engine->bus.Write(kBusBase + 0x4000 + i * 4, 4, 0x100 + i);
+    engine->AttachRecompiler();
+  }
+  withheld.recompiler()->set_ram(nullptr);
+  given.Run(kProgramBase);
+  withheld.Run(kProgramBase);
+  g_direct_ram = false;
+
+  const emulation::rec::Recompiler::Stats& a = given.recompiler()->stats();
+  const emulation::rec::Recompiler::Stats& b = withheld.recompiler()->stats();
+  CheckEqual(given.machine.r[4], 0x100 + 0x101 + 0x102 + 0x103, "the loop added up what it read");
+  Check(SameRegisters(given.machine.r, withheld.machine.r), "withheld, the same registers");
+  CheckEqual(static_cast<int64_t>(a.ram_reads_direct), 4, "four loads read RAM directly");
+  CheckEqual(given.bus.calls, 0, "none called out");
+  CheckEqual(static_cast<int64_t>(b.ram_reads_direct), 0, "none did with it withheld");
+  CheckEqual(withheld.bus.calls, 4, "all four called out");
+  CheckEqual(static_cast<int64_t>(a.instructions_compiled),
+             static_cast<int64_t>(b.instructions_compiled),
+             "the same instructions ran compiled either way");
+  CheckEqual(static_cast<int64_t>(a.cycles_compiled - a.instructions_compiled),
+             4 * kRamReadCycles, "and the chains owed exactly the four stalls on top");
+  CheckEqual(static_cast<int64_t>(b.cycles_compiled - b.instructions_compiled), 0,
+             "which the callback charges itself when RAM is withheld");
+}
+
+void TestAMisalignedLoadStillFaults() {
+  printf("a misaligned load still raises its exception with the RAM given\n");
+
+  // The same program as TestAFaultingAccessStopsTheBlock: the load at index 1 is a misaligned
+  // word, which a direct read would happily make. It has to go to the callback, which faults.
+  const std::vector<uint32_t> program = {
+      ADDIU(3, 0, 5),           // 0: runs
+      LW(2, 0, 0x4001),         // 1: misaligned - faults
+      ADDIU(4, 0, 7),           // 2: must not run
+      JR(0),                    // 3
+      NOP(),                    // 4
+  };
+
+  g_direct_ram = true;
+  Engine engine;
+  engine.bus.WriteProgram(kProgramBase, program);
+  engine.AttachRecompiler();
+  engine.bus.faults_on_unaligned = engine.recompiler();
+  const uint32_t next = engine.recompiler()->Step(kProgramBase);
+  g_direct_ram = false;
+
+  CheckEqual(engine.machine.r[3], 5, "the instruction before it ran");
+  CheckEqual(engine.machine.r[2], 0, "the load delivered nothing");
+  CheckEqual(engine.machine.r[4], 0, "the instruction after it did not run");
+  Check(next == emulation::rec::Recompiler::kFaulted, "and the block stopped as faulted");
+}
+
 int main() {
   printf("rec_test - emitter, block cache, decoder, compiler, engine\n");
   printf("           (Docs/Recompiler-Plan.md steps 1 to 6)\n\n");
@@ -2494,6 +2707,7 @@ int main() {
   printf("\n");
   g_link_blocks = true;
   g_allocate_registers = true;
+  g_direct_ram = false;
   TestTheAllocatorAllocates();
   TestALoopStaysInsideCompiledCode();
   TestTheBudgetBoundsAChain();
@@ -2501,6 +2715,10 @@ int main() {
   TestAFaultingAccessStopsTheBlock();
   TestEveryAccessIsToldItsOwnPc();
   TestRegisterCopiesAreReportedWhenAsked();
+  TestRamIsReadDirectlyWhenGiven();
+  TestEverythingElseStillCallsOut();
+  TestTheChainIsChargedForWhatItRead();
+  TestAMisalignedLoadStillFaults();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

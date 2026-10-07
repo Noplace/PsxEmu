@@ -164,6 +164,15 @@ inline void NotReg(Emitter* e, uint8_t reg) {
   e->emit8(ModRM(3, 2, reg));
 }
 
+// test r32, imm32 - the /0 form of the same group, for asking whether an address
+// is aligned without spending a register on the answer.
+inline void TestRegImm(Emitter* e, uint8_t reg, uint32_t value) {
+  EmitRex(e, false, 0, reg);
+  e->emit8(0xF7);
+  e->emit8(ModRM(3, 0, reg));
+  e->emit32(value);
+}
+
 // The shift group, by an immediate count: 0xC1 with the /digit choosing which.
 enum class ShiftOp : uint8_t {
   kShl = 4,
@@ -210,6 +219,27 @@ inline void MovsxRegReg16(Emitter* e, uint8_t dest, uint8_t src) {
   e->emit8(ModRM(3, dest, src));
 }
 
+// movzx r32, byte [base + disp8] and movzx r32, word [base + disp8] - a byte or a
+// halfword read straight out of guest RAM, zero-extended the way the callbacks
+// return one, so the sign extension after them is the same either way.
+inline void MovzxRegMem8(Emitter* e, uint8_t reg, uint8_t base,
+                         int8_t displacement) {
+  EmitRex(e, false, reg, base);
+  e->emit8(0x0F);
+  e->emit8(0xB6);
+  e->emit8(ModRM(1, reg, base));
+  e->emit8(static_cast<uint8_t>(displacement));
+}
+
+inline void MovzxRegMem16(Emitter* e, uint8_t reg, uint8_t base,
+                          int8_t displacement) {
+  EmitRex(e, false, reg, base);
+  e->emit8(0x0F);
+  e->emit8(0xB7);
+  e->emit8(ModRM(1, reg, base));
+  e->emit8(static_cast<uint8_t>(displacement));
+}
+
 // mov r64, r64 - the REX.W form, for moving the incoming argument pointer out
 // of the register the shift instructions need.
 inline void Mov64RegReg(Emitter* e, uint8_t dest, uint8_t src) {
@@ -223,6 +253,17 @@ inline void Mov64RegReg(Emitter* e, uint8_t dest, uint8_t src) {
 inline void Mov64RegMem(Emitter* e, uint8_t dest, uint8_t base,
                         int8_t displacement) {
   EmitRegMem8(e, 0x8B, dest, base, displacement, true);
+}
+
+// test r64, r64 - whether a pointer taken out of the state is null.
+inline void Test64RegReg(Emitter* e, uint8_t reg) {
+  EmitRegReg(e, 0x85, reg, reg, true);
+}
+
+// add r64, r64 - a pointer plus an offset. The offset is computed with the
+// 32-bit forms, which have already zero-extended it into the whole register.
+inline void Add64RegReg(Emitter* e, uint8_t dest, uint8_t src) {
+  EmitRegReg(e, 0x03, dest, src, true);
 }
 
 // The condition codes, as the low nibble shared by Jcc, SETcc and CMOVcc: the
@@ -337,6 +378,11 @@ inline void SubMemImm8(Emitter* e, uint8_t base, int8_t displacement,
 // and may change when a store throws that target away.
 inline void JccRel8(Emitter* e, Cc condition, int8_t displacement) {
   e->emit8(static_cast<uint8_t>(0x70 + static_cast<uint8_t>(condition)));
+  e->emit8(static_cast<uint8_t>(displacement));
+}
+
+inline void JmpRel8(Emitter* e, int8_t displacement) {
+  e->emit8(0xEB);
   e->emit8(static_cast<uint8_t>(displacement));
 }
 

@@ -105,6 +105,42 @@ days. Every one of these changes must leave the twelve-disc table in
 [Test-Suite.md](Test-Suite.md) byte-identical, and that is the whole safety
 net.
 
+## Incremental interpolation, done 2026-10-07
+
+The third item above. `SoftwareRaster::RasterTriangle` used to work out three
+edge functions and up to five barycentric sums from scratch at every pixel of the
+bounding box; each is linear in x and y, so now each is its value at the start of
+a row plus a fixed step per pixel and per row. In integers that is exact - the
+same numbers, without the multiplications - so the divisions that turn the sums
+into colours and texture coordinates, and everything after them, are untouched.
+And the displayed field's rows in 480i are settled a row at a time instead of a
+pixel at a time: on a row hardware leaves alone (bug 89) nothing is worked out
+at all, not even the texel.
+
+**The twelve-disc table is byte-identical** with the interpreter - every
+checkpoint's picture, CD, MDEC and GP0 count - and every disc is faster: 414.9 s
+to 403.3 s over the twelve, three at a time, about 3%. With the recompiler,
+where drawing is a larger share of the time, the same: about 3%. That is what the
+2026-09-16 measurement predicted for any rasteriser work - it was never the
+bottleneck - and why this was the cheap, safe step and not a rewrite.
+
+Two counters change meaning a little, both only for 480i, and the table does not
+read either. `field_skipped` now counts every pixel of a skipped row a triangle
+covers, where it used to count only those with an opaque texel, since no texel is
+fetched there to know; and `transparent_texels` and `texels_by_depth` no longer
+count those rows' texels. The BIOS's own 480i logo shows it: 979,380 pixels move
+from transparent to field-skipped, and 1,572,480 fewer texels are fetched.
+
+**Tried and left out: SIMD.** It came with the change, from a branch another
+tool wrote (`gemini-test-1`): the edge test four pixels at a time in SSE2, every
+covered pixel then shaded one by one as before. Measured on its own, alternating
+with the plain loop twice over the table with the recompiler: 1.5% and 0.8%,
+within the run-to-run noise, for a loop twice the size. The fourth item above
+still stands - SIMD wants the loop simple first, and wants the per-pixel work
+vectorised, not the edge test. That branch also skipped the displayed field in
+VRAM-to-VRAM copies, which hardware does not do (`SkipsVramRow`); that was not
+taken.
+
 ## If the SPU is the cost
 
 - **The per-sample voice loop is the hot part**, and most voices are usually

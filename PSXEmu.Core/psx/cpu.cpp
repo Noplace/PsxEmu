@@ -921,7 +921,7 @@ uint32_t Cpu::Load(MemorySize size, uint32_t address) {
         DrainWriteQueue();
     }
     if (address >= 0xFFFE0000)                                    stall = 0;   // cache control
-    else if (physical <= 0x007FFFFF)                              stall = 4;   // RAM
+    else if (physical <= 0x007FFFFF)                              stall = kRamLoadStall;   // RAM
     else if (physical >= 0x1F800000 && physical <= 0x1F8003FF)    stall = 0;   // scratchpad
     else if (physical >= 0x1F801800 && physical <= 0x1F80180F)
       stall = NarrowLoadStall(IOInterface::kBusCdrom, width);

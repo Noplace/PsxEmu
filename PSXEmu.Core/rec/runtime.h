@@ -31,6 +31,10 @@
 // the host fills these in with thunks; the tests fill them in with a fake
 // memory. Nothing in rec/ knows psx/ exists, which is what keeps the
 // recompiler switchable rather than woven in.
+//
+// With one exception, made because it is most of the traffic: a load from main
+// RAM, while the host says that is nothing but a read and a fixed stall, reads
+// `ram` itself and adds the stall to `extra_cycles` (Recompiler::set_ram).
 
 #include <cstdint>
 
@@ -108,6 +112,19 @@ struct BlockState {
   int32_t budget = 0;
 
   MoveFn move = nullptr;
+
+  // Main RAM, for the loads compiled to read it directly - or nullptr, and every
+  // load calls out. Each such load checks it as it runs, so the host can switch
+  // between the two before any step without a block being compiled again: the
+  // emulator does, whenever something - PGXP, a debugger watchpoint, the write
+  // queue, an isolated cache - makes a RAM load more than a read.
+  uint8_t* ram = nullptr;
+
+  // Cycles owed beyond one an instruction: what each direct RAM read would have
+  // stalled for in the callback (HostInterface::ram_read_cycles), added up as the
+  // chain runs and charged with its instructions. The budget is left alone, so
+  // it still bounds a chain in instructions.
+  uint32_t extra_cycles = 0;
 };
 
 }  // namespace rec

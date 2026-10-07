@@ -59,6 +59,10 @@ namespace psx {
     void RasterVramCopy(const DrawJob& job);
     void PlotPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
                    const RasterState& state, bool from_texture, bool texture_mask);
+    // PlotPixel without its two checks - the drawing area and the displayed field - for a
+    // caller that has settled both for a whole row.
+    void WritePixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b,
+                    const RasterState& state, bool from_texture, bool texture_mask);
     uint16_t SampleTexture(uint32_t u, uint32_t v, const RasterState& state);
     void BlendSemiTransparent(uint16_t* dst, uint8_t r, uint8_t g, uint8_t b,
                               uint32_t mode) const;

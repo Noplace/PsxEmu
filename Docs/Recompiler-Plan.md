@@ -503,6 +503,96 @@ still not equivalent, and nothing in the table can see it. The runs were three
 at a time, so their speed readings (2.9-3.7x real time compiled against
 1.6-2.0x interpreted) are indicative, not measurements.
 
+### Loads from RAM read it, 2026-10-07
+
+A compiled `lb`, `lbu`, `lh`, `lhu` or `lw` whose address is in main RAM no longer
+calls out. It reads RAM itself and adds `Cpu::kRamLoadStall` - the four cycles
+`Cpu::Load` would have ticked out inside the call - to `BlockState::extra_cycles`,
+which the engine charges with the chain's instructions. The machine goes exactly
+as far either way; it goes in the chain's one burst instead of in four single
+ticks in the middle of it, which is the granularity this bridge already has for
+every other instruction (the timing note above).
+
+That was most of what running compiled code cost. A load was the thunk, then
+`Access` - prev_pc, an address translation, the exception count, the PGXP
+question - then `Cpu::Load` - the bus error, the address error, isolation, the
+watch, a second translation - and then four calls to `Tick`, each a cycle of the
+whole machine. About a fifth of compiled instructions are such loads: Final
+Fantasy VII's first 3,000 frames run 902 million instructions compiled, 182
+million of them loads that now read RAM directly (`boot_runner`'s new `rec ram`
+line). The twelve-disc table with `--recompiler`, three discs at a time: master
+163.4 s and 155.9 s, this and the rasteriser change of the same day
+(GPU-SPU-Optimisation-Plan.md) 117.6 s - about 26% less, every disc faster than
+both master runs. The rasteriser is about 3% of that.
+
+**Where the idea came from, and what was wrong with it the first time.** It came
+from a branch another tool wrote, `gemini-test-1`, whose compiled loads read
+RAM directly and charged nothing for it. With `--recompiler` every disc in the
+table then ran ahead of master: Final Fantasy VIII showed at frame 1,000 what
+master shows at 2,000, and Legend of Mana had read 739 CD sectors by frame 1,000
+where master had read 250. The stall is four of a RAM load's five cycles, and
+without it the CPU runs far more instructions per frame than a console does -
+the comment on it in `Cpu::Load` describes the BIOS noticing exactly that. The
+branch skipped `Access` too, so PGXP's shadows stopped travelling through
+memory: Final Fantasy VII's opening, on the hardware rasteriser, drew 25,854 of
+its vertices from shadows on master and none on the branch. rec_test said so,
+once its changes compiled and their two-megabyte fake bus was off a one-megabyte
+stack: "all four memory operations went through the callbacks" and "each
+access's own pc" failed. And it was not even the faster version: a first
+prototype of this one, charging the stall, took 119.4 s over the table where the
+branch took 129.6 s, run back to back - with no stall, games did more work per
+frame.
+
+**When a load is more than a read.** The direct read is only right while
+`Cpu::Load` would do nothing else with the access, so `RecompilerBridge::Step`
+gives the engine the RAM (`Recompiler::set_ram`) only while that holds, and
+withholds it - every load then calls out - while PGXP is on (its shadows come
+through `Access`), the cache is isolated (the read comes from the cache), the
+debugger watches loads (which keeps the machine interpreted anyway), or the
+write queue is modelled (a load waits for the stores ahead of it first). Each
+compiled load checks `BlockState::ram` as it runs, so switching costs nothing
+and nothing is compiled again. The compiled code also still calls out for
+everything `Cpu::Load` decodes as something else: a misaligned word or
+halfword (the address error), KSEG2, KUSEG past its first 512 MB, and anything
+past RAM's first two megabytes - another region, or one of RAM's mirrors.
+
+**Verified.**
+- The table with `--recompiler`: all 36 checkpoint pictures identical to master's,
+  and so still to the interpreter's. The pacing moved by one in two places: Area
+  51 has read one CD sector fewer by frames 2,000 and 3,000, and Wild Arms has
+  decoded one MDEC macroblock more by 3,000 - the class of difference the table
+  of 2026-09-25 already recorded between the two CPUs.
+- JaCzekanski's `cpu/access-time`, which times loads from every region with a
+  root counter, prints exactly what it printed compiled before - RAM 5.1 cycles
+  at every width, as interpreted, where the console's log has 5.14 to 5.3 - with
+  22.8 million of its loads read directly. The stall reaches the machine at the end of a chain
+  rather than in the middle, and nothing the test times can tell.
+- PGXP: with it on, every load calls out as before. Final Fantasy VII's first
+  3,000 frames on the hardware rasteriser, compiled, draw 25,854 of 44,978
+  vertices from shadows, as on master, with the same picture - and `rec ram`
+  says no load read RAM directly.
+- `rec_test` 513 -> 941. Linking and the allocator already ran every compiling
+  test in all four combinations; reading RAM directly is a third switch, so the
+  differential suite now runs eight times. And four new tests: every width
+  through all three segments, sign extension included, with no call and the
+  stall owed; the five loads a direct read would get wrong calling out and
+  owing nothing; a chain run with the RAM given and withheld coming out the same,
+  owing exactly the stalls apart; a misaligned load still faulting. Built against
+  three broken versions of the direct read, they fail: without the stall, 3
+  checks; without the segment test, 2; without the alignment test, 5. The
+  differential suite alone caught neither of the last two - its programs never
+  load from KSEG2, and a misaligned load there does not fault.
+
+**Not done.** Stores still call out: invalidating compiled code, the isolated
+cache (a store under it writes the cache, not RAM - which is how the BIOS
+flushes it) and the write queue all live there, and a store is rarer than a
+load. RAM's mirrors call out too. The branch's other two recompiler changes were
+measured on their own and left out: indirect jumps (`jr`, `jalr`) dispatching
+through a table straight to the next block - the same pictures, about 2% faster,
+within run-to-run noise, for a 4 MB table cleared on every cache flush - and RBP
+as a fifth cached register, the same pictures and about 2%, also within the
+noise.
+
 ## Started, 2026-09-16: steps 1 to 6 are done, and block linking with them
 
 ### Step 7: block linking
@@ -747,7 +837,9 @@ compiled code calls the real one. The pointers are what keeps `rec/` from
 including `psx/`: the emulator will fill them with thunks at wiring time, and
 `rec_test` fills them with a kilobyte of fake memory. Widths are extended in
 the emitted code rather than in the callback (`movsx`/`movzx`), so a callback
-stays the same shape as `Cpu::Load`.
+stays the same shape as `Cpu::Load`. (Since 2026-10-07 a load from main RAM reads
+it itself while the host allows it, and owes the stall instead - "Loads from RAM
+read it", above.)
 
 **Branches do not branch.** Every guest branch is "one of two addresses", so
 the emitted code is a compare, two immediates and a `cmov` into `next_pc`.
