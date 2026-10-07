@@ -125,6 +125,16 @@ struct BlockState {
   // chain runs and charged with its instructions. The budget is left alone, so
   // it still bounds a chain in instructions.
   uint32_t extra_cycles = 0;
+
+  // Main RAM for the stores compiled to write it directly, or nullptr and every store
+  // calls out - decided per step like `ram`, but separately, since a store has more to
+  // answer than a load (a watched address, and the compiled code it may land on).
+  uint8_t* ram_store = nullptr;
+
+  // BlockCache's bitmap of the 4 KB pages that blocks were compiled from, which never
+  // moves. A direct store tests its page's bit as it runs and calls out when it is set,
+  // so the store that throws compiled code away is always the callback's.
+  const uint64_t* code_pages = nullptr;
 };
 
 }  // namespace rec

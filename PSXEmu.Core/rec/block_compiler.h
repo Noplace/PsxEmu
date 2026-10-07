@@ -153,6 +153,7 @@ class BlockCompiler {
   static const uint8_t kScratchC = 2;      // EDX - and arg 2
   static const uint8_t kArg3 = 8;          // R8D - a store's value, a load's guest pc
   static const uint8_t kArg4 = 9;          // R9D - a store's guest pc
+  static const uint8_t kScratchD = 10;     // R10 - a direct store's pointer to the code pages
 
   // Windows x64: 32 bytes of shadow space, and RSP 16-byte aligned at the call.
   // Three pushes leave RSP 16-aligned, so the shadow space is all that is
@@ -230,9 +231,18 @@ class BlockCompiler {
   // charged. Zero bytes, the default, compiles every load as a call. Blocks keep
   // what they were compiled with; the host switches between the two at run time
   // through BlockState::ram, not through this.
-  void set_direct_ram(uint32_t bytes, uint8_t read_cycles) {
+  //
+  // `window_bytes` is how far the physical addresses that reach RAM extend: the same `bytes`
+  // seen again and again, as the console's 2 MB is across its first 8 MB. Zero means no
+  // mirrors - RAM is only its own first `bytes`. Whatever the host says, `bytes` has to be a
+  // power of two and the window a multiple of it, since a mirror is found by masking.
+  //
+  // Stores to the same memory are written directly too, from BlockState::ram_store, unless
+  // the page they land on has compiled code in it (BlockState::code_pages).
+  void set_direct_ram(uint32_t bytes, uint8_t read_cycles, uint32_t window_bytes = 0) {
     direct_ram_bytes_ = bytes;
     direct_ram_read_cycles_ = read_cycles;
+    direct_ram_window_ = window_bytes > bytes ? window_bytes : bytes;
   }
 
   CompiledBlock Compile(const DecodedBlock& block, CodeBlock* code) {
@@ -449,6 +459,11 @@ class BlockCompiler {
   // The cast above would wrap a field past 127 into a negative displacement
   // without a word, and the code would read whatever sits before the state.
   static_assert(offsetof(BlockState, extra_cycles) <= 127,
+                "every BlockState field has to be in reach of a disp8");
+  static const int8_t kOffRamStore = static_cast<int8_t>(offsetof(BlockState, ram_store));
+  static const int8_t kOffCodePages = static_cast<int8_t>(offsetof(BlockState, code_pages));
+  static_assert(offsetof(BlockState, ram_store) <= 127 &&
+                offsetof(BlockState, code_pages) <= 127,
                 "every BlockState field has to be in reach of a disp8");
 
   // How far into the block the compiled code gets. Computed backwards, because
@@ -1061,8 +1076,13 @@ class BlockCompiler {
     FlushPendingBeforeMemory();
     EmitAddress(rs, immediate);
     LoadReg(kArg3, rt);        // the value, whole; the callback narrows it
+    size_t past_call = 0;
+    if (direct_ram_bytes_ != 0)
+      past_call = EmitDirectRamWrite(opcode);
     EmitCall(function, instruction.pc, kArg4);   // (context, address, value, pc)
     EmitFaultCheck(code_, block_start_);
+    if (direct_ram_bytes_ != 0)
+      PatchRel8(code_, past_call, code_->cursor);
   }
 
   // A load reading main RAM itself, with the address in EDX: the value lands in
@@ -1084,14 +1104,48 @@ class BlockCompiler {
   // Only EAX, ECX and EDX are touched, which a call would have clobbered
   // anyway, and only forward rel8 jumps are emitted - PatchRel8 checks them.
   size_t EmitDirectRamRead(uint32_t opcode) {
-    size_t to_call[5];
+    size_t to_call[8];
     int to_call_count = 0;
     auto jump_to_call = [&](x86::Cc condition) {
       to_call[to_call_count++] = code_->cursor;
       x86::JccRel8(emitter_, condition, 0);
     };
 
-    x86::Mov64RegMem(emitter_, kScratchA, kStatePtr, kOffRam);   // mov rax, [rbx+ram]
+    EmitDirectRamPrologue(kOffRam, jump_to_call);
+
+    if (opcode == 0x23 || opcode == 0x21 || opcode == 0x25) {
+      x86::TestRegImm(emitter_, kScratchC, opcode == 0x23 ? 3 : 1);
+      jump_to_call(x86::Cc::kNotEqual);
+    }
+
+    if (direct_ram_window_ > direct_ram_bytes_)                  // a mirror is the same bytes
+      x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, direct_ram_bytes_ - 1);
+    x86::Add64RegReg(emitter_, kScratchA, kScratchB);            // RAM + physical
+    if (opcode == 0x20 || opcode == 0x24)
+      x86::MovzxRegMem8(emitter_, kScratchA, kScratchA, 0);
+    else if (opcode == 0x21 || opcode == 0x25)
+      x86::MovzxRegMem16(emitter_, kScratchA, kScratchA, 0);
+    else
+      x86::MovRegMem(emitter_, kScratchA, kScratchA, 0);
+    if (direct_ram_read_cycles_ != 0) {
+      x86::AddMemImm8(emitter_, kStatePtr, kOffExtraCycles,
+                      direct_ram_read_cycles_);
+    }
+
+    const size_t past_call = code_->cursor;
+    x86::JmpRel8(emitter_, 0);
+    for (int i = 0; i < to_call_count; ++i)
+      PatchRel8(code_, to_call[i], code_->cursor);
+    return past_call;
+  }
+
+  // What a direct read and a direct write both start with, the address being in EDX: RAM's
+  // base into RAX, or out through `jump_to_call` if the host gave none (`ram_offset` is which
+  // of BlockState's two); out again unless the address is in KUSEG's first 512 MB, KSEG0 or
+  // KSEG1; and the physical address into ECX, out unless it is inside RAM's window.
+  template <typename JumpToCall>
+  void EmitDirectRamPrologue(int8_t ram_offset, JumpToCall& jump_to_call) {
+    x86::Mov64RegMem(emitter_, kScratchA, kStatePtr, ram_offset);   // mov rax, [rbx+ram]
     x86::Test64RegReg(emitter_, kScratchA);
     jump_to_call(x86::Cc::kEqual);
 
@@ -1109,25 +1163,57 @@ class BlockCompiler {
 
     x86::MovRegReg(emitter_, kScratchB, kScratchC);              // the physical address
     x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 0x1FFFFFFF);
-    x86::AluRegImm(emitter_, x86::AluImmOp::kCmp, kScratchB, direct_ram_bytes_);
+    x86::AluRegImm(emitter_, x86::AluImmOp::kCmp, kScratchB, direct_ram_window_);
     jump_to_call(x86::Cc::kAboveEqual);
+  }
 
-    if (opcode == 0x23 || opcode == 0x21 || opcode == 0x25) {
-      x86::TestRegImm(emitter_, kScratchC, opcode == 0x23 ? 3 : 1);
+  // A store writing main RAM itself, with the address in EDX and the value in R8D - EmitStore's
+  // arguments - and the same shape as EmitDirectRamRead: the returned offset is the jump over
+  // the call EmitStore emits next, which stays the way out for everything else.
+  //
+  // Right only when Cpu::Store would have done nothing but write, so it also goes to the call
+  // for what a read would not mind:
+  //   - the host saying not now - BlockState::ram_store is null;
+  //   - a misaligned word or halfword, an address error the callback raises;
+  //   - a page that compiled code was built from (BlockState::code_pages): the callback
+  //     writes it and discards whatever blocks the word belonged to, which is not something
+  //     to do from here. Data beside code in the same 4 KB takes the call as well, as it
+  //     always did.
+  //
+  // EAX, ECX, EDX, R9 and R10 are touched, all of which a call would have clobbered anyway;
+  // R8 holds the value and is left alone until the write.
+  size_t EmitDirectRamWrite(uint32_t opcode) {
+    size_t to_call[8];
+    int to_call_count = 0;
+    auto jump_to_call = [&](x86::Cc condition) {
+      to_call[to_call_count++] = code_->cursor;
+      x86::JccRel8(emitter_, condition, 0);
+    };
+
+    EmitDirectRamPrologue(kOffRamStore, jump_to_call);
+
+    if (opcode == 0x2B || opcode == 0x29) {
+      x86::TestRegImm(emitter_, kScratchC, opcode == 0x2B ? 3 : 1);
       jump_to_call(x86::Cc::kNotEqual);
     }
 
+    // The page's bit, from the physical address as the cache keys it - mirrors included, as
+    // BlockCache::IsCodePage reads it.
+    x86::MovRegReg(emitter_, kArg4, kScratchB);                  // mov r9d, ecx
+    x86::ShiftRegImm(emitter_, x86::ShiftOp::kShr, kArg4, BlockCache::kPageShift);
+    x86::Mov64RegMem(emitter_, kScratchD, kStatePtr, kOffCodePages);   // mov r10, [rbx+pages]
+    x86::BtMemReg(emitter_, kScratchD, kArg4);                   // bt [r10], r9
+    jump_to_call(x86::Cc::kBelow);                               // set: there is code here
+
+    if (direct_ram_window_ > direct_ram_bytes_)
+      x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, direct_ram_bytes_ - 1);
     x86::Add64RegReg(emitter_, kScratchA, kScratchB);            // RAM + physical
-    if (opcode == 0x20 || opcode == 0x24)
-      x86::MovzxRegMem8(emitter_, kScratchA, kScratchA, 0);
-    else if (opcode == 0x21 || opcode == 0x25)
-      x86::MovzxRegMem16(emitter_, kScratchA, kScratchA, 0);
+    if (opcode == 0x28)
+      x86::MovMem8Reg(emitter_, kScratchA, kArg3);
+    else if (opcode == 0x29)
+      x86::MovMem16Reg(emitter_, kScratchA, kArg3);
     else
-      x86::MovRegMem(emitter_, kScratchA, kScratchA, 0);
-    if (direct_ram_read_cycles_ != 0) {
-      x86::AddMemImm8(emitter_, kStatePtr, kOffExtraCycles,
-                      direct_ram_read_cycles_);
-    }
+      x86::MovMem32Reg(emitter_, kScratchA, kArg3);
 
     const size_t past_call = code_->cursor;
     x86::JmpRel8(emitter_, 0);
@@ -1286,6 +1372,7 @@ class BlockCompiler {
   // the cycles each read owes. Zero bytes compiles every load as a call.
   uint32_t direct_ram_bytes_ = 0;
   uint8_t direct_ram_read_cycles_ = 0;
+  uint32_t direct_ram_window_ = 0;
 
   // Set by PatchRel8 when a jump would not reach, for Compile to see.
   bool rel8_out_of_reach_ = false;

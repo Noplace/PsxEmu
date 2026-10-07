@@ -837,7 +837,7 @@ come out at 0.025 and 0.043, the others at 0.12-0.25); `--cost` does that and th
 times DLSS at the sizes the emulator gives it. Each makes one device, once: on the
 4060, never in a loop.
 
-`rec_test` (941 checks) is not counted either, and for a different reason: it
+`rec_test` (966 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
 `psx/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,

@@ -694,8 +694,13 @@ class FakeBus {
   uint8_t bytes_[kBusBytes];
 };
 
+// The code-page bitmap a block-level test hands its state: nothing there is code, which is what
+// a direct store asks. (The engine's own state points at its BlockCache's.)
+uint64_t g_no_code_pages[2048] = {};
+
 emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
   emulation::rec::BlockState state;
+  state.code_pages = g_no_code_pages;
   state.regs = regs;
   state.context = bus;
   state.load32 = &FakeBus::Load32;
@@ -706,6 +711,7 @@ emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
   state.store8 = &FakeBus::Store8;
   state.move = &FakeBus::Move;
   state.ram = bus->ram();   // read only by code compiled with direct RAM on
+  state.ram_store = bus->ram();
   return state;
 }
 
@@ -1535,7 +1541,7 @@ void TestTheCallingConventionIsHonoured() {
 
   CheckEqual(regs[4], 0x1234ABCD, "and the block did its work");
   if (g_direct_ram) {
-    Check(bus.calls == 2, "the two stores went through the callbacks, the two loads read RAM");
+    Check(bus.calls == 0, "the two stores wrote RAM and the two loads read it, no call");
   } else {
     Check(bus.calls == 4, "all four memory operations went through the callbacks");
   }
@@ -1657,6 +1663,7 @@ class Engine {
     recompiler_->set_minimum_block_instructions(1);
     recompiler_->set_link_blocks(g_link_blocks);
     recompiler_->set_ram(bus.ram());
+    recompiler_->set_ram_store(bus.ram());
 
     // The interpreter's own stores have to invalidate too.
     emulation::rec::Recompiler* rec = recompiler_.get();
@@ -2496,7 +2503,8 @@ struct DirectRun {
 };
 
 DirectRun RunWithDirectRam(const std::vector<uint32_t>& program, const uint32_t initial[32],
-                           FakeBus* bus, bool ram_given) {
+                           FakeBus* bus, bool ram_given, uint32_t window = 0,
+                           bool stores_given = true, const uint64_t* code_pages = nullptr) {
   FakeMemory memory;
   memory.Write(kProgramBase, program);
   BlockDecoder decoder(memory.Fetch());
@@ -2505,7 +2513,7 @@ DirectRun RunWithDirectRam(const std::vector<uint32_t>& program, const uint32_t 
   Emitter emitter;
   CodeBlock* code = emitter.create_block(4096);
   emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
-  compiler.set_direct_ram(kBusBytes, kRamReadCycles);
+  compiler.set_direct_ram(kBusBytes, kRamReadCycles, window);
   const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
 
   DirectRun run;
@@ -2513,6 +2521,9 @@ DirectRun RunWithDirectRam(const std::vector<uint32_t>& program, const uint32_t 
     run.regs[i] = initial[i];
   emulation::rec::BlockState state = MakeState(run.regs, bus);
   state.ram = ram_given ? bus->ram() : nullptr;
+  state.ram_store = ram_given && stores_given ? bus->ram() : nullptr;
+  if (code_pages != nullptr)
+    state.code_pages = code_pages;
   RunBlock(code, &state);
   run.extra_cycles = state.extra_cycles;
   run.compiled = compiled.compiled;
@@ -2676,6 +2687,129 @@ void TestAMisalignedLoadStillFaults() {
   Check(next == emulation::rec::Recompiler::kFaulted, "and the block stopped as faulted");
 }
 
+void TestRamIsWrittenDirectlyWhenGiven() {
+  printf("a store to RAM writes it directly when the host gives it\n");
+
+  // Every width, through all three views of the same memory, each into bytes of its own.
+  uint32_t initial[32] = {};
+  initial[1] = kBusBase + 0x100;   // KSEG0
+  initial[2] = 0xA0000104;         // KSEG1
+  initial[3] = 0x00000108;         // KUSEG
+  initial[10] = 0xDEADBEEF;
+  initial[11] = 0x12345678;
+  initial[12] = 0xCAFEF00D;
+  const std::vector<uint32_t> program = {
+      SW(10, 1, 0),
+      SB(11, 2, 1),    // 0x105 <- 78
+      SH(12, 3, 2),    // 0x10A <- F00D
+  };
+  FakeBus given, withheld;
+  const DirectRun direct = RunWithDirectRam(program, initial, &given, true);
+  const DirectRun called = RunWithDirectRam(program, initial, &withheld, false);
+
+  CheckEqual(direct.compiled, static_cast<int64_t>(program.size()), "the whole block compiled");
+  CheckEqual(given.Read(kBusBase + 0x100, 4), 0xDEADBEEF, "sw through KSEG0");
+  CheckEqual(given.Read(kBusBase + 0x105, 1), 0x78, "sb through KSEG1");
+  CheckEqual(given.Read(kBusBase + 0x10A, 2), 0xF00D, "sh through KUSEG");
+  CheckEqual(given.calls, 0, "and not one of them called out");
+  CheckEqual(direct.extra_cycles, 0, "a store owes nothing");
+  Check(given.SameAs(withheld), "withheld, every byte of memory the same");
+  CheckEqual(withheld.calls, 3, "every store through the callback");
+  Check(SameRegisters(called.regs, direct.regs), "and the registers untouched either way");
+}
+
+void TestAStoreToACodePageStillCallsOut() {
+  printf("a store to a page with compiled code in it calls out, whichever way it is asked\n");
+
+  // The code-page bitmap says page 0 has code and page 1 does not: a store to 0x100 has to reach
+  // the callback, where the blocks compiled from it are thrown away, and a store to 0x1100 need not.
+  uint64_t pages[2048] = {};
+  pages[0] = 1;
+  uint32_t initial[32] = {};
+  initial[1] = kBusBase + 0x100;
+  initial[2] = kBusBase + 0x1100;
+  initial[10] = 0xA5A5A5A5;
+  const std::vector<uint32_t> program = {
+      SW(10, 1, 0),
+      SW(10, 2, 0),
+  };
+  FakeBus bus;
+  const DirectRun run = RunWithDirectRam(program, initial, &bus, true, 0, true, pages);
+  CheckEqual(run.compiled, static_cast<int64_t>(program.size()), "the whole block compiled");
+  CheckEqual(bus.calls, 1, "only the store to the page with code called out");
+  CheckEqual(bus.Read(kBusBase + 0x100, 4), 0xA5A5A5A5, "and it was written");
+  CheckEqual(bus.Read(kBusBase + 0x1100, 4), 0xA5A5A5A5, "as the other was, directly");
+
+  // And with the host withholding stores while it still gives loads - a watched address.
+  FakeBus watched;
+  RunWithDirectRam(program, initial, &watched, true, 0, false);
+  CheckEqual(watched.calls, 2, "withheld, both go through the callback");
+}
+
+void TestEveryOtherStoreStillCallsOut() {
+  printf("a store a direct write would get wrong still calls out\n");
+
+  // A misaligned word and halfword, which are address errors; the first byte past RAM, another
+  // region; KSEG2, where the cache control register is; and KUSEG past its first 512 MB.
+  uint32_t initial[32] = {};
+  initial[1] = kBusBase + 0x101;
+  initial[2] = kBusBase + kBusBytes;
+  initial[3] = 0xFFFE0130;
+  initial[4] = 0x20000100;
+  initial[10] = 0x01020304;
+  const std::vector<uint32_t> program = {
+      SW(10, 1, 0),
+      SH(10, 1, 0),
+      SB(10, 2, 0),
+      SW(10, 3, 0),
+      SW(10, 4, 0),
+  };
+  FakeBus given, withheld;
+  const DirectRun direct = RunWithDirectRam(program, initial, &given, true);
+  RunWithDirectRam(program, initial, &withheld, false);
+  CheckEqual(direct.compiled, static_cast<int64_t>(program.size()), "the whole block compiled");
+  CheckEqual(given.calls, 5, "all five went through the callback");
+  Check(given.SameAs(withheld), "writing what they write with the RAM withheld");
+}
+
+void TestMirrorsReachRamDirectly() {
+  printf("with RAM's mirrors given, loads and stores through them are direct\n");
+
+  // The window is four times the bus, as the console's 8 MB is its 2: the same bytes at 0x100 and
+  // at bus + 0x100 and at 3 bus + 0x100, which the bus's own callbacks wrap onto each other too.
+  const uint32_t window = 4 * kBusBytes;
+  uint32_t initial[32] = {};
+  initial[1] = kBusBase + kBusBytes + 0x100;          // KSEG0, the first mirror
+  initial[2] = 0xA0000000 + 3 * kBusBytes + 0x100;    // KSEG1, the third
+  initial[3] = 2 * kBusBytes + 0x100;                 // KUSEG, the second
+  initial[4] = kBusBase + window + 0x100;             // the first address past them
+  initial[10] = 0xDEADBEEF;
+  initial[13] = 0x5A;
+  const std::vector<uint32_t> program = {
+      SW(10, 1, 0),    // 0x100 <- DEADBEEF, by the first mirror
+      LW(11, 2, 0),    // read back by the third
+      NOP(),
+      SB(13, 3, 3),    // 0x103 <- 5A, by the second
+      LBU(12, 1, 3),   // read back by the first
+      NOP(),
+      SW(10, 4, 0),    // past the window: a call
+      LW(14, 4, 0),    // and another
+      NOP(),
+  };
+  FakeBus given, withheld;
+  const DirectRun direct = RunWithDirectRam(program, initial, &given, true, window);
+  const DirectRun called = RunWithDirectRam(program, initial, &withheld, false, window);
+
+  CheckEqual(direct.compiled, static_cast<int64_t>(program.size()), "the whole block compiled");
+  CheckEqual(direct.regs[11], 0xDEADBEEF, "a word stored by one mirror reads back by another");
+  CheckEqual(direct.regs[12], 0x5A, "a byte too");
+  CheckEqual(given.calls, 2, "only the two past the window called out");
+  CheckEqual(direct.extra_cycles, 2 * kRamReadCycles, "and the two loads that read owe their stall");
+  Check(SameRegisters(called.regs, direct.regs), "withheld, every register the same");
+  Check(given.SameAs(withheld), "and every byte of memory");
+  CheckEqual(withheld.calls, 6, "all six memory accesses through the callbacks");
+}
+
 int main() {
   printf("rec_test - emitter, block cache, decoder, compiler, engine\n");
   printf("           (Docs/Recompiler-Plan.md steps 1 to 6)\n\n");
@@ -2719,6 +2853,10 @@ int main() {
   TestEverythingElseStillCallsOut();
   TestTheChainIsChargedForWhatItRead();
   TestAMisalignedLoadStillFaults();
+  TestRamIsWrittenDirectlyWhenGiven();
+  TestAStoreToACodePageStillCallsOut();
+  TestEveryOtherStoreStillCallsOut();
+  TestMirrorsReachRamDirectly();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

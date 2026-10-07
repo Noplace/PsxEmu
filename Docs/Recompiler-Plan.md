@@ -583,10 +583,13 @@ past RAM's first two megabytes - another region, or one of RAM's mirrors.
   differential suite alone caught neither of the last two - its programs never
   load from KSEG2, and a misaligned load there does not fault.
 
-**Not done.** Stores still call out: invalidating compiled code, the isolated
+**Not done** - *stores and RAM's mirrors were done the same day, see
+[Recompiler-Profile.md](Recompiler-Profile.md): a store to a page without compiled
+code writes RAM itself, and loads and stores reach the mirrors.* Stores called
+out: invalidating compiled code, the isolated
 cache (a store under it writes the cache, not RAM - which is how the BIOS
 flushes it) and the write queue all live there, and a store is rarer than a
-load. RAM's mirrors call out too. The branch's other two recompiler changes were
+load. RAM's mirrors called out too. The branch's other two recompiler changes were
 measured on their own and left out: indirect jumps (`jr`, `jalr`) dispatching
 through a table straight to the next block - the same pictures, about 2% faster,
 within run-to-run noise, for a 4 MB table cleared on every cache flush - and RBP

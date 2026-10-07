@@ -200,8 +200,13 @@ class BlockCache {
   void Clear() {
     blocks_.clear();
     pages_.clear();
-    code_pages_.clear();
+    std::fill(code_pages_.begin(), code_pages_.end(), 0ull);
   }
+
+  // The page bitmap itself, for compiled stores to test as they run. It covers every page of
+  // the 512 MB physical space from the start and is never resized, so the pointer holds for the
+  // life of the cache; bit n is page n, as IsCodePage reads it.
+  const uint64_t* code_pages() const { return code_pages_.data(); }
 
   size_t size() const { return blocks_.size(); }
 
@@ -290,7 +295,9 @@ class BlockCache {
 
   std::unordered_map<uint32_t, Block> blocks_;
   std::unordered_map<uint32_t, Page> pages_;
-  std::vector<uint64_t> code_pages_;
+  // 2048 words of 64 pages of 4 KB: all 512 MB of physical addresses (Normalise's range).
+  static const size_t kCodePageWords = (0x20000000u >> kPageShift) / 64;
+  std::vector<uint64_t> code_pages_ = std::vector<uint64_t>(kCodePageWords, 0ull);
 };
 
 }  // namespace rec

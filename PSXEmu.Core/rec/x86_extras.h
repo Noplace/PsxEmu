@@ -182,6 +182,7 @@ enum class ShiftOp : uint8_t {
 
 inline void ShiftRegImm(Emitter* e, ShiftOp op, uint8_t reg,
                         uint8_t count) {
+  EmitRex(e, false, 0, reg);
   e->emit8(0xC1);
   e->emit8(ModRM(3, static_cast<uint8_t>(op), reg));
   e->emit8(count);
@@ -253,6 +254,39 @@ inline void Mov64RegReg(Emitter* e, uint8_t dest, uint8_t src) {
 inline void Mov64RegMem(Emitter* e, uint8_t dest, uint8_t base,
                         int8_t displacement) {
   EmitRegMem8(e, 0x8B, dest, base, displacement, true);
+}
+
+// mov [base], r32 / r16 / r8 - a word, halfword or byte stored straight into guest RAM. The
+// base is addressed with no displacement, so it must not be RSP, RBP, R12 or R13, whose ModRM
+// encodings mean something else; the caller uses RAX. A REX prefix is emitted for any register
+// from R8 up, which is also what makes `r8b` mean R8's low byte rather than a legacy one.
+inline void MovMem32Reg(Emitter* e, uint8_t base, uint8_t reg) {
+  EmitRex(e, false, reg, base);
+  e->emit8(0x89);
+  e->emit8(ModRM(0, reg, base));
+}
+
+inline void MovMem16Reg(Emitter* e, uint8_t base, uint8_t reg) {
+  e->emit8(0x66);
+  EmitRex(e, false, reg, base);
+  e->emit8(0x89);
+  e->emit8(ModRM(0, reg, base));
+}
+
+inline void MovMem8Reg(Emitter* e, uint8_t base, uint8_t reg) {
+  EmitRex(e, false, reg, base);
+  e->emit8(0x88);
+  e->emit8(ModRM(0, reg, base));
+}
+
+// bt [base], r64 - the carry flag (Cc::kBelow) becomes the bit numbered by the register in the
+// bit string that starts at base, which is how a page number asks a bitmap whether it holds
+// code. Base must be one ModRM encodes with no displacement (see above); the caller uses R10.
+inline void BtMemReg(Emitter* e, uint8_t base, uint8_t reg) {
+  EmitRex(e, true, reg, base);
+  e->emit8(0x0F);
+  e->emit8(0xA3);
+  e->emit8(ModRM(0, reg, base));
 }
 
 // test r64, r64 - whether a pointer taken out of the state is null.

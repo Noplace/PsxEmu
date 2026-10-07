@@ -90,6 +90,7 @@ class RecompilerBridge {
     host.interpret = [this](uint32_t pc) { return Interpret(pc); };
     host.load_in_flight = [this]() { return cpu()->LoadInFlight(); };
     host.ram_bytes = kRamBytes;
+    host.ram_window_bytes = kRamWindowBytes;
     host.ram_read_cycles = Cpu::kRamLoadStall;
 
     recompiler_.reset(new emulation::rec::Recompiler(
@@ -112,6 +113,10 @@ class RecompilerBridge {
 
   // Main RAM, IOInterface::ram_buffer: 2 MB from physical address zero.
   static const uint32_t kRamBytes = 0x200000;
+
+  // And its mirrors: Cpu::Load and Cpu::Store decode every physical address up to 8 MB as RAM,
+  // reduced to its first 2 MB. Wild Arms makes half its RAM loads through them.
+  static const uint32_t kRamWindowBytes = 0x800000;
 
   // Runs one step of the machine at the current pc, and returns how many guest
   // instructions ran *as compiled code*.
@@ -142,6 +147,8 @@ class RecompilerBridge {
     // setting is latched once a batch, so switching it reaches compiled loads at the next step.
     recompiler_->set_ram(!pgxp && processor->RamLoadIsPlain()
                              ? system_->io().ram_buffer.u8 : nullptr);
+    recompiler_->set_ram_store(!pgxp && processor->RamStoreIsPlain()
+                                   ? system_->io().ram_buffer.u8 : nullptr);
 
     // A chain runs for as long as the devices have no use for the machine: the cycles left
     // in the current batch, which is the next event any of them has scheduled. Never less

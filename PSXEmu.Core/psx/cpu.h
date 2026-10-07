@@ -400,6 +400,12 @@ class Cpu : public Component {
     return !context_->ctrl.SR.IsC && !debug_watch_ && !write_queue_;
   }
 
+  // The same for a store to main RAM: nothing but the write - and, for compiled code, the check
+  // of whether it landed on code, which compiled stores make themselves. Everything that keeps a
+  // load whole keeps a store whole, and so does a watched address (set_watch_address), which
+  // records who wrote it from inside Store.
+  bool RamStoreIsPlain() const { return RamLoadIsPlain() && watch_address_ == 0; }
+
   // The load that will reach its register at the start of the next
   // instruction, for a harness comparing this CPU against another at an
   // instruction boundary. The two are not in the same state there even when

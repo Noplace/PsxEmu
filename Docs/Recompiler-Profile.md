@@ -155,6 +155,63 @@ The 40 hardware test programs under `test/test suite` (cpu, dma, gpu, mdec) draw
 the same picture, with `--recompiler`, before and after; `rec_test` 941, `cpu_test`
 297, `timer_test` 80 pass.
 
+## Re-profile after both, and the next one: stores and RAM mirrors (same day)
+
+Self time on the machine thread after the two changes above, summed by group, over
+Wild Arms, FF7, Ace Combat 3 and Ridge Racer:
+
+| Group | Share |
+|---|---|
+| Compiled memory calling out (`Access`, `Cpu::Load`, `Cpu::Store`, `NoteStoreRange`, `AddressTranslation`) | 17-21% |
+| Dispatcher (`BlockCache::Find` - an `unordered_map` -, both `Step`s, `StepImpl`, the `load_in_flight` `std::function`, `CauseRegister`) | 12-25% |
+| Interpreter fallback (`lambda_2`, `ExecuteInstruction`) | ~15% |
+| Waiting on the raster thread at vblank | 5% (Wild Arms) to 24% (FF7) |
+| SPU | 4-10% |
+
+The raster thread itself is idle 56-85% of the time: the wait is the frame's drawing
+arriving in a burst just before vblank and then being waited for, a serial latency that
+only costs speed when the machine runs uncapped.
+
+A histogram of what called out (1,500 frames): **RAM stores 16-40M, never direct**;
+and **loads and stores through RAM's mirrors** - Wild Arms makes 28.8M mirror loads and
+14.9M mirror stores beside 58M direct loads, Ace Combat 3 10.8M and 5.4M - because
+the direct path stopped at the first 2 MB. Scratchpad is nearly unused (8,000 loads
+in Ace Combat 3), I/O loads are 2.3-10M and have to call out.
+
+**Done:** compiled stores write RAM themselves, and loads and stores reach the
+mirrors (`HostInterface::ram_window_bytes`, 8 MB, masked down to the 2 MB):
+
+- A store tests `BlockState::ram_store` (null while PGXP is on, the cache is isolated,
+  the debugger watches, the write queue is modelled, **or an address is watched**
+  - `Cpu::RamStoreIsPlain`), the segment, the window, the alignment, and then the
+  page's bit in the block cache's code-page bitmap (`bt [r10], r9`). A store to a
+  page with compiled code in it takes the callback, which writes it and throws the
+  blocks away - so invalidation is exactly what it was. The bitmap is now a fixed
+  2,048 words covering all 512 MB so compiled code can hold its address.
+- Skipped, because unobservable: `icache.InvalidateLine`, which only ever writes
+  0xFFFFFFFF into an array that already holds it.
+- `ShiftRegImm` did not emit REX, so shifting R8-R15 would have shifted the low
+  register instead; it does now (nothing used it with a high register before).
+
+Back to back with the previous commit, `--recompiler`, 1,500 frames:
+
+| Run | Before | After | |
+|---|---|---|---|
+| Wild Arms | 8.8x | 10.9x | +24% |
+| Final Fantasy VII | 8.4x | 9.4x | +12% |
+| Ridge Racer | 9.2x | 10.9x | +19% |
+
+Twelve-disc table, `--recompiler`, 3,000 frames, alternated: **81.4 s -> 70.7 s (13%
+less), every disc faster, all 36 checkpoint pictures and all 12 sector counts
+identical** - stores cost nothing and a mirror load owes the same stall, so unlike
+the batching change nothing moves. The 40 hardware test programs draw the same
+pictures; `--watch-ram` finds the same writes (13, 13 and 4 at three addresses);
+Final Fantasy VII with PGXP on the hardware rasteriser still draws 25,854 of 44,978
+vertices from shadows with no load read directly, and the same checksum. `rec_test`
+941 -> 966 (the differential suite now runs its self-modifying programs through
+direct stores); with the code-page check removed 29 of them fail, with the alignment
+test removed one does, and both come back.
+
 ## Method and caveats
 
 - `boot_runner` built `/O2 /Zi /DEBUG /INCREMENTAL:NO` (no incremental-link
