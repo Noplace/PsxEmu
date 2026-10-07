@@ -168,7 +168,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 446 checks, 0 failures.**
+**Current: 474 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -217,6 +217,15 @@ Covers, in the order it runs:
   interrupt and leaves the SPU idle; burst mode still moves everything at once.
   Eight of the seventeen fail with the old channel, which moved the lot inside the
   CHCR write
+- **The decoded header, and how far a seek reaches** (bug 146): GetlocL fails
+  with 80h before any header has been decoded; SeekL decodes the header at its
+  target, 00:02:16, and SeekP decodes none; a ReadN that has to seek says 42h
+  until its first sector and 22h with it; Init keeps the header; a SeekL into the
+  pregap, 00:00:30, and into the lead-out each find a header there; GetlocP in the
+  lead-out says track AA, index 1, 74:00:00; and a seek to 74:30:00 fails with
+  INT5 04h, 04h, after which both Getlocs fail and Getstat says 04h until MotorOn.
+  Thirteen of the twenty-eight fail with the old controller, which answered
+  GetlocL from whatever the buffer held and let a seek go anywhere
 - **Where the head is inside a pregap** (bug 110): GetlocP 54 sectors before a
   track's index 1 answers that track, index 0, with the time counting down -
   00:02:00 on the pregap's first sector, the sector before it still the track
@@ -758,11 +767,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 95 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 446 |
+| `timer_test` | 80 | | `media_test` | 474 |
 | `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,747 checks, 0 failures**, all ten green. Each harness's own section above
+**1,775 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -773,7 +782,9 @@ follows music on a CloneCD dump that did not keep them, bug 131, and four with
 DLSS's mode and preset: their defaults, the round trip, values the menu does not
 offer ignored, and the mode among a game's own keys - and one with the Direct3D 12
 rasteriser's key, which must round-trip and count as hardware. The eight after that are
-not settings: a sector held in the buffer until its interrupt is acknowledged, bug 139.)
+not settings: a sector held in the buffer until its interrupt is acknowledged, bug 139 - nor
+are the seventeen of SPU DMA in request mode, bug 145, or the twenty-eight of the decoded
+header and how far a seek reaches, bug 146.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
@@ -1015,12 +1026,16 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 | Vandal Hearts | `eac4dfab83da3880` | `bfe5fadefb61e2e4` | `e80a7b8eb0b41ca6` | 76,772 | 320x240 | 127,200 | 5,219 |
 | Legend of Mana | `45d5d2b44c07b562` | `9797912c492383e1` | `b16eaf3906c9d6dd` | 76,312 | 320x240 | 154,465 | 5,310 |
 | Ridge Racer | `f265695832f0679b` | `cf3e36606c4d8e97` | `902df9f582d0c892` | 76,458 | 320x240 | 0 | 1,578 |
-| Bomberman Party Ed. | `4a31d7a6c52734a4` | `45e058b70ed827c2` | `3ba049eea7e64970` | 68,913 | 320x240 | 145,800 | 4,650 |
+| Bomberman Party Ed. | `4a31d7a6c52734a4` | `45e058b70ed827c2` | `3ba049eea7e64970` | 68,913 | 320x240 | 145,800 | 4,652 |
 | Area 51 | `d7e8093204d0085b` | `5b1c23ab7d41b7d0` | `e33d8019d0abfc22` | 51,855 | 256x240 | 100,080 | 5,651 |
 | Final Fantasy VII | `37991653287d63d1` | `bbbb18dffe854383` | `04e1e2cfb9649a5e` | 75,942 | 320x240 | 0 | 668 |
 | Final Fantasy VIII | `aedac3154f8a0383` | `f3ee4d06bf3e0383` | `c184351a7e528d32` | 4,002 | 640x480 | 0 | 1,187 |
 | Ace Combat 3 | `f1839d675ff2720f` | `fb65d8a672a9fa31` | `2e6db11119920d31` | 51,183 | 320x240 | 79,268 | 2,229 |
 | Captain Tsubasa J | `f0779890ee9b1bb0` | `add4d55f3196ad03` | `816d516f2ba1d3f8` | 76,800 | 320x240 | 59,100 | 3,763 |
+
+**Bomberman's sector count since bug 146** is 4,652 where it was 4,650, every checksum
+the same: its ReadS acknowledge now says the drive is seeking, and it asks Getstat once
+before it starts polling GetlocL, which moves its polls a little later.
 
 **Re-recorded after bug 145, 2026-10-02.** SPU uploads in request mode now take the
 SPU's time - 16 cycles a halfword, the CPU running between blocks - where they finished

@@ -8831,3 +8831,97 @@ checks - the frame limiter holding the display's rate, and three seconds of soun
 laptop running on battery: they failed one run in three, and a `host_test` built with the old `dma.cpp`,
 alternated with the new, failed the same run. The machine they time is identical (92,822,656
 instructions, `435bad9a6c5e4004`).
+
+## 146. GetlocL always answered, a read never said it was seeking, and a seek reached anywhere
+
+`psx/cdrom.cpp`, `psx/cdrom.h`, `tools/media_test.cpp`
+
+Reported: JaCzekanski's `cdrom/getloc` (it calls itself `cdrom/header-valid-bit`) fails four checks
+the console's log passes - "Expected failure but GetlocL succeeeded" after the first reset, "Expected
+stat bits 0x42, got 0x22" just after starting a read, and, after a seek to 74:30:00 that should have
+failed, "Expected failure" for GetlocL and for GetlocP both.
+
+**What the test does**, read off its output and the console's: CdInit, then Getstat (02h) and GetlocL,
+which must fail - nothing has been decoded since the power came on. SeekL to 00:02:16, after which
+GetlocL answers with that header. A read at 40:00:00, and Getstat a moment after it, which must have
+the seeking bit: the head has forty minutes of disc to cross. After the read, CdInit again, after which
+GetlocL must still answer. Then SeekL to 00:00:30, in the pregap before track 1, and to 74:00:00, in
+the lead-out - both answer, and GetlocP says track AA there - and to 74:30:00, which must fail with
+IRQ 5 and status 04h, after which GetlocL and GetlocP must fail as well.
+
+**Why.**
+- GetlocL answered from the sector buffer whatever was in it - zeros before any sector, the last
+  sector read after any seek. The controller had no idea of a header having been decoded; the
+  console's does, and GetlocL fails with 80h until it has one, and again once a seek moves the head.
+- ReadN and ReadS set the reading bit at once, though a read that has to seek first is seeking until
+  its first sector comes round.
+- A seek went anywhere it was told, and GetlocP past the last track still said track 1.
+
+**Fix.**
+- The header the drive last decoded is the front of `sector_` - sync, header, subheader - and
+  "decoded" is the sync pattern being there: a sector read puts it there and `ForgetHeader` clears
+  its twelve bytes (the data FIFO starts at 12 or 24, never in them). Both are in the saved state
+  already, so the format does not change. It is forgotten when a disc goes in or comes out, on Reset
+  (1Ch), Stop and SetSession, and by every seek: SeekL decodes the header at its target on arriving,
+  SeekP decodes none - it finds its place by the subchannel, as DuckStation has it; the test does no
+  physical seek - a ReadN or ReadS that has to seek has none until its first sector, and a Play
+  that seeks has none at all, since audio has no headers. Init
+  (0Ah) keeps it: the console's GetlocL fails after the first Init and answers after the second,
+  which follows a read.
+- GetlocL fails with error 80h without a header, or after a seek error; GetlocP after a seek error.
+- A ReadN or ReadS that has to seek says 42h - in its acknowledge too - until its first sector, then
+  22h.
+- A seek past what was pressed fails: INT5 with 04h, 04h - the seek-error bit, the motor off - after
+  which Getstat says 04h and both Getlocs fail until MotorOn spins the disc up and clears it. How far
+  a disc was pressed is in no image. The one measurement is the console's run of this test, on a
+  disc whose data ended at 70:25:16: 74:00:03 was there, 74:30:00 was not. So a seek reaches
+  74:15:00, between the two, or 90 seconds past the disc's end - the shortest lead-out - if that is
+  further.
+- Past the last track GetlocP reports the lead-out: track AA, index 1, its time counting from where
+  the lead-out begins. And a SeekL into the pregap before track 1, or into the lead-out, decodes a
+  header there, made from the address and the first data track's mode: those sectors are on a
+  pressed disc, and the console answers GetlocL in both (00:00:29 and 73:59:74, mode 2).
+
+**The 42h check needs mechanical timing.** The test asks Getstat a moment after starting the read.
+With CD-ROM Mechanical Timing on (Emulation > CD-ROM Mechanical Timing, part of the Accuracy preset,
+and on in the reporter's psxemu.ini) the seek to 40:00 takes as long as it would on the console and
+Getstat answers 42h. Off, seeks are free by design: the first sector comes a sector's time after the
+command, the read is over before Getstat is asked, and the answer is 02h. That is the setting doing
+what it is for.
+
+**Two things in the test's output that are not the controller's.**
+- Every GetlocP's absolute frame prints as 00. psxcd, in this build of the test, takes at most seven
+  bytes of a response - the loop at `800115A0` stops at seven - and GetlocP's eighth is the absolute
+  frame; nothing else in the program reads the response FIFO. The console's log shows real frames
+  there ([74:00:03] in the lead-out), so it presumably came from a build whose psxcd read all eight.
+  That is a guess. The test checks nothing in the frame.
+- The status it prints after a failed Getloc is the previous command's: psxcd does not take the
+  first byte of a GetlocL or GetlocP reply as the status (the compares at `80011540`-`80011550`).
+
+**Verified.**
+- `cdrom/getloc`, with mechanical timing: "Test passed" on the interpreter and the recompiler, with
+  Final Fantasy VII's `.cue` and with Thousand Arms' `.ccd` and `.sub`, and with the disc put in after
+  the test asks for one, as the report did. Without it, only "Expected stat bits 0x42" fails, with
+  02h. Before: the four failures reported.
+- JaCzekanski's other CD-ROM tests here - `cdrom/disc-swap`, `terminal` and `timing` - print exactly
+  what they printed before.
+- The twelve discs: every checksum the same at all three checkpoints. One count moved: Bomberman
+  Party Edition reads 4,652 sectors by frame 3,000 instead of 4,650. It watches its XA stream by
+  polling GetlocL, and its ReadS acknowledge now says the drive is seeking, so it asks Getstat once
+  before it starts polling - its polls come about 720,000 cycles later from then on.
+- `media_test` 446 -> 474: GetlocL failing with 80h before any header; SeekL decoding its target's
+  header and SeekP none; a ReadN seeking until its first sector and reading with it; Init keeping
+  the header; the headers in the pregap and the lead-out; GetlocP in the lead-out as track AA, index
+  1, 74:00:00; a seek to 74:30:00 failing with 04h, 04h, both Getlocs failing and Getstat 04h until
+  MotorOn. 13 of the 28 fail against the old controller.
+
+**Not done.**
+- Init on the console also takes the head back to the start of the disc: its GetlocP after the
+  second Init reads 00:01:67, in track 1's pregap, and GetlocL answers with a header from there,
+  00:01:72. Ours stays where the read ended. The test only asks that GetlocL answer.
+- The console's head drifts about its target once a seek is done - GetlocL after the SeekL to
+  00:00:30 gave 00:00:29, and GetlocP 00:00:33 - where ours sits on it exactly. Nothing seen needs it.
+- On a disc much shorter than the test's, a seek still reaches 74:15:00, which a pressed disc that
+  short presumably would not.
+
+All twenty-four harness runs green after bug 146 (`media_test` 474).
