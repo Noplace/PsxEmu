@@ -143,6 +143,14 @@ class RecompilerBridge {
     recompiler_->set_ram(!pgxp && processor->RamLoadIsPlain()
                              ? system_->io().ram_buffer.u8 : nullptr);
 
+    // A chain runs for as long as the devices have no use for the machine: the cycles left
+    // in the current batch, which is the next event any of them has scheduled. Never less
+    // than kBudget, the length of a block and what this always was.
+    uint32_t budget = system_->io().CyclesToBatch();
+    if (budget < static_cast<uint32_t>(kBudget))
+      budget = kBudget;
+    recompiler_->set_budget(static_cast<int32_t>(budget));
+
     const uint32_t next = recompiler_->Step(pc);
 
     if (next != emulation::rec::Recompiler::kFaulted)

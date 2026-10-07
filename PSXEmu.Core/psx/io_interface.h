@@ -80,6 +80,13 @@ class IOInterface : public Component {
   // counter value that is up to a batch stale - which it otherwise would,
   // and which is exactly what a game timing something short would notice.
   void RunPending();
+  // The most cycles a batch may hold, and how many more cycles it takes to fill the
+  // current one - which is how far the CPU can run before the devices are due, and what
+  // compiled code is given to run for.
+  static const uint32_t kMaxBatchCycles = 1024;
+  uint32_t CyclesToBatch() const {
+    return batch_threshold_ > pending_cycles_ ? batch_threshold_ - pending_cycles_ : 1;
+  }
   uint8_t Read08(uint32_t address);
   uint16_t Read16(uint32_t address);
   uint32_t Read32(uint32_t address);
@@ -126,21 +133,28 @@ class IOInterface : public Component {
   static uint32_t BusUnits(const BusCost& cost, uint32_t lane, uint32_t bytes);
 
   // ---- batching (EmuConfig::exact_event_timing) --------------------------------
-  // The batch runs once this many cycles have piled up: 32 normally, and with exact
-  // event timing the cycles to the next thing any device will do, whichever is sooner.
+  // The batch runs once this many cycles have piled up. With exact event timing that is
+  // the cycles to the next thing any device will do. Without it, the same, but never
+  // fewer than kBatchCycles: an event may land up to that late, as it always could, and
+  // when nothing is due for a while the devices are left alone for that while - up to
+  // kMaxBatchCycles - instead of being ticked every 32 cycles to find nothing.
   // Derived, not saved - recomputed after every batch and after a state is loaded.
   static const uint32_t kBatchCycles = 32;
   uint32_t batch_threshold_ = kBatchCycles;
   bool exact_timing_ = false;
-  // Cycles until the soonest event any device has scheduled, capped at kBatchCycles.
-  uint32_t NextEventCycles();
-  // With exact timing, a register write can schedule something sooner than the batch
-  // was going to end - a DMA, a CD command, a counter's new target - so the devices are
-  // brought up to date first and the next cycle works the batch out again.
+  // Cycles until the soonest event any device has scheduled, capped at `cap`.
+  uint32_t NextEventCycles(uint32_t cap);
+  // A register write can schedule something sooner than the batch was going to end - a
+  // DMA, a CD command, a counter's new target. With exact timing the devices are brought
+  // up to date first and the next cycle works the batch out again; without it the batch
+  // is shortened to the ordinary 32 cycles, so what the write started lands as soon as
+  // it always did.
   void SettleBeforeWrite() {
     if (exact_timing_) [[unlikely]] {
       RunPending();
       batch_threshold_ = 1;
+    } else if (batch_threshold_ > kBatchCycles) {
+      batch_threshold_ = kBatchCycles;
     }
   }
 

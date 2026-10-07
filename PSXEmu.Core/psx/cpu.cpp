@@ -641,9 +641,13 @@ void Cpu::TickCycles(uint32_t cycles) {
   // Handed on in the same size steps ordinary execution uses. One enormous
   // step would jump the GPU dozens of scanlines at once and leave the display
   // gates the counters watch meaningless for the whole transfer.
-  while (cycles > 32) {
-    system_->io().Tick(32);
-    cycles -= 32;
+  //
+  // With the recompiler on that size is a whole batch: a chain is handed to the devices
+  // in one piece, since it was given only as long as the batch had left (RecompilerBridge).
+  const uint32_t step = system_->recompiler_enabled() ? IOInterface::kMaxBatchCycles : 32;
+  while (cycles > step) {
+    system_->io().Tick(step);
+    cycles -= step;
   }
   if (cycles > 0)
     system_->io().Tick(cycles);

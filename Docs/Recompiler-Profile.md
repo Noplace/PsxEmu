@@ -120,6 +120,41 @@ also stalling on lines the raster thread had just written. What remains of this
 item is the vblank wait for the raster thread (7-9%), which needs the resolve to
 move onto the raster thread and the front end's picture copy to follow it.
 
+## Done: device batching follows the next event (same day)
+
+With the recompiler on, `IOInterface` no longer ticks every device every 32 cycles.
+The batch ends at the soonest event any device has scheduled
+(`NextEventCycles`, the code `--exact-timing` already used), never sooner than 32
+cycles and never later than 1,024; `Cpu::TickCycles` hands a chain over in one
+piece instead of re-splitting it into 32s; and the chain's budget is the cycles the
+current batch has left (`IOInterface::CyclesToBatch`), never less than the 64 it
+was. A register write shortens a long batch back to 32, since it can schedule
+something sooner than the batch was computed for. The interpreter is untouched:
+every one of its baselines stays byte-identical, because none of this runs without
+`--recompiler`.
+
+Back to back with the previous commit, `--recompiler`, 1,500 frames:
+
+| Run | Before | After | |
+|---|---|---|---|
+| Wild Arms | 7.09x | 8.51x | +20% |
+| Final Fantasy VII | 7.01x | 8.41x | +20% |
+| Wild Arms, `--exact-timing` | 6.08x | 8.77x | +44% |
+| Final Fantasy VII, `--exact-timing` | 6.08x | 8.32x | +37% |
+
+Twelve-disc table, `--recompiler`, 3,000 frames, checkpoints 1,000/2,000/3,000, one
+disc at a time, alternated: **97.8 s -> 81.1 s, 17% less, every disc faster.**
+Pictures identical at all 36 checkpoints except Ace Combat 3's frame 3,000, which
+is the same movie scene a few macroblocks on (79,268 -> 79,002 decoded, 2,229 ->
+2,225 sectors), checked by eye. Pacing moved a little elsewhere, as it did with the
+recompiler change of 2026-10-07: Area 51 has read 3,259 and 5,688 sectors by frames
+2,000 and 3,000 where it had read 3,246 and 5,650 (the same pictures and MDEC
+counts). That is the point of the change - a device event lands when it is due,
+rather than a chain and a batch late, so the CD gets a little more done per frame.
+The 40 hardware test programs under `test/test suite` (cpu, dma, gpu, mdec) draw
+the same picture, with `--recompiler`, before and after; `rec_test` 941, `cpu_test`
+297, `timer_test` 80 pass.
+
 ## Method and caveats
 
 - `boot_runner` built `/O2 /Zi /DEBUG /INCREMENTAL:NO` (no incremental-link

@@ -593,6 +593,18 @@ within run-to-run noise, for a 4 MB table cleared on every cache flush - and RBP
 as a fifth cached register, the same pictures and about 2%, also within the
 noise.
 
+### Where the time went, and what came of it, 2026-10-07
+
+[Recompiler-Profile.md](Recompiler-Profile.md): a sampling profile of the
+recompiled machine on six discs. Compiled guest code is about 7% of the machine
+thread; the rest is the machine around it. Two changes came straight out of it:
+the 15-bit frame resolve eight pixels at a time (15-22% faster), and device
+batches that end at the next scheduled event instead of every 32 cycles, with the
+chain's budget following (about 20% faster, 17% on the twelve-disc table). Both
+leave every interpreter baseline alone. The same document ranks what is left:
+compiled stores, the dispatcher, the uncompiled instructions, the vblank wait for
+the raster thread.
+
 ## Started, 2026-09-16: steps 1 to 6 are done, and block linking with them
 
 ### Step 7: block linking

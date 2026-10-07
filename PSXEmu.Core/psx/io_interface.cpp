@@ -354,15 +354,22 @@ void IOInterface::RunPending() {
 
   dma.Tick(batch);
 
-  batch_threshold_ = exact_timing_ ? NextEventCycles() : kBatchCycles;
+  // Only the recompiler coalesces: the interpreter ticks the machine once a cycle and every
+  // baseline it has was measured on 32-cycle batches, which stay exactly what they were.
+  if (system_->recompiler_enabled()) {
+    const uint32_t next = NextEventCycles(kMaxBatchCycles);
+    batch_threshold_ = (exact_timing_ || next > kBatchCycles) ? next : kBatchCycles;
+  } else {
+    batch_threshold_ = exact_timing_ ? NextEventCycles(kBatchCycles) : kBatchCycles;
+  }
 }
 
 // The soonest any device will do something software can see - raise an interrupt,
 // change a gate, finish a transfer - in CPU cycles from now, capped at a normal batch.
 // Too early only costs a batch that finds nothing to do; too late is the error this
 // exists to remove, so every estimate below errs early.
-uint32_t IOInterface::NextEventCycles() {
-  uint64_t next = kBatchCycles;
+uint32_t IOInterface::NextEventCycles(uint32_t cap) {
+  uint64_t next = cap;
   auto consider = [&next](uint64_t cycles) {
     if (cycles < next)
       next = cycles;
