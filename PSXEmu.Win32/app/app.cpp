@@ -26,6 +26,7 @@
 #include "app/win32_dialogs.h"
 #include "app/win32_paths.h"
 #include "graphics/dlss/reflex_markers.h"
+#include "graphics/fsr/fsr_download.h"
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/shared_device.h"
 #include "ui/dpi.h"
@@ -3356,9 +3357,9 @@ namespace psxemu {
         return missing;
     }
 
-    // The way to AMD's files, as ShowDlssFiles does NVIDIA's. They are MIT, and a build that ran
-    // graphics\fsr\fetch_fidelityfx.ps1 has them beside it already; a copy without them is sent
-    // to AMD's newest FidelityFX SDK release.
+    // The way to AMD's files, as ShowDlssFiles does NVIDIA's - and, since AMD's are MIT and
+    // published one by one, the emulator fetching them itself (FetchFsrFiles). A build that ran
+    // graphics\fsr\fetch_fidelityfx.ps1 has them beside it already.
     void App::ShowFsrFiles() {
         const std::vector<std::wstring> missing = MissingFsrFiles();
         std::wstring needed;
@@ -3368,11 +3369,9 @@ namespace psxemu {
         }
         const std::wstring content =
             L"AMD FSR needs three of AMD's files beside PSXEmu - signed by AMD, under the MIT "
-            L"licence.\n\n"
-            L"1. From AMD's newest FidelityFX SDK release, download its source code zip.\n"
-            L"2. From the Kits\\FidelityFX\\signedbin folder inside it, copy these into PSXEmu's "
-            L"folder:\n" + needed +
-            L"\n3. Choose Check again.";
+            L"licence:\n" + needed +
+            L"\n\nPSXEmu can download them for you, or you can copy them in by hand from the "
+            L"Kits\\FidelityFX\\signedbin folder of AMD's FidelityFX SDK and choose Check again.";
         std::wstring footer;
         if (missing.empty()) {
             footer = L"All three are there.";
@@ -3385,8 +3384,13 @@ namespace psxemu {
         footer += L"\nPSXEmu was built and tested with the FidelityFX SDK " +
                   std::wstring(kFsrBuiltWith) + L".";
 
-        constexpr int kOpenPage = 100, kOpenFolder = 101, kCheckAgain = 102;
+        constexpr int kOpenPage = 100, kOpenFolder = 101, kCheckAgain = 102, kDownload = 103;
+        const std::wstring download =
+            L"Download them now\nFrom AMD's FidelityFX SDK " + std::wstring(kFsrBuiltWith) +
+            L" release on GitHub, " + std::to_wstring((FsrDownloadTotal() + 524288) >> 20) +
+            L" MB - each checked against the release and AMD's signature, then FSR starts";
         const TASKDIALOG_BUTTON buttons[] = {
+            { kDownload, download.c_str() },
             { kOpenPage, L"Open AMD's download page\nAMD's newest FidelityFX SDK release on "
                          L"GitHub, in your browser" },
             { kOpenFolder, L"Open PSXEmu's folder\nWhere the files go" },
@@ -3430,8 +3434,95 @@ namespace psxemu {
         };
         int chosen = 0;
         TaskDialogIndirect(&config, &chosen, nullptr, nullptr);
-        if (chosen == kCheckAgain)
+        if (chosen == kDownload)
+            FetchFsrFiles();
+        else if (chosen == kCheckAgain)
             RetryFsr();
+    }
+
+    // AMD's three files downloaded beside the emulator (graphics/fsr/fsr_download.h) on a thread
+    // of their own, a task dialog showing how far it has got and offering to cancel; then FSR
+    // started with them, or what went wrong said.
+    void App::FetchFsrFiles() {
+        struct Fetch {
+            FsrDownloadProgress progress;
+            std::atomic<bool> finished{ false };
+            bool ok = false;
+            std::wstring error;
+            std::wstring line;   // the dialog's text, kept alive while it shows it
+        } fetch;
+        const std::wstring folder = ProgramFolder();
+        std::thread worker([&fetch, folder] {
+            fetch.ok = DownloadFsrFiles(folder, &fetch.progress, &fetch.error);
+            fetch.finished.store(true);
+        });
+
+        TASKDIALOGCONFIG config = {};
+        config.cbSize = sizeof(config);
+        config.hwndParent = video_settings_.window() != nullptr &&
+                                    IsWindowVisible(video_settings_.window())
+                                ? video_settings_.window()
+                                : window_;
+        config.hInstance = GetModuleHandleW(nullptr);
+        config.dwFlags = TDF_SHOW_PROGRESS_BAR | TDF_CALLBACK_TIMER |
+                         TDF_POSITION_RELATIVE_TO_WINDOW;
+        config.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+        config.pszWindowTitle = L"AMD FSR files";
+        config.pszMainIcon = TD_INFORMATION_ICON;
+        config.pszMainInstruction = L"Downloading AMD's FSR files";
+        config.pszContent = L"Starting...";
+        config.lpCallbackData = reinterpret_cast<LONG_PTR>(&fetch);
+        config.pfCallback = [](HWND dialog, UINT note, WPARAM wparam, LPARAM,
+                               LONG_PTR data) -> HRESULT {
+            Fetch* fetch = reinterpret_cast<Fetch*>(data);
+            switch (note) {
+                case TDN_CREATED:
+                    SendMessageW(dialog, TDM_SET_PROGRESS_BAR_RANGE, 0, MAKELPARAM(0, 1000));
+                    break;
+                case TDN_TIMER: {
+                    if (fetch->finished.load()) {
+                        // Done, well or not: the dialog goes, and what happened is said after.
+                        SendMessageW(dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
+                        break;
+                    }
+                    const uint64_t total = FsrDownloadTotal();
+                    const uint64_t done = (std::min)(fetch->progress.done.load(), total);
+                    SendMessageW(dialog, TDM_SET_PROGRESS_BAR_POS,
+                                 static_cast<WPARAM>(done * 1000 / total), 0);
+                    const int file = fetch->progress.file.load();
+                    wchar_t line[256];
+                    swprintf(line, std::size(line), L"%ls\n%.1f of %.1f MB%ls",
+                             kFsrDownloadFiles[file].name, done / 1048576.0, total / 1048576.0,
+                             fetch->progress.cancel.load() ? L" - cancelling" : L"");
+                    if (fetch->line != line) {
+                        fetch->line = line;
+                        SendMessageW(dialog, TDM_SET_ELEMENT_TEXT, TDE_CONTENT,
+                                     reinterpret_cast<LPARAM>(fetch->line.c_str()));
+                    }
+                    break;
+                }
+                case TDN_BUTTON_CLICKED:
+                    // Cancel asks the download to stop, and the dialog stays until it has.
+                    if (wparam == IDCANCEL && !fetch->finished.load()) {
+                        fetch->progress.cancel.store(true);
+                        return S_FALSE;
+                    }
+                    break;
+            }
+            return S_OK;
+        };
+        TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+        worker.join();
+
+        UpdateVideoSettings();   // the link to the files goes once they are all there
+        if (fetch.ok) {
+            Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"AMD FSR files downloaded",
+                   L"Checked against AMD's release and signature");
+            RetryFsr();
+        } else if (!fetch.progress.cancel.load()) {
+            ShowWarning(config.hwndParent,
+                        (L"AMD's FSR files could not be downloaded.\n\n" + fetch.error).c_str());
+        }
     }
 
     // Help > About, as a task dialog: the program, and in its footer the attribution NVIDIA's

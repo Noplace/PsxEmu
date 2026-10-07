@@ -145,6 +145,18 @@ values from its caller:
   saying what runs and at what internal resolution, or why not, and one for Frame Generation. The
   group needs Direct3D 12 and the hardware rasteriser, on any card; greyed otherwise, with the
   reason. "Get AMD's FSR files..." while they are not all beside the emulator.
+- **The emulator downloads AMD's files itself** (`graphics/fsr/fsr_download.h/.cpp`, added
+  2026-10-07): that link's dialog leads with "Download them now". DLSS's can only send people to
+  NVIDIA's 280 MB archive; AMD's DLLs are MIT and published one by one, so the same three files
+  `fetch_fidelityfx.ps1` fetches come straight from AMD's v2.3.0 release over WinHTTP, each into a
+  `.part` file with its git blob id worked out as it streams, checked against the release's size
+  and id, then against AMD's Authenticode signature, and only then moved beside the emulator; the
+  MIT notice goes beside them as `fidelityfx.license.txt`. A file already there and the release's
+  is left alone - it may be loaded. A progress dialog shows each file and the megabytes, and can
+  cancel; then the renderer is made again and FSR starts. Checked on the Radeon from a copy with
+  none of the files: 66 MB in about fifteen seconds, FSR running at once; cancelled half-way,
+  nothing left behind and nothing said. A folder that cannot be written (Program Files) says so,
+  and the copy-by-hand way stays in the same dialog.
 - **The window is three columns now**: Rasteriser, NVIDIA DLSS, AMD FSR. One above the other
   would have made it taller than a 1600-line screen at 200%.
 - **`EmuConfig`**: `fsr_mode`, `fsr_version`, `fsr_sharpness`, `fsr_frame_generation`; the mode

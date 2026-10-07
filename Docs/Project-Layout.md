@@ -152,6 +152,8 @@ PsxEmu/
         fidelityfx.h/.cpp      AMD's loader DLL loaded once, every DLL's AMD signature checked;
                                the versions a card runs; fsr.log
         fsr_choice.h           the modes, and the arithmetic of sizes; header-only, the tools use it
+        fsr_download.h/.cpp    AMD's three DLLs downloaded by the emulator itself, each checked
+                               against the release and AMD's signature (Get AMD's FSR files...)
         fetch_fidelityfx.ps1   downloads AMD's three signed DLLs into Temp\fidelityfx\ - MIT, but
                                69 MB, so never committed; the build copies them beside the exe,
                                with the licence

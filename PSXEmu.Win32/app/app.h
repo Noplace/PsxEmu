@@ -197,6 +197,8 @@ namespace psxemu {
         // AMD's files for FSR not beside the emulator, and how to get them, the same way.
         std::vector<std::wstring> MissingFsrFiles() const;
         void ShowFsrFiles();
+        // ...or the emulator downloading them itself, with a progress dialog.
+        void FetchFsrFiles();
         void RetryFsr();
         void SetMouseMotion(const std::string& key);
         void SetMouseDpi(int dpi);

@@ -93,6 +93,9 @@
     <ClCompile Include="graphics\fsr\fidelityfx.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
+    <ClCompile Include="graphics\fsr\fsr_download.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
     <ClCompile Include="graphics\opengl_engine.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
@@ -228,6 +231,9 @@
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\fsr\fidelityfx.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\fsr\fsr_download.h">
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\opengl_engine.h">

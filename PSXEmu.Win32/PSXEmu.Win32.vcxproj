@@ -120,6 +120,7 @@ exit /b 0</Command>
     <ClCompile Include="graphics\dlss\reflex_markers.cpp" />
     <ClCompile Include="graphics\d3d12_fsr.cpp" />
     <ClCompile Include="graphics\fsr\fidelityfx.cpp" />
+    <ClCompile Include="graphics\fsr\fsr_download.cpp" />
     <ClCompile Include="graphics\opengl_engine.cpp" />
     <ClCompile Include="graphics\vulkan_engine.cpp" />
     <ClCompile Include="app\engine_factory.cpp" />
@@ -167,6 +168,7 @@ exit /b 0</Command>
     <ClInclude Include="graphics\dlss\reflex_markers.h" />
     <ClInclude Include="graphics\fsr\fsr_choice.h" />
     <ClInclude Include="graphics\fsr\fidelityfx.h" />
+    <ClInclude Include="graphics\fsr\fsr_download.h" />
     <ClInclude Include="graphics\opengl_engine.h" />
     <ClInclude Include="graphics\gl_functions.h" />
     <ClInclude Include="graphics\vulkan_engine.h" />
