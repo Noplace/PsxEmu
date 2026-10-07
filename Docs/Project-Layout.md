@@ -102,6 +102,9 @@ PsxEmu/
       dlss_choice_test.cpp     the sizes around DLSS: the rasteriser's scale, the jitter, the output
       sl_probe.cpp             what NVIDIA Streamline says of each card; DLSS's input sizes, the
                                signs of its jitter and motion, and its cost (Docs/DLSS-Plan.md)
+      fsr_choice_test.cpp      the sizes around FSR: the rasteriser's scale, the jitter, the output
+      ffx_probe.cpp            what AMD's FidelityFX runtime offers on each card; the signs of
+                               FSR's jitter and motion, and its cost (Docs/FSR-Plan.md)
       wav_pitch.cpp            the note in a WAV boot_runner wrote
       make_test_disc.cpp       writes a synthetic disc image
       make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format
@@ -143,6 +146,16 @@ PsxEmu/
                                NVIDIA's, never committed; the build copies them beside the exe,
                                with NVIDIA's licences and Streamline's
         streamline/            Streamline's headers, MIT, as they come in the SDK
+      d3d12_fsr.cpp            ...and its AMD FSR: AMD's upscaler made on its device from the same
+                               inputs as DLSS, and FSR Frame Generation through AMD's swap chain
+      fsr/                     AMD FSR (Docs/FSR-Plan.md)
+        fidelityfx.h/.cpp      AMD's loader DLL loaded once, every DLL's AMD signature checked;
+                               the versions a card runs; fsr.log
+        fsr_choice.h           the modes, and the arithmetic of sizes; header-only, the tools use it
+        fetch_fidelityfx.ps1   downloads AMD's three signed DLLs into Temp\fidelityfx\ - MIT, but
+                               69 MB, so never committed; the build copies them beside the exe,
+                               with the licence
+        fidelityfx/            AMD's API headers, MIT, as they come in the SDK
       d3dx12.h                 Microsoft's D3D12 helpers, vendored as they come
       opengl_engine.h/.cpp     the same again in OpenGL 3.3, on a child window of its own
       gl_functions.h           the OpenGL past 1.1 the engine asks the driver for

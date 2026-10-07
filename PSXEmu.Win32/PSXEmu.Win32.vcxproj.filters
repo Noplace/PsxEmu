@@ -87,6 +87,12 @@
     <ClCompile Include="graphics\dlss\reflex_markers.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
+    <ClCompile Include="graphics\d3d12_fsr.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\fsr\fidelityfx.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
     <ClCompile Include="graphics\opengl_engine.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
@@ -216,6 +222,12 @@
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\dlss\reflex_markers.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\fsr\fsr_choice.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\fsr\fidelityfx.h">
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\opengl_engine.h">

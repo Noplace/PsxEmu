@@ -19,10 +19,10 @@
 #pragma once
 
 // Settings > Video: how the picture is made and shown - the renderer, the graphics card and the
-// filter; the rasteriser and what it adds (resolution, true colour, PGXP); NVIDIA DLSS; and what
-// the on-screen display draws over the picture. One window, where these used to be six popups of
-// a menu, so how they bear on each other - DLSS needs Direct3D 12 and the hardware rasteriser,
-// and takes over its resolution - is in view while choosing.
+// filter; the rasteriser and what it adds (resolution, true colour, PGXP); NVIDIA DLSS and AMD
+// FSR; and what the on-screen display draws over the picture. One window, where these used to be
+// six popups of a menu, so how they bear on each other - DLSS and FSR need Direct3D 12 and the
+// hardware rasteriser, and take over its resolution - is in view while choosing.
 //
 // Like Emulation Settings there is no OK or Cancel: each control reaches the App the moment it
 // changes, and the App applies it to the running game. The window keeps no settings of its own;
@@ -53,7 +53,9 @@ namespace psxemu {
             bool pgxp_vertices = false;
             bool pgxp_textures = false;
             bool pgxp_culling = false;
-            bool dlss_running = false;           // and so has the resolution and the vertices
+            // DLSS or FSR running, and so has the resolution and the vertices; which one.
+            bool upscaler_running = false;
+            bool fsr_running = false;
             std::string dlss_mode;               // kDlssModeChoices
             std::string dlss_preset;             // kDlssPresetChoices
             std::string dlss_generation;         // kDlssGenerationChoices
@@ -68,7 +70,17 @@ namespace psxemu {
             // the hardware rasteriser drawing. Otherwise its group is greyed, and dlss_status
             // says what is missing.
             bool dlss_available = false;
-            int stats_mode = 0;                  // the performance panel: off, compact, full
+            // AMD FSR, the same way: its lists, what it runs or why not, its files, and whether
+            // what it draws with is in place - Direct3D 12 and the hardware rasteriser.
+            std::string fsr_mode;                // kFsrModeChoices
+            std::string fsr_version;             // kFsrVersionChoices
+            std::string fsr_sharpness;           // kFsrSharpnessChoices
+            bool fsr_generation = false;
+            std::wstring fsr_status;
+            std::wstring fsr_generation_status;
+            bool fsr_files_missing = false;
+            bool fsr_available = false;
+            int stats_mode = 0;               // the performance panel: off, compact, full
             bool notifications = true;
             bool controllers_always = false;
             bool glass = false;
@@ -92,6 +104,12 @@ namespace psxemu {
             std::function<void(const std::string& key)> set_dlss_generation;
             // "Get NVIDIA's DLSS files...": how to, and the way to check again.
             std::function<void()> get_dlss_files;
+            std::function<void(const std::string& key)> set_fsr_mode;
+            std::function<void(const std::string& key)> set_fsr_version;
+            std::function<void(const std::string& key)> set_fsr_sharpness;
+            std::function<void(bool on)> set_fsr_generation;
+            // "Get AMD's FSR files...": how to, and the way to check again.
+            std::function<void()> get_fsr_files;
             std::function<void(int mode)> set_stats;
             std::function<void(bool on)> set_notifications;
             std::function<void(bool on)> set_controllers_always;
@@ -144,6 +162,14 @@ namespace psxemu {
         HWND dlss_files_ = nullptr;
         // The group's box and the lists' labels, greyed with the lists when DLSS cannot run.
         std::array<HWND, 4> dlss_labels_ = {};
+        HWND fsr_mode_ = nullptr;
+        HWND fsr_version_ = nullptr;
+        HWND fsr_sharpness_ = nullptr;
+        HWND fsr_generation_ = nullptr;
+        HWND fsr_status_ = nullptr;
+        HWND fsr_generation_status_ = nullptr;
+        HWND fsr_files_ = nullptr;
+        std::array<HWND, 4> fsr_labels_ = {};
         HWND stats_ = nullptr;
         HWND notifications_ = nullptr;
         HWND controllers_ = nullptr;

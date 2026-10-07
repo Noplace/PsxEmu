@@ -43,6 +43,9 @@ bool D3D12GraphicsEngine::Initialize(HWND window_handle, int width, int height) 
     // If it cannot start, they are made as ever and dlss_status says why.
     if (dlss_choice_.mode != psxemu::DlssMode::kOff)
         StartStreamline();
+    // AMD FSR asked for instead: its DLLs loaded now, since Frame Generation makes the swap chain.
+    else if (fsr_choice_.mode != psxemu::FsrMode::kOff)
+        StartFsr();
     if (!CreateCommandQueue())
         return false;
     if (!CreateSwapChain(window_handle))
@@ -68,13 +71,15 @@ bool D3D12GraphicsEngine::Initialize(HWND window_handle, int width, int height) 
         overlay_pipeline_.Reset();
         overlay_root_.Reset();
     }
-    // So is DLSS, and Frame Generation.
-    if (streamline_ != nullptr && !CreateDlssPipeline()) {
+    // So is DLSS, and Frame Generation - and FSR, which draws with the same pipeline.
+    if ((streamline_ != nullptr || fsr_started_) && !CreateDlssPipeline()) {
         dlss_pipeline_.Reset();
-        dlss_why_ = "its shaders could not be made";
+        (streamline_ != nullptr ? dlss_why_ : fsr_why_) = "its shaders could not be made";
     }
     if (dlss_pipeline_ != nullptr)
         CreateDlssTimers();
+    else if (fsr_generation_ready_)
+        fsr_generation_why_ = "its shaders could not be made";
     SetUpGeneration(window_handle);
 
     // The device for a Direct3D 12 rasteriser to draw on too - the native one, never
@@ -368,6 +373,13 @@ bool D3D12GraphicsEngine::CreateSwapChain(HWND window_handle) {
         swap_chain_desc.Flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
     }
 
+    // AMD's own swap chain under FSR Frame Generation, which paces the frames it makes; DXGI's if
+    // that cannot be made, and FSR's status says why.
+    if (fsr_started_ && fsr_choice_.generating() && CreateFsrSwapChain(window_handle, swap_chain_desc)) {
+        factory_->MakeWindowAssociation(window_handle, DXGI_MWA_NO_ALT_ENTER);
+        return true;
+    }
+
     // Through Streamline's proxy when it runs, so its Present, GetBuffer and ResizeBuffers are
     // the ones called.
     IDXGIFactory2* const maker = sl_factory_ != nullptr ? sl_factory_.Get() : factory_.Get();
@@ -485,7 +497,8 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
     if (!EnsureUploadHeaps())
         return;
     shown_texture_id_ = 0;   // fb_texture_ holds no shared picture now
-    // A picture DLSS never sees - a film, or the software rasteriser's - breaks its history.
+    // A picture the upscaler never sees - a film, or the software rasteriser's - breaks its
+    // history.
     dlss_reset_ = true;
     dlss_output_valid_ = false;
 
@@ -627,8 +640,9 @@ bool D3D12GraphicsEngine::ShowPicture(const emulation::psx::SharedPicture& pictu
         presented_picture_ = picture.picture;
     }
 
-    // DLSS's picture of it, when DLSS runs and can take this one; otherwise the picture itself.
-    if (DlssRunning() && DrawDlss(picture))
+    // DLSS's or FSR's picture of it, when one runs and can take this one; otherwise the picture
+    // itself.
+    if ((DlssRunning() || FsrRunning()) && DrawUpscaled(picture))
         return true;
     DrawFramebuffer(picture.width, picture.height);
     return true;
@@ -762,11 +776,37 @@ void D3D12GraphicsEngine::EndFrame() {
         generation_ready_ && generation_why_.empty() && generation_allowed_ &&
         generation_this_frame_ && present_picture_ != 0 &&
         static_cast<UINT>((std::min)(width_, height_)) >= generation_min_size_ && EnsureUiTargets();
-    if (generate)
+    // FSR's the same way, its picture the screen's own size as AMD asks: the overlay goes into a
+    // layer of its own, which AMD's swap chain puts over every frame it shows, real and made.
+    const LetterboxRect screen = ScreenRect();
+    const bool fsr_generate =
+        fsr_generation_ready_ && fsr_generation_why_.empty() && generation_allowed_ &&
+        generation_this_frame_ && present_picture_ != 0 &&
+        dlss_out_width_ == static_cast<int>(screen.width) &&
+        dlss_out_height_ == static_cast<int>(screen.height) && EnsureUiTargets() &&
+        EnsureFsrGeneration(dlss_in_width_, dlss_in_height_);
+    if (generate) {
         DrawGenerationLayers();
-    else
+    } else if (fsr_generate) {
+        const D3D12_CPU_DESCRIPTOR_HANDLE ui_rtv =
+            ui_rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+        const CD3DX12_RESOURCE_BARRIER to_draw = CD3DX12_RESOURCE_BARRIER::Transition(
+            ui_.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_RENDER_TARGET);
+        command_list_->ResourceBarrier(1, &to_draw);
+        const float clear[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        command_list_->ClearRenderTargetView(ui_rtv, clear, 0, nullptr);
+        DrawOverlay(&ui_rtv);
+        const CD3DX12_RESOURCE_BARRIER drawn = CD3DX12_RESOURCE_BARRIER::Transition(
+            ui_.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        command_list_->ResourceBarrier(1, &drawn);
+    } else {
         DrawOverlay();
+    }
     SetGenerationMode(generate);
+    if (fsr_generation_ready_)
+        ConfigureFsrGeneration(fsr_generate);
 
     D3D12_RESOURCE_BARRIER barrier = {};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -808,13 +848,14 @@ void D3D12GraphicsEngine::EndFrame() {
     // to the screen for that one - roughly, as Frame Generation presents on a thread of its own,
     // which a second of them averages out. Counted at every present, added up only for those it
     // generated after.
-    if (generation_ready_ && dlss_timing_ != nullptr) {
+    // AMD's swap chain counts the same way, the frames it made among them.
+    if ((generation_ready_ || fsr_generation_ready_) && dlss_timing_ != nullptr) {
         UINT count = 0;
         swap_chain_->GetLastPresentCount(&count);
         if (timing_generated_)
             dlss_timing_->AddGenerated(count - timing_present_count_);
         timing_present_count_ = count;
-        timing_generated_ = generate;
+        timing_generated_ = generate || fsr_generate;
     }
 
     MoveToNextFrame();
@@ -863,6 +904,9 @@ void D3D12GraphicsEngine::Resize(int width, int height) {
     height_ = height;
 
     FlushGPU();
+    // FSR's generation context is made for the screen's size: it goes, its swap chain told
+    // first, and is made again at the next picture it can generate after.
+    DestroyFsrGeneration();
 
     for (UINT n = 0; n < kFrameCount; n++) {
         render_targets_[n].Reset();
@@ -889,6 +933,8 @@ void D3D12GraphicsEngine::Shutdown() {
     opened_planes_.clear();
     // Streamline goes before the device it was given - and what was made through it, before it.
     StopStreamline();
+    // FSR's contexts too, and AMD's swap chain.
+    StopFsr();
 
     if (fence_event_) {
         CloseHandle(fence_event_);

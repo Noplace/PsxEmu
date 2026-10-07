@@ -54,7 +54,7 @@ namespace psxemu {
         std::wstring warning;
         std::string opened;
         engine_ = CreateGraphicsEngine(preferred, windows_, width_, height_, &opened, &warning,
-                                       card_luid_, card_name_, dlss_);
+                                       card_luid_, card_name_, dlss_, fsr_);
         if (engine_ == nullptr && card_luid_ != 0) {
             // No engine would start on the card chosen. Better a picture on the one Windows
             // picks than none, with the reason - the card is dropped from here on, so the menu
@@ -63,7 +63,7 @@ namespace psxemu {
             std::string reason = card_name_;
             card_name_.clear();
             engine_ = CreateGraphicsEngine(preferred, windows_, width_, height_, &opened,
-                                           &warning, 0, std::string(), dlss_);
+                                           &warning, 0, std::string(), dlss_, fsr_);
             if (engine_ != nullptr) {
                 std::wstring text = L"No renderer would start on " +
                                     std::wstring(reason.begin(), reason.end()) +
@@ -82,6 +82,7 @@ namespace psxemu {
         engine_->SetDlssTiming(dlss_timing_);
         // What the caller hears of from here: not this, which it asks for itself.
         dlss_reported_ = engine_->dlss_status();
+        fsr_reported_ = engine_->fsr_status();
         last_picture_ = 0;
         // Filters run on Direct3D 12 and OpenGL; on D3D11 nothing is loaded and nothing is ticked.
         filter_.clear();
@@ -133,6 +134,7 @@ namespace psxemu {
             }
             DrawShared(frame.shared);
             ReportDlss();
+            ReportFsr();
             return;
         }
 
@@ -254,6 +256,28 @@ namespace psxemu {
         dlss_reported_ = status;
         if (dlss_listener_)
             dlss_listener_(status);
+    }
+
+    void D3DPresenter::ReportFsr() {
+        const FsrStatus status = engine_->fsr_status();
+        if (status == fsr_reported_)
+            return;
+        fsr_reported_ = status;
+        if (fsr_listener_)
+            fsr_listener_(status);
+    }
+
+    void D3DPresenter::SetFsr(const FsrChoice& choice) {
+        if (choice == fsr_)
+            return;
+        const FsrChoice before = fsr_;
+        fsr_ = choice;
+        if (engine_ == nullptr)
+            return;
+        if (engine_->FsrNeedsRemaking(before, choice))
+            Rebuild(renderer_);
+        else
+            engine_->SetFsr(choice);
     }
 
     void D3DPresenter::SetDlss(const DlssChoice& choice) {

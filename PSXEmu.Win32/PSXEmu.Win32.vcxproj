@@ -62,14 +62,19 @@
   </ItemDefinitionGroup>
   <!-- NVIDIA DLSS's DLLs beside the executable, when they have been fetched into Temp\streamline
        (graphics\dlss\fetch_streamline.ps1): NVIDIA's, under NVIDIA's licence, so never in the
-       repository. Without them the emulator builds and runs, and says DLSS's files are missing. -->
+       repository. Without them the emulator builds and runs, and says DLSS's files are missing.
+       AMD FSR's the same way, from Temp\fidelityfx (graphics\fsr\fetch_fidelityfx.ps1): MIT, but
+       69 MB, so fetched too - and AMD's loader finds its effect DLLs only beside the executable. -->
   <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
     <PostBuildEvent>
       <Command>set SL=$(SolutionDir)Temp\streamline\v2.14.1\bin\x64
 if exist "%SL%\sl.interposer.dll" for %%f in (sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll nvngx_dlss.license.txt sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll reflex.license.txt) do xcopy /y /d /q "%SL%\%%f" "$(OutDir)." &gt;nul
 if exist "%SL%\sl.interposer.dll" copy /y "%SL%\..\..\license.txt" "$(OutDir)streamline.license.txt" &gt;nul
+set AMD=$(SolutionDir)Temp\fidelityfx\v2.3.0
+if exist "%AMD%\amd_fidelityfx_loader_dx12.dll" for %%f in (amd_fidelityfx_loader_dx12.dll amd_fidelityfx_upscaler_dx12.dll amd_fidelityfx_framegeneration_dx12.dll) do xcopy /y /d /q "%AMD%\%%f" "$(OutDir)." &gt;nul
+if exist "%AMD%\amd_fidelityfx_loader_dx12.dll" copy /y "$(ProjectDir)graphics\fsr\fidelityfx\LICENSE.txt" "$(OutDir)fidelityfx.license.txt" &gt;nul
 exit /b 0</Command>
-      <Message>NVIDIA DLSS's DLLs, if fetched</Message>
+      <Message>NVIDIA DLSS's and AMD FSR's DLLs, if fetched</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -113,6 +118,8 @@ exit /b 0</Command>
     <ClCompile Include="graphics\d3d12_dlss.cpp" />
     <ClCompile Include="graphics\dlss\streamline.cpp" />
     <ClCompile Include="graphics\dlss\reflex_markers.cpp" />
+    <ClCompile Include="graphics\d3d12_fsr.cpp" />
+    <ClCompile Include="graphics\fsr\fidelityfx.cpp" />
     <ClCompile Include="graphics\opengl_engine.cpp" />
     <ClCompile Include="graphics\vulkan_engine.cpp" />
     <ClCompile Include="app\engine_factory.cpp" />
@@ -158,6 +165,8 @@ exit /b 0</Command>
     <ClInclude Include="graphics\dlss\dlss_timing.h" />
     <ClInclude Include="graphics\dlss\streamline.h" />
     <ClInclude Include="graphics\dlss\reflex_markers.h" />
+    <ClInclude Include="graphics\fsr\fsr_choice.h" />
+    <ClInclude Include="graphics\fsr\fidelityfx.h" />
     <ClInclude Include="graphics\opengl_engine.h" />
     <ClInclude Include="graphics\gl_functions.h" />
     <ClInclude Include="graphics\vulkan_engine.h" />

@@ -52,17 +52,24 @@ namespace psxemu {
         const int kIdGlass = 118;
         const int kIdClose = 119;
         const int kIdDlssFiles = 120;
+        const int kIdFsrMode = 122;
+        const int kIdFsrVersion = 123;
+        const int kIdFsrSharpness = 124;
+        const int kIdFsrGeneration = 125;
+        const int kIdFsrFiles = 126;
         const int kIdHintFirst = 300;   // the grey lines, which WM_CTLCOLORSTATIC finds by id
         const int kIdHintLast = 399;
 
         // The layout, in pixels at 96 DPI: the game's check box across the top; what shows the
-        // picture across the window; what draws it and NVIDIA DLSS side by side, the same height;
-        // what is drawn over it across the bottom; then Close. A list has its label in front of
-        // it, in a column of their own so the lists in a group line up.
+        // picture across the window; what draws it, NVIDIA DLSS and AMD FSR side by side, the
+        // same height; what is drawn over it across the bottom; then Close. A list has its label
+        // in front of it, in a column of their own so the lists in a group line up. Three columns
+        // rather than the upscalers one above the other: at 200% the window stays inside a
+        // 1600-line screen.
         const int kMargin = 12;
-        const int kClientWidth = 760;
+        const int kClientWidth = 1080;
         const int kFullWidth = kClientWidth - kMargin * 2;
-        const int kColumnWidth = (kClientWidth - kMargin * 3) / 2;
+        const int kColumnWidth = (kClientWidth - kMargin * 4) / 3;
         const int kGroupsTop = 44;
         const int kGroupHeader = 22;   // from a group box's top to its first row
         const int kGroupFooter = 10;
@@ -241,12 +248,13 @@ namespace psxemu {
         display.y += kListRow;
         filter_ = list_at(left, display.y, kHalfLabel, kLeftHalf, L"&Filter:", kIdFilter);
         text_at(right, display.y + 1, kRightHalf, 2,
-                L"NVIDIA DLSS needs Direct3D 12. The filters need Direct3D 12, OpenGL or Vulkan.",
+                L"NVIDIA DLSS and AMD FSR need Direct3D 12. The filters need Direct3D 12, OpenGL "
+                L"or Vulkan.",
                 hint_id++);
         display.y += kListRow;
         const int display_bottom = end_group(display, 0);
 
-        // What draws it, and NVIDIA DLSS, which works on what it draws: side by side.
+        // What draws it, and NVIDIA DLSS and AMD FSR, which work on what it draws: side by side.
         const int middle = display_bottom + kGroupGap;
         Group raster = begin_group(L"Rasteriser", kMargin, kColumnWidth, middle);
         software_ = switch_row(raster, L"&Software: draws as the console does", BS_RADIOBUTTON,
@@ -286,9 +294,30 @@ namespace psxemu {
                  L"Frame generation runs at 100% speed only, with NVIDIA Reflex on.",
                  hint_id++);
 
-        const int middle_height = std::max(raster.y, dlss.y) - middle + kGroupFooter;
+        Group fsr = begin_group(L"AMD FSR", kMargin * 3 + kColumnWidth * 2, kColumnWidth, middle);
+        fsr_labels_[0] = fsr.box;
+        fsr_mode_ = list_row(fsr, L"Mo&de:", kIdFsrMode, &fsr_labels_[1]);
+        fsr_version_ = list_row(fsr, L"Upsc&aler:", kIdFsrVersion, &fsr_labels_[2]);
+        fsr_sharpness_ = list_row(fsr, L"Sharpening:", kIdFsrSharpness, &fsr_labels_[3]);
+        fsr_generation_ = switch_row(fsr, L"Frame generation (2x)", BS_AUTOCHECKBOX,
+                                     kIdFsrGeneration);
+        fsr_status_ = text_row(fsr, 2, L"", 0);
+        fsr_generation_status_ = text_row(fsr, 2, L"", 0);
+        // Shown only while AMD's files are not all here (State::fsr_files_missing).
+        fsr_files_ = make(WC_LINK, L"<a>Get AMD's FSR files...</a>", WS_TABSTOP, kIdFsrFiles,
+                          fsr.x + kInset, fsr.y + 4, fsr.width - kInset * 2, 20, font_);
+        fsr.y += 4 + 20;
+        fsr.y += 4;
+        text_row(fsr, 3,
+                 L"Runs on any Direct3D 12 card, with the hardware rasteriser. Frame generation "
+                 L"runs at 100% speed only, and is made for 60 fps games.",
+                 hint_id++);
+
+        const int middle_height =
+            std::max({ raster.y, dlss.y, fsr.y }) - middle + kGroupFooter;
         end_group(raster, middle_height);
-        const int middle_bottom = end_group(dlss, middle_height);
+        end_group(dlss, middle_height);
+        const int middle_bottom = end_group(fsr, middle_height);
 
         // What is drawn over the picture, across the window.
         Group osd = begin_group(L"On-screen display", kMargin, kFullWidth,
@@ -339,6 +368,18 @@ namespace psxemu {
             for (const DlssModeChoice& choice : kDlssPresetChoices)
                 items.push_back(choice.label);
             SetItems(dlss_preset_, items);
+            items.clear();
+            for (const DlssModeChoice& choice : kFsrModeChoices)
+                items.push_back(choice.label);
+            SetItems(fsr_mode_, items);
+            items.clear();
+            for (const DlssModeChoice& choice : kFsrVersionChoices)
+                items.push_back(choice.label);
+            SetItems(fsr_version_, items);
+            items.clear();
+            for (const DlssModeChoice& choice : kFsrSharpnessChoices)
+                items.push_back(choice.label);
+            SetItems(fsr_sharpness_, items);
             items.clear();
             for (const wchar_t* choice : kStatsChoices)
                 items.push_back(choice);
@@ -401,7 +442,7 @@ namespace psxemu {
         // Rasteriser: what is drawing, which a hardware one that could not be made leaves as
         // software. Its resolution, true colour and PGXP are the hardware one's alone - greyed
         // while software draws, and still showing what switching would give. While DLSS runs it
-        // has the resolution and precise vertices: shown, and greyed.
+        // has the resolution and precise vertices: shown, and greyed. FSR the same.
         Check(software_, !state.hardware);
         Check(hardware_, state.hardware && !state.hardware_d3d12);
         Check(hardware12_, state.hardware && state.hardware_d3d12);
@@ -411,22 +452,25 @@ namespace psxemu {
                 resolution = static_cast<int>(i);
         }
         Select(resolution_, resolution);
-        EnableWindow(resolution_, state.hardware && !state.dlss_running);
+        EnableWindow(resolution_, state.hardware && !state.upscaler_running);
         Check(true_color_, state.true_color);
         EnableWindow(true_color_, state.hardware && state.resolution_scale > 1);
-        const bool vertices = state.pgxp_vertices || state.dlss_running;
+        const bool vertices = state.pgxp_vertices || state.upscaler_running;
         Check(pgxp_[0], vertices);
         Check(pgxp_[1], state.pgxp_textures);
         Check(pgxp_[2], state.pgxp_culling);
-        EnableWindow(pgxp_[0], state.hardware && !state.dlss_running);
+        EnableWindow(pgxp_[0], state.hardware && !state.upscaler_running);
         EnableWindow(pgxp_[1], state.hardware && vertices);
         EnableWindow(pgxp_[2], state.hardware && vertices);
         SetWindowTextW(raster_hint_,
                        !state.hardware
                            ? L"The resolution, true colour and PGXP are the hardware rasteriser's."
-                       : state.dlss_running
-                           ? L"NVIDIA DLSS sets the internal resolution, and keeps precise "
-                             L"vertices on, while it runs."
+                       : state.upscaler_running
+                           ? (state.fsr_running
+                                  ? L"AMD FSR sets the internal resolution, and keeps precise "
+                                    L"vertices on, while it runs."
+                                  : L"NVIDIA DLSS sets the internal resolution, and keeps precise "
+                                    L"vertices on, while it runs.")
                            : L"The hardware rasteriser draws at up to 8x the console's "
                              L"resolution. Experimental.");
 
@@ -467,6 +511,24 @@ namespace psxemu {
         SetWindowTextW(generation_status_, state.generation_status.c_str());
         ShowWindow(dlss_files_, state.dlss_files_missing ? SW_SHOWNA : SW_HIDE);
 
+        // AMD FSR: the same, with Frame Generation a check box - FSR makes one picture between
+        // two, no more.
+        const bool fsr_available = state.fsr_available;
+        const bool fsr = fsr_available && state.fsr_mode != "off";
+        for (HWND part : fsr_labels_)
+            EnableWindow(part, fsr_available);
+        Select(fsr_mode_, IndexOf(kFsrModeChoices, state.fsr_mode));
+        EnableWindow(fsr_mode_, fsr_available);
+        Select(fsr_version_, IndexOf(kFsrVersionChoices, state.fsr_version));
+        EnableWindow(fsr_version_, fsr);
+        Select(fsr_sharpness_, IndexOf(kFsrSharpnessChoices, state.fsr_sharpness));
+        EnableWindow(fsr_sharpness_, fsr);
+        Check(fsr_generation_, state.fsr_generation);
+        EnableWindow(fsr_generation_, fsr);
+        SetWindowTextW(fsr_status_, state.fsr_status.c_str());
+        SetWindowTextW(fsr_generation_status_, state.fsr_generation_status.c_str());
+        ShowWindow(fsr_files_, state.fsr_files_missing ? SW_SHOWNA : SW_HIDE);
+
         // On-screen display.
         Select(stats_, std::clamp(state.stats_mode, 0, 2));
         Check(notifications_, state.notifications);
@@ -484,9 +546,9 @@ namespace psxemu {
         Check(game_box_, game.separate);
         EnableWindow(game_box_, game.running);
         SetWindowTextW(note_, game.separate
-                                  ? L"The rasteriser and what it adds, and the DLSS mode and frame "
-                                    L"generation, are kept for this game alone. The rest is "
-                                    L"shared."
+                                  ? L"The rasteriser and what it adds, and the DLSS and FSR modes "
+                                    L"and frame generation, are kept for this game alone. The "
+                                    L"rest is shared."
                                   : L"Every change applies at once, to a running game, and to every "
                                     L"game.");
         const std::wstring caption = game.running
@@ -535,6 +597,20 @@ namespace psxemu {
                         host_.set_dlss_generation)
                         host_.set_dlss_generation(generation_items_[index]);
                     break;
+                case kIdFsrMode:
+                    if (index < static_cast<int>(std::size(kFsrModeChoices)) && host_.set_fsr_mode)
+                        host_.set_fsr_mode(kFsrModeChoices[index].key);
+                    break;
+                case kIdFsrVersion:
+                    if (index < static_cast<int>(std::size(kFsrVersionChoices)) &&
+                        host_.set_fsr_version)
+                        host_.set_fsr_version(kFsrVersionChoices[index].key);
+                    break;
+                case kIdFsrSharpness:
+                    if (index < static_cast<int>(std::size(kFsrSharpnessChoices)) &&
+                        host_.set_fsr_sharpness)
+                        host_.set_fsr_sharpness(kFsrSharpnessChoices[index].key);
+                    break;
                 case kIdStats:
                     if (host_.set_stats)
                         host_.set_stats(index);
@@ -570,6 +646,10 @@ namespace psxemu {
             case kIdPgxpFirst + 2:
                 if (host_.set_pgxp)
                     host_.set_pgxp(id - kIdPgxpFirst, Checked(pgxp_[id - kIdPgxpFirst]));
+                break;
+            case kIdFsrGeneration:
+                if (host_.set_fsr_generation)
+                    host_.set_fsr_generation(Checked(fsr_generation_));
                 break;
             case kIdNotifications:
                 if (host_.set_notifications)
@@ -622,12 +702,15 @@ namespace psxemu {
                 return 0;
 
             case WM_NOTIFY: {
-                // The link to NVIDIA's files, clicked or chosen with Enter.
+                // The links to NVIDIA's and AMD's files, clicked or chosen with Enter.
                 const NMHDR* header = reinterpret_cast<const NMHDR*>(lparam);
-                if (header->idFrom == static_cast<UINT_PTR>(kIdDlssFiles) &&
-                    (header->code == NM_CLICK || header->code == NM_RETURN) &&
+                const bool chosen = header->code == NM_CLICK || header->code == NM_RETURN;
+                if (chosen && header->idFrom == static_cast<UINT_PTR>(kIdDlssFiles) &&
                     self->host_.get_dlss_files)
                     self->host_.get_dlss_files();
+                if (chosen && header->idFrom == static_cast<UINT_PTR>(kIdFsrFiles) &&
+                    self->host_.get_fsr_files)
+                    self->host_.get_fsr_files();
                 return 0;
             }
 

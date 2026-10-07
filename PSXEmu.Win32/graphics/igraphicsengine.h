@@ -25,6 +25,7 @@
 
 #include "graphics/dlss/dlss_choice.h"
 #include "graphics/dlss/dlss_timing.h"
+#include "graphics/fsr/fsr_choice.h"
 #include "psx/shared_picture.h"
 #include "ui/overlay/overlay_draw.h"
 
@@ -118,6 +119,25 @@ class IGraphicsEngine {
     // for one that starts NVIDIA's Streamline with its device.
     virtual bool DlssNeedsRemaking(const psxemu::DlssChoice& from,
                                    const psxemu::DlssChoice& to) const {
+        (void)from;
+        (void)to;
+        return false;
+    }
+
+    // AMD FSR (Docs/FSR-Plan.md): the same inputs as DLSS, through AMD's FidelityFX API. Given
+    // before Initialize and whenever it changes, like DLSS; DLSS asked for takes precedence. Only
+    // the Direct3D 12 engine has it. Its time on the card goes to SetDlssTiming's, as DLSS's
+    // does, and its Frame Generation follows SetFrameGenerationAllowed and TakesOnlyNewPictures.
+    virtual void SetFsr(const psxemu::FsrChoice& choice) { (void)choice; }
+    virtual psxemu::FsrStatus fsr_status() const {
+        psxemu::FsrStatus status;
+        status.why = "only the Direct3D 12 renderer has it";
+        return status;
+    }
+    // Whether this engine has to be made again for FSR to go from `from` to `to`: Frame
+    // Generation on or off, since it brings a swap chain of AMD's.
+    virtual bool FsrNeedsRemaking(const psxemu::FsrChoice& from,
+                                  const psxemu::FsrChoice& to) const {
         (void)from;
         (void)to;
         return false;

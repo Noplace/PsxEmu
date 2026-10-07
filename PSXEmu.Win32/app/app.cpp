@@ -229,6 +229,11 @@ namespace psxemu {
                 SetDlssFrameGeneration(key);
             };
             host.get_dlss_files = [this] { ShowDlssFiles(); };
+            host.set_fsr_mode = [this](const std::string& key) { SetFsrMode(key); };
+            host.set_fsr_version = [this](const std::string& key) { SetFsrVersion(key); };
+            host.set_fsr_sharpness = [this](const std::string& key) { SetFsrSharpness(key); };
+            host.set_fsr_generation = [this](bool on) { SetFsrFrameGeneration(on); };
+            host.get_fsr_files = [this] { ShowFsrFiles(); };
             host.set_stats = [this](int mode) { SetStatsMode(static_cast<StatsMode>(mode)); };
             host.set_notifications = [this](bool on) { SetOverlayNotifications(on); };
             host.set_controllers_always = [this](bool on) { SetControllersAlwaysVisible(on); };
@@ -533,13 +538,15 @@ namespace psxemu {
         start_dlss.preset = ParseDlssPreset(config_.dlss_preset);
         start_dlss.frame_generation = ParseDlssGeneration(config_.dlss_frame_generation);
         dlss_sent_ = start_dlss;
+        const FsrChoice start_fsr = FsrChoiceFromConfig();
+        fsr_sent_ = start_fsr;
         const bool start_generation_allowed = config_.frame_limiter &&
                                               config_.emulation_speed == 1.0f;
         generation_allowed_sent_ = start_generation_allowed;
         video_ = std::make_unique<VideoOutput>(
             [this, start_renderer, start_filter, start_stats, start_notifications,
              start_controllers, start_theme, start_card, start_card_name,
-             start_dlss, start_generation_allowed]() -> std::unique_ptr<Presenter> {
+             start_dlss, start_fsr, start_generation_allowed]() -> std::unique_ptr<Presenter> {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
                 auto presenter = std::make_unique<D3DPresenter>(
@@ -552,10 +559,14 @@ namespace psxemu {
                 presenter->overlay().SetTheme(start_theme);
                 presenter->SetGraphicsCard(start_card, start_card_name);
                 presenter->SetDlss(start_dlss);
+                presenter->SetFsr(start_fsr);
                 presenter->SetFrameGenerationAllowed(start_generation_allowed);
-                // DLSS changing by itself - Frame Generation stopping - comes to the menu.
+                // DLSS or FSR changing by itself - Frame Generation stopping - comes to the menu.
                 presenter->set_dlss_listener([this](const DlssStatus& status) {
                     PostToUi([this, status] { OnDlssStatus(status); });
+                });
+                presenter->set_fsr_listener([this](const FsrStatus& status) {
+                    PostToUi([this, status] { OnFsrStatus(status); });
                 });
                 if (!presenter->Open(start_renderer, start_filter)) {
                     PostToUi([this] {
@@ -570,7 +581,8 @@ namespace psxemu {
                 const uint64_t adapter = presenter->shared_adapter();
                 const uint64_t card = presenter->card_luid();
                 const DlssStatus dlss = presenter->dlss_status();
-                PostToUi([this, renderer, filter, adapter, card, dlss] {
+                const FsrStatus fsr = presenter->fsr_status();
+                PostToUi([this, renderer, filter, adapter, card, dlss, fsr] {
                     current_backend_ = renderer;
                     current_filter_ = filter;
                     config_.graphics_backend = renderer;
@@ -579,6 +591,7 @@ namespace psxemu {
                     SaveSettingsIfChanged();
                     OnPresenterAdapter(adapter, renderer, card);
                     OnDlssStatus(dlss);
+                    OnFsrStatus(fsr);
                 });
                 return presenter;
             });
@@ -710,10 +723,10 @@ namespace psxemu {
         // Held Tab runs the machine unpaced, without touching the setting itself.
         if (fast_forward_)
             config.frame_limiter = false;
-        // DLSS, while it runs, has the rasteriser's scale and PGXP's precise vertices - its
+        // DLSS or FSR, while it runs, has the rasteriser's scale and PGXP's precise vertices - its
         // motion comes from them - again without touching the settings.
-        if (dlss_active_) {
-            config.resolution_scale = dlss_scale_;
+        if (upscaler_active_) {
+            config.resolution_scale = upscaler_scale_;
             config.pgxp_vertices = true;
         }
         SendFrameGenerationAllowed();
@@ -789,8 +802,10 @@ namespace psxemu {
                 // under Frame Generation the frames on the screen for each of ours - 2.0x when
                 // it doubles, 1.0x when it makes none (another window over this one, say).
                 wchar_t dlss[80] = {};
+                // AMD FSR's the same, when it is FSR that draws.
                 if (dlss_ms_ > 0.0) {
-                    swprintf(dlss, std::size(dlss), L"  |  dlss %.2f ms", dlss_ms_);
+                    swprintf(dlss, std::size(dlss), L"  |  %ls %.2f ms",
+                             fsr_active_ ? L"fsr" : L"dlss", dlss_ms_);
                     title += dlss;
                 }
                 if (generated_per_present_ > 0.0) {
@@ -1173,9 +1188,15 @@ namespace psxemu {
     // rather than one setting changed through its setter.
     void App::ConfigReplaced(const EmuConfig& before) {
         SendConfigToMachine();
-        // A game's own DLSS mode.
-        SendDlssToRenderer();
-        UpdateDlss();
+        // A game's own DLSS or FSR mode - the one going off told first.
+        if (config_.dlss_mode != "off") {
+            SendFsrToRenderer();
+            SendDlssToRenderer();
+        } else {
+            SendDlssToRenderer();
+            SendFsrToRenderer();
+        }
+        UpdateUpscaler();
         UpdateVideoSettings();
         // A port that has just become a multitap gets the disc's cards B-D, as SetControllerType
         // does for one chosen by hand.
@@ -1262,8 +1283,9 @@ namespace psxemu {
             const uint64_t adapter = presenter->shared_adapter();
             const uint64_t card = presenter->card_luid();
             const DlssStatus dlss = presenter->dlss_status();
+            const FsrStatus fsr = presenter->fsr_status();
             video.PresentAgain();
-            PostToUi([this, renderer, filter, adapter, card, dlss] {
+            PostToUi([this, renderer, filter, adapter, card, dlss, fsr] {
                 current_backend_ = renderer;
                 current_filter_ = filter;
                 if (!renderer.empty())
@@ -1273,6 +1295,7 @@ namespace psxemu {
                 SaveSettingsIfChanged();
                 OnPresenterAdapter(adapter, renderer, card);
                 OnDlssStatus(dlss);
+                OnFsrStatus(fsr);
                 if (!renderer.empty())
                     Notify(OverlayIcon::kScreen, ToastKind::kInfo,
                            L"Renderer: " + NameForRenderer(renderer));
@@ -1338,14 +1361,19 @@ namespace psxemu {
     }
 
     // The Video Settings window's NVIDIA DLSS. The renderer is told, and says whether it runs;
-    // the machine hears of it through UpdateDlss once it does.
+    // the machine hears of it through UpdateUpscaler once it does.
     void App::SetDlssMode(const std::string& key) {
         if (key == config_.dlss_mode)
             return;
         config_.dlss_mode = key;
+        // Never with FSR: it goes off first.
+        if (key != "off" && config_.fsr_mode != "off") {
+            config_.fsr_mode = "off";
+            SendFsrToRenderer();
+        }
         SaveSettingsIfChanged();
         SendDlssToRenderer();
-        UpdateDlss();
+        UpdateUpscaler();
         UpdateVideoSettings();
         for (const DlssModeChoice& choice : kDlssModeChoices) {
             if (key == choice.key)
@@ -1409,10 +1437,12 @@ namespace psxemu {
             const uint64_t adapter = presenter->shared_adapter();
             const uint64_t card = presenter->card_luid();
             const DlssStatus status = presenter->dlss_status();
+            const FsrStatus fsr = presenter->fsr_status();
             video.PresentAgain();
-            PostToUi([this, renderer, adapter, card, status] {
+            PostToUi([this, renderer, adapter, card, status, fsr] {
                 OnPresenterAdapter(adapter, renderer, card);
                 OnDlssStatus(status);
+                OnFsrStatus(fsr);
             });
         });
     }
@@ -1434,18 +1464,144 @@ namespace psxemu {
             const uint64_t adapter = presenter->shared_adapter();
             const uint64_t card = presenter->card_luid();
             const DlssStatus status = presenter->dlss_status();
+            const FsrStatus fsr = presenter->fsr_status();
             video.PresentAgain();
-            PostToUi([this, renderer, adapter, card, status] {
+            PostToUi([this, renderer, adapter, card, status, fsr] {
                 OnPresenterAdapter(adapter, renderer, card);
                 OnDlssStatus(status);
+                OnFsrStatus(fsr);
             });
         });
+    }
+
+    // The Video Settings window's AMD FSR, as DLSS's: the renderer told, and the machine through
+    // UpdateUpscaler once it runs. A mode turns DLSS off first.
+    void App::SetFsrMode(const std::string& key) {
+        if (key == config_.fsr_mode)
+            return;
+        config_.fsr_mode = key;
+        if (key != "off" && config_.dlss_mode != "off") {
+            config_.dlss_mode = "off";
+            SendDlssToRenderer();
+        }
+        SaveSettingsIfChanged();
+        SendFsrToRenderer();
+        UpdateUpscaler();
+        UpdateVideoSettings();
+        for (const DlssModeChoice& choice : kFsrModeChoices) {
+            if (key == choice.key)
+                Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+                       L"AMD FSR: " + std::wstring(choice.label));
+        }
+    }
+
+    void App::SetFsrVersion(const std::string& key) {
+        if (key == config_.fsr_version)
+            return;
+        config_.fsr_version = key;
+        SaveSettingsIfChanged();
+        SendFsrToRenderer();
+        UpdateVideoSettings();
+    }
+
+    void App::SetFsrSharpness(const std::string& key) {
+        if (key == config_.fsr_sharpness)
+            return;
+        config_.fsr_sharpness = key;
+        SaveSettingsIfChanged();
+        SendFsrToRenderer();
+        UpdateVideoSettings();
+    }
+
+    void App::SetFsrFrameGeneration(bool on) {
+        if (on == config_.fsr_frame_generation)
+            return;
+        config_.fsr_frame_generation = on;
+        SaveSettingsIfChanged();
+        SendFsrToRenderer();
+        UpdateVideoSettings();
+        Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+               on ? L"AMD FSR Frame Generation on" : L"AMD FSR Frame Generation off");
+    }
+
+    FsrChoice App::FsrChoiceFromConfig() const {
+        FsrChoice choice;
+        choice.mode = ParseFsrMode(config_.fsr_mode);
+        choice.version = ParseFsrVersion(config_.fsr_version);
+        choice.sharpness = ParseFsrSharpness(config_.fsr_sharpness);
+        choice.frame_generation = config_.fsr_frame_generation;
+        return choice;
+    }
+
+    // Only when it changed. Frame Generation going on or off makes the Direct3D 12 renderer again,
+    // with AMD's swap chain or without, so all of it comes back, as for DLSS.
+    void App::SendFsrToRenderer() {
+        const FsrChoice choice = FsrChoiceFromConfig();
+        if (choice == fsr_sent_ || video_ == nullptr)
+            return;
+        fsr_sent_ = choice;
+        video_->Post([this, choice](VideoOutput& video) {
+            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            if (presenter == nullptr)
+                return;
+            presenter->SetFsr(choice);
+            const std::string renderer = presenter->renderer();
+            const uint64_t adapter = presenter->shared_adapter();
+            const uint64_t card = presenter->card_luid();
+            const DlssStatus dlss = presenter->dlss_status();
+            const FsrStatus fsr = presenter->fsr_status();
+            video.PresentAgain();
+            PostToUi([this, renderer, adapter, card, dlss, fsr] {
+                OnPresenterAdapter(adapter, renderer, card);
+                OnDlssStatus(dlss);
+                OnFsrStatus(fsr);
+            });
+        });
+    }
+
+    void App::RetryFsr() {
+        UpdateVideoSettings();   // the link to the files goes once they are all there
+        const bool running = fsr_status_.ready && (!config_.fsr_frame_generation ||
+                                                   fsr_status_.generation_ready);
+        if (config_.fsr_mode == "off" || running || current_backend_ != "d3d12" ||
+            video_ == nullptr)
+            return;
+        video_->Post([this](VideoOutput& video) {
+            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            if (presenter == nullptr)
+                return;
+            presenter->Reopen();
+            const std::string renderer = presenter->renderer();
+            const uint64_t adapter = presenter->shared_adapter();
+            const uint64_t card = presenter->card_luid();
+            const DlssStatus dlss = presenter->dlss_status();
+            const FsrStatus fsr = presenter->fsr_status();
+            video.PresentAgain();
+            PostToUi([this, renderer, adapter, card, dlss, fsr] {
+                OnPresenterAdapter(adapter, renderer, card);
+                OnDlssStatus(dlss);
+                OnFsrStatus(fsr);
+            });
+        });
+    }
+
+    void App::OnFsrStatus(const FsrStatus& status) {
+        const FsrStatus before = fsr_status_;
+        fsr_status_ = status;
+        UpdateUpscaler();
+        UpdateVideoSettings();
+        // Asked for and not there: said once for each reason, not at every renderer made.
+        if (config_.fsr_mode != "off" && !status.ready &&
+            (before.ready || status.why != before.why))
+            Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"AMD FSR unavailable",
+                   status.why.empty() ? std::wstring(L"Needs the Direct3D 12 renderer")
+                                      : Wide(status.why));
     }
 
     void App::OnDlssStatus(const DlssStatus& status) {
         const DlssStatus before = dlss_status_;
         dlss_status_ = status;
-        UpdateDlss();
+        UpdateUpscaler();
         UpdateVideoSettings();
         // Asked for and not there: said once for each reason, not at every renderer made.
         if (config_.dlss_mode != "off" && !status.ready &&
@@ -1455,7 +1611,7 @@ namespace psxemu {
                                       : Wide(status.why));
     }
 
-    void App::UpdateDlss() {
+    void App::UpdateUpscaler() {
         const DlssMode mode = ParseDlssMode(config_.dlss_mode);
         RECT client = {};
         GetClientRect(window_, &client);
@@ -1463,23 +1619,34 @@ namespace psxemu {
         // Minimised: nothing to fit, and nothing to change until it comes back.
         if (shown <= 0)
             return;
-        const bool active = mode != DlssMode::kOff && dlss_status_.ready && drawing_hardware_ &&
-                            raster_shared_.load(std::memory_order_acquire);
-        const int scale = active ? DlssScale(mode, shown) : 0;
-        const int phases = active ? DlssJitterPhases(mode, shown, scale) : 0;
-        // Reflex's markers from the machine's thread while Frame Generation can run.
-        const bool markers = active && dlss_status_.generation_ready;
+        const bool drawing = drawing_hardware_ && raster_shared_.load(std::memory_order_acquire);
+        const bool dlss = mode != DlssMode::kOff && dlss_status_.ready && drawing;
+        // FSR the same way, when DLSS is not running: its own scale for the mode and AMD's
+        // jitter length, and nothing else asked of the machine.
+        const FsrMode fsr_mode = ParseFsrMode(config_.fsr_mode);
+        const bool fsr = !dlss && fsr_mode != FsrMode::kOff && fsr_status_.ready && drawing;
+        const bool active = dlss || fsr;
+        const int scale = dlss ? DlssScale(mode, shown) : fsr ? FsrScale(fsr_mode, shown) : 0;
+        const int phases = dlss  ? DlssJitterPhases(mode, shown, scale)
+                           : fsr ? FsrJitterPhases(shown, scale)
+                                 : 0;
+        if (fsr != fsr_active_) {
+            fsr_active_ = fsr;
+            UpdateVideoSettings();
+        }
+        // Reflex's markers from the machine's thread while DLSS Frame Generation can run.
+        const bool markers = dlss && dlss_status_.generation_ready;
         if (markers != latency_markers_on_) {
             latency_markers_on_ = markers;
             emulation::host::LatencyMarkers* sink = markers ? &ReflexMarkers::Get() : nullptr;
             PostToMachine([sink](Machine& machine) { machine.set_latency_markers(sink); });
         }
-        if (active == dlss_active_ && scale == dlss_scale_ && phases == dlss_phases_)
+        if (active == upscaler_active_ && scale == upscaler_scale_ && phases == upscaler_phases_)
             return;
-        const bool rescaled = active != dlss_active_ || scale != dlss_scale_;
-        dlss_active_ = active;
-        dlss_scale_ = scale;
-        dlss_phases_ = phases;
+        const bool rescaled = active != upscaler_active_ || scale != upscaler_scale_;
+        upscaler_active_ = active;
+        upscaler_scale_ = scale;
+        upscaler_phases_ = phases;
         PostToMachine([active, phases](Machine& machine) { machine.set_dlss(active, phases); });
         // The scale and PGXP: a new scale makes the rasteriser again, between frames.
         if (rescaled)
@@ -1490,7 +1657,7 @@ namespace psxemu {
     void App::UpdateVideoSettings() {
         // The depth and motion views take the place of the hardware rasteriser's picture, so
         // need it drawing above 1x.
-        const int scale = dlss_active_ ? dlss_scale_ : config_.resolution_scale;
+        const int scale = upscaler_active_ ? upscaler_scale_ : config_.resolution_scale;
         TickPlaneView(window_, plane_view_, drawing_hardware_ && scale > 1);
         video_settings_.OnSettingsChanged();
     }
@@ -1513,12 +1680,13 @@ namespace psxemu {
         state.filter = current_filter_;
         state.hardware = drawing_hardware_;
         state.hardware_d3d12 = config_.gpu_rasteriser == "hardware_d3d12";
-        state.resolution_scale = dlss_active_ ? dlss_scale_ : config_.resolution_scale;
+        state.resolution_scale = upscaler_active_ ? upscaler_scale_ : config_.resolution_scale;
         state.true_color = config_.true_color;
         state.pgxp_vertices = config_.pgxp_vertices;
         state.pgxp_textures = config_.pgxp_textures;
         state.pgxp_culling = config_.pgxp_culling;
-        state.dlss_running = dlss_active_;
+        state.upscaler_running = upscaler_active_;
+        state.fsr_running = fsr_active_;
         state.dlss_mode = config_.dlss_mode;
         state.dlss_preset = config_.dlss_preset;
         state.dlss_generation = config_.dlss_frame_generation;
@@ -1566,7 +1734,7 @@ namespace psxemu {
             state.dlss_status = L"Not running: the rasteriser is on another graphics card.";
         } else {
             state.dlss_status = L"Running: NVIDIA DLSS " + Wide(dlss_status_.version) +
-                                L", at " + std::to_wstring(dlss_scale_) +
+                                L", at " + std::to_wstring(upscaler_scale_) +
                                 L"x internal resolution.";
         }
         // ...and Frame Generation, when it is asked for.
@@ -1585,6 +1753,54 @@ namespace psxemu {
                                                ? std::wstring(L"dynamic")
                                                : Wide(config_.dlss_frame_generation)) +
                                           L", with NVIDIA Reflex low latency.";
+        }
+
+        // AMD FSR: any Direct3D 12 card, with the hardware rasteriser drawing.
+        state.fsr_mode = config_.fsr_mode;
+        state.fsr_version = config_.fsr_version;
+        state.fsr_sharpness = config_.fsr_sharpness;
+        state.fsr_generation = config_.fsr_frame_generation;
+        state.fsr_files_missing = !MissingFsrFiles().empty();
+        std::vector<std::wstring> fsr_needs;
+        if (current_backend_ != "d3d12")
+            fsr_needs.push_back(L"the Direct3D 12 renderer");
+        if (!drawing_hardware_)
+            fsr_needs.push_back(L"the hardware rasteriser");
+        state.fsr_available = fsr_needs.empty();
+        if (!state.fsr_available) {
+            state.fsr_status = L"Not available: needs ";
+            for (size_t i = 0; i < fsr_needs.size(); ++i)
+                state.fsr_status += (i == 0 ? L"" : L" and ") + fsr_needs[i];
+            state.fsr_status += L".";
+        } else if (config_.fsr_mode == "off") {
+            state.fsr_status = L"Off.";
+        } else if (!fsr_status_.ready) {
+            state.fsr_status = L"Not running: " +
+                               (fsr_status_.why.empty()
+                                    ? std::wstring(L"needs the Direct3D 12 renderer.")
+                                    : Wide(fsr_status_.why));
+        } else if (!raster_shared_.load(std::memory_order_acquire)) {
+            state.fsr_status = L"Not running: the rasteriser is on another graphics card.";
+        } else {
+            state.fsr_status = L"Running: AMD FSR " + Wide(fsr_status_.version) + L", at " +
+                               std::to_wstring(upscaler_scale_) + L"x internal resolution." +
+                               (fsr_status_.note.empty() ? std::wstring()
+                                                         : L" " + Wide(fsr_status_.note) + L".");
+        }
+        if (state.fsr_available && config_.fsr_mode != "off" && config_.fsr_frame_generation &&
+            fsr_status_.ready) {
+            if (!fsr_status_.generation_ready)
+                state.fsr_generation_status = L"Frame generation not running: " +
+                                              (fsr_status_.generation_why.empty()
+                                                   ? std::wstring(L"not started.")
+                                                   : Wide(fsr_status_.generation_why));
+            else if (!generation_allowed_sent_)
+                state.fsr_generation_status =
+                    L"Frame generation paused: it runs at 100% speed only.";
+            else
+                state.fsr_generation_status =
+                    L"Frame generation running: AMD FSR Frame Generation " +
+                    Wide(fsr_status_.generation_version) + L".";
         }
 
         state.stats_mode = static_cast<int>(stats_mode_);
@@ -1697,8 +1913,9 @@ namespace psxemu {
             const uint64_t adapter = presenter->shared_adapter();
             const uint64_t card = presenter->card_luid();
             const DlssStatus dlss = presenter->dlss_status();
+            const FsrStatus fsr = presenter->fsr_status();
             video.PresentAgain();
-            PostToUi([this, renderer, filter, adapter, card, name, dlss] {
+            PostToUi([this, renderer, filter, adapter, card, name, dlss, fsr] {
                 current_backend_ = renderer;
                 current_filter_ = filter;
                 if (!renderer.empty())
@@ -1708,6 +1925,7 @@ namespace psxemu {
                 SaveSettingsIfChanged();
                 OnPresenterAdapter(adapter, renderer, card);
                 OnDlssStatus(dlss);
+                OnFsrStatus(fsr);
                 Notify(OverlayIcon::kScreen, ToastKind::kInfo,
                        name.empty() ? std::wstring(L"Graphics card: automatic")
                                     : L"Graphics card: " + Wide(name));
@@ -1720,7 +1938,7 @@ namespace psxemu {
         drawing_hardware_ = hardware;
         UpdateVideoSettings();
         // DLSS needs the hardware rasteriser, which has just come or gone.
-        UpdateDlss();
+        UpdateUpscaler();
         if (!error.empty())
             Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"Hardware rasteriser unavailable",
                    Wide(error) + L" - drawing in software");
@@ -2841,7 +3059,7 @@ namespace psxemu {
                     // DLSS's scale follows the window's size - once a drag has finished, not at
                     // every step of it, since a new scale is a new rasteriser.
                     if (!app->sizing_)
-                        app->UpdateDlss();
+                        app->UpdateUpscaler();
                 }
                 return 0;
 
@@ -2852,7 +3070,7 @@ namespace psxemu {
             case WM_EXITSIZEMOVE:
                 if (app != nullptr) {
                     app->sizing_ = false;
-                    app->UpdateDlss();
+                    app->UpdateUpscaler();
                 }
                 break;
 
@@ -3127,6 +3345,95 @@ namespace psxemu {
             RetryDlss();
     }
 
+    // AMD's three files FSR needs, on any computer: FSR runs on any Direct3D 12 card.
+    std::vector<std::wstring> App::MissingFsrFiles() const {
+        std::vector<std::wstring> missing;
+        const std::wstring folder = ProgramFolder();
+        for (const wchar_t* file : kFsrFiles) {
+            if (GetFileAttributesW((folder + file).c_str()) == INVALID_FILE_ATTRIBUTES)
+                missing.push_back(file);
+        }
+        return missing;
+    }
+
+    // The way to AMD's files, as ShowDlssFiles does NVIDIA's. They are MIT, and a build that ran
+    // graphics\fsr\fetch_fidelityfx.ps1 has them beside it already; a copy without them is sent
+    // to AMD's newest FidelityFX SDK release.
+    void App::ShowFsrFiles() {
+        const std::vector<std::wstring> missing = MissingFsrFiles();
+        std::wstring needed;
+        for (size_t i = 0; i < std::size(kFsrFiles); ++i) {
+            needed += i == 0 ? L"  " : i == 2 ? L"\n  and for frame generation: " : L", ";
+            needed += kFsrFiles[i];
+        }
+        const std::wstring content =
+            L"AMD FSR needs three of AMD's files beside PSXEmu - signed by AMD, under the MIT "
+            L"licence.\n\n"
+            L"1. From AMD's newest FidelityFX SDK release, download its source code zip.\n"
+            L"2. From the Kits\\FidelityFX\\signedbin folder inside it, copy these into PSXEmu's "
+            L"folder:\n" + needed +
+            L"\n3. Choose Check again.";
+        std::wstring footer;
+        if (missing.empty()) {
+            footer = L"All three are there.";
+        } else {
+            footer = L"Missing now: ";
+            for (size_t i = 0; i < missing.size(); ++i)
+                footer += (i == 0 ? L"" : L", ") + missing[i];
+            footer += L".";
+        }
+        footer += L"\nPSXEmu was built and tested with the FidelityFX SDK " +
+                  std::wstring(kFsrBuiltWith) + L".";
+
+        constexpr int kOpenPage = 100, kOpenFolder = 101, kCheckAgain = 102;
+        const TASKDIALOG_BUTTON buttons[] = {
+            { kOpenPage, L"Open AMD's download page\nAMD's newest FidelityFX SDK release on "
+                         L"GitHub, in your browser" },
+            { kOpenFolder, L"Open PSXEmu's folder\nWhere the files go" },
+            { kCheckAgain, L"Check again\nAMD FSR starts if the files are there now" },
+        };
+        struct Links {
+            std::wstring folder;
+        } links = { ProgramFolder() };
+
+        TASKDIALOGCONFIG config = {};
+        config.cbSize = sizeof(config);
+        config.hwndParent = video_settings_.window() != nullptr &&
+                                    IsWindowVisible(video_settings_.window())
+                                ? video_settings_.window()
+                                : window_;
+        config.hInstance = GetModuleHandleW(nullptr);
+        config.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION |
+                         TDF_POSITION_RELATIVE_TO_WINDOW;
+        config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+        config.pszWindowTitle = L"AMD FSR files";
+        config.pszMainIcon = TD_INFORMATION_ICON;
+        config.pszMainInstruction = L"Get AMD's FSR files";
+        config.pszContent = content.c_str();
+        config.pButtons = buttons;
+        config.cButtons = static_cast<UINT>(std::size(buttons));
+        config.pszFooter = footer.c_str();
+        config.lpCallbackData = reinterpret_cast<LONG_PTR>(&links);
+        config.pfCallback = [](HWND, UINT note, WPARAM wparam, LPARAM, LONG_PTR data) -> HRESULT {
+            if (note != TDN_BUTTON_CLICKED)
+                return S_OK;
+            const Links* links = reinterpret_cast<const Links*>(data);
+            if (wparam == static_cast<WPARAM>(kOpenPage)) {
+                ShellExecuteW(nullptr, L"open", kFsrSdkLatest, nullptr, nullptr, SW_SHOW);
+                return S_FALSE;   // stays open
+            }
+            if (wparam == static_cast<WPARAM>(kOpenFolder)) {
+                ShellExecuteW(nullptr, L"open", links->folder.c_str(), nullptr, nullptr, SW_SHOW);
+                return S_FALSE;
+            }
+            return S_OK;
+        };
+        int chosen = 0;
+        TaskDialogIndirect(&config, &chosen, nullptr, nullptr);
+        if (chosen == kCheckAgain)
+            RetryFsr();
+    }
+
     // Help > About, as a task dialog: the program, and in its footer the attribution NVIDIA's
     // licences ask for - the DLSS SDK's use said "in the about box of the application" (Exhibit
     // 7.1(b) of nvngx_dlss.license.txt), and Reflex referred to (3.1 of reflex.license.txt). In
@@ -3155,6 +3462,18 @@ namespace psxemu {
             nvidia += L"\n\nNVIDIA's files beside the program are under NVIDIA's licences, and "
                       L"Streamline under the MIT licence: <a href=\"" + folder +
                       L"\">the licence files</a>.";
+        // AMD's: the MIT notice its licence asks to go with the DLLs is the
+        // fidelityfx.license.txt the build puts beside them.
+        nvidia += L"\n\nUses AMD FidelityFX Super Resolution - FSR Upscaling and FSR Frame "
+                  L"Generation - through the AMD FidelityFX SDK, copyright Advanced Micro "
+                  L"Devices, Inc., under the MIT licence";
+        if (fsr_status_.ready && !fsr_status_.version.empty())
+            nvidia += L" (FSR " + Wide(fsr_status_.version) + L" running now)";
+        nvidia += L". AMD, FidelityFX and FSR are trademarks of Advanced Micro Devices, Inc.";
+        if (GetFileAttributesW((folder + L"fidelityfx.license.txt").c_str()) !=
+            INVALID_FILE_ATTRIBUTES)
+            nvidia += L" Its licence: <a href=\"" + folder + L"fidelityfx.license.txt\">"
+                      L"fidelityfx.license.txt</a>.";
 
         TASKDIALOGCONFIG config = {};
         config.cbSize = sizeof(config);

@@ -93,8 +93,15 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     bool DlssNeedsRemaking(const psxemu::DlssChoice& from,
                            const psxemu::DlssChoice& to) const override;
     void SetFrameGenerationAllowed(bool allowed) override { generation_allowed_ = allowed; }
-    bool TakesOnlyNewPictures() const override { return generation_ready_; }
+    bool TakesOnlyNewPictures() const override {
+        return generation_ready_ || fsr_generation_ready_;
+    }
     void SetDlssTiming(psxemu::DlssTiming* timing) override { dlss_timing_ = timing; }
+
+    void SetFsr(const psxemu::FsrChoice& choice) override;
+    psxemu::FsrStatus fsr_status() const override;
+    bool FsrNeedsRemaking(const psxemu::FsrChoice& from,
+                          const psxemu::FsrChoice& to) const override;
 
  private:
     // ---- the overlay (ui/overlay), drawn last in EndFrame ----------------------------------
@@ -293,13 +300,25 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
                           int* out_height);
     bool EnsureDlssTargets(int in_width, int in_height, int out_width, int out_height);
     ID3D12Resource* OpenPlanes(const emulation::psx::SharedPicture& picture);
+    // The plane into the upscaler's inputs - motion, depth and the hint, which is DLSS's
+    // bias-current-colour hint or FSR's reactive mask: `unknown` where the motion is not known,
+    // `translucent` where the last thing drawn was - left in kDlssInputState, with Show Timings'
+    // first timestamp taken before. FinishUpscalerInputs puts them back and takes the second.
+    void MakeUpscalerInputs(const emulation::psx::SharedPicture& picture, ID3D12Resource* planes,
+                            float unknown, float translucent);
+    void FinishUpscalerInputs(bool ran);
     // DLSS on the picture in fb_texture_, into dlss_output_. False if it could not run.
     bool EvaluateDlss(const emulation::psx::SharedPicture& picture, ID3D12Resource* planes,
                       int out_width, int out_height);
-    // Draws DLSS's picture of `picture` - made now if it is a new one - in place of the picture.
-    // False, drawing nothing, when DLSS cannot take it: no plane, interlaced, a size it will not
-    // take, or any step failing.
-    bool DrawDlss(const emulation::psx::SharedPicture& picture);
+    // Draws the upscaler's picture of `picture` - DLSS's or FSR's, whichever runs, made now if
+    // it is a new one - in place of the picture. False, drawing nothing, when it cannot take it:
+    // no plane, interlaced, a size it will not take, or any step failing.
+    bool DrawUpscaled(const emulation::psx::SharedPicture& picture);
+    // A line for whichever upscaler's log runs: dlss.log or fsr.log.
+    void NoteUpscaler(const std::string& line);
+    // The picture's 4:3 rectangle of the window in whole pixels, where an upscaler's output lands
+    // one to one.
+    LetterboxRect ScreenRect() const;
     // Streamline's frame for picture `picture`: its frames are the pictures' numbers.
     sl::FrameToken* Token(uint32_t picture);
 
@@ -394,4 +413,77 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     // at every frame.
     void NoteDlss(const std::string& line);
     std::string dlss_last_note_;
+
+    // ---- AMD FSR through the FidelityFX API (Docs/FSR-Plan.md) ------------------------------
+    //
+    // AMD's loader DLL is loaded when FSR is first asked for, and an upscaler context made on
+    // this device for each pair of sizes. Everything around it is DLSS's: the same plane turned
+    // into the same inputs by the same pass (with a reactive mask in place of DLSS's hint), the
+    // same output texture, history and Show Timings, and DrawUpscaled choosing between the two.
+    // Only one runs: DLSS asked for comes first. Frame Generation brings AMD's own swap chain,
+    // made in place of DXGI's in Initialize, so it going on or off makes the engine again.
+    void StartFsr();
+    void StopFsr();
+    // The context for these sizes and the version asked for, made again when either changes.
+    bool EnsureFsrContext(int in_width, int in_height, int out_width, int out_height);
+    void DestroyFsrContext();
+    bool ChooseFsrOutput(int width, int height, const LetterboxRect& screen, int* out_width,
+                         int* out_height) const;
+    // FSR on the picture in frame_texture_, into dlss_output_. False if it could not run.
+    bool EvaluateFsr(const emulation::psx::SharedPicture& picture, ID3D12Resource* planes,
+                     int out_width, int out_height);
+    // The version id to ask for (ffxOverrideVersion), 0 for AMD's own choice, from fsr_versions_.
+    uint64_t FsrVersionId(std::string* note) const;
+    void NoteFsr(const std::string& line);
+    bool FsrRunning() const {
+        return fsr_started_ && fsr_why_.empty() && streamline_ == nullptr &&
+               dlss_pipeline_ != nullptr && fsr_choice_.mode != psxemu::FsrMode::kOff;
+    }
+    psxemu::FsrChoice fsr_choice_;
+    bool fsr_started_ = false;
+    std::string fsr_why_;              // why FSR does not run here; empty when it does
+    std::string fsr_note_;
+    std::string fsr_version_;          // the upscaler AMD made, by its name
+    struct FsrVersionEntry {
+        uint64_t id;
+        std::string name;
+    };
+    std::vector<FsrVersionEntry> fsr_versions_;   // the upscalers this card runs, best first
+    void* fsr_context_ = nullptr;      // an ffxContext
+    // FSR's exposure, 1x1: 1.0, the console's picture being 0-1 already. Written once, into this
+    // frame's command list, from an upload kept beside it.
+    bool EnsureFsrExposure();
+    ComPtr<ID3D12Resource> fsr_exposure_, fsr_exposure_upload_;
+    bool fsr_exposure_ready_ = false;
+    int fsr_context_in_w_ = 0, fsr_context_in_h_ = 0;
+    int fsr_context_out_w_ = 0, fsr_context_out_h_ = 0;
+    uint64_t fsr_context_version_ = 0;
+    LARGE_INTEGER fsr_last_time_ = {};  // the last evaluation, for its frame time
+    // The last evaluation's jitter as given to FSR, its time since the one before, and whether it
+    // started afresh - which Frame Generation's inputs for the same picture repeat.
+    float fsr_jitter_x_ = 0.0f, fsr_jitter_y_ = 0.0f;
+    float fsr_frame_ms_ = 16.7f;
+    bool fsr_last_reset_ = true;
+    std::string fsr_last_note_;
+
+    // FSR Frame Generation: AMD's swap chain, made by CreateSwapChain in place of DXGI's when it
+    // is asked for, and its context, made on the first picture it can generate after and again
+    // when the window or the picture's size changes. Each new picture FSR has just made is
+    // presented once, the overlay drawn apart into ui_ and handed to the swap chain to put over
+    // every frame, real and generated; anything else goes with generation off for that present.
+    bool CreateFsrSwapChain(HWND window, const DXGI_SWAP_CHAIN_DESC1& desc);
+    bool EnsureFsrGeneration(int render_width, int render_height);
+    void DestroyFsrGeneration();
+    // This present's frame: generation on or off, and when on its inputs.
+    void ConfigureFsrGeneration(bool on);
+    void* fsr_swap_chain_context_ = nullptr;   // an ffxContext
+    void* fsr_generation_context_ = nullptr;   // an ffxContext
+    bool fsr_generation_ready_ = false;
+    std::string fsr_generation_why_;
+    std::string fsr_generation_version_;
+    int fsr_generation_render_w_ = 0, fsr_generation_render_h_ = 0;
+    int fsr_generation_display_w_ = 0, fsr_generation_display_h_ = 0;
+    uint64_t fsr_frame_id_ = 0;
+    bool fsr_ui_registered_ = false;
+    bool fsr_generation_on_ = false;   // what the log last said
 };

@@ -2349,6 +2349,45 @@ void TestSettingsFile(const std::string& directory) {
           "a game can keep its own Frame Generation");
   }
 
+  // AMD FSR (Docs/FSR-Plan.md): off, AMD's own version, medium sharpening and no Frame
+  // Generation by default; each kept; one the menu does not offer ignored; never on with DLSS;
+  // and the mode and Frame Generation a game's own.
+  {
+    EmuConfig config;
+    Check(config.fsr_mode == "off" && config.fsr_version == "auto" &&
+              config.fsr_sharpness == "medium" && !config.fsr_frame_generation,
+          "FSR is off by default, AMD's own version, medium sharpening, no Frame Generation");
+    config.fsr_mode = "native_aa";
+    config.fsr_version = "fsr3";
+    config.fsr_sharpness = "max";
+    config.fsr_frame_generation = true;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.fsr_mode == "native_aa" && loaded.fsr_version == "fsr3" &&
+              loaded.fsr_sharpness == "max" && loaded.fsr_frame_generation,
+          "an FSR mode, version, sharpening and Frame Generation survive the round trip");
+    out.SetString("fsr_mode", "dlaa");
+    out.SetString("fsr_version", "fsr2");
+    out.SetString("fsr_sharpness", "11");
+    EmuConfig rejected;
+    emulation::psx::LoadConfig(out, rejected);
+    Check(rejected.fsr_mode == "off" && rejected.fsr_version == "auto" &&
+              rejected.fsr_sharpness == "medium",
+          "an FSR mode, version or sharpening the menu does not offer is ignored");
+    out.SetString("fsr_mode", "quality");
+    out.SetString("dlss_mode", "balanced");
+    EmuConfig both;
+    emulation::psx::LoadConfig(out, both);
+    Check(both.dlss_mode == "balanced" && both.fsr_mode == "off",
+          "DLSS and FSR both on in a file: DLSS kept, FSR off");
+    const std::vector<std::string> keys = emulation::psx::GameSettingKeys();
+    Check(std::find(keys.begin(), keys.end(), "fsr_mode") != keys.end() &&
+              std::find(keys.begin(), keys.end(), "fsr_frame_generation") != keys.end(),
+          "a game can keep its own FSR mode and Frame Generation");
+  }
+
   // The graphics card (Settings > Video > Graphics Card): automatic by default, and a name -
   // spaces, brackets and all - kept as it is. A saved name for a card that is not here is
   // kept too: it is the front end that treats it as automatic, so that the choice comes back

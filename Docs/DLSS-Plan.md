@@ -17,7 +17,7 @@ only until an RTX 40 update NVIDIA has promised for "later this fall".**
 
 - **Scope:** Super Resolution and DLAA, then Frame Generation.
 - **DLLs:** NVIDIA's DLLs ship beside the executable, once phase 0 confirms the licence allows it.
-- **FSR:** left for later.
+- **FSR:** left for later. *(Built 2026-10-07: [FSR-Plan.md](FSR-Plan.md).)*
 - **Pacing:** the machine's own frame limiter keeps pacing.
 - **RTX 50 modes:** shown in the menu, untested.
 - **DLSS 5:** an enhancement, like PGXP, once its gate opens.
@@ -974,7 +974,8 @@ mixes.
    Video Settings window offers "Get NVIDIA's DLSS files...", which sends them to NVIDIA's newest
    Streamline release and remakes the renderer once they are copied in.
 3. **FSR: later.** AMD's FSR 3.1 (MIT) takes the same colour, depth, motion and jitter and would
-   run on the Radeon. Not planned now.
+   run on the Radeon. Not planned now. *Built 2026-10-07 on exactly these inputs:
+   [FSR-Plan.md](FSR-Plan.md).*
 4. **Pacing: ours.** The machine's limiter keeps the console's rate under Frame Generation. Reflex
    is integrated only as far as Frame Generation requires: markers, and a sleep with no limit.
 5. **RTX 50 modes: shown**, marked untested.

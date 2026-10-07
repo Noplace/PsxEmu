@@ -125,7 +125,7 @@ namespace psxemu {
         kCommandViewDepth,
         kCommandViewMotion,
         // View > Video Settings and Settings > Video: the window with the renderer, the
-        // rasteriser, NVIDIA DLSS and the on-screen display (ui/video_settings_window).
+        // rasteriser, NVIDIA DLSS, AMD FSR and the on-screen display (ui/video_settings_window).
         kCommandVideoSettings,
         // Help > About PSXEmu.
         kCommandAbout,
@@ -278,6 +278,31 @@ namespace psxemu {
         { "k",    L"K" },
         { "l",    L"L" },
         { "m",    L"M" },
+    };
+
+    // The Video Settings window's AMD FSR lists, in the order EmuConfig::kValidFsrModes,
+    // kValidFsrVersions and kValidFsrSharpness hold them. AMD's own names for the modes.
+    inline constexpr DlssModeChoice kFsrModeChoices[] = {
+        { "off",               L"Off" },
+        { "native_aa",         L"Native AA" },
+        { "quality",           L"Quality" },
+        { "balanced",          L"Balanced" },
+        { "performance",       L"Performance" },
+        { "ultra_performance", L"Ultra Performance" },
+    };
+
+    inline constexpr DlssModeChoice kFsrVersionChoices[] = {
+        { "auto", L"Automatic" },
+        { "fsr4", L"FSR 4" },
+        { "fsr3", L"FSR 3.1" },
+    };
+
+    inline constexpr DlssModeChoice kFsrSharpnessChoices[] = {
+        { "off",    L"Off" },
+        { "low",    L"Low" },
+        { "medium", L"Medium" },
+        { "high",   L"High" },
+        { "max",    L"Maximum" },
     };
 
     // The on-screen display's performance panel, in StatsMode's order (ui/overlay).

@@ -43,7 +43,8 @@ namespace psxemu {
                                                           std::wstring* warning,
                                                           uint64_t adapter_luid,
                                                           const std::string& adapter_name,
-                                                          const DlssChoice& dlss) {
+                                                          const DlssChoice& dlss,
+                                                          const FsrChoice& fsr) {
         if (warning != nullptr)
             warning->clear();
         auto try_backend = [&](GraphicsBackend backend) -> std::unique_ptr<IGraphicsEngine> {
@@ -61,6 +62,7 @@ namespace psxemu {
                                                                       : windows.main;
             engine->SetPreferredAdapter(adapter_luid, adapter_name);
             engine->SetDlss(dlss);
+            engine->SetFsr(fsr);
             if (target != nullptr && engine->Initialize(target, width, height))
                 return engine;
             return nullptr;
