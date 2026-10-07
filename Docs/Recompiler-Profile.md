@@ -212,6 +212,36 @@ vertices from shadows with no load read directly, and the same checksum. `rec_te
 direct stores); with the code-page check removed 29 of them fail, with the alignment
 test removed one does, and both come back.
 
+## The dispatcher, and why cleaning it up bought almost nothing (same day)
+
+Done: `BlockCache::Find` has a 4,096-slot direct-mapped table in front of the
+`unordered_map` (a hit is one compare; `Remove` and `Clear` empty the slots they
+take out), `Recompiler::Step` no longer copies the `Block`, no longer divides to count
+direct reads (`stats()` does), and asks `load_in_flight` through a function pointer
+instead of a `std::function`; `System::StepImpl` works the Cause bits out inline
+instead of calling `Cpu::CauseRegister`. Output identical (twelve-disc table: all
+pictures and sector counts; `rec_test` 966/0).
+
+**Measured: +0-3%**, back to back (Wild Arms 11.06x -> 11.17x, Ridge Racer 10.85x ->
+11.13x, FF7 9.5x -> 9.6x), inside the noise of one run. The per-step cost was never the
+problem; **the number of steps is.** Wild Arms takes 22.6M steps in 1,500 frames, 11.9M
+compiled chains and 10.7M single interpreted instructions - 47% of the steps for 2.4% of
+the instructions, each one a full trip through `StepImpl`, the bridge and the engine.
+
+What those 10.7M are (a histogram of why `Interpret` was called):
+
+- **About 4.4M are the BIOS boot**, identical in every game (150 frames of it): a loop of
+  `sll`/`bne`/`lw` the compiler declines for a reason I have not chased, because it is paid
+  once per boot and not per frame.
+- **In play, per 1,500 frames, Wild Arms:** `add` 1.2M, `addi` 0.7M, `mult`/`multu`/
+  `div`/`divu`/`mfhi`/`mflo` ~1.5M, then the instruction after each of those, since an
+  interpreted load or a refused instruction makes the next step interpret too. Ridge
+  Racer and Ace Combat 3 add `mult` (0.3M), `mfhi` and the GTE's `cop2` (0.9-1.0M).
+- Branches refused for their delay slot: a few thousand. Not a factor.
+
+So the next dispatcher gain is **compiling `add`/`addi` (trapping on overflow) and the
+multiply/divide family** - fewer steps, not cheaper ones - and the GTE moves after that.
+
 ## Method and caveats
 
 - `boot_runner` built `/O2 /Zi /DEBUG /INCREMENTAL:NO` (no incremental-link

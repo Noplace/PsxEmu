@@ -106,6 +106,9 @@ class BlockCache {
     if (it == blocks_.end())
       return false;
     const uint32_t end = End(it->second);
+    FastSlot& slot = fast_[(key >> 2) & (kFastSlots - 1)];
+    if (slot.key == key)
+      slot = FastSlot();
     blocks_.erase(it);
     for (uint32_t page = key >> kPageShift; page <= (end - 1) >> kPageShift; ++page)
       ForgetInPage(page, key);
@@ -150,9 +153,23 @@ class BlockCache {
   // ever entered at its first instruction: jumping into the middle of one
   // compiles a new block from there, which is correct and costs a little
   // duplicated code.
+  //
+  // Almost every lookup is for a block the last few thousand lookups have already asked about -
+  // a game spends its time in loops - so a small table indexed by the address's low bits answers
+  // those without hashing: a hit is one compare. A miss goes to the map and fills the slot. A
+  // block's address in the map never moves while it is there (node-based), and Remove and Clear
+  // empty any slot that points at what they take out.
   const Block* Find(uint32_t address) const {
-    const auto it = blocks_.find(Normalise(address));
-    return (it == blocks_.end()) ? nullptr : &it->second;
+    const uint32_t key = Normalise(address);
+    FastSlot& slot = fast_[(key >> 2) & (kFastSlots - 1)];
+    if (slot.key == key)
+      return slot.block;
+    const auto it = blocks_.find(key);
+    if (it == blocks_.end())
+      return nullptr;
+    slot.key = key;
+    slot.block = &it->second;
+    return slot.block;
   }
 
   // Whether any block was compiled from any page this range covers.
@@ -201,6 +218,8 @@ class BlockCache {
     blocks_.clear();
     pages_.clear();
     std::fill(code_pages_.begin(), code_pages_.end(), 0ull);
+    for (FastSlot& slot : fast_)
+      slot = FastSlot();
   }
 
   // The page bitmap itself, for compiled stores to test as they run. It covers every page of
@@ -292,6 +311,15 @@ class BlockCache {
     if (word < code_pages_.size())
       code_pages_[word] &= ~(1ull << (page & 63));
   }
+
+  // Find's front: the block last found at each slot's address, or key 0xFFFFFFFF for none (no
+  // normalised address has its top three bits set).
+  struct FastSlot {
+    uint32_t key = 0xFFFFFFFFu;
+    const Block* block = nullptr;
+  };
+  static const uint32_t kFastSlots = 4096;
+  mutable FastSlot fast_[kFastSlots];
 
   std::unordered_map<uint32_t, Block> blocks_;
   std::unordered_map<uint32_t, Page> pages_;

@@ -141,6 +141,9 @@ struct HostInterface {
   // recompiler assumes there never is, which is only true of a host with no
   // load delay at all.
   std::function<bool()> load_in_flight;
+  // The same question as a plain function, handed `context`, which the recompiler asks on every
+  // step and so prefers when it is set: a std::function is a call through a thunk to a lambda.
+  bool (*load_in_flight_fn)(void* context) = nullptr;
 };
 
 class Recompiler {
@@ -212,7 +215,8 @@ class Recompiler {
       Reclaim();
 
     // Never enter compiled code with a load still on its way to a register.
-    if (host_.load_in_flight && host_.load_in_flight())
+    if (host_.load_in_flight_fn != nullptr ? host_.load_in_flight_fn(host_.context)
+                                           : (host_.load_in_flight && host_.load_in_flight()))
       return Interpret(pc);
 
     const Block* found = cache_.Find(pc);
@@ -221,20 +225,21 @@ class Recompiler {
     if (found == nullptr || found->code == nullptr)
       return Interpret(pc);
 
-    // By value: running the block can store into its own page, which discards
-    // the cache entry this points at. The host code survives that - arenas
-    // outlive invalidation - but the Block does not.
-    const Block block = *found;
+    // What is needed of it, taken now: running the block can store into its own
+    // page, which discards the cache entry this points at. The host code survives
+    // that - arenas outlive invalidation - but the Block does not.
+    void* const code = found->code;
+    const uint32_t guest_bytes = found->guest_bytes;
 
     // What comes back may be several blocks later: a block linked to the next
     // jumps straight to it rather than returning here. The budget is what
     // bounds that, and what is left of it is how much ran.
-    state_.next_pc = pc + block.guest_bytes;
+    state_.next_pc = pc + guest_bytes;
     state_.budget = budget_;
     state_.fault = 0;
     state_.extra_cycles = 0;
     ++executing_;
-    reinterpret_cast<void (*)(BlockState*)>(block.code)(&state_);
+    reinterpret_cast<void (*)(BlockState*)>(code)(&state_);
     --executing_;
 
     ++stats_.blocks_executed;
@@ -248,8 +253,7 @@ class Recompiler {
     // charged that itself.
     last_cycles_ = static_cast<uint32_t>(budget_ - state_.budget) + state_.extra_cycles;
     stats_.cycles_compiled += last_cycles_;
-    if (host_.ram_read_cycles != 0)
-      stats_.ram_reads_direct += state_.extra_cycles / host_.ram_read_cycles;
+    stall_cycles_direct_ += state_.extra_cycles;   // divided into reads by stats(), not here
 
     // A memory access raised a guest exception and the block stopped where it
     // was. Whoever raised it has already moved the CPU's pc, so there is
@@ -365,7 +369,13 @@ class Recompiler {
   // on to the rest of the machine.
   uint32_t last_cycles() const { return last_cycles_; }
 
-  const Stats& stats() const { return stats_; }
+  const Stats& stats() const {
+    // Every direct read owed the same stall, so the reads are the stalls divided by it - worked
+    // out here, since Step runs far more often than anyone asks.
+    stats_.ram_reads_direct =
+        host_.ram_read_cycles != 0 ? stall_cycles_direct_ / host_.ram_read_cycles : 0;
+    return stats_;
+  }
   const BlockCache& cache() const { return cache_; }
   size_t arena_count() const { return arenas_.size(); }
 
@@ -588,7 +598,8 @@ class Recompiler {
   BlockCache cache_;
   BlockState state_;
   std::vector<CodeBlock*> arenas_;
-  Stats stats_;
+  mutable Stats stats_;
+  uint64_t stall_cycles_direct_ = 0;
   int executing_ = 0;
   bool reclaim_pending_ = false;
 

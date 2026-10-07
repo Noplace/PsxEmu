@@ -194,7 +194,10 @@ bool System::StepImpl() {
   // interrupt_mask` and SR bit 10, which is what this used to read directly;
   // going through Cause adds the two software-interrupt bits, which software
   // sets with MTC0 and which are as real as the hardware one (bug 84).
-  const uint32_t cause_pending = (cpu_.CauseRegister() >> 8) & 0xFF;
+  // Cpu::CauseRegister's bits 8-15, worked out here rather than through a call made every step:
+  // the two software-interrupt bits Cause stores, and bit 10 from the controller's line.
+  const uint32_t cause_pending =
+      ((cpu_.context()->ctrl.Cause >> 8) & 3u) | (io_.interrupt_line() ? 4u : 0u);
   const uint32_t cause_masked = cause_pending & ((cpu_.context()->ctrl.SR.raw >> 8) & 0xFF);
 
   if (cause_pending != 0) {

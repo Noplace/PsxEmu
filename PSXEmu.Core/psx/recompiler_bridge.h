@@ -88,7 +88,7 @@ class RecompilerBridge {
     host.store8 = &Store8;
     host.move = &Move;
     host.interpret = [this](uint32_t pc) { return Interpret(pc); };
-    host.load_in_flight = [this]() { return cpu()->LoadInFlight(); };
+    host.load_in_flight_fn = &LoadInFlight;
     host.ram_bytes = kRamBytes;
     host.ram_window_bytes = kRamWindowBytes;
     host.ram_read_cycles = Cpu::kRamLoadStall;
@@ -224,6 +224,11 @@ class RecompilerBridge {
 
   static RecompilerBridge* Of(void* context) {
     return static_cast<RecompilerBridge*>(context);
+  }
+
+  // Asked before every step: a plain function, not a std::function's thunk.
+  static bool LoadInFlight(void* context) {
+    return Of(context)->cpu()->LoadInFlight();
   }
 
   // Every compiled access goes through one of these. They do three things
