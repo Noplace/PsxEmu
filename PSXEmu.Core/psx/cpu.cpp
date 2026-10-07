@@ -1807,64 +1807,111 @@ uint32_t MultiplyCyclesUnsigned(uint32_t rs) {
 }
 }  // namespace
 
+// The arithmetic of the four, into HI and LO, and what it costs: the one place it is, for the
+// interpreter below and for compiled code (CompiledHiLo).
+//
+// Division on MIPS never traps. Both degenerate cases have defined answers, and both have to be
+// handled here rather than handed to the host CPU: x86 raises a hardware divide-error for each of
+// them, which takes the whole emulator down rather than producing a wrong number.
+uint32_t Cpu::MulDiv(uint32_t funct, uint32_t a, uint32_t b) {
+  switch (funct) {
+    case 0x18: {   // mult
+      const uint64_t product = static_cast<uint64_t>(
+          static_cast<int64_t>(static_cast<int32_t>(a)) * static_cast<int64_t>(static_cast<int32_t>(b)));
+      context_->low = static_cast<uint32_t>(product & 0xFFFFFFFF);
+      context_->high = static_cast<uint32_t>((product >> 32) & 0xFFFFFFFF);
+      return MultiplyCyclesSigned(static_cast<int32_t>(a));
+    }
+    case 0x19: {   // multu
+      const uint64_t product = static_cast<uint64_t>(a) * static_cast<uint64_t>(b);
+      context_->low = static_cast<uint32_t>(product & 0xFFFFFFFF);
+      context_->high = static_cast<uint32_t>((product >> 32) & 0xFFFFFFFF);
+      return MultiplyCyclesUnsigned(a);
+    }
+    case 0x1A: {   // div
+      const int32_t dividend = static_cast<int32_t>(a);
+      const int32_t divisor = static_cast<int32_t>(b);
+      if (divisor == 0) {
+        // Quotient is all ones or one, depending on the sign of the dividend;
+        // the remainder is the dividend itself.
+        context_->high = static_cast<uint32_t>(dividend);
+        context_->low = (dividend >= 0) ? 0xFFFFFFFFu : 1u;
+      } else if (static_cast<uint32_t>(dividend) == 0x80000000u && divisor == -1) {
+        // The one quotient that does not fit in 32 bits. The result is the
+        // dividend unchanged, with no remainder.
+        context_->high = 0;
+        context_->low = 0x80000000u;
+      } else {
+        context_->low = static_cast<uint32_t>(dividend / divisor);
+        context_->high = static_cast<uint32_t>(dividend % divisor);
+      }
+      return 36;   // fixed, whatever the operands - psx-spx
+    }
+    default: {     // divu
+      if (b == 0) {
+        context_->high = a;
+        context_->low = 0xFFFFFFFFu;
+      } else {
+        context_->low = a / b;
+        context_->high = a % b;
+      }
+      return 36;
+    }
+  }
+}
+
 void Cpu::MULT() {
-  uint64_t test = int64_t((int64_t)((int32_t)context_->gp.reg[rs_]) * (int64_t)((int32_t)context_->gp.reg[rt_]));
-  context_->low  = (uint32_t)(test & 0xFFFFFFFF);
-  context_->high = (uint32_t)((test >> 32) & 0xFFFFFFFF);
-  const uint32_t cost = MultiplyCyclesSigned(static_cast<int32_t>(context_->gp.reg[rs_]));
+  const uint32_t cost = MulDiv(0x18, context_->gp.reg[rs_], context_->gp.reg[rt_]);
   TickCycles(cost);
   hilo_busy_until_cycles_ = context_->cycles + (cost > 1 ? cost - 1 : 0);
 }
 
 void Cpu::MULTU() {
-  uint64_t test = uint64_t((uint64_t)((uint32_t)context_->gp.reg[rs_]) * (uint64_t)((uint32_t)context_->gp.reg[rt_]));
-  context_->low  = (uint32_t)(test & 0xFFFFFFFF);
-  context_->high = (uint32_t)((test >> 32) & 0xFFFFFFFF);
-  const uint32_t cost = MultiplyCyclesUnsigned(context_->gp.reg[rs_]);
+  const uint32_t cost = MulDiv(0x19, context_->gp.reg[rs_], context_->gp.reg[rt_]);
   TickCycles(cost);
   hilo_busy_until_cycles_ = context_->cycles + (cost > 1 ? cost - 1 : 0);
 }
 
-// Division on MIPS never traps. Both degenerate cases have defined answers,
-// and both have to be handled here rather than handed to the host CPU: x86
-// raises a hardware divide-error for each of them, which takes the whole
-// emulator down rather than producing a wrong number.
 void Cpu::DIV() {
-  const int32_t dividend = static_cast<int32_t>(context_->gp.reg[rs_]);
-  const int32_t divisor = static_cast<int32_t>(context_->gp.reg[rt_]);
-
-  if (divisor == 0) {
-    // Quotient is all ones or one, depending on the sign of the dividend;
-    // the remainder is the dividend itself.
-    context_->high = static_cast<uint32_t>(dividend);
-    context_->low = (dividend >= 0) ? 0xFFFFFFFFu : 1u;
-  } else if (static_cast<uint32_t>(dividend) == 0x80000000u && divisor == -1) {
-    // The one quotient that does not fit in 32 bits. The result is the
-    // dividend unchanged, with no remainder.
-    context_->high = 0;
-    context_->low = 0x80000000u;
-  } else {
-    context_->low = static_cast<uint32_t>(dividend / divisor);
-    context_->high = static_cast<uint32_t>(dividend % divisor);
-  }
-  // Fixed at 36 cycles regardless of operands - psx-spx.
-  TickCycles(36);
+  const uint32_t cost = MulDiv(0x1A, context_->gp.reg[rs_], context_->gp.reg[rt_]);
+  TickCycles(cost);
   hilo_busy_until_cycles_ = context_->cycles + 35;
 }
 
 void Cpu::DIVU() {
-  const uint32_t dividend = context_->gp.reg[rs_];
-  const uint32_t divisor = context_->gp.reg[rt_];
-
-  if (divisor == 0) {
-    context_->high = dividend;
-    context_->low = 0xFFFFFFFFu;
-  } else {
-    context_->low = dividend / divisor;
-    context_->high = dividend % divisor;
-  }
-  TickCycles(36);
+  const uint32_t cost = MulDiv(0x1B, context_->gp.reg[rs_], context_->gp.reg[rt_]);
+  TickCycles(cost);
   hilo_busy_until_cycles_ = context_->cycles + 35;
+}
+
+// What compiled code asks of the unit. Where the interpreter ticks the machine inside each
+// instruction and compares its own clock, this is told how far the chain has got and answers with
+// what the instruction costs on top of its cycle. `now` is the clock as the interpreter would read
+// it at the top of this instruction - the same number MFHI compares, and the one MULT's own
+// ticking is counted from - so the unit comes out busy until exactly when it would have.
+uint32_t Cpu::CompiledHiLo(uint32_t funct, uint32_t a, uint32_t b, uint32_t elapsed,
+                           uint32_t* extra_cycles) {
+  const uint64_t now = context_->cycles + elapsed;
+  *extra_cycles = 0;
+  switch (funct) {
+    case 0x10:
+    case 0x12:
+      if (now < hilo_busy_until_cycles_)
+        *extra_cycles = static_cast<uint32_t>(hilo_busy_until_cycles_ - now);
+      return funct == 0x10 ? context_->high : context_->low;
+    case 0x11:
+      context_->high = a;
+      return 0;
+    case 0x13:
+      context_->low = a;
+      return 0;
+    default: {
+      const uint32_t cost = MulDiv(funct, a, b);
+      *extra_cycles = cost - 1;
+      hilo_busy_until_cycles_ = now + cost + (cost - 1);
+      return 0;
+    }
+  }
 }
 
 void Cpu::ADD() {

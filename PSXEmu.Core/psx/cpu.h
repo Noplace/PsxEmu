@@ -344,6 +344,16 @@ class Cpu : public Component {
   // block stops where it is. See rec/runtime.h.
   uint64_t exceptions_raised() const { return exceptions_raised_; }
 
+  // The multiply and divide unit, for compiled code (RecompilerBridge): what mfhi, mflo, mthi,
+  // mtlo, mult, multu, div and divu do, by the instruction's funct, without the interpreter's
+  // register fields or its tick. Compiled code is not ticking as it goes, so `elapsed` is how many
+  // cycles it has run since the clock last advanced - the clock this reads is where the chain began.
+  // Returns what a read read; `*extra_cycles` is what the instruction costs beyond its one cycle,
+  // which the chain is charged with the rest - the same total the interpreter ticks out inside
+  // MULT, or inside MFHI when the unit is still busy.
+  uint32_t CompiledHiLo(uint32_t funct, uint32_t a, uint32_t b, uint32_t elapsed,
+                        uint32_t* extra_cycles);
+
   // The instruction cache as a timing model (bug 94) - see EmuConfig::icache_
   // timing. System turns it on and off, between instructions and only while the
   // interpreter is running. Counters are for the harnesses.
@@ -673,6 +683,10 @@ class Cpu : public Component {
   // psx-spx. MFHI/MFLO check this before running; MTHI/MTLO are not
   // documented to wait on it, same asymmetry as MTC2/CTC2 and the GTE.
   uint64_t hilo_busy_until_cycles_ = 0;
+
+  // The arithmetic of mult, multu, div and divu on `a` and `b`, into HI and LO - the one place it
+  // is, for the interpreter and for compiled code - and how many cycles it takes.
+  uint32_t MulDiv(uint32_t funct, uint32_t a, uint32_t b);
 
   // Every register write goes through here, because a write has to cancel a
   // load still in flight to the same register - the hardware writes the load

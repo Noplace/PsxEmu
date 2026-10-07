@@ -62,6 +62,14 @@ typedef void (*Store8Fn)(void* context, uint32_t address, uint32_t value, uint32
 // PGXP). Emitted only while the host asks (Recompiler::set_track_moves), and like the memory
 // callbacks it must not touch the guest register file.
 typedef void (*MoveFn)(void* context, uint32_t to, uint32_t from);
+// The instructions that are more than arithmetic - a trapping add that overflowed, the multiply and
+// divide unit and its two result registers. One entry rather than one each, because everything the
+// compiled code reaches by a one-byte offset into BlockState has to fit in the first 128 bytes.
+// `operation` is the instruction's funct field, or kSpecialOverflow, with the instruction's index in
+// its block shifted up by 8 (what the host needs to know how far into the chain this is); `a` and `b`
+// are the operands, or for an overflow, `a` is the instruction's pc. A read returns its value.
+typedef uint32_t (*SpecialFn)(void* context, uint32_t operation, uint32_t a, uint32_t b);
+const uint32_t kSpecialOverflow = 0x3F;
 
 // The layout the emitted code addresses by offset. Field order is load-bearing
 // in the sense that the compiler hard-codes the offsets - keep the two in step,
@@ -135,6 +143,9 @@ struct BlockState {
   // moves. A direct store tests its page's bit as it runs and calls out when it is set,
   // so the store that throws compiled code away is always the callback's.
   const uint64_t* code_pages = nullptr;
+
+  // The multiply and divide unit, and the trap on a signed overflow: see SpecialFn.
+  SpecialFn special = nullptr;
 };
 
 }  // namespace rec

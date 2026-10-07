@@ -89,6 +89,8 @@ class RecompilerBridge {
     host.move = &Move;
     host.interpret = [this](uint32_t pc) { return Interpret(pc); };
     host.load_in_flight_fn = &LoadInFlight;
+    host.overflow = &Overflow;
+    host.hilo = &HiLo;
     host.ram_bytes = kRamBytes;
     host.ram_window_bytes = kRamWindowBytes;
     host.ram_read_cycles = Cpu::kRamLoadStall;
@@ -224,6 +226,24 @@ class RecompilerBridge {
 
   static RecompilerBridge* Of(void* context) {
     return static_cast<RecompilerBridge*>(context);
+  }
+
+  // A compiled add or addi overflowed: the exception the interpreter's ADD and ADDI raise, with prev_pc
+  // on the instruction as they have it, and the block told to stop - as for a memory access that
+  // faulted. Not compiled in a delay slot (BlockCompiler::CompilablePrefix), so the branch flag the
+  // exception reads is clear, as it is for any instruction the interpreter runs outside one.
+  static void Overflow(void* context, uint32_t pc) {
+    RecompilerBridge* self = Of(context);
+    Cpu* const processor = self->cpu();
+    processor->context()->prev_pc = pc;
+    processor->RaiseException(pc, kOtherException, kExceptionCodeOv);
+    self->recompiler_->SetFault();
+  }
+
+  // The multiply and divide unit (Cpu::CompiledHiLo).
+  static uint32_t HiLo(void* context, uint32_t funct, uint32_t a, uint32_t b, uint32_t elapsed,
+                       uint32_t* extra_cycles) {
+    return Of(context)->cpu()->CompiledHiLo(funct, a, b, elapsed, extra_cycles);
   }
 
   // Asked before every step: a plain function, not a std::function's thunk.

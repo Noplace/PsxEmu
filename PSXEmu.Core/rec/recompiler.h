@@ -144,6 +144,25 @@ struct HostInterface {
   // The same question as a plain function, handed `context`, which the recompiler asks on every
   // step and so prefers when it is set: a std::function is a call through a thunk to a lambda.
   bool (*load_in_flight_fn)(void* context) = nullptr;
+
+  // A trapping add or addi that overflowed, in the instruction at `pc`: the host raises the
+  // exception, as the memory callbacks do for an address error, and calls Recompiler::SetFault.
+  // Both this and `hilo` have to be set for the compiler to compile `add`, `addi` and the
+  // multiply/divide unit at all; without them they stay the interpreter's.
+  void (*overflow)(void* context, uint32_t pc) = nullptr;
+
+  // The multiply and divide unit: mult 0x18, multu 0x19, div 0x1A, divu 0x1B (operands `a` and
+  // `b`, the values of rs and rt), mfhi 0x10, mflo 0x12 (the value read comes back) and mthi
+  // 0x11, mtlo 0x13 (`a` is the value written). The funct is the instruction's own.
+  //
+  // `elapsed` is how many cycles the chain has run, counting from the start of this entry into
+  // compiled code, as the machine would have counted them: one an instruction, plus what direct
+  // RAM reads owed and what earlier calls here asked for. It is what lets the unit know whether
+  // the last multiply is finished when a read comes along - compiled code ticks nothing as it goes,
+  // so the host's own clock is where the chain began. Whatever the instruction costs beyond its one
+  // cycle goes in `*extra_cycles`: the rest of a multiply or divide, a read waiting for one.
+  uint32_t (*hilo)(void* context, uint32_t funct, uint32_t a, uint32_t b, uint32_t elapsed,
+                   uint32_t* extra_cycles) = nullptr;
 };
 
 class Recompiler {
@@ -192,6 +211,8 @@ class Recompiler {
     state_.move = &MoveThunk;
     compiler_.set_direct_ram(host.ram_bytes, host.ram_read_cycles, host.ram_window_bytes);
     state_.code_pages = cache_.code_pages();
+    state_.special = &SpecialThunk;
+    compiler_.set_special_ops(host.overflow != nullptr && host.hilo != nullptr);
   }
 
   ~Recompiler() {
@@ -238,6 +259,7 @@ class Recompiler {
     state_.budget = budget_;
     state_.fault = 0;
     state_.extra_cycles = 0;
+    special_extra_ = 0;
     ++executing_;
     reinterpret_cast<void (*)(BlockState*)>(code)(&state_);
     --executing_;
@@ -253,7 +275,9 @@ class Recompiler {
     // charged that itself.
     last_cycles_ = static_cast<uint32_t>(budget_ - state_.budget) + state_.extra_cycles;
     stats_.cycles_compiled += last_cycles_;
-    stall_cycles_direct_ += state_.extra_cycles;   // divided into reads by stats(), not here
+    // What direct reads owed, for stats() to divide into reads: not what the multiply and divide
+    // unit asked for, which is in the same sum for the chain's charge.
+    stall_cycles_direct_ += state_.extra_cycles - special_extra_;
 
     // A memory access raised a guest exception and the block stopped where it
     // was. Whoever raised it has already moved the CPU's pc, so there is
@@ -554,6 +578,25 @@ class Recompiler {
     return static_cast<Recompiler*>(context);
   }
 
+  // BlockState::special - see SpecialFn. The index says how far into its block the instruction is,
+  // which with what the chain has finished already (the budget spent, the extra cycles owed) is how
+  // far into the chain: the block that is running has not charged itself yet.
+  static uint32_t SpecialThunk(void* c, uint32_t operation, uint32_t a, uint32_t b) {
+    Recompiler* self = Self(c);
+    const uint32_t funct = operation & 0xFF;
+    if (funct == kSpecialOverflow) {
+      self->host_.overflow(self->host_.context, a);
+      return 0;
+    }
+    const uint32_t elapsed = static_cast<uint32_t>(self->budget_ - self->state_.budget) +
+                             self->state_.extra_cycles + (operation >> 8);
+    uint32_t extra = 0;
+    const uint32_t value = self->host_.hilo(self->host_.context, funct, a, b, elapsed, &extra);
+    self->state_.extra_cycles += extra;
+    self->special_extra_ += extra;
+    return value;
+  }
+
   static void MoveThunk(void* c, uint32_t to, uint32_t from) {
     Recompiler* self = Self(c);
     if (self->host_.move != nullptr)
@@ -600,6 +643,7 @@ class Recompiler {
   std::vector<CodeBlock*> arenas_;
   mutable Stats stats_;
   uint64_t stall_cycles_direct_ = 0;
+  uint32_t special_extra_ = 0;   // extra cycles the current chain's SpecialThunk calls asked for
   int executing_ = 0;
   bool reclaim_pending_ = false;
 

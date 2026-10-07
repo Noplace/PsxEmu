@@ -606,7 +606,9 @@ batches that end at the next scheduled event instead of every 32 cycles, with th
 chain's budget following (about 20% faster, 17% on the twelve-disc table). Both
 leave every interpreter baseline alone. The same document ranks what is left:
 compiled stores, the dispatcher, the uncompiled instructions, the vblank wait for
-the raster thread.
+the raster thread - and records the stores, the RAM mirrors, and then `add`, `addi` and
+the multiply/divide unit (compiled, with the unit's clock kept as the interpreter
+keeps it) as done.
 
 ## Started, 2026-09-16: steps 1 to 6 are done, and block linking with them
 

@@ -305,6 +305,8 @@ inline void Add64RegReg(Emitter* e, uint8_t dest, uint8_t src) {
 // for all three is what stops a branch and the SETcc that was supposed to
 // mirror it from drifting apart.
 enum class Cc : uint8_t {
+  kOverflow = 0x0,       // signed overflow, the flag add sets
+  kNoOverflow = 0x1,
   kBelow = 0x2,          // unsigned <
   kAboveEqual = 0x3,
   kEqual = 0x4,

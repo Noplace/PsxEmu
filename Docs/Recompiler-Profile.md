@@ -242,6 +242,57 @@ What those 10.7M are (a histogram of why `Interpret` was called):
 So the next dispatcher gain is **compiling `add`/`addi` (trapping on overflow) and the
 multiply/divide family** - fewer steps, not cheaper ones - and the GTE moves after that.
 
+## Done: add, addi and the multiply/divide unit are compiled (same day)
+
+The histogram above said what the steps were; this removes the biggest part of them. `add`, `addi`,
+`mult`, `multu`, `div`, `divu`, `mfhi`, `mflo`, `mthi` and `mtlo` compile, when the host says it can answer
+for them (`HostInterface::overflow` and `::hilo`; without both they stay the interpreter's, as every
+`rec_test` harness other than the new tests still has it).
+
+- **`add`/`addi`**: an x86 `add` and `jno`; the overflow path calls out to raise the exception exactly as a
+  faulting memory access does, and leaves by the same fault exit. A load in flight is written to its register
+  on that path only, so the block that carries on still lands it after the add. Not compiled in a branch's
+  delay slot - the exception there is the branch's, with its address and the BD bit, which only the
+  interpreter does - and the branch before such a slot stays the interpreter's with it.
+- **The unit** (`BlockState::special`, one entry because the compiled code's one-byte offsets run out at 128
+  bytes): HI and LO stay the CPU's; compiled code passes the operands and gets a value back. What makes this
+  more than a call is the clock. The interpreter ticks inside each instruction and `mfhi` waits for the last
+  multiply by comparing the machine's cycle count with when the unit finishes; compiled code ticks nothing
+  as it goes. So the engine tells the host how far the chain has got - `(budget spent) + (extra cycles owed)
+  + (index in the block)`, added to the clock as the chain began - and the host answers with what the
+  instruction costs beyond its one cycle (`Cpu::CompiledHiLo`), which the chain is charged with the rest. The
+  interpreter's `MULT`, `MULTU`, `DIV` and `DIVU` now call the same `Cpu::MulDiv`, so the arithmetic and the
+  cost bands are in one place.
+
+Back to back with the previous commit, `--recompiler`:
+
+| Run | Before | After | | Interpreted instructions |
+|---|---|---|---|---|
+| BIOS boot, 600 frames | 8.1x | 9.8x | +21% | 8.6M -> 4.2M |
+| Wild Arms, 1,500 frames | 10.4x | 11.8x | +13% | 10.7M -> 6.8M |
+| Ridge Racer | 10.7x | 11.8x | +10% | 11.2M -> 6.8M |
+
+Twelve-disc table, `--recompiler`: 89.7 s -> 75.0 s, **all 36 pictures identical**; Area 51 has read 3 more
+sectors by frame 3,000 (5,691 for 5,688), pacing, the same kind as before. Wild Arms and Ridge Racer's
+1,500-frame checksums are unchanged. The BIOS shell differs from the previous recompiler only at frame 600
+(100-500 identical), by a handful of draw commands - the interpreter itself lands on a third answer there.
+The 40 hardware test programs draw the same pictures; amidog's `psxtest_cpu` - the one that checks the traps
+and the unit's timing column - gives the same results screen as the interpreter and the previous recompiler;
+Final Fantasy VII with PGXP on the hardware rasteriser still draws 25,854 of 44,978 vertices from shadows with
+the same checksum. `rec_test` 966 -> 985, `cpu_test` 297, `timing_test` 38 and `timer_test` 80 unchanged.
+
+**What the tests check against.** `RunReference` in `rec_test` is the interpreter's `ADD`, `ADDI`, `MULT`,
+`MULTU`, `DIV`, `DIVU`, `MFHI` and `MFLO` written out again with its own clock, not the compiler's logic. Over
+four operations, sixteen operand pairs (each of multiply's three cost bands either side of zero, divide by zero,
+`INT_MIN / -1`) and seven gaps before the result is read - the unit busy, then not - compiled code agrees on
+every register, HI, LO and the cycles. A second test runs the same program as two blocks entered one at a
+time and as a chain of linked blocks and requires the same total either way. Each of the three guards was
+removed in turn - the index in the clock, the delay-slot rule, the load written out on the trap - and one or
+two checks fail each time.
+
+What is left of the steps: Wild Arms now takes 6.8M interpreted steps in 1,500 frames, of which about 4.4M is
+the BIOS boot. The remainder is `lwl`/`lwr`/`swl`/`swr`, the coprocessor moves and the GTE.
+
 ## Method and caveats
 
 - `boot_runner` built `/O2 /Zi /DEBUG /INCREMENTAL:NO` (no incremental-link

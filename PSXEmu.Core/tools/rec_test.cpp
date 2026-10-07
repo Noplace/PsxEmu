@@ -669,6 +669,85 @@ class FakeBus {
     Bus(c)->DoWrite(a, 1, v);
   }
 
+  // The multiply and divide unit and the overflow trap, as a host provides them: HI and LO, the clock
+  // the unit is busy until, and the clock the chain began at (the host's own, which compiled code does
+  // not advance as it goes - `elapsed` is how far it has got).
+  uint32_t hi = 0;
+  uint32_t lo = 0;
+  uint64_t unit_busy_until = 0;
+  uint64_t clock = 0;
+  int overflows = 0;
+  uint32_t overflow_pc = 0;
+  // Where an overflow sets its fault: the engine's recompiler, or, for a block run by itself, its state.
+  emulation::rec::Recompiler* overflow_target = nullptr;
+  emulation::rec::BlockState* block_state = nullptr;
+
+  uint32_t HiLoImpl(uint32_t funct, uint32_t a, uint32_t b, uint32_t elapsed, uint32_t* extra) {
+    const uint64_t now = clock + elapsed;
+    *extra = 0;
+    switch (funct) {
+      case 0x10: case 0x12:   // mfhi, mflo: wait for the unit
+        if (now < unit_busy_until)
+          *extra = static_cast<uint32_t>(unit_busy_until - now);
+        return funct == 0x10 ? hi : lo;
+      case 0x11: hi = a; return 0;
+      case 0x13: lo = a; return 0;
+      default: {
+        uint32_t cost = 36;
+        if (funct == 0x18) {
+          const int64_t p = static_cast<int64_t>(static_cast<int32_t>(a)) * static_cast<int32_t>(b);
+          lo = static_cast<uint32_t>(p);
+          hi = static_cast<uint32_t>(static_cast<uint64_t>(p) >> 32);
+          cost = (a <= 0x7FF || a >= 0xFFFFF800u) ? 6 : (a <= 0xFFFFF || a >= 0xFFF00000u) ? 9 : 13;
+        } else if (funct == 0x19) {
+          const uint64_t p = static_cast<uint64_t>(a) * b;
+          lo = static_cast<uint32_t>(p);
+          hi = static_cast<uint32_t>(p >> 32);
+          cost = (a <= 0x7FF) ? 6 : (a <= 0xFFFFF) ? 9 : 13;
+        } else if (funct == 0x1A) {
+          const int32_t n = static_cast<int32_t>(a), d = static_cast<int32_t>(b);
+          if (d == 0) { hi = a; lo = n >= 0 ? 0xFFFFFFFFu : 1u; }
+          else if (a == 0x80000000u && d == -1) { hi = 0; lo = 0x80000000u; }
+          else { lo = static_cast<uint32_t>(n / d); hi = static_cast<uint32_t>(n % d); }
+        } else {
+          if (b == 0) { hi = a; lo = 0xFFFFFFFFu; }
+          else { lo = a / b; hi = a % b; }
+        }
+        *extra = cost - 1;
+        unit_busy_until = now + cost + (cost - 1);
+        return 0;
+      }
+    }
+  }
+  static uint32_t HiLo(void* c, uint32_t funct, uint32_t a, uint32_t b, uint32_t elapsed,
+                       uint32_t* extra) {
+    return Bus(c)->HiLoImpl(funct, a, b, elapsed, extra);
+  }
+  static void Overflow(void* c, uint32_t pc) {
+    FakeBus* bus = Bus(c);
+    ++bus->overflows;
+    bus->overflow_pc = pc;
+    if (bus->overflow_target != nullptr)
+      bus->overflow_target->SetFault();
+    else if (bus->block_state != nullptr)
+      bus->block_state->fault = 1;
+  }
+  // BlockState::special for a block run by itself, where nothing in between works out how far into a
+  // chain it is: the instruction's index and what the block has asked for so far are all there is.
+  static uint32_t Special(void* c, uint32_t operation, uint32_t a, uint32_t b) {
+    if ((operation & 0xFF) == emulation::rec::kSpecialOverflow) {
+      Overflow(c, a);
+      return 0;
+    }
+    FakeBus* bus = Bus(c);
+    const uint32_t owed = bus->block_state != nullptr ? bus->block_state->extra_cycles : 0;
+    uint32_t extra = 0;
+    const uint32_t value = bus->HiLoImpl(operation & 0xFF, a, b, (operation >> 8) + owed, &extra);
+    if (bus->block_state != nullptr)
+      bus->block_state->extra_cycles += extra;
+    return value;
+  }
+
   // Register copies reported to the host (BlockState::move), as {to, from}.
   std::vector<std::pair<uint32_t, uint32_t>> moves;
   static void Move(void* c, uint32_t to, uint32_t from) {
@@ -712,6 +791,7 @@ emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
   state.move = &FakeBus::Move;
   state.ram = bus->ram();   // read only by code compiled with direct RAM on
   state.ram_store = bus->ram();
+  state.special = &FakeBus::Special;   // likewise, for the instructions that need a host
   return state;
 }
 
@@ -727,6 +807,9 @@ bool g_link_blocks = true;
 // And loads reading RAM directly, with the whole bus as RAM, which is a switch
 // of the same kind: it changes what every load compiles to.
 bool g_direct_ram = false;
+// And the trapping add and the multiply/divide unit, which the compiler only takes when its host can
+// answer for them: off for everything above, on for the tests of those instructions.
+bool g_special_ops = false;
 // What each direct read owes - Cpu::kRamLoadStall's value, though nothing here
 // depends on which number it is.
 const uint8_t kRamReadCycles = 4;
@@ -736,6 +819,7 @@ emulation::rec::BlockCompiler MakeCompiler(Emitter* emitter) {
   compiler.set_allocate_registers(g_allocate_registers);
   compiler.set_link_blocks(g_link_blocks);
   compiler.set_direct_ram(g_direct_ram ? kBusBytes : 0, kRamReadCycles);
+  compiler.set_special_ops(g_special_ops);
   // Allocate however short the block is. In the emulator a block has to be
   // long enough for allocation to pay; here it has to happen at all, or the
   // second pass over the suite would compile the same thing as the first and
@@ -1658,7 +1742,12 @@ class Engine {
     host.load_in_flight = [this]() { return machine.LoadInFlight(); };
     host.ram_bytes = g_direct_ram ? kBusBytes : 0;
     host.ram_read_cycles = kRamReadCycles;
+    if (g_special_ops) {
+      host.overflow = &FakeBus::Overflow;
+      host.hilo = &FakeBus::HiLo;
+    }
     recompiler_.reset(new emulation::rec::Recompiler(host, machine.r));
+    bus.overflow_target = recompiler_.get();
     recompiler_->set_allocate_registers(g_allocate_registers);
     recompiler_->set_minimum_block_instructions(1);
     recompiler_->set_link_blocks(g_link_blocks);
@@ -2810,6 +2899,415 @@ void TestMirrorsReachRamDirectly() {
   CheckEqual(withheld.calls, 6, "all six memory accesses through the callbacks");
 }
 
+// ---------------------------------------------------------------------------
+// The trapping add and the multiply/divide unit
+// ---------------------------------------------------------------------------
+
+uint32_t ADD_(uint32_t rd, uint32_t rs, uint32_t rt) { return Special(rs, rt, rd, 0x20); }
+uint32_t ADDI_(uint32_t rt, uint32_t rs, uint16_t imm) {
+  return (0x08u << 26) | (rs << 21) | (rt << 16) | imm;
+}
+uint32_t SUB_(uint32_t rd, uint32_t rs, uint32_t rt) { return Special(rs, rt, rd, 0x22); }
+uint32_t MULTU_(uint32_t rs, uint32_t rt) { return Special(rs, rt, 0, 0x19); }
+uint32_t DIV_(uint32_t rs, uint32_t rt) { return Special(rs, rt, 0, 0x1A); }
+uint32_t DIVU_(uint32_t rs, uint32_t rt) { return Special(rs, rt, 0, 0x1B); }
+uint32_t MFHI_(uint32_t rd) { return Special(0, 0, rd, 0x10); }
+uint32_t MFLO_(uint32_t rd) { return Special(0, 0, rd, 0x12); }
+uint32_t MTHI_(uint32_t rs) { return Special(rs, 0, 0, 0x11); }
+uint32_t MTLO_(uint32_t rs) { return Special(rs, 0, 0, 0x13); }
+
+// What the interpreter does with a straight run of these instructions, written from Cpu::ADD, ADDI,
+// MULT, MULTU, DIV, DIVU, MFHI and MFLO rather than from the compiler: a register file, HI and LO,
+// the interpreter's clock - which the unit's busy time is measured on - and where an add trapped.
+struct Reference {
+  uint32_t r[32] = {};
+  uint32_t hi = 0, lo = 0;
+  uint64_t cycles = 0;
+  uint64_t busy_until = 0;
+  bool trapped = false;
+  uint32_t trap_pc = 0;
+};
+
+Reference RunReference(const std::vector<uint32_t>& program, const uint32_t initial[32]) {
+  Reference m;
+  for (int i = 0; i < 32; ++i)
+    m.r[i] = initial[i];
+  for (size_t i = 0; i < program.size() && !m.trapped; ++i) {
+    const uint32_t word = program[i];
+    const uint32_t pc = kProgramBase + static_cast<uint32_t>(i) * 4;
+    const uint32_t opcode = word >> 26;
+    const uint32_t rs = (word >> 21) & 31, rt = (word >> 16) & 31, rd = (word >> 11) & 31;
+    const uint32_t se = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(word & 0xFFFF)));
+    auto write = [&](uint32_t index, uint32_t value) { if (index != 0) m.r[index] = value; };
+    auto overflows = [](uint32_t a, uint32_t b) {
+      const uint32_t sum = a + b;
+      return ((~(a ^ b)) & (a ^ sum) & 0x80000000u) != 0;
+    };
+    auto start = [&](uint32_t cost, uint32_t a, uint32_t b, uint32_t funct) {
+      if (funct == 0x18) {
+        const int64_t p = static_cast<int64_t>(static_cast<int32_t>(a)) * static_cast<int32_t>(b);
+        m.lo = static_cast<uint32_t>(p); m.hi = static_cast<uint32_t>(static_cast<uint64_t>(p) >> 32);
+      } else if (funct == 0x19) {
+        const uint64_t p = static_cast<uint64_t>(a) * b;
+        m.lo = static_cast<uint32_t>(p); m.hi = static_cast<uint32_t>(p >> 32);
+      } else if (funct == 0x1A) {
+        const int32_t n = static_cast<int32_t>(a), d = static_cast<int32_t>(b);
+        if (d == 0) { m.hi = a; m.lo = n >= 0 ? 0xFFFFFFFFu : 1u; }
+        else if (a == 0x80000000u && d == -1) { m.hi = 0; m.lo = 0x80000000u; }
+        else { m.lo = static_cast<uint32_t>(n / d); m.hi = static_cast<uint32_t>(n % d); }
+      } else {
+        if (b == 0) { m.hi = a; m.lo = 0xFFFFFFFFu; } else { m.lo = a / b; m.hi = a % b; }
+      }
+      m.cycles += cost;                     // the instruction is the whole of its cost
+      m.busy_until = m.cycles + cost - 1;   // and the unit is busy again for all but one of it
+    };
+    if (opcode == 0x00) {
+      const uint32_t funct = word & 0x3F;
+      switch (funct) {
+        case 0x00: write(rd, m.r[rt] << ((word >> 6) & 31)); m.cycles += 1; break;   // sll, nop
+        case 0x08: m.cycles += 1; break;   // jr: a cycle, and a straight run goes on to the next word
+        case 0x20:
+          if (overflows(m.r[rs], m.r[rt])) { m.trapped = true; m.trap_pc = pc; }
+          else { write(rd, m.r[rs] + m.r[rt]); m.cycles += 1; }
+          break;
+        case 0x10: case 0x12:
+          if (m.cycles < m.busy_until)
+            m.cycles = m.busy_until;
+          write(rd, funct == 0x10 ? m.hi : m.lo);
+          m.cycles += 1;
+          break;
+        case 0x11: m.hi = m.r[rs]; m.cycles += 1; break;
+        case 0x13: m.lo = m.r[rs]; m.cycles += 1; break;
+        case 0x18: case 0x19: {
+          const uint32_t a = m.r[rs];
+          const uint32_t cost = funct == 0x18
+              ? ((a <= 0x7FF || a >= 0xFFFFF800u) ? 6u : (a <= 0xFFFFF || a >= 0xFFF00000u) ? 9u : 13u)
+              : ((a <= 0x7FF) ? 6u : (a <= 0xFFFFF) ? 9u : 13u);
+          start(cost, a, m.r[rt], funct);
+          break;
+        }
+        case 0x1A: case 0x1B: start(36, m.r[rs], m.r[rt], funct); break;
+        default: break;
+      }
+    } else if (opcode == 0x08) {
+      if (overflows(m.r[rs], se)) { m.trapped = true; m.trap_pc = pc; }
+      else { write(rt, m.r[rs] + se); m.cycles += 1; }
+    } else if (opcode == 0x09) {
+      write(rt, m.r[rs] + se);
+      m.cycles += 1;
+    }
+  }
+  return m;
+}
+
+// Compiles `program` with the special ops on, runs it as one block over a host whose unit starts
+// idle, and returns what it left behind; `*cycles` is what the chain would be charged.
+struct SpecialRun {
+  uint32_t regs[32] = {};
+  uint32_t compiled = 0;
+  uint32_t fault = 0;
+  uint64_t cycles = 0;
+  FakeBus bus;
+};
+
+void RunSpecial(const std::vector<uint32_t>& program, const uint32_t initial[32], SpecialRun* run) {
+  FakeMemory memory;
+  memory.Write(kProgramBase, program);
+  BlockDecoder decoder(memory.Fetch());
+  const DecodedBlock decoded = decoder.Decode(kProgramBase, static_cast<uint32_t>(program.size()));
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(8192);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+  compiler.set_special_ops(true);
+  const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
+  for (int i = 0; i < 32; ++i)
+    run->regs[i] = initial[i];
+  emulation::rec::BlockState state = MakeState(run->regs, &run->bus);
+  run->bus.block_state = &state;
+  RunBlock(code, &state);
+  run->bus.block_state = nullptr;
+  run->compiled = compiled.compiled;
+  run->fault = state.fault;
+  run->cycles = compiled.compiled + state.extra_cycles;
+  emitter.destroy_block(code);
+}
+
+void TestTheMultiplyAndDivideUnitMatchesTheInterpreter() {
+  printf("compiled mult, div, mfhi, mflo, mthi and mtlo leave what the interpreter leaves, and cost the same\n");
+
+  // Every operation, over operands in each of multiply's cost bands on either side of zero, the divide's two
+  // degenerate cases, and a gap of 0 to 30 instructions before the result is read - which is the unit being
+  // busy, and then not.
+  const uint32_t operands[][2] = {
+      {5, 7}, {0x7FF, 3}, {0x800, 3}, {0xFFFFF800u, 3}, {0xFFFFF7FFu, 3}, {0xFFFFF, 3},
+      {0x100000, 3}, {0xFFF00000u, 3}, {0xFFEFFFFFu, 3}, {0x80000000u, 0x80000000u},
+      {0xFFFFFFFFu, 0xFFFFFFFFu}, {100, 0}, {0xFFFFFF9Cu, 0}, {0x80000000u, 0xFFFFFFFFu},
+      {0xFFFFFFF9u, 2}, {123456789, 1000},
+  };
+  const int gaps[] = { 0, 1, 4, 5, 11, 12, 30 };
+  const uint32_t ops[] = { 0x18, 0x19, 0x1A, 0x1B };
+
+  int runs = 0, failures = 0;
+  for (uint32_t op : ops) {
+    for (const auto& pair : operands) {
+      for (int gap : gaps) {
+        std::vector<uint32_t> program = { Special(1, 2, 0, op) };
+        for (int i = 0; i < gap; ++i)
+          program.push_back(NOP());
+        program.push_back(MFLO_(10));
+        program.push_back(MFHI_(11));
+        uint32_t initial[32] = {};
+        initial[1] = pair[0];
+        initial[2] = pair[1];
+        const Reference expected = RunReference(program, initial);
+        SpecialRun run;
+        RunSpecial(program, initial, &run);
+        ++runs;
+        const bool same = run.compiled == program.size() && run.regs[10] == expected.r[10] &&
+                          run.regs[11] == expected.r[11] && run.bus.hi == expected.hi &&
+                          run.bus.lo == expected.lo && run.cycles == expected.cycles;
+        if (!same) {
+          ++failures;
+          if (failures <= 4)
+            printf("  FAIL  op %02X rs %08X rt %08X gap %d: compiled %u of %zu, lo %08X hi %08X, %llu cycles; "
+                   "want lo %08X hi %08X, %llu cycles\n", op, pair[0], pair[1], gap, run.compiled,
+                   program.size(), run.regs[10], run.regs[11],
+                   static_cast<unsigned long long>(run.cycles), expected.r[10], expected.r[11],
+                   static_cast<unsigned long long>(expected.cycles));
+        }
+      }
+    }
+  }
+  CheckEqual(failures, 0, "every operation, operand pair and gap agrees with the interpreter");
+  Check(runs > 400, "and the sweep covered what it says");
+
+  // mthi and mtlo write the registers without waiting for the unit, and are not waited on by it.
+  {
+    const std::vector<uint32_t> program = {
+        Special(1, 2, 0, 0x1A),     // div: busy for 36
+        MTHI_(3), MTLO_(4),
+        MFLO_(10), MFHI_(11),
+    };
+    uint32_t initial[32] = {};
+    initial[1] = 100; initial[2] = 7; initial[3] = 0xAAAA0001; initial[4] = 0xBBBB0002;
+    const Reference expected = RunReference(program, initial);
+    SpecialRun run;
+    RunSpecial(program, initial, &run);
+    Check(run.compiled == program.size() && run.regs[10] == expected.r[10] &&
+              run.regs[11] == expected.r[11] && run.cycles == expected.cycles,
+          "mthi and mtlo after a divide, read back, agree with the interpreter");
+    CheckEqual(run.regs[10], 0xBBBB0002, "and the written values are what is read");
+  }
+}
+
+void TestATrappingAddOverflowsOrAdds() {
+  printf("a compiled add or addi that overflows raises the exception and stops; one that does not adds\n");
+
+  // Each of these overflows, or sits on the boundary and does not.
+  struct Case { uint32_t a, b; bool overflows; };
+  const Case cases[] = {
+      {0x7FFFFFFF, 1, true},  {0x7FFFFFFF, 0, false}, {0x7FFFFFFF, 0xFFFFFFFF, false},
+      {0x80000000, 0xFFFFFFFF, true}, {0x80000000, 0x80000000, true}, {0x80000000, 1, false},
+      {5, 7, false}, {0xFFFFFFFB, 0xFFFFFFFA, false}, {0x40000000, 0x40000000, true},
+  };
+  for (int allocate = 0; allocate < 2; ++allocate) {
+    const bool saved = g_allocate_registers;
+    g_allocate_registers = allocate != 0;
+    int bad = 0;
+    for (const Case& c : cases) {
+      for (int form = 0; form < 2; ++form) {   // add, then addi (whose immediate is sign-extended)
+        const bool immediate = form == 1;
+        if (immediate && (c.b >= 0x8000 && c.b < 0xFFFF8000u))
+          continue;   // not an immediate
+        const uint16_t imm = static_cast<uint16_t>(c.b);
+        const std::vector<uint32_t> program = {
+            ADDIU(6, 0, 77),                                 // runs before the add
+            immediate ? ADDI_(3, 1, imm) : ADD_(3, 1, 2),    // r3 = r1 + (r2 | imm)
+            ADDIU(7, 0, 88),                                 // runs only if the add did not trap
+        };
+        uint32_t initial[32] = {};
+        initial[1] = c.a;
+        initial[2] = c.b;
+        initial[3] = 0xC0DEC0DE;                             // the destination, to see it left alone
+        const Reference expected = RunReference(program, initial);
+        SpecialRun run;
+        RunSpecial(program, initial, &run);
+        const bool trapped = run.fault != 0;
+        const bool same = trapped == c.overflows && trapped == expected.trapped &&
+                          (!trapped || run.bus.overflow_pc == expected.trap_pc) &&
+                          run.regs[3] == expected.r[3] && run.regs[6] == 77 &&
+                          run.regs[7] == expected.r[7] && run.bus.overflows == (trapped ? 1 : 0);
+        if (!same) {
+          ++bad;
+          printf("  FAIL  %s %08X + %08X (allocation %s): fault %u, r3 %08X, r7 %u; want trapped %d\n",
+                 immediate ? "addi" : "add", c.a, c.b, allocate ? "on" : "off", run.fault,
+                 run.regs[3], run.regs[7], c.overflows);
+        }
+      }
+    }
+    g_allocate_registers = saved;
+    CheckEqual(bad, 0, allocate ? "every case, registers allocated" : "every case, registers in memory");
+  }
+
+  // A load in flight reaches its register when the add traps, as before a memory access that faults, and
+  // lands after the add when it does not - the add in its delay slot reads the register's old value.
+  {
+    const std::vector<uint32_t> program = {
+        LW(5, 1, 0),                 // r5 arrives after the next instruction
+        ADD_(6, 5, 5),               // so this reads the old r5 (the sentinel), and ...
+        ADDIU(7, 0, 1),
+    };
+    uint32_t initial[32] = {};
+    initial[1] = kBusBase + 0x100;
+    initial[5] = 3;
+    SpecialRun ok;
+    ok.bus.Write(kBusBase + 0x100, 4, 0x11112222);
+    RunSpecial(program, initial, &ok);
+    CheckEqual(ok.regs[6], 6, "an add after a load reads the register's old value");
+    CheckEqual(ok.regs[5], 0x11112222, "and the load lands after it");
+
+    initial[5] = 0x7FFFFFFF;         // now the add overflows, with the load still in flight
+    SpecialRun bad;
+    bad.bus.Write(kBusBase + 0x100, 4, 0x11112222);
+    RunSpecial(program, initial, &bad);
+    CheckEqual(bad.fault, 1, "the same add trapping stops the block");
+    CheckEqual(bad.regs[5], 0x11112222, "with the load delivered, which is what the interpreter resumes from");
+    CheckEqual(bad.regs[7], 0, "and the instruction after it not run");
+  }
+}
+
+void TestAnOverflowingAddInADelaySlotIsLeftToTheInterpreter() {
+  printf("an add or addi in a branch's delay slot is not compiled, and takes the branch with it\n");
+
+  FakeMemory memory;
+  memory.Write(kProgramBase, {
+      ADDIU(1, 0, 1),             // compiled
+      BEQ(0, 0, 4),               // a branch ...
+      ADD_(3, 1, 1),              // ... whose delay slot is a trapping add: neither is compiled
+      NOP(),
+  });
+  BlockDecoder decoder(memory.Fetch());
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(4096);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+  compiler.set_special_ops(true);
+  const emulation::rec::CompiledBlock compiled = compiler.Compile(decoder.Decode(kProgramBase, 4), code);
+  CheckEqual(compiled.compiled, 1, "only the instruction before the branch is compiled");
+  emitter.destroy_block(code);
+
+  // The same add anywhere else is.
+  memory.Write(kProgramBase, { ADDIU(1, 0, 1), ADD_(3, 1, 1), ADDI_(4, 1, 5), NOP() });
+  BlockDecoder again(memory.Fetch());
+  CodeBlock* code2 = emitter.create_block(4096);
+  emulation::rec::BlockCompiler compiler2 = MakeCompiler(&emitter);
+  compiler2.set_special_ops(true);
+  const emulation::rec::CompiledBlock outside = compiler2.Compile(again.Decode(kProgramBase, 4), code2);
+  CheckEqual(outside.compiled, 4, "outside a delay slot the add and the addi are compiled");
+  emitter.destroy_block(code2);
+
+  // Without a host for them they stay the interpreter's, delay slot or not.
+  CodeBlock* code3 = emitter.create_block(4096);
+  emulation::rec::BlockCompiler plain = MakeCompiler(&emitter);
+  plain.set_special_ops(false);
+  const emulation::rec::CompiledBlock refused = plain.Compile(again.Decode(kProgramBase, 4), code3);
+  CheckEqual(refused.compiled, 1, "and without the host's say-so, neither is");
+  emitter.destroy_block(code3);
+}
+
+void TestWhatItAdmitsWithTheUnitOnIsWhatItCompiles() {
+  printf("with the special ops on, what is admitted is exactly what is emitted\n");
+
+  int mismatches = 0, admitted_special = 0;
+  for (uint32_t opcode = 0; opcode < 64; ++opcode) {
+    std::vector<uint32_t> words;
+    if (opcode == 0x00) {
+      for (uint32_t funct = 0; funct < 64; ++funct)
+        words.push_back((2u << 21) | (3u << 16) | (4u << 11) | (5u << 6) | funct);
+    } else if (opcode == 0x01) {
+      for (uint32_t rt = 0; rt < 32; ++rt)
+        words.push_back((opcode << 26) | (2u << 21) | (rt << 16) | 0x0008);
+    } else {
+      words.push_back((opcode << 26) | (2u << 21) | (3u << 16) | 0x0008);
+    }
+    for (uint32_t word : words) {
+      FakeMemory memory;
+      memory.Write(kProgramBase, { word, ADDIU(6, 6, 1) });
+      BlockDecoder decoder(memory.Fetch());
+      Emitter emitter;
+      CodeBlock* code = emitter.create_block(4096);
+      emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+      compiler.set_special_ops(true);
+      const bool admits = compiler.CanCompile(word);
+      const emulation::rec::CompiledBlock compiled =
+          compiler.Compile(decoder.Decode(kProgramBase, 2), code);
+      emitter.destroy_block(code);
+      if (admits && emulation::rec::BlockCompiler::IsSpecialOp(word))
+        ++admitted_special;
+      if (compiled.compiled != (admits ? 2u : 0u)) {
+        ++mismatches;
+        if (mismatches <= 3)
+          printf("  FAIL  %08X: CanCompile says %s, compiled %u\n", word, admits ? "yes" : "no",
+                 compiled.compiled);
+      }
+    }
+  }
+  CheckEqual(mismatches, 0, "every word is compiled if and only if it is admitted");
+  CheckEqual(admitted_special, 10, "and ten of them are the special ops: add, addi, and the unit's eight");
+}
+
+// The cycles a chain is charged are the same whether it ran as one chain of linked blocks or as one
+// block per entry: the unit's clock is told how far the chain has got, and has to count the blocks
+// already run and what they asked for.
+void TestTheUnitsClockFollowsTheChain() {
+  printf("the unit knows how far into a chain a read is, across linked blocks as across entries\n");
+
+  const uint32_t second = kProgramBase + 20;
+  const std::vector<uint32_t> program = {
+      ADDIU(1, 0, 100),            // 0: block one
+      ADDIU(2, 0, 3),              // 1
+      MULT(1, 2),                  // 2: six cycles, busy for five more after
+      J(second >> 2),              // 3: ends the block, to the next instruction after its slot
+      NOP(),                       // 4
+      MFLO_(10),                   // 5: block two - reads it while the unit is still busy
+      JR(0),                       // 6
+      NOP(),                       // 7
+  };
+  // Straight through, the interpreter's clock: 1 + 1 + 6, then the j and its slot, then the read waits.
+  const uint32_t initial[32] = {};
+  const Reference expected = RunReference({ program[0], program[1], program[2], NOP(), NOP(),
+                                            program[5], program[6], program[7] }, initial);
+
+  g_special_ops = true;
+  uint64_t one_by_one = 0, chained = 0;
+  Engine engine;
+  engine.bus.WriteProgram(kProgramBase, program);
+  engine.AttachRecompiler();
+  // The first round compiles each block as it is reached, one per entry; by the third the first is
+  // linked to the second and the whole run is one chain.
+  for (int round = 0; round < 3; ++round) {
+    engine.bus.clock = 0;
+    engine.bus.unit_busy_until = 0;
+    uint32_t pc = kProgramBase;
+    uint64_t cycles = 0;
+    int steps = 0;
+    while (pc != 0 && steps++ < 8) {
+      pc = engine.recompiler()->Step(pc);
+      cycles += engine.recompiler()->last_cycles();
+      engine.bus.clock += engine.recompiler()->last_cycles();   // the host's TickCycles
+    }
+    if (round == 0)
+      one_by_one = cycles;
+    if (round == 2)
+      chained = cycles;
+  }
+  g_special_ops = false;
+  Check(engine.recompiler()->stats().links_made > 0, "the blocks were linked");
+  CheckEqual(static_cast<int64_t>(one_by_one), static_cast<int64_t>(expected.cycles),
+             "one block per entry costs what the interpreter's clock says");
+  CheckEqual(static_cast<int64_t>(chained), static_cast<int64_t>(expected.cycles),
+             "and so does the same code run as a chain of linked blocks");
+}
+
 int main() {
   printf("rec_test - emitter, block cache, decoder, compiler, engine\n");
   printf("           (Docs/Recompiler-Plan.md steps 1 to 6)\n\n");
@@ -2857,6 +3355,11 @@ int main() {
   TestAStoreToACodePageStillCallsOut();
   TestEveryOtherStoreStillCallsOut();
   TestMirrorsReachRamDirectly();
+  TestTheMultiplyAndDivideUnitMatchesTheInterpreter();
+  TestATrappingAddOverflowsOrAdds();
+  TestAnOverflowingAddInADelaySlotIsLeftToTheInterpreter();
+  TestWhatItAdmitsWithTheUnitOnIsWhatItCompiles();
+  TestTheUnitsClockFollowsTheChain();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

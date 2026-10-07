@@ -261,6 +261,7 @@ class BlockCompiler {
     result.code = static_cast<uint8_t*>(code->address) + start;
     code_ = code;
     block_start_ = start;
+    block_pc_ = block.start_pc;
     fault_exits_.clear();
 
     pending_active_ = false;
@@ -355,6 +356,10 @@ class BlockCompiler {
   // switch covers exactly what it admits. rec_test sweeps every opcode and
   // funct comparing the two, because a disagreement here is the one that
   // produces an instruction executed twice or not at all.
+  //
+  // The base subset: what needs nothing from the host beyond memory. The instructions of
+  // IsSpecialOp are compiled too, but only when the host can answer for them (set_special_ops),
+  // which is what CanCompile asks.
   static bool Compilable(uint32_t word) {
     const uint32_t opcode = word >> 26;
     if (opcode == 0x00) {
@@ -390,6 +395,50 @@ class BlockCompiler {
     }
   }
 
+  // The instructions that are compiled when the host provides for them (set_special_ops): the
+  // trapping add and addi, which have an exception to raise, and the multiply and divide unit,
+  // which has state of its own (HI and LO) and a clock.
+  static bool IsSpecialOp(uint32_t word) {
+    const uint32_t opcode = word >> 26;
+    if (opcode == 0x08)   // addi
+      return true;
+    if (opcode != 0x00)
+      return false;
+    switch (word & 0x3F) {
+      case 0x10: case 0x11: case 0x12: case 0x13:   // mfhi, mthi, mflo, mtlo
+      case 0x18: case 0x19: case 0x1A: case 0x1B:   // mult, multu, div, divu
+      case 0x20:                                    // add
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  // The two that trap, which are the two that cannot be compiled in a branch's delay slot: the
+  // exception they raise has to be taken as the branch's, with its address and the BD bit, and
+  // the interpreter is what knows how.
+  static bool TrapsOnOverflow(uint32_t word) {
+    const uint32_t opcode = word >> 26;
+    return opcode == 0x08 || (opcode == 0x00 && (word & 0x3F) == 0x20);
+  }
+
+  static bool IsBranchOrJump(uint32_t word) {
+    const uint32_t opcode = word >> 26;
+    if (opcode == 0x00)
+      return (word & 0x3F) == 0x08 || (word & 0x3F) == 0x09;
+    return opcode == 0x01 || (opcode >= 0x02 && opcode <= 0x07);
+  }
+
+  // Whether this compiler admits the instruction - Compilable, and IsSpecialOp when the host
+  // has said it can answer for those.
+  bool CanCompile(uint32_t word) const {
+    return Compilable(word) || (special_ops_ && IsSpecialOp(word));
+  }
+
+  // Compile the trapping add and addi and the multiply/divide unit, calling BlockState::special
+  // for what compiled code cannot do itself. Off, the default, they stay the interpreter's.
+  void set_special_ops(bool on) { special_ops_ = on; }
+
   // Which register this instruction writes, or 0 for none. Used to decide
   // whether it cancels a load still in flight - the hardware writes the load
   // back first and the instruction's own result second, so the instruction
@@ -402,12 +451,14 @@ class BlockCompiler {
       const uint32_t funct = word & 0x3F;
       if (funct == 0x08)                  // jr writes nothing
         return 0;
+      if (funct == 0x11 || funct == 0x13 || (funct >= 0x18 && funct <= 0x1B))
+        return 0;                         // mthi, mtlo and mult/div write HI and LO, not rd
       return (word >> 11) & 0x1F;         // rd, including jalr's
     }
     switch (opcode) {
       case 0x03:                          // jal
         return 31;
-      case 0x09: case 0x0A: case 0x0B:
+      case 0x08: case 0x09: case 0x0A: case 0x0B:
       case 0x0C: case 0x0D: case 0x0E: case 0x0F:
       case 0x20: case 0x21: case 0x23: case 0x24: case 0x25:
         return (word >> 16) & 0x1F;       // rt
@@ -462,8 +513,10 @@ class BlockCompiler {
                 "every BlockState field has to be in reach of a disp8");
   static const int8_t kOffRamStore = static_cast<int8_t>(offsetof(BlockState, ram_store));
   static const int8_t kOffCodePages = static_cast<int8_t>(offsetof(BlockState, code_pages));
+  static const int8_t kOffSpecial = static_cast<int8_t>(offsetof(BlockState, special));
   static_assert(offsetof(BlockState, ram_store) <= 127 &&
-                offsetof(BlockState, code_pages) <= 127,
+                offsetof(BlockState, code_pages) <= 127 &&
+                offsetof(BlockState, special) <= 127,
                 "every BlockState field has to be in reach of a disp8");
 
   // How far into the block the compiled code gets. Computed backwards, because
@@ -479,7 +532,7 @@ class BlockCompiler {
     return opcode >= 0x20 && opcode <= 0x25;
   }
 
-  static uint32_t CompilablePrefix(const DecodedBlock& block) {
+  uint32_t CompilablePrefix(const DecodedBlock& block) const {
     size_t n = block.instructions.size();
 
     // A memory access whose fault would have to be taken while a load is still
@@ -503,7 +556,13 @@ class BlockCompiler {
     std::vector<bool> ok(n, false);
     for (size_t i = n; i-- > 0;) {
       const uint32_t word = block.instructions[i].word;
-      bool can = Compilable(word);
+      bool can = CanCompile(word);
+      // An add that overflows in a branch's delay slot is the branch's exception, taken with its
+      // address and the BD bit, which the interpreter does and compiled code does not: the add
+      // is left to it, and so is the branch before it, whose slot would not be compiled.
+      if (can && i > 0 && TrapsOnOverflow(word) &&
+          IsBranchOrJump(block.instructions[i - 1].word))
+        can = false;
       if (can && NeedsFollower(word))
         can = (i + 1 < n) && ok[i + 1];
       ok[i] = can;
@@ -799,6 +858,12 @@ class BlockCompiler {
     const uint16_t immediate = static_cast<uint16_t>(word & 0xFFFF);
 
     switch (opcode) {
+      case 0x08:   // addi - addiu, but a signed overflow raises an exception instead
+        LoadReg(kScratchA, rs);
+        x86::AluRegImm(emitter_, x86::AluImmOp::kAdd, kScratchA, SignExtend(immediate));
+        EmitOverflowCheck(instruction, rt);
+        return;
+
       case 0x09:   // addiu rt, rs, imm - sign-extended, and does not trap
         LoadReg(kScratchA, rs);
         x86::AluRegImm(emitter_, x86::AluImmOp::kAdd, kScratchA, SignExtend(immediate));
@@ -894,6 +959,27 @@ class BlockCompiler {
         EmitShiftVariable(x86::ShiftOp::kSar, rd, rt, rs);
         break;
 
+      case 0x20:   // add - addu, but a signed overflow raises an exception instead
+        LoadReg(kScratchA, rs);
+        LoadReg(kScratchB, rt);
+        x86::AluRegReg(emitter_, x86::AluOp::kAdd, kScratchA, kScratchB);
+        EmitOverflowCheck(instruction, rd);
+        break;
+
+      case 0x10: case 0x12:   // mfhi, mflo
+        EmitSpecialCall(instruction, funct);
+        StoreReg(rd, kScratchA);
+        break;
+      case 0x11: case 0x13:   // mthi, mtlo
+        LoadReg(kArg3, rs);
+        EmitSpecialCall(instruction, funct);
+        break;
+      case 0x18: case 0x19: case 0x1A: case 0x1B:   // mult, multu, div, divu
+        LoadReg(kArg3, rs);
+        LoadReg(kArg4, rt);
+        EmitSpecialCall(instruction, funct);
+        break;
+
       case 0x21:   // addu
         EmitAlu(x86::AluOp::kAdd, rd, rs, rt);
         EmitMoveIfCopy(rd, rs, rt);
@@ -938,6 +1024,40 @@ class BlockCompiler {
         break;    // Compilable() admitted nothing else
     }
     FlushPending(Destination(word));
+  }
+
+  // The end of a trapping add: the sum is in EAX and the flags are the add's. No overflow, and it
+  // is stored to `destination`; overflow, and the host raises the exception and the block leaves,
+  // by the same exit a faulting memory access takes, with the destination untouched.
+  //
+  // The call is off to one side and falls through to a jump out, so the common path is the add,
+  // one jump not taken and the store. A load still in flight is written to its register on the
+  // way out, as a memory access does before it can fault - only on this path, where it is the
+  // state the interpreter has to resume from, and not on the one that carries on, where the load
+  // lands after the add as it should.
+  void EmitOverflowCheck(const Instruction& instruction, uint32_t destination) {
+    const size_t no_overflow = code_->cursor;
+    x86::JccRel8(emitter_, x86::Cc::kNoOverflow, 0);
+
+    if (pending_active_)
+      StoreReg(pending_reg_, kPending);
+    x86::MovRegImm(emitter_, kScratchC, kSpecialOverflow);                // arg 2: the operation
+    EmitCall(kOffSpecial, instruction.pc, kArg3);                         // arg 3: where
+    fault_exits_.push_back(code_->cursor);
+    x86::JmpRel32(emitter_, 0);                                           // the host set the fault
+
+    PatchRel8(code_, no_overflow, code_->cursor);
+    StoreReg(destination, kScratchA);
+  }
+
+  // A call to BlockState::special for the multiply and divide unit: the operation and how far into
+  // the block this is in arg 2, the operands already in arg 3 and 4 (R8D and R9D), and a read's
+  // value coming back in EAX. Nothing live is in a volatile register between instructions, and the
+  // callee does not touch the guest registers - it takes values and returns one.
+  void EmitSpecialCall(const Instruction& instruction, uint32_t funct) {
+    const uint32_t index = (instruction.pc - block_pc_) >> 2;
+    x86::MovRegImm(emitter_, kScratchC, funct | (index << 8));
+    EmitCall(kOffSpecial, instruction.pc, kScratchD);   // the pc register is not one it reads
   }
 
   // A branch, as two addresses and a conditional move. `taken` is computed from
@@ -1373,6 +1493,11 @@ class BlockCompiler {
   uint32_t direct_ram_bytes_ = 0;
   uint8_t direct_ram_read_cycles_ = 0;
   uint32_t direct_ram_window_ = 0;
+
+  // set_special_ops, and where the block being compiled starts - an instruction's index in it is
+  // what a call to BlockState::special reports.
+  bool special_ops_ = false;
+  uint32_t block_pc_ = 0;
 
   // Set by PatchRel8 when a jump would not reach, for Compile to see.
   bool rel8_out_of_reach_ = false;
