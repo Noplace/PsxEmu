@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <emmintrin.h>
 
 namespace emulation {
     namespace psx {
@@ -1687,7 +1688,32 @@ namespace emulation {
 
                 if (!status_.display_depth) {
                     // 15 bit: one VRAM halfword per pixel.
-                    for (int x = 0; x < display_width_; ++x) {
+                    int x = 0;
+                    // Eight at a time when the row does not wrap past VRAM's right edge: the
+                    // same widening as From5Bit, in 16-bit lanes - (c << 3) | (c >> 2) - and
+                    // blue, green, red, opaque interleaved into pixels.
+                    if (display_vram_x_ + static_cast<uint32_t>(display_width_) <= kVramWidth) {
+                        const uint16_t* source = &VramAt(display_vram_x_, vram_y);
+                        const __m128i mask5 = _mm_set1_epi16(0x1F);
+                        const __m128i opaque = _mm_set1_epi16(static_cast<short>(0xFF00));
+                        for (; x + 8 <= display_width_; x += 8) {
+                            const __m128i pixels = _mm_loadu_si128(
+                                reinterpret_cast<const __m128i*>(source + x));
+                            __m128i r = _mm_and_si128(pixels, mask5);
+                            __m128i g = _mm_and_si128(_mm_srli_epi16(pixels, 5), mask5);
+                            __m128i b = _mm_and_si128(_mm_srli_epi16(pixels, 10), mask5);
+                            r = _mm_or_si128(_mm_slli_epi16(r, 3), _mm_srli_epi16(r, 2));
+                            g = _mm_or_si128(_mm_slli_epi16(g, 3), _mm_srli_epi16(g, 2));
+                            b = _mm_or_si128(_mm_slli_epi16(b, 3), _mm_srli_epi16(b, 2));
+                            const __m128i blue_green = _mm_or_si128(b, _mm_slli_epi16(g, 8));
+                            const __m128i red_alpha = _mm_or_si128(r, opaque);
+                            _mm_storeu_si128(reinterpret_cast<__m128i*>(row + x),
+                                             _mm_unpacklo_epi16(blue_green, red_alpha));
+                            _mm_storeu_si128(reinterpret_cast<__m128i*>(row + x + 4),
+                                             _mm_unpackhi_epi16(blue_green, red_alpha));
+                        }
+                    }
+                    for (; x < display_width_; ++x) {
                         const uint16_t pixel = VramAt(display_vram_x_ + x, vram_y);
                         row[x] = 0xFF000000u |
                             (From5Bit(pixel & 0x1F) << 16) |
