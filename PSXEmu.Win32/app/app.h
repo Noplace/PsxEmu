@@ -185,7 +185,7 @@ namespace psxemu {
         // Borderless full screen over the monitor the window is on, and back to the window as it
         // was. Alt+Enter or F11 toggles it, Escape leaves it, and so does View > Full Screen.
         void SetFullscreen(bool on);
-        // Help > About: what this is, and the attribution NVIDIA's licences ask for.
+        // Help > About: what this is, and the attribution NVIDIA's and AMD's licences ask for.
         void ShowAbout();
         // NVIDIA's files for DLSS not beside the emulator - none, if there is no NVIDIA card to
         // run them - and how to get them, with the way to check again (RetryDlss).
@@ -194,6 +194,12 @@ namespace psxemu {
         // The renderer made again, which loads NVIDIA's files if they have arrived since -
         // when DLSS is asked for on Direct3D 12 and is not running.
         void RetryDlss();
+        // AMD's files for FSR not beside the emulator, and how to get them, the same way.
+        std::vector<std::wstring> MissingFsrFiles() const;
+        void ShowFsrFiles();
+        // ...or the emulator downloading them itself, with a progress dialog.
+        void FetchFsrFiles();
+        void RetryFsr();
         void SetMouseMotion(const std::string& key);
         void SetMouseDpi(int dpi);
         // On the machine's thread, after every frame: what the BIOS console gained, posted to the
@@ -467,15 +473,28 @@ namespace psxemu {
         // runs.
         void SendDlssToRenderer();
         void OnDlssStatus(const DlssStatus& status);
-        // Works out whether DLSS runs, at what scale and jitter, and tells the machine what
-        // changed. Called whenever anything it depends on may have: the setting, the renderer's
-        // word, the rasteriser, the window's size.
-        void UpdateDlss();
+        // Works out whether DLSS or FSR runs, at what scale and jitter, and tells the machine
+        // what changed. Called whenever anything it depends on may have: the setting, the
+        // renderer's word, the rasteriser, the window's size.
+        void UpdateUpscaler();
         DlssChoice dlss_sent_;           // what the renderer was last told
         DlssStatus dlss_status_;         // ...and what it said
-        bool dlss_active_ = false;       // DLSS running: the machine told so
-        int dlss_scale_ = 0;             // the rasteriser's scale while it does
-        int dlss_phases_ = 0;            // the jitter's length
+        bool upscaler_active_ = false;   // DLSS or FSR running: the machine told so
+        bool fsr_active_ = false;        // ...and it is FSR
+        int upscaler_scale_ = 0;         // the rasteriser's scale while it does
+        int upscaler_phases_ = 0;        // the jitter's length
+
+        // Settings > Video, AMD FSR (Docs/FSR-Plan.md): the same as DLSS, through AMD's runtime
+        // on any Direct3D 12 card. Never both: a mode chosen in one turns the other off.
+        void SetFsrMode(const std::string& key);
+        void SetFsrVersion(const std::string& key);
+        void SetFsrSharpness(const std::string& key);
+        void SetFsrFrameGeneration(bool on);
+        void SendFsrToRenderer();
+        void OnFsrStatus(const FsrStatus& status);
+        FsrChoice FsrChoiceFromConfig() const;
+        FsrChoice fsr_sent_;
+        FsrStatus fsr_status_;
         bool sizing_ = false;            // inside a drag or resize of the window
 
         // The BIOS in use, as a full path, and the images the last scan found. bios_path_ is what

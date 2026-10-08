@@ -209,6 +209,10 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetString("dlss_mode", c.dlss_mode);
   f.SetString("dlss_preset", c.dlss_preset);
   f.SetString("dlss_frame_generation", c.dlss_frame_generation);
+  f.SetString("fsr_mode", c.fsr_mode);
+  f.SetString("fsr_version", c.fsr_version);
+  f.SetString("fsr_sharpness", c.fsr_sharpness);
+  f.SetBool("fsr_frame_generation", c.fsr_frame_generation);
   f.SetBool("gpu_transfer_timing", c.gpu_transfer_timing);
   f.SetBool("icache_timing", c.icache_timing);
   f.SetBool("exact_event_timing", c.exact_event_timing);
@@ -315,6 +319,19 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   const std::string generation = f.GetString("dlss_frame_generation", c.dlss_frame_generation);
   if (IsValidChoice(generation, EmuConfig::kValidDlssFrameGenerations))
     c.dlss_frame_generation = generation;
+  const std::string fsr_mode = f.GetString("fsr_mode", c.fsr_mode);
+  if (IsValidChoice(fsr_mode, EmuConfig::kValidFsrModes))
+    c.fsr_mode = fsr_mode;
+  const std::string fsr_version = f.GetString("fsr_version", c.fsr_version);
+  if (IsValidChoice(fsr_version, EmuConfig::kValidFsrVersions))
+    c.fsr_version = fsr_version;
+  const std::string fsr_sharpness = f.GetString("fsr_sharpness", c.fsr_sharpness);
+  if (IsValidChoice(fsr_sharpness, EmuConfig::kValidFsrSharpness))
+    c.fsr_sharpness = fsr_sharpness;
+  c.fsr_frame_generation = f.GetBool("fsr_frame_generation", c.fsr_frame_generation);
+  // DLSS and FSR are never both on: a file edited by hand to have both keeps DLSS.
+  if (c.dlss_mode != "off" && c.fsr_mode != "off")
+    c.fsr_mode = "off";
   c.gpu_transfer_timing = f.GetBool("gpu_transfer_timing", c.gpu_transfer_timing);
   c.icache_timing = f.GetBool("icache_timing", c.icache_timing);
   c.exact_event_timing = f.GetBool("exact_event_timing", c.exact_event_timing);
@@ -381,6 +398,8 @@ inline std::vector<std::string> GameSettingKeys() {
       // ...and DLSS off, or in another mode, for a game it does badly or well
       // (Docs/DLSS-Plan.md).
       "dlss_mode",          "dlss_frame_generation",
+      // ...and FSR the same way (Docs/FSR-Plan.md).
+      "fsr_mode",           "fsr_frame_generation",
   };
   for (int port = 0; port < 2; ++port) {
     for (int player = 0; player < 4; ++player)

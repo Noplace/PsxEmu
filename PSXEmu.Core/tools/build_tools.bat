@@ -218,6 +218,23 @@ cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_slprobe\ /Fe:Temp\tools\sl_probe.e
    PSXEmu.Core\tools\sl_probe.cpp PSXEmu.Win32\graphics\dlss\streamline.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
+rem The arithmetic of sizes around AMD FSR: graphics\fsr\fsr_choice.h, header-only.
+if not exist Temp\tools\obj_fsr mkdir Temp\tools\obj_fsr
+cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_fsr\ /Fe:Temp\tools\fsr_choice_test.exe ^
+   PSXEmu.Core\tools\fsr_choice_test.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
+rem What AMD's FidelityFX runtime says about each card - Docs/FSR-Plan.md, phase 0. Needs
+rem PSXEmu.Win32\graphics\fsr\fetch_fidelityfx.ps1 run first to find anything, but builds without;
+rem AMD's loader finds its effects only beside the executable, so they are copied here.
+if not exist Temp\tools\obj_ffxprobe mkdir Temp\tools\obj_ffxprobe
+cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_ffxprobe\ /Fe:Temp\tools\ffx_probe.exe ^
+   PSXEmu.Core\tools\ffx_probe.cpp PSXEmu.Win32\graphics\fsr\fidelityfx.cpp ^
+   PSXEmu.Win32\graphics\dlss\streamline.cpp %LIBS%
+if errorlevel 1 exit /b 1
+if exist Temp\fidelityfx\v2.3.0\amd_fidelityfx_loader_dx12.dll ^
+   xcopy /y /d /q Temp\fidelityfx\v2.3.0\*.dll Temp\tools\ >nul
+
 echo.
 echo Built Temp\tools\boot_runner.exe
 echo Built Temp\tools\media_test.exe

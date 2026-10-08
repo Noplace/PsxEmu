@@ -28,6 +28,8 @@ place to keep current.
 | `frame_limiter_test` `speed_resampler_test` `letterbox_test` | The host-side headers the front end leans on |
 | `dlss_choice_test` | The arithmetic of sizes around DLSS - the rasteriser's scale, the jitter, the output |
 | `sl_probe` | What NVIDIA Streamline says of each card; with `--optimal`, `--jitter-test` or `--cost`, DLSS's input sizes, the signs of its jitter and motion, and its cost. Needs the SDK fetched (`PSXEmu.Win32\graphics\dlss\fetch_streamline.ps1`) |
+| `fsr_choice_test` | The arithmetic of sizes around AMD FSR - the rasteriser's scale, the jitter against AMD's table, the output |
+| `ffx_probe` | What AMD's FidelityFX runtime offers on each card (the NVIDIA one only with `--all` or `--card`); with `--jitter-test` or `--cost`, the signs of FSR's jitter and motion, and its cost; `--version` picks an upscaler by AMD's name. Needs the DLLs fetched (`PSXEmu.Win32\graphics\fsr\fetch_fidelityfx.ps1`), which `build_tools.bat` copies beside it - AMD's loader looks only beside the executable |
 | `wav_pitch` | The note in a WAV `boot_runner --wav` wrote |
 | `make_test_disc` | Writes a synthetic disc image |
 

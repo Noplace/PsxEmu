@@ -69,7 +69,8 @@ namespace psxemu {
     // Plan.md's rules. Empty means nothing to say.
     //
     // `dlss` is what DLSS is asked for (IGraphicsEngine::SetDlss), also given before each engine
-    // starts. An engine without it starts regardless, and says why not.
+    // starts. An engine without it starts regardless, and says why not. `fsr`, AMD FSR, the same way
+    // (IGraphicsEngine::SetFsr).
     std::unique_ptr<IGraphicsEngine> CreateGraphicsEngine(GraphicsBackend preferred,
                                                           const RenderWindows& windows,
                                                           int width, int height,
@@ -77,7 +78,8 @@ namespace psxemu {
                                                           std::wstring* warning,
                                                           uint64_t adapter_luid = 0,
                                                           const std::string& adapter_name = std::string(),
-                                                          const DlssChoice& dlss = DlssChoice());
+                                                          const DlssChoice& dlss = DlssChoice(),
+                                                          const FsrChoice& fsr = FsrChoice());
 
     // Compiles every ported filter into the engine at once - cheap (startup-cost shader compiles,
     // not per-frame work), so there is no reason to defer any of them until first selected. HLSL

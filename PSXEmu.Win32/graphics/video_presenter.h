@@ -86,9 +86,19 @@ namespace psxemu {
         void set_dlss_listener(std::function<void(const DlssStatus&)> listener) {
             dlss_listener_ = std::move(listener);
         }
-        // DLSS Frame Generation only at full speed (IGraphicsEngine::SetFrameGenerationAllowed).
+        // Settings > Video, AMD FSR, the same way: the engine made again when FSR's Frame
+        // Generation goes on or off (IGraphicsEngine::FsrNeedsRemaking).
+        void SetFsr(const FsrChoice& choice);
+        FsrStatus fsr_status() const {
+            return engine_ != nullptr ? engine_->fsr_status() : FsrStatus();
+        }
+        void set_fsr_listener(std::function<void(const FsrStatus&)> listener) {
+            fsr_listener_ = std::move(listener);
+        }
+        // Frame Generation, DLSS's or FSR's, only at full speed
+        // (IGraphicsEngine::SetFrameGenerationAllowed).
         void SetFrameGenerationAllowed(bool allowed);
-        // The engine made again as it is - for NVIDIA's DLSS files put beside the emulator
+        // The engine made again as it is - for NVIDIA's DLSS files or AMD's FSR files put beside the emulator
         // since it was made, which it loads as it starts.
         void Reopen() {
             if (engine_ != nullptr)
@@ -124,12 +134,16 @@ namespace psxemu {
         bool generation_allowed_ = true;
         std::function<void(const DlssStatus&)> dlss_listener_;
         DlssStatus dlss_reported_;
+        FsrChoice fsr_;
+        std::function<void(const FsrStatus&)> fsr_listener_;
+        FsrStatus fsr_reported_;
         // Under Frame Generation: the last picture presented, and when - repeats of it are not
         // presented, and while pictures come the overlay waits for them rather than presenting
         // in between.
         uint32_t last_picture_ = 0;
         std::chrono::steady_clock::time_point last_picture_time_;
         void ReportDlss();
+        void ReportFsr();
 
         HWND window_;
         RenderWindows windows_;

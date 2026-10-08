@@ -267,6 +267,24 @@ struct EmuConfig {
   std::string dlss_frame_generation = "off";
   static const std::array<const char*, 7> kValidDlssFrameGenerations;
 
+  // AMD FSR (Docs/FSR-Plan.md): the same as DLSS - the picture drawn smaller and jittered, and
+  // FSR making the screen's picture from the plane's motion and depth - through AMD's FidelityFX
+  // runtime, on any Direct3D 12 card. Off by default, an enhancement like DLSS, and never with
+  // it: choosing one turns the other off. "off", "native_aa", "quality", "balanced",
+  // "performance" or "ultra_performance".
+  std::string fsr_mode = "off";
+  static const std::array<const char*, 6> kValidFsrModes;
+  // Which upscaler: "auto" - AMD's own for the card, FSR 4 where the card has it - "fsr4" or
+  // "fsr3".
+  std::string fsr_version = "auto";
+  static const std::array<const char*, 3> kValidFsrVersions;
+  // AMD's sharpening after the upscale: "off", "low", "medium", "high" or "max".
+  std::string fsr_sharpness = "medium";
+  static const std::array<const char*, 5> kValidFsrSharpness;
+  // FSR Frame Generation, with an FSR mode on: one picture made between each two of the game's.
+  // At 100% speed only; AMD designed FSR 3.1's for 60 pictures a second and more.
+  bool fsr_frame_generation = false;
+
   // Charge the GPU for CPU-to-VRAM and VRAM-to-CPU transfers: one tick per pixel
   // moved, so commands issued after a large upload wait for it the way they
   // would on hardware. Off by default because it can only make a game slower,
@@ -465,6 +483,11 @@ inline const std::array<const char*, 6> EmuConfig::kValidDlssModes = {
 inline const std::array<const char*, 4> EmuConfig::kValidDlssPresets = { "auto", "k", "l", "m" };
 inline const std::array<const char*, 7> EmuConfig::kValidDlssFrameGenerations = {
     "off", "2x", "3x", "4x", "5x", "6x", "dynamic" };
+inline const std::array<const char*, 6> EmuConfig::kValidFsrModes = {
+    "off", "native_aa", "quality", "balanced", "performance", "ultra_performance" };
+inline const std::array<const char*, 3> EmuConfig::kValidFsrVersions = { "auto", "fsr4", "fsr3" };
+inline const std::array<const char*, 5> EmuConfig::kValidFsrSharpness = {
+    "off", "low", "medium", "high", "max" };
 
 // Empty string ("None") first, then the nine loaded filters in the same
 // order PSXEmu.Win32's Video Settings window offers them.

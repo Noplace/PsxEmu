@@ -39,9 +39,12 @@ namespace {
     //   motion  where the pixel was in the last picture minus where it is, in the picture's own
     //           pixels - DLSS's convention and scale (mvecScale 1/size) - and 0 where unknown
     //   depth   1/w as it is: nearer is larger (depthInverted), unknown 0 is infinitely far
-    //   hint    how far to trust this picture over DLSS's history (the bias-current-colour hint):
-    //           wholly where the motion is unknown, half where the last thing drawn was
-    //           translucent, which the motion underneath it does not describe
+    //   hint    how far to trust this picture over the upscaler's history - DLSS's
+    //           bias-current-colour hint, FSR's reactive mask - one value where the motion is
+    //           unknown, another where the last thing drawn was translucent, which the motion
+    //           underneath it does not describe; each upscaler gives its own
+    // AMD FSR takes the same three (graphics/d3d12_fsr.cpp): its motion in pixels rather than
+    // DLSS's scaled, which is the scale it is given, not anything written here.
     // A filled 480-line picture's console samples on its filled rows hold the last field
     // (SharedPicture::filled_rows): the plane just below each, this frame's, is taken in its
     // place - not a mean, which would blend motion and depth across an edge.
@@ -50,7 +53,10 @@ Texture2D<float4> planes : register(t0);
 RWTexture2D<float2> motion : register(u0);
 RWTexture2D<float> depth : register(u1);
 RWTexture2D<float> hint : register(u2);
-cbuffer Size : register(b0) { uint width; uint height; uint filled_rows; uint scale; };
+cbuffer Size : register(b0) {
+    uint width; uint height; uint filled_rows; uint scale; float unknown_hint;
+    float translucent_hint;
+};
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID) {
@@ -64,7 +70,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     const bool unknown = plane.r >= 16384.0;   // kUnknownMotion, 32768
     motion[id.xy] = unknown ? float2(0.0, 0.0) : plane.rg;
     depth[id.xy] = plane.b / 256.0;             // kPlaneDepthScale
-    hint[id.xy] = unknown ? 1.0 : (plane.a < 0.5 ? 0.5 : 0.0);
+    hint[id.xy] = unknown ? unknown_hint : (plane.a < 0.5 ? translucent_hint : 0.0);
 }
 )HLSL";
 
@@ -537,7 +543,8 @@ bool D3D12GraphicsEngine::CreateDlssPipeline() {
     ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 3, 0);   // u0-u2 motion, depth, hint
     CD3DX12_ROOT_PARAMETER parameters[2];
     parameters[0].InitAsDescriptorTable(2, ranges);
-    parameters[1].InitAsConstants(4, 0);   // b0: the size, and the filled rows and scale
+    // b0: the size, the filled rows and scale, and the hint's two values
+    parameters[1].InitAsConstants(6, 0);
     CD3DX12_ROOT_SIGNATURE_DESC description;
     description.Init(2, parameters);
     ComPtr<ID3DBlob> serialized, errors;
@@ -624,7 +631,7 @@ void D3D12GraphicsEngine::CreateDlssTimers() {
                  "heap 0x%08lX, readback 0x%08lX",
                  static_cast<unsigned long>(frequency), static_cast<unsigned long>(heap),
                  static_cast<unsigned long>(made));
-        NoteDlss(line);
+        NoteUpscaler(line);
         dlss_queries_.Reset();
         dlss_query_readback_.Reset();
     }
@@ -656,7 +663,7 @@ void D3D12GraphicsEngine::CollectDlssTiming() {
         dlss_timing_noted_ = true;
         char line[96];
         snprintf(line, sizeof(line), "the first picture took %.1f ms of the card", ms);
-        NoteDlss(line);
+        NoteUpscaler(line);
     }
 }
 
@@ -786,31 +793,12 @@ ID3D12Resource* D3D12GraphicsEngine::OpenPlanes(const emulation::psx::SharedPict
     return resource.Get();
 }
 
-bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& picture,
-                                       ID3D12Resource* planes, int out_width, int out_height) {
-    const int width = picture.width;
-    const int height = picture.height;
-    // Streamline's frame is the picture: the same for DLSS's constants and tags here, Frame
-    // Generation's tags at the present, and Reflex's markers on both threads.
-    if (Token(picture.picture) == nullptr) {
-        NoteDlss("no frame token");
-        return false;
-    }
-    if (!EnsureDlssTargets(width, height, out_width, out_height)) {
-        NoteDlss("DLSS's textures could not be made");
-        return false;
-    }
-    // Which of Streamline's steps failed, and what it said.
-    auto check = [this](sl::Result result, const char* step) {
-        if (result == sl::Result::eOk)
-            return true;
-        NoteDlss(std::string(step) + " failed: " + psxemu::StreamlineResultText(result) + " - " +
-                 streamline_->last_message());
-        return false;
-    };
-
-    // This frame's descriptors, which the fence says the card has finished with since this
-    // slot's frame last came round.
+// The plane into the upscaler's three inputs, a thread a pixel, on this frame's own descriptors -
+// which the fence says the card has finished with since this slot's frame last came round. The
+// inputs are left readable by DLSS and FSR alike (kDlssInputState).
+void D3D12GraphicsEngine::MakeUpscalerInputs(const emulation::psx::SharedPicture& picture,
+                                             ID3D12Resource* planes, float unknown,
+                                             float translucent) {
     const UINT increment =
         device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     D3D12_CPU_DESCRIPTOR_HANDLE cpu = dlss_heap_->GetCPUDescriptorHandleForHeapStart();
@@ -838,51 +826,102 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
         }
     }
 
-    // Show Timings: the card's time from here to DLSS's end.
+    // Show Timings: the card's time from here to the upscaler's end.
     if (dlss_queries_ != nullptr)
         command_list_->EndQuery(dlss_queries_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
                                 2 * frame_index_);
 
-    // The plane into DLSS's inputs. From another device it lives in the common state between
-    // the two, and goes back to it; drawn on this one it is already readable by any shader.
+    // From another device the plane lives in the common state between the two, and goes back to
+    // it; drawn on this one it is already readable by any shader.
     const bool planes_here = picture.source->device() != nullptr;
-    {
-        if (!planes_here) {
-            const CD3DX12_RESOURCE_BARRIER to_read = CD3DX12_RESOURCE_BARRIER::Transition(
-                planes, D3D12_RESOURCE_STATE_COMMON,
-                D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-            command_list_->ResourceBarrier(1, &to_read);
-        }
-        command_list_->SetComputeRootSignature(dlss_root_.Get());
-        command_list_->SetPipelineState(dlss_pipeline_.Get());
-        ID3D12DescriptorHeap* heaps[] = { dlss_heap_.Get() };
-        command_list_->SetDescriptorHeaps(1, heaps);
-        command_list_->SetComputeRootDescriptorTable(0, gpu);
-        const UINT size[4] = { static_cast<UINT>(width), static_cast<UINT>(height),
-                               static_cast<UINT>(picture.filled_rows),
-                               static_cast<UINT>((std::max)(picture.scale, 1)) };
-        command_list_->SetComputeRoot32BitConstants(1, 4, size, 0);
-        command_list_->Dispatch((static_cast<UINT>(width) + 7) / 8,
-                                (static_cast<UINT>(height) + 7) / 8, 1);
-        if (!planes_here) {
-            const CD3DX12_RESOURCE_BARRIER back = CD3DX12_RESOURCE_BARRIER::Transition(
-                planes, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-                D3D12_RESOURCE_STATE_COMMON);
-            command_list_->ResourceBarrier(1, &back);
-        }
-        const CD3DX12_RESOURCE_BARRIER done[] = {
-            CD3DX12_RESOURCE_BARRIER::Transition(dlss_motion_.Get(),
-                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                 kDlssInputState),
-            CD3DX12_RESOURCE_BARRIER::Transition(dlss_depth_.Get(),
-                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                 kDlssInputState),
-            CD3DX12_RESOURCE_BARRIER::Transition(dlss_hint_.Get(),
-                                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                 kDlssInputState),
-        };
-        command_list_->ResourceBarrier(_countof(done), done);
+    if (!planes_here) {
+        const CD3DX12_RESOURCE_BARRIER to_read = CD3DX12_RESOURCE_BARRIER::Transition(
+            planes, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        command_list_->ResourceBarrier(1, &to_read);
     }
+    command_list_->SetComputeRootSignature(dlss_root_.Get());
+    command_list_->SetPipelineState(dlss_pipeline_.Get());
+    ID3D12DescriptorHeap* heaps[] = { dlss_heap_.Get() };
+    command_list_->SetDescriptorHeaps(1, heaps);
+    command_list_->SetComputeRootDescriptorTable(0, gpu);
+    UINT constants[6] = { static_cast<UINT>(picture.width), static_cast<UINT>(picture.height),
+                          static_cast<UINT>(picture.filled_rows),
+                          static_cast<UINT>((std::max)(picture.scale, 1)), 0, 0 };
+    memcpy(&constants[4], &unknown, sizeof(float));
+    memcpy(&constants[5], &translucent, sizeof(float));
+    command_list_->SetComputeRoot32BitConstants(1, 6, constants, 0);
+    command_list_->Dispatch((static_cast<UINT>(picture.width) + 7) / 8,
+                            (static_cast<UINT>(picture.height) + 7) / 8, 1);
+    if (!planes_here) {
+        const CD3DX12_RESOURCE_BARRIER back = CD3DX12_RESOURCE_BARRIER::Transition(
+            planes, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        command_list_->ResourceBarrier(1, &back);
+    }
+    const CD3DX12_RESOURCE_BARRIER done[] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(dlss_motion_.Get(),
+                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kDlssInputState),
+        CD3DX12_RESOURCE_BARRIER::Transition(dlss_depth_.Get(),
+                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kDlssInputState),
+        CD3DX12_RESOURCE_BARRIER::Transition(dlss_hint_.Get(),
+                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS, kDlssInputState),
+    };
+    command_list_->ResourceBarrier(_countof(done), done);
+}
+
+// The inputs back to where the pass writes them, Show Timings' second timestamp, and the back
+// buffer the target again: the upscaler leaves the command list as it likes, and the draw after
+// it sets all it uses but the target.
+void D3D12GraphicsEngine::FinishUpscalerInputs(bool ran) {
+    const CD3DX12_RESOURCE_BARRIER back[] = {
+        CD3DX12_RESOURCE_BARRIER::Transition(dlss_motion_.Get(), kDlssInputState,
+                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+        CD3DX12_RESOURCE_BARRIER::Transition(dlss_depth_.Get(), kDlssInputState,
+                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+        CD3DX12_RESOURCE_BARRIER::Transition(dlss_hint_.Get(), kDlssInputState,
+                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
+    };
+    command_list_->ResourceBarrier(_countof(back), back);
+
+    if (dlss_queries_ != nullptr) {
+        command_list_->EndQuery(dlss_queries_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                                2 * frame_index_ + 1);
+        command_list_->ResolveQueryData(dlss_queries_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
+                                        2 * frame_index_, 2, dlss_query_readback_.Get(),
+                                        sizeof(UINT64) * 2 * frame_index_);
+        dlss_query_pending_[frame_index_] = ran;
+    }
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv(rtv_heap_->GetCPUDescriptorHandleForHeapStart());
+    rtv.ptr += static_cast<SIZE_T>(frame_index_) * rtv_descriptor_size_;
+    command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+}
+
+bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& picture,
+                                       ID3D12Resource* planes, int out_width, int out_height) {
+    const int width = picture.width;
+    const int height = picture.height;
+    // Streamline's frame is the picture: the same for DLSS's constants and tags here, Frame
+    // Generation's tags at the present, and Reflex's markers on both threads.
+    if (Token(picture.picture) == nullptr) {
+        NoteDlss("no frame token");
+        return false;
+    }
+    if (!EnsureDlssTargets(width, height, out_width, out_height)) {
+        NoteDlss("DLSS's textures could not be made");
+        return false;
+    }
+    // Which of Streamline's steps failed, and what it said.
+    auto check = [this](sl::Result result, const char* step) {
+        if (result == sl::Result::eOk)
+            return true;
+        NoteDlss(std::string(step) + " failed: " + psxemu::StreamlineResultText(result) + " - " +
+                 streamline_->last_message());
+        return false;
+    };
+
+    // The hint: wholly this picture where the motion is unknown, half where the last thing drawn
+    // was translucent.
+    MakeUpscalerInputs(picture, planes, 1.0f, 0.5f);
 
     const sl::ViewportHandle viewport(0u);
     bool ok = true;
@@ -988,39 +1027,28 @@ bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& pict
                    "slEvaluateFeature");
     }
 
-    const CD3DX12_RESOURCE_BARRIER back[] = {
-        CD3DX12_RESOURCE_BARRIER::Transition(dlss_motion_.Get(), kDlssInputState,
-                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-        CD3DX12_RESOURCE_BARRIER::Transition(dlss_depth_.Get(), kDlssInputState,
-                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-        CD3DX12_RESOURCE_BARRIER::Transition(dlss_hint_.Get(), kDlssInputState,
-                                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS),
-    };
-    command_list_->ResourceBarrier(_countof(back), back);
-
-    if (dlss_queries_ != nullptr) {
-        command_list_->EndQuery(dlss_queries_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                                2 * frame_index_ + 1);
-        command_list_->ResolveQueryData(dlss_queries_.Get(), D3D12_QUERY_TYPE_TIMESTAMP,
-                                        2 * frame_index_, 2, dlss_query_readback_.Get(),
-                                        sizeof(UINT64) * 2 * frame_index_);
-        dlss_query_pending_[frame_index_] = ok;
-    }
-
-    // DLSS leaves the command list as it likes; the draw after it sets all it uses but the
-    // target, which is the back buffer again.
-    D3D12_CPU_DESCRIPTOR_HANDLE rtv(rtv_heap_->GetCPUDescriptorHandleForHeapStart());
-    rtv.ptr += static_cast<SIZE_T>(frame_index_) * rtv_descriptor_size_;
-    command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-
+    FinishUpscalerInputs(ok);
     if (ok)
         dlss_reset_ = false;
     return ok;
 }
 
-bool D3D12GraphicsEngine::DrawDlss(const emulation::psx::SharedPicture& picture) {
+LetterboxRect D3D12GraphicsEngine::ScreenRect() const {
+    return Snapped(ComputeLetterboxRect(width_, height_, 4.0f / 3.0f));
+}
+
+void D3D12GraphicsEngine::NoteUpscaler(const std::string& line) {
+    if (FsrRunning())
+        NoteFsr(line);
+    else
+        NoteDlss(line);
+}
+
+bool D3D12GraphicsEngine::DrawUpscaled(const emulation::psx::SharedPicture& picture) {
+    const bool fsr = FsrRunning();
+    const char* const name = fsr ? "FSR" : "DLSS";
     auto give_up = [this](const std::string& why) {
-        NoteDlss("not run: " + why);
+        NoteUpscaler("not run: " + why);
         dlss_reset_ = true;
         dlss_output_valid_ = false;
         return false;
@@ -1032,19 +1060,22 @@ bool D3D12GraphicsEngine::DrawDlss(const emulation::psx::SharedPicture& picture)
     if (picture.interlaced)
         return give_up("interlaced");
 
-    const LetterboxRect screen = Snapped(ComputeLetterboxRect(width_, height_, 4.0f / 3.0f));
+    const LetterboxRect screen = ScreenRect();
     int out_width = 0, out_height = 0;
-    if (!ChooseDlssOutput(picture.width, picture.height, screen, &out_width, &out_height))
-        return give_up("DLSS takes no output for " + std::to_string(picture.width) + "x" +
-                       std::to_string(picture.height) + " on " +
-                       std::to_string(static_cast<int>(screen.width)) + "x" +
+    const bool taken =
+        fsr ? ChooseFsrOutput(picture.width, picture.height, screen, &out_width, &out_height)
+            : ChooseDlssOutput(picture.width, picture.height, screen, &out_width, &out_height);
+    if (!taken)
+        return give_up(std::string(name) + " takes no output for " +
+                       std::to_string(picture.width) + "x" + std::to_string(picture.height) +
+                       " on " + std::to_string(static_cast<int>(screen.width)) + "x" +
                        std::to_string(static_cast<int>(screen.height)));
 
-    // A new picture, or the same one needed at another size, is DLSS's to make; the last one
-    // again - a 30 fps game's second vblank, or the overlay moving - is drawn as it was made.
+    // A new picture, or the same one needed at another size, is the upscaler's to make; the last
+    // one again - a 30 fps game's second vblank, or the overlay moving - is drawn as it was made.
     // New by its number, not by whether the vblank that sent it had drawn it: a new picture
-    // replaced in the mailbox by its own repeat is still one DLSS has not seen, and a number
-    // skipped is a picture it never saw, which its motion refers to - so it starts afresh.
+    // replaced in the mailbox by its own repeat is still one the upscaler has not seen, and a
+    // number skipped is a picture it never saw, which its motion refers to - so it starts afresh.
     const bool resized = picture.width != dlss_in_width_ || picture.height != dlss_in_height_ ||
                          out_width != dlss_out_width_ || out_height != dlss_out_height_;
     const bool fresh = picture.picture != dlss_picture_;
@@ -1054,14 +1085,16 @@ bool D3D12GraphicsEngine::DrawDlss(const emulation::psx::SharedPicture& picture)
         ID3D12Resource* const planes = OpenPlanes(picture);
         if (planes == nullptr)
             return give_up("the plane could not be opened");
-        if (!EvaluateDlss(picture, planes, out_width, out_height))
+        const bool ran = fsr ? EvaluateFsr(picture, planes, out_width, out_height)
+                             : EvaluateDlss(picture, planes, out_width, out_height);
+        if (!ran)
             return give_up("evaluation failed");
-        NoteDlss("running: " + std::to_string(picture.width) + "x" +
-                 std::to_string(picture.height) + " to " + std::to_string(out_width) + "x" +
-                 std::to_string(out_height));
+        NoteUpscaler("running: " + std::to_string(picture.width) + "x" +
+                     std::to_string(picture.height) + " to " + std::to_string(out_width) + "x" +
+                     std::to_string(out_height));
         dlss_output_valid_ = true;
-        // Frame Generation makes pictures after a new one of DLSS's, not after one made again
-        // at another size.
+        // Frame Generation makes pictures after a new one of the upscaler's, not after one made
+        // again at another size.
         generation_this_frame_ = fresh;
     }
     dlss_picture_ = picture.picture;

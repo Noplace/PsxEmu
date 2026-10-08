@@ -767,11 +767,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 297 | | `gpu_test` | 95 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 474 |
+| `timer_test` | 80 | | `media_test` | 479 |
 | `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,775 checks, 0 failures**, all ten green. Each harness's own section above
+**1,780 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -784,7 +784,9 @@ offer ignored, and the mode among a game's own keys - and one with the Direct3D 
 rasteriser's key, which must round-trip and count as hardware. The eight after that are
 not settings: a sector held in the buffer until its interrupt is acknowledged, bug 139 - nor
 are the seventeen of SPU DMA in request mode, bug 145, or the twenty-eight of the decoded
-header and how far a seek reaches, bug 146.)
+header and how far a seek reaches, bug 146. Five more are AMD FSR's settings, Docs/FSR-Plan.md:
+the defaults, the round trip, values the menu does not offer ignored, DLSS kept and FSR
+turned off when a file has both, and the mode and Frame Generation among a game's own keys.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
@@ -836,6 +838,16 @@ of the motion, and scores each against the pattern (the signs the renderer uses
 come out at 0.025 and 0.043, the others at 0.12-0.25); `--cost` does that and then
 times DLSS at the sizes the emulator gives it. Each makes one device, once: on the
 4060, never in a loop.
+
+`fsr_choice_test` (36 checks) is AMD FSR's arithmetic of sizes in
+`graphics/fsr/fsr_choice.h`: the settings' names, the rasteriser's scale for each mode and
+window (never 1x or 7x), the jitter's length against AMD's own table (18, 32 and 72 at 1.5,
+2 and 3), and the output - the screen's rectangle unless the input is larger. `ffx_probe` is
+AMD's side, as `sl_probe` is NVIDIA's (Docs/FSR-Plan.md, phase 0): the versions AMD offers on
+each card, a device on the NVIDIA card only when asked; `--jitter-test` the signs (jitter
+negated 0.054, motion as given 0.094 on the Radeon, every other sign 0.08-0.22); `--cost` the
+time. AMD's loader finds its effect DLLs only beside the running executable, so
+`build_tools.bat` copies them into `Temp\tools`.
 
 `rec_test` (985 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
