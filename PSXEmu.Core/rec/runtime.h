@@ -117,7 +117,10 @@ struct BlockState {
   uint32_t fault = 0;
   // fault = 2 is not a fault: the block left on purpose before an instruction it does not do, `next_pc`
   // says where, and the interpreter is to run that one (lwl, lwr, swl and swr for anything but RAM).
+  // The low byte of `fault`; the rest says which register had a load in flight that the interpreter's
+  // lwl or lwr is to merge into - its number, shifted up by kBailRegShift, and its value in `bail_value`.
   static const uint32_t kBail = 2;
+  static const uint32_t kBailRegShift = 8;
 
   // How many more guest instructions compiled code may run before handing
   // control back. Every block subtracts its own length on the way out and
@@ -167,6 +170,10 @@ struct BlockState {
 
   // The multiply and divide unit, and the trap on a signed overflow: see SpecialFn.
   SpecialFn special = nullptr;
+
+  // Past the 128 bytes a one-byte offset reaches (the compiled code addresses it by four): the value of a
+  // load in flight when a block bails, see `fault`.
+  uint32_t bail_value = 0;
 };
 
 }  // namespace rec

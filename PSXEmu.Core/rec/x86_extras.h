@@ -249,6 +249,14 @@ inline void Mov64RegReg(Emitter* e, uint8_t dest, uint8_t src) {
   e->emit8(0x89);
   e->emit8(ModRM(3, src, dest));
 }
+// mov [base + disp32], r32 - for a field of BlockState past the reach of a disp8. The base is never
+// rsp or r12, which would want a SIB byte.
+inline void MovMemRegDisp32(Emitter* e, uint8_t reg, uint8_t base, int32_t displacement) {
+  EmitRex(e, false, reg, base);
+  e->emit8(0x89);
+  e->emit8(ModRM(2, reg, base));
+  e->emit32(static_cast<uint32_t>(displacement));
+}
 
 // mov r64, [base + disp8] - for pulling a pointer out of the block's state:
 // the register file, the callback context, a function address.

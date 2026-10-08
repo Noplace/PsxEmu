@@ -145,6 +145,11 @@ struct HostInterface {
   // step and so prefers when it is set: a std::function is a call through a thunk to a lambda.
   bool (*load_in_flight_fn)(void* context) = nullptr;
 
+  // Puts a load into the interpreter's pipeline as though the instruction before had issued it: the register is to
+  // receive the value at the start of the instruction after the next one it runs. Asked for when a block
+  // leaves for the interpreter to do an lwl or lwr (BlockState::kBail) that has a load in flight to merge into.
+  std::function<void(uint32_t reg, uint32_t value)> arm_load;
+
   // A trapping add or addi that overflowed, in the instruction at `pc`: the host raises the
   // exception, as the memory callbacks do for an address error, and calls Recompiler::SetFault.
   // Both this and `hilo` have to be set for the compiler to compile `add`, `addi` and the
@@ -263,6 +268,9 @@ class Recompiler {
     // Once: compiling the block that starts here would meet the same instruction and leave again.
     if (pc == interpret_pc_) {
       interpret_pc_ = kNoPc;
+      if (bail_reg_ != 0 && host_.arm_load)
+        host_.arm_load(bail_reg_, bail_value_);
+      bail_reg_ = 0;
       return Interpret(pc);
     }
 
@@ -323,8 +331,10 @@ class Recompiler {
     // Or the block left on purpose, before an instruction it does not do (lwl, lwr, swl and swr, for
     // anything but RAM): next_pc is that instruction - or the branch whose delay slot it is - and the
     // interpreter is to run it, which is the next step and only that one.
-    if (state_.fault == BlockState::kBail) {
+    if ((state_.fault & 0xFF) == BlockState::kBail) {
       ++stats_.bails;
+      bail_reg_ = state_.fault >> BlockState::kBailRegShift;
+      bail_value_ = state_.bail_value;
       interpret_pc_ = state_.next_pc;
       return state_.next_pc;
     }
@@ -748,6 +758,8 @@ class Recompiler {
   // The address a block asked the interpreter to run next, or kNoPc.
   static const uint32_t kNoPc = 0xFFFFFFFFu;
   uint32_t interpret_pc_ = kNoPc;
+  uint32_t bail_reg_ = 0;      // the load in flight to hand over with it, if any
+  uint32_t bail_value_ = 0;
 };
 
 }  // namespace rec

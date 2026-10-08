@@ -89,6 +89,7 @@ class RecompilerBridge {
     host.move = &Move;
     host.interpret = [this](uint32_t pc) { return Interpret(pc); };
     host.load_in_flight_fn = &LoadInFlight;
+    host.arm_load = [this](uint32_t reg, uint32_t value) { cpu()->ArmCompiledLoad(reg, value); };
     host.overflow = &Overflow;
     host.hilo = &HiLo;
     host.gte = &GteOp;

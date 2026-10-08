@@ -576,6 +576,8 @@ class BlockCompiler {
   static const int8_t kOffCodePages = static_cast<int8_t>(offsetof(BlockState, code_pages));
   static const int8_t kOffSpecial = static_cast<int8_t>(offsetof(BlockState, special));
   static const int8_t kOffBlockPc = static_cast<int8_t>(offsetof(BlockState, block_pc));
+  // Past the first 128 bytes of BlockState, so it is addressed with a 32-bit displacement.
+  static const int32_t kOffBailValue = static_cast<int32_t>(offsetof(BlockState, bail_value));
   static_assert(offsetof(BlockState, block_pc) <= 127 && offsetof(BlockState, ram_store) <= 127 &&
                 offsetof(BlockState, code_pages) <= 127 &&
                 offsetof(BlockState, special) <= 127,
@@ -999,16 +1001,21 @@ class BlockCompiler {
   // interpreter runs again with its slot; the branch has done nothing that running it twice would
   // show, which CompilablePrefix saw to.
   void EmitUnalignedBail(const Instruction& instruction, bool deliver_pending = false) {
-    // A load in flight that lwl or lwr was to merge into is delivered here, where the interpreter will
-    // read it as the register: the only place its value is not simply dropped (the merge replaces it).
-    if (deliver_pending && pending_active_)
-      StoreReg(pending_reg_, kPending);
+    // A load in flight that lwl or lwr was to merge into goes with the block as a register and a value.
+    // It is not written to the register file: the instruction after the interpreter's lwl would see it
+    // there, and the merge is to replace it. The interpreter still has to read it as the register's
+    // value in flight, so Recompiler::Step hands it to the host to put back in the pipeline.
+    uint32_t fault = BlockState::kBail;
+    if (deliver_pending && pending_active_) {
+      x86::MovMemRegDisp32(emitter_, kPending, kStatePtr, kOffBailValue);
+      fault |= pending_reg_ << BlockState::kBailRegShift;
+    }
     const uint32_t before = instruction.in_delay_slot ? 1u : 0u;
     const uint32_t executed = ((instruction.pc - block_pc_) >> 2) - before;
     if (executed != 0)
       x86::SubMemImm8(emitter_, kStatePtr, kOffBudget, static_cast<uint8_t>(executed));
     x86::MovMemImm(emitter_, kStatePtr, kOffNextPc, instruction.pc - before * 4);
-    x86::MovMemImm(emitter_, kStatePtr, kOffFault, BlockState::kBail);
+    x86::MovMemImm(emitter_, kStatePtr, kOffFault, fault);
     fault_exits_.push_back(code_->cursor);
     x86::JmpRel32(emitter_, 0);
   }

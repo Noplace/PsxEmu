@@ -403,6 +403,15 @@ class Cpu : public Component {
     return pending_load_.active || armed_load_.active;
   }
 
+  // A load the compiled code had in flight when it left for the interpreter to do an lwl or lwr that
+  // merges into it: issued now, so it is the pending load at that instruction, which reads it
+  // (ReadRegForwarded) and then drops it, and the register file still holds what it held before the load.
+  void ArmCompiledLoad(uint32_t reg, uint32_t value) {
+    armed_load_.reg = reg;
+    armed_load_.value = value;
+    armed_load_.active = (reg != 0);
+  }
+
   // What a load from main RAM stalls for beyond the one cycle every instruction
   // costs - charged in Load, measured against a console by JaCzekanski's
   // cpu/access-time. Named because the recompiler charges it too, for the loads

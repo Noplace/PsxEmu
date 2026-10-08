@@ -772,7 +772,7 @@ the most likely answer is the network share rather than the emulator.
 | `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,843 checks, 0 failures**, all ten green. Each harness's own section above
+**1,824 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -850,7 +850,7 @@ negated 0.054, motion as given 0.094 on the Radeon, every other sign 0.08-0.22);
 time. AMD's loader finds its effect DLLs only beside the running executable, so
 `build_tools.bat` copies them into `Temp\tools`.
 
-`rec_test` (1144 checks) is not counted either, and for a different reason: it
+`rec_test` (1792 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
 `psx/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,

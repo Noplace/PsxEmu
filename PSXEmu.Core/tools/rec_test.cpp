@@ -935,6 +935,9 @@ class Machine {
   // before entering a compiled block.
   bool LoadInFlight() const { return pending_.active || armed_.active; }
 
+  // A load the compiled code had in flight when it left for this interpreter to do an lwl or lwr.
+  void ArmCompiledLoad(uint32_t reg, uint32_t value) { armed_.reg = reg; armed_.value = value; armed_.active = true; }
+
   void Stored(uint32_t address) {
     if (on_store)
       on_store(address);
@@ -1839,6 +1842,7 @@ class Engine {
     host.store8 = &FakeBus::Store8;
     host.interpret = [this](uint32_t pc) { return machine.Run(pc); };
     host.load_in_flight = [this]() { return machine.LoadInFlight(); };
+    host.arm_load = [this](uint32_t reg, uint32_t value) { machine.ArmCompiledLoad(reg, value); };
     host.ram_bytes = g_direct_ram ? kBusBytes : 0;
     host.ram_read_cycles = kRamReadCycles;
     if (g_special_ops) {
@@ -4135,6 +4139,70 @@ void TestTheUnalignedPairsMatchTheInterpreter() {
     sweep({ LW(3, 1, 0), LWL(3, 1, 5), ADDU(4, 3, 0), NOP(), ADDU(5, 3, 0) }, initial, "lw then lwl", 5);
     sweep({ LW(2, 1, 8), SWL(3, 2, 1), NOP(), NOP() }, initial, "the address in flight", 0);
     sweep({ LW(3, 1, 8), SWL(3, 1, 1), NOP(), NOP() }, initial, "the value in flight", 0);
+  }
+  // What amidog's psxtest_cpu does for each: the register is made a copy of the address register just
+  // before, the load follows a nop, and the result is copied out of the register the load wrote.
+  for (uint32_t base = 0; base < 4; ++base) {
+    uint32_t initial[32] = {};
+    initial[8] = kBusBase + 0x10C + base;
+    initial[5] = kBusBase + 0x200;
+    initial[4] = 0x7000;
+    sweep({ ADDU(15, 0, 0), ADDU(11, 0, 8), NOP(), LWL(11, 8, 2), NOP(), ADDU(8, 0, 11),
+            SW(15, 5, 0), SW(8, 5, 4), NOP() }, initial, "psxtest lwl", 9);
+    sweep({ ADDU(15, 0, 0), ADDU(11, 0, 8), NOP(), LWR(11, 8, 2), NOP(), ADDU(8, 0, 11),
+            SW(15, 5, 0), SW(8, 5, 4), NOP() }, initial, "psxtest lwr", 9);
+  }
+  // Every pair of loads back to back, as psxtest_cpu's "advanced load" group makes them: into one register
+  // or two, with the unaligned pair as either half, and the results used after a nop and straight away.
+  {
+    struct Form { uint32_t opcode; uint16_t offset; };
+    const Form forms[] = { {0x20, 0xFFFF}, {0x24, 0xFFFF}, {0x21, 0xFFFE}, {0x25, 0xFFFE}, {0x23, 0xFFFC},
+                           {0x22, 0}, {0x22, 2}, {0x26, 0}, {0x26, 2} };
+    auto word = [](const Form& f, uint32_t rt) {
+      return (f.opcode << 26) | (8u << 21) | (rt << 16) | f.offset;
+    };
+    for (const Form& a : forms)
+      for (const Form& b : forms)
+        for (uint32_t second_rt = 11; second_rt <= 12; ++second_rt)
+          for (int gap = 0; gap < 2; ++gap) {
+            uint32_t initial[32] = {};
+            initial[8] = kBusBase + 0x10C;
+            initial[5] = kBusBase + 0x200;
+            initial[11] = 0x11223344;
+            initial[12] = 0x55667788;
+            std::vector<uint32_t> program = { ADDU(11, 0, 8), NOP(), word(a, 11), word(b, second_rt) };
+            if (gap)
+              program.push_back(NOP());
+            program.push_back(ADDU(9, 0, 11));
+            program.push_back(ADDU(10, 0, 12));
+            program.push_back(NOP());
+            ++runs;
+            if (!RunBothWays(program, initial, "pair of loads", false)) {
+              ++failures;
+              if (failures <= 6)
+                printf("  FAIL  loads %02X/%04X then %02X/%04X into r%u, gap %d\n", a.opcode, a.offset,
+                       b.opcode, b.offset, second_rt, gap);
+            }
+            // And the same as a whole program, where what leaves for the interpreter comes back.
+            std::vector<uint32_t> whole = { LUI_(8, 0x8000), ORI_(8, 8, 0x400C), ADDU(11, 0, 8), NOP(),
+                                            word(a, 11), word(b, second_rt) };
+            if (gap)
+              whole.push_back(NOP());
+            whole.push_back(ADDU(9, 0, 11));
+            whole.push_back(ADDU(10, 0, 12));
+            whole.push_back(JR(0));
+            whole.push_back(NOP());
+            for (int withheld = 0; withheld < 2; ++withheld) {
+              g_withhold_ram = withheld != 0;
+              ++runs;
+              if (!RunProgramBothWays(whole, "pair of loads, whole", nullptr, &SeedSlotLoopData)) {
+                ++failures;
+                printf("  FAIL  loads %02X/%04X then %02X/%04X into r%u, gap %d, withheld %d\n", a.opcode,
+                       a.offset, b.opcode, b.offset, second_rt, gap, withheld);
+              }
+              g_withhold_ram = false;
+            }
+          }
   }
   CheckEqual(failures, 0, "every one agrees with the interpreter, in registers and memory");
   CheckEqual(uncompiled, 0, "and compiled what it should have, and stopped where it must");
