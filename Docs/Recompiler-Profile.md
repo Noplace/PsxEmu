@@ -412,9 +412,52 @@ same wrong EPC and BD bit - `Access` sets `prev_pc` but not the branch flag - an
 the twelve discs or the hardware tests takes one. It wants the same one-line treatment in `Access`, once there is a
 program that raises it to check against.
 
-**What is left to interpret:** Ridge Racer still has 11.6M in 3,000 frames, mostly `lwl`/`lwr`/`swl`/`swr`
+**What is left to interpret (before the lwl family):** Ridge Racer still has 11.6M in 3,000 frames, mostly `lwl`/`lwr`/`swl`/`swr`
 (1.8M each) and what follows them; Ace Combat 3 4.9M, the same family. After that every BIOS call's entry at
 0xA0/0xB0/0xC0 (1M in Wild Arms), which stays the interpreter's by design.
+
+## Done: lwl, lwr, swl and swr are compiled for RAM (same day) - and gain almost nothing
+
+The last of the big interpreted families in Ridge Racer and Ace Combat 3. The four read or write the aligned word
+under the address and merge it with `rt`; compiled, they do that for main RAM the way `lw` and `sw` do, with the
+same checks (the host's say-so, KUSEG/KSEG0/KSEG1, inside RAM, and for a store the code-page bit). Everything
+else - scratchpad, I/O, a store into a page with compiled code in it, the host declining the direct path - **bails**:
+the block leaves *before* the instruction (`BlockState::kBail`, `fault` = 2), `Recompiler::Step` interprets that one
+instruction and the code goes on compiled. The interpreter's timing, exceptions and watches come with it rather
+than being written a second time.
+
+- **The load in flight is the hard part.** `lwl`/`lwr` read a load still on its way to the same register (the
+  back-to-back unaligned pair needs it), and the interpreter drops that load when the merge arms its own. So
+  compiled code keeps it in the pending register and never writes it out early. A bail has to give it to the
+  interpreter as a load *in flight*, not as the register's value: the instruction after the `lwl` must still see
+  the register as it was before both loads. The first version wrote it into the register file, which got every
+  unit test and the whole disc table right and failed amidog's `psxtest_cpu` ("MEM ADV" LWL and LWR, value). Now
+  the bail carries a register (in the upper bits of `fault`) and a value (`BlockState::bail_value`, past the
+  128 bytes a disp8 reaches, so stored with a 32-bit displacement), and the host arms it in the interpreter's
+  pipeline before that instruction (`HostInterface::arm_load`, `Cpu::ArmCompiledLoad`).
+- **`rec_test`** 1125 -> 1792: the unaligned pairs at every lane, the idiom, a copy, stores into compiled code, and -
+  added after the bug above - every pair of back-to-back loads (9 forms x 9 forms, one register or two, with and
+  without a gap) both as a block and as a whole program with RAM given and withheld. The whole-program withheld
+  cases fail on the first version. Four mutants of the merge masks and the page check are caught.
+
+| Run, 3,000 frames, alternated | Before | After | Interpreted instructions |
+|---|---|---|---|
+| Ridge Racer | 10.5x, 10.7x | 10.8x, 10.6x | 11.6M -> 9.6M |
+| Ace Combat 3 | 12.3x | 12.5x | 4.9M -> 3.2M |
+| Wild Arms | 12.9x | 13.0x | 2.02M -> 1.93M |
+
+That is inside the noise for Ridge Racer and a couple of percent elsewhere. **Why Ridge Racer barely moved:** its hot
+copy loop (`0x80026808`-`0x800268B0`, 286,160 iterations in 3,000 frames) does its `lwl`/`lwr` from the
+*scratchpad* (`0x1F800090`-`97`) into RAM, and scratchpad is outside the RAM window, so every one bails. The other
+9.6M are the 1.19M at the BIOS vector `0xB0`, which stays the interpreter's by design, and what follows each bail.
+A scratchpad fast path would help that loop - and every plain `lw`/`sw` to scratchpad, which also call out today -
+but it needs a pointer in `BlockState`, which is full below 128 bytes.
+
+Validation: twelve-disc table all 36 pictures and 12 sector counts identical (69.2 s -> 67.1 s wall, noise included); the
+42 hardware test programs draw the same pictures; `psxtest_cpu` gives the interpreter's results screen (3,000
+frames; the first version did not); amidog's `psxtest_gte` ends on the same results screen byte for byte, 40k frames
+and the full 558,200 (14.8x real time); PGXP on FF7 still draws 25,854 of 44,978 vertices from shadows with the same
+checksum.
 
 ## Method and caveats
 
