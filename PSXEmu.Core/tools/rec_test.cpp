@@ -576,6 +576,8 @@ class FakeBus {
   FakeBus() {
     for (int i = 0; i < kBusBytes; ++i)
       bytes_[i] = static_cast<uint8_t>(i * 7 + 1);
+    for (int i = 0; i < 1024; ++i)
+      scratch_[i] = static_cast<uint8_t>(i * 13 + 5);
   }
 
   // Programs are written as words and read back by the decoder through the
@@ -597,18 +599,27 @@ class FakeBus {
   uint32_t Read(uint32_t address, int width) const {
     uint32_t value = 0;
     for (int i = 0; i < width; ++i)
-      value |= static_cast<uint32_t>(bytes_[Index(address + i)]) << (i * 8);
+      value |= static_cast<uint32_t>(*Byte(address + i)) << (i * 8);
     return value;
   }
 
   void Write(uint32_t address, int width, uint32_t value) {
     for (int i = 0; i < width; ++i)
-      bytes_[Index(address + i)] = static_cast<uint8_t>(value >> (i * 8));
+      *Byte(address + i) = static_cast<uint8_t>(value >> (i * 8));
   }
 
   bool SameAs(const FakeBus& other) const {
-    return memcmp(bytes_, other.bytes_, sizeof(bytes_)) == 0;
+    return memcmp(bytes_, other.bytes_, sizeof(bytes_)) == 0 &&
+           memcmp(scratch_, other.scratch_, sizeof(scratch_)) == 0;
   }
+
+  // The scratchpad: 1 KB at physical 0x1F800000, a block of its own that no address in the bus reaches
+  // (BlockState::scratchpad).
+  uint8_t* scratch() { return scratch_; }
+  static bool IsScratch(uint32_t address) {
+    return (address & 0x1FFFFFFFu) - kScratchBase < sizeof(scratch_);
+  }
+  static const uint32_t kScratchBase = 0x1F800000;
 
   int calls = 0;   // how many times the compiled code called out
 
@@ -813,6 +824,12 @@ class FakeBus {
   static int Index(uint32_t address) {
     return static_cast<int>((address - kBusBase) & (kBusBytes - 1));
   }
+  const uint8_t* Byte(uint32_t address) const {
+    return IsScratch(address) ? &scratch_[address & 0x3FF] : &bytes_[Index(address)];
+  }
+  uint8_t* Byte(uint32_t address) {
+    return IsScratch(address) ? &scratch_[address & 0x3FF] : &bytes_[Index(address)];
+  }
 
   uint32_t DoRead(uint32_t address, int width) {
     ++calls;
@@ -824,6 +841,7 @@ class FakeBus {
   }
 
   uint8_t bytes_[kBusBytes];
+  uint8_t scratch_[1024];
 };
 
 // The code-page bitmap a block-level test hands its state: nothing there is code, which is what
@@ -844,6 +862,7 @@ emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
   state.move = &FakeBus::Move;
   state.ram = bus->ram();   // read only by code compiled with direct RAM on
   state.ram_store = bus->ram();
+  state.scratchpad = bus->scratch();
   state.special = &FakeBus::Special;   // likewise, for the instructions that need a host
   return state;
 }
@@ -860,6 +879,8 @@ bool g_link_blocks = true;
 // And loads reading RAM directly, with the whole bus as RAM, which is a switch
 // of the same kind: it changes what every load compiles to.
 bool g_direct_ram = false;
+// ...and the scratchpad beside it, which is compiled whenever RAM is unless a test says otherwise.
+bool g_direct_scratch = true;
 // And the trapping add and the multiply/divide unit, which the compiler only takes when its host can
 // answer for them: off for everything above, on for the tests of those instructions.
 bool g_special_ops = false;
@@ -879,6 +900,7 @@ emulation::rec::BlockCompiler MakeCompiler(Emitter* emitter) {
   compiler.set_allocate_registers(g_allocate_registers);
   compiler.set_link_blocks(g_link_blocks);
   compiler.set_direct_ram(g_direct_ram ? kBusBytes : 0, kRamReadCycles);
+  compiler.set_direct_scratchpad(g_direct_ram && g_direct_scratch ? FakeBus::kScratchBase : 0, 1024);
   compiler.set_special_ops(g_special_ops);
   compiler.set_gte_ops(g_gte_ops);
   // Allocate however short the block is. In the emulator a block has to be
@@ -1163,6 +1185,9 @@ const uint32_t kProgramBase = 0x80001000;
 // interpreter over real games, and works exactly like this.
 // `report` is off for the sweeps, which run this hundreds of times and count
 // the whole sweep as one check rather than flooding the output.
+// How many times the block RunBothWays last compiled called out.
+int g_last_calls = 0;
+
 bool RunBothWays(const std::vector<uint32_t>& program,
                  const uint32_t initial[32], const char* what,
                  bool report = true) {
@@ -1207,8 +1232,8 @@ bool RunBothWays(const std::vector<uint32_t>& program,
   for (int i = 0; i < 32 && same; ++i) {
     if (compiled_regs[i] != machine.r[i]) {
       if (report) {
-        printf("  FAIL  %s: r%d compiled %08X, interpreted %08X (after %u of %u)\n",
-               what, i, compiled_regs[i], machine.r[i], compiled.compiled,
+        printf("  FAIL  %s: fault %u next %08X r%d compiled %08X, interpreted %08X (after %u of %u)\n",
+               what, state.fault, state.next_pc, i, compiled_regs[i], machine.r[i], compiled.compiled,
                static_cast<unsigned>(decoded.instructions.size()));
       }
       same = false;
@@ -1232,6 +1257,7 @@ bool RunBothWays(const std::vector<uint32_t>& program,
     if (!same)
       ++g_failures;
   }
+  g_last_calls = compiled_bus.calls;
   emitter.destroy_block(code);
   return same;
 }
@@ -1844,6 +1870,8 @@ class Engine {
     host.load_in_flight = [this]() { return machine.LoadInFlight(); };
     host.arm_load = [this](uint32_t reg, uint32_t value) { machine.ArmCompiledLoad(reg, value); };
     host.ram_bytes = g_direct_ram ? kBusBytes : 0;
+    host.scratchpad_base = g_direct_ram && g_direct_scratch ? FakeBus::kScratchBase : 0;
+    host.scratchpad_bytes = g_direct_ram && g_direct_scratch ? 1024 : 0;
     host.ram_read_cycles = kRamReadCycles;
     if (g_special_ops) {
       host.overflow = &FakeBus::Overflow;
@@ -1862,6 +1890,7 @@ class Engine {
     recompiler_->set_link_blocks(g_link_blocks);
     recompiler_->set_ram(bus.ram());
     recompiler_->set_ram_store(bus.ram());
+    recompiler_->set_scratchpad(bus.scratch());
 
     // The interpreter's own stores have to invalidate too.
     emulation::rec::Recompiler* rec = recompiler_.get();
@@ -4270,6 +4299,134 @@ void TestAnUnalignedAccessItCannotDoLeavesForTheInterpreter() {
   g_direct_ram = false;
 }
 
+// The scratchpad is read and written by compiled code the way RAM is: every load and store, the
+// unaligned pairs, in each of the three views and at its edges, with no call and the interpreter's
+// answers; the same program with the scratchpad not compiled still calls out and still agrees; and a
+// loop of the unaligned copy Ridge Racer's hot loop makes, whole, leaves nothing for the interpreter.
+static bool UnalignedForm(uint32_t opcode) {
+  return opcode == 0x22 || opcode == 0x26 || opcode == 0x2A || opcode == 0x2E;
+}
+
+void TestTheScratchpadIsReachedDirectly() {
+  printf("compiled loads and stores reach the scratchpad themselves, in every view and at its edges\n");
+
+  const bool saved_ram = g_direct_ram;
+  const bool saved_scratch = g_direct_scratch;
+  g_direct_ram = true;
+  struct Form { const char* name; uint32_t opcode; uint16_t offset; bool store; };
+  const Form forms[] = {
+      {"lb", 0x20, 1, false}, {"lbu", 0x24, 3, false}, {"lh", 0x21, 2, false}, {"lhu", 0x25, 2, false},
+      {"lw", 0x23, 4, false}, {"lwl", 0x22, 3, false}, {"lwr", 0x26, 1, false},
+      {"sb", 0x28, 1, true}, {"sh", 0x29, 2, true}, {"sw", 0x2B, 4, true}, {"swl", 0x2A, 3, true},
+      {"swr", 0x2E, 1, true},
+  };
+  const uint32_t views[] = { 0x1F800000u, 0x9F800000u, 0xBF800000u };
+  const uint32_t places[] = { 0x000, 0x100, 0x3F8 };
+  int runs = 0, failures = 0, called = 0;
+  for (int scratch_on = 1; scratch_on >= 0; --scratch_on) {
+    g_direct_scratch = scratch_on != 0;
+    for (const Form& f : forms)
+      for (uint32_t view : views)
+        for (uint32_t place : places) {
+          // The unaligned pairs leave a block for the interpreter when they cannot do the access, which
+          // a single block does not carry on from: they are tried whole, below.
+          if (scratch_on == 0 && UnalignedForm(f.opcode))
+            continue;
+          uint32_t initial[32] = {};
+          initial[1] = view + place;
+          initial[3] = 0xA1B2C3D4;
+          const uint32_t word = (f.opcode << 26) | (1u << 21) | (3u << 16) | f.offset;
+          const std::vector<uint32_t> program = { word, NOP(), ADDU(4, 3, 0), NOP() };
+          ++runs;
+          if (!RunBothWays(program, initial, f.name, failures < 2)) {
+            ++failures;
+            if (failures <= 4)
+              printf("  FAIL  %s at %08X\n", f.name, view + place);
+          }
+          if (scratch_on != 0 && g_last_calls != 0)
+            ++called;
+          if (scratch_on == 0 && g_last_calls == 0)
+            ++called;   // not compiled, so it has to have called
+        }
+  }
+  CheckEqual(failures, 0, "every access agrees with the interpreter, in registers and memory");
+  CheckEqual(called, 0, "with the scratchpad compiled none of them calls out, and without it all do");
+  Check(runs == 12 * 9 + 8 * 9, "and the sweep covered what it says");
+
+  // Past its edges is somebody else's: one byte under and one word over go to the callbacks, which
+  // have the same answers (a misaligned word faults the same way for both).
+  g_direct_scratch = true;
+  int edge_failures = 0, edge_direct = 0;
+  const uint32_t edges[] = { 0x1F7FFFFCu, 0x1F800400u, 0x1F800000u + 0x3FEu, 0x1F800000u + 0x3FDu };
+  for (uint32_t address : edges)
+    for (const Form& f : forms) {
+      if (UnalignedForm(f.opcode))
+        continue;
+      uint32_t initial[32] = {};
+      initial[1] = address;
+      initial[3] = 0xA1B2C3D4;
+      const uint32_t word = (f.opcode << 26) | (1u << 21) | (3u << 16) | 0;
+      if (!RunBothWays({ word, NOP(), NOP() }, initial, f.name, false))
+        ++edge_failures;
+      if (address == 0x1F800400u && g_last_calls == 0)
+        ++edge_direct;
+      (void)0;
+    }
+  CheckEqual(edge_failures, 0, "outside it, and across its end, the answers are the interpreter's");
+  CheckEqual(edge_direct, 0, "and the first address past it is not read directly");
+
+  // Whole: the unaligned copy out of the scratchpad into RAM, with RAM given and withheld.
+  const std::vector<uint32_t> copy = {
+      LUI_(1, 0x1F80),            // 0
+      ORI_(1, 1, 0x0090),         // 1: the source, in the scratchpad
+      LUI_(2, 0x8000),            // 2
+      ORI_(2, 2, 0x4001),         // 3: the destination, in RAM, not aligned
+      ADDIU(6, 0, 6),             // 4: six words
+      LWL(3, 1, 3),               // 5: loop:
+      LWR(3, 1, 0),               // 6
+      NOP(),                      // 7
+      SWL(3, 2, 3),               // 8
+      SWR(3, 2, 0),               // 9
+      SW(3, 1, 0x40),             // 10: and back into the scratchpad, aligned
+      ADDIU(1, 1, 4),             // 11
+      ADDIU(2, 2, 4),             // 12
+      ADDIU(6, 6, 0xFFFF),        // 13
+      BNE(6, 0, 0xFFF8),          // 14: back to 5
+      NOP(),                      // 15
+      JR(0),                      // 16
+      NOP(),                      // 17
+  };
+  emulation::rec::Recompiler::Stats given;
+  Check(RunProgramBothWays(copy, "scratchpad copy", &given), "the copy agrees with the interpreter");
+  CheckEqual(static_cast<int64_t>(given.bails), 0, "and nothing in it left for the interpreter");
+  g_withhold_ram = true;
+  emulation::rec::Recompiler::Stats withheld;
+  Check(RunProgramBothWays(copy, "scratchpad copy, RAM withheld", &withheld),
+        "with RAM withheld the scratchpad is withheld too, and the answer is the same");
+  g_withhold_ram = false;
+  Check(withheld.bails > 8, "by way of the interpreter");
+
+  // And the pairs at the scratchpad's edges, whole: the last word, the first one past, and just before.
+  for (uint32_t address : { 0x1F7FFFFDu, 0x1F800000u, 0x1F8003FDu, 0x1F8003FFu, 0x1F800400u }) {
+    const std::vector<uint32_t> edge = {
+        LUI_(1, static_cast<uint16_t>(address >> 16)),
+        ORI_(1, 1, static_cast<uint16_t>(address & 0xFFFF)),
+        ADDIU(3, 0, 0x1234),
+        LWL(3, 1, 0), NOP(), LWR(3, 1, 3), NOP(), SWL(3, 1, 1), SWR(3, 1, 0xFFFE), ADDU(4, 3, 0),
+        JR(0), NOP(),
+    };
+    for (int withheld = 0; withheld < 2; ++withheld) {
+      g_withhold_ram = withheld != 0;
+      Check(RunProgramBothWays(edge, "unaligned pairs at the scratchpad's edge"),
+            "the pairs at an edge of the scratchpad agree with the interpreter");
+      g_withhold_ram = false;
+    }
+  }
+
+  g_direct_ram = saved_ram;
+  g_direct_scratch = saved_scratch;
+}
+
 // swl and swr that land on compiled code have to discard it, like sw does: the same self-rewriting
 // program as above, the instruction replaced by an swr at lane 0 and by an swl at lane 3, each of which
 // writes the whole word. Without the page's check the store goes in and the old block runs again.
@@ -4372,6 +4529,7 @@ int main() {
   TestTheUnalignedPairsMatchTheInterpreter();
   TestAnUnalignedAccessItCannotDoLeavesForTheInterpreter();
   TestAnUnalignedStoreIntoCodeIsNoticed();
+  TestTheScratchpadIsReachedDirectly();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

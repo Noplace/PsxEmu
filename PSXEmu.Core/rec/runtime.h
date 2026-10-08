@@ -174,6 +174,11 @@ struct BlockState {
   // Past the 128 bytes a one-byte offset reaches (the compiled code addresses it by four): the value of a
   // load in flight when a block bails, see `fault`.
   uint32_t bail_value = 0;
+
+  // The console's scratchpad for the accesses compiled to reach it directly, beside `ram` and with
+  // the same meaning for null: the host wants every access to go through its callbacks. Also past
+  // the 128 bytes of one-byte offsets.
+  uint8_t* scratchpad = nullptr;
 };
 
 }  // namespace rec

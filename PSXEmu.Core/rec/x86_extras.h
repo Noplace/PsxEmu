@@ -265,6 +265,14 @@ inline void Mov64RegMem(Emitter* e, uint8_t dest, uint8_t base,
   EmitRegMem8(e, 0x8B, dest, base, displacement, true);
 }
 
+// mov r64, [base + disp32] - for the fields of BlockState past a disp8's reach.
+inline void Mov64RegMemDisp32(Emitter* e, uint8_t dest, uint8_t base, int32_t displacement) {
+  EmitRex(e, true, dest, base);
+  e->emit8(0x8B);
+  e->emit8(ModRM(2, dest, base));
+  e->emit32(static_cast<uint32_t>(displacement));
+}
+
 // mov [base], r32 / r16 / r8 - a word, halfword or byte stored straight into guest RAM. The
 // base is addressed with no displacement, so it must not be RSP, RBP, R12 or R13, whose ModRM
 // encodings mean something else; the caller uses RAX. A REX prefix is emitted for any register
@@ -421,6 +429,12 @@ inline void SubMemImm8(Emitter* e, uint8_t base, int8_t displacement,
 // instruction, and the rel32 ones are written as zero and filled in afterwards:
 // a link's target is not known when the block that jumps to it is compiled,
 // and may change when a store throws that target away.
+inline void JccRel32(Emitter* e, Cc condition, int32_t displacement) {
+  e->emit8(0x0F);
+  e->emit8(static_cast<uint8_t>(0x80 + static_cast<uint8_t>(condition)));
+  e->emit32(static_cast<uint32_t>(displacement));
+}
+
 inline void JccRel8(Emitter* e, Cc condition, int8_t displacement) {
   e->emit8(static_cast<uint8_t>(0x70 + static_cast<uint8_t>(condition)));
   e->emit8(static_cast<uint8_t>(displacement));

@@ -252,6 +252,16 @@ class BlockCompiler {
     direct_ram_window_ = window_bytes > bytes ? window_bytes : bytes;
   }
 
+  // The scratchpad, which is memory too and nothing else: the `bytes` from physical address `base`
+  // (0x1F800000, 1 KB), read and written by compiled code the same way RAM is, from
+  // BlockState::scratchpad - at no stall, with no mirror and no code in it to notice a store to.
+  // Zero bytes, the default, leaves every access to it a call. Taken only where RAM is: it is the same
+  // pointers' being null that says the host wants every access to go through its callbacks.
+  void set_direct_scratchpad(uint32_t base, uint32_t bytes) {
+    direct_scratch_base_ = base;
+    direct_scratch_bytes_ = bytes;
+  }
+
   CompiledBlock Compile(const DecodedBlock& block, CodeBlock* code) {
     CompiledBlock result;
     if (code == nullptr)
@@ -578,6 +588,7 @@ class BlockCompiler {
   static const int8_t kOffBlockPc = static_cast<int8_t>(offsetof(BlockState, block_pc));
   // Past the first 128 bytes of BlockState, so it is addressed with a 32-bit displacement.
   static const int32_t kOffBailValue = static_cast<int32_t>(offsetof(BlockState, bail_value));
+  static const int32_t kOffScratchpad = static_cast<int32_t>(offsetof(BlockState, scratchpad));
   static_assert(offsetof(BlockState, block_pc) <= 127 && offsetof(BlockState, ram_store) <= 127 &&
                 offsetof(BlockState, code_pages) <= 127 &&
                 offsetof(BlockState, special) <= 127,
@@ -1043,13 +1054,23 @@ class BlockCompiler {
       FlushPendingBeforeMemory();
     EmitAddress(rs, immediate);
 
-    size_t to_bail[8];
+    size_t to_bail[16];
     int to_bail_count = 0;
     auto jump_to_bail = [&](x86::Cc condition) {
       to_bail[to_bail_count++] = code_->cursor;
-      x86::JccRel8(emitter_, condition, 0);
+      x86::JccRel32(emitter_, condition, 0);
     };
-    EmitDirectRamPrologue(kOffRam, jump_to_bail);
+    size_t to_scratch[2];
+    int to_scratch_count = 0;
+    auto jump_to_scratch = [&](x86::Cc condition) {
+      if (direct_scratch_bytes_ == 0) {
+        jump_to_bail(condition);
+        return;
+      }
+      to_scratch[to_scratch_count++] = code_->cursor;
+      x86::JccRel32(emitter_, condition, 0);
+    };
+    EmitDirectRamPrologue(kOffRam, jump_to_bail, jump_to_scratch);
     if (direct_ram_window_ > direct_ram_bytes_)
       x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, direct_ram_bytes_ - 1);
     x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 0xFFFFFFFCu);   // the aligned word
@@ -1058,6 +1079,7 @@ class BlockCompiler {
     if (direct_ram_read_cycles_ != 0)
       x86::AddMemImm8(emitter_, kStatePtr, kOffExtraCycles, direct_ram_read_cycles_);
 
+    const size_t merge = code_->cursor;                                      // where the scratchpad's read rejoins
     x86::MovRegReg(emitter_, kScratchB, kScratchC);                          // CL = 8 * lane
     x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 3);
     x86::ShiftRegImm(emitter_, x86::ShiftOp::kShl, kScratchB, 3);
@@ -1082,8 +1104,16 @@ class BlockCompiler {
 
     const size_t past_bail = code_->cursor;
     x86::JmpRel8(emitter_, 0);
+    if (to_scratch_count != 0) {
+      // The scratchpad: the aligned word, no stall, and the same merge.
+      for (int i = 0; i < to_scratch_count; ++i)
+        PatchJcc32(to_scratch[i], code_->cursor);
+      EmitScratchpadAddress(jump_to_bail, true);
+      x86::MovRegMem(emitter_, kScratchA, kScratchA, 0);
+      JumpBack8(merge);
+    }
     for (int i = 0; i < to_bail_count; ++i)
-      PatchRel8(code_, to_bail[i], code_->cursor);
+      PatchJcc32(to_bail[i], code_->cursor);
     EmitUnalignedBail(instruction, forwarded);
     PatchRel8(code_, past_bail, code_->cursor);
 
@@ -1111,13 +1141,23 @@ class BlockCompiler {
     FlushPendingBeforeMemory();
     EmitAddress(rs, immediate);
 
-    size_t to_bail[8];
+    size_t to_bail[16];
     int to_bail_count = 0;
     auto jump_to_bail = [&](x86::Cc condition) {
       to_bail[to_bail_count++] = code_->cursor;
-      x86::JccRel8(emitter_, condition, 0);
+      x86::JccRel32(emitter_, condition, 0);
     };
-    EmitDirectRamPrologue(kOffRamStore, jump_to_bail);
+    size_t to_scratch[2];
+    int to_scratch_count = 0;
+    auto jump_to_scratch = [&](x86::Cc condition) {
+      if (direct_scratch_bytes_ == 0) {
+        jump_to_bail(condition);
+        return;
+      }
+      to_scratch[to_scratch_count++] = code_->cursor;
+      x86::JccRel32(emitter_, condition, 0);
+    };
+    EmitDirectRamPrologue(kOffRamStore, jump_to_bail, jump_to_scratch);
     x86::MovRegReg(emitter_, kArg4, kScratchB);                              // the page's bit, as sw reads it
     x86::ShiftRegImm(emitter_, x86::ShiftOp::kShr, kArg4, BlockCache::kPageShift);
     x86::Mov64RegMem(emitter_, kScratchD, kStatePtr, kOffCodePages);
@@ -1129,6 +1169,7 @@ class BlockCompiler {
     x86::Add64RegReg(emitter_, kScratchA, kScratchB);
     x86::MovRegMem(emitter_, kScratchD, kScratchA, 0);                       // what is there
 
+    const size_t merge = code_->cursor;                                      // where the scratchpad's read rejoins
     x86::MovRegReg(emitter_, kScratchB, kScratchC);                          // CL = 8 * lane
     x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 3);
     x86::ShiftRegImm(emitter_, x86::ShiftOp::kShl, kScratchB, 3);
@@ -1152,8 +1193,16 @@ class BlockCompiler {
 
     const size_t past_bail = code_->cursor;
     x86::JmpRel8(emitter_, 0);
+    if (to_scratch_count != 0) {
+      // The scratchpad: no page to look up, the word read the same way, the merge and the write shared.
+      for (int i = 0; i < to_scratch_count; ++i)
+        PatchJcc32(to_scratch[i], code_->cursor);
+      EmitScratchpadAddress(jump_to_bail, true);
+      x86::MovRegMem(emitter_, kScratchD, kScratchA, 0);
+      JumpBack8(merge);
+    }
     for (int i = 0; i < to_bail_count; ++i)
-      PatchRel8(code_, to_bail[i], code_->cursor);
+      PatchJcc32(to_bail[i], code_->cursor);
     EmitUnalignedBail(instruction);
     PatchRel8(code_, past_bail, code_->cursor);
   }
@@ -1619,14 +1668,24 @@ class BlockCompiler {
   // Only EAX, ECX and EDX are touched, which a call would have clobbered
   // anyway, and only forward rel8 jumps are emitted - PatchRel8 checks them.
   size_t EmitDirectRamRead(uint32_t opcode) {
-    size_t to_call[8];
+    size_t to_call[16];
     int to_call_count = 0;
     auto jump_to_call = [&](x86::Cc condition) {
       to_call[to_call_count++] = code_->cursor;
       x86::JccRel8(emitter_, condition, 0);
     };
 
-    EmitDirectRamPrologue(kOffRam, jump_to_call);
+    size_t to_scratch[2];
+    int to_scratch_count = 0;
+    auto jump_to_scratch = [&](x86::Cc condition) {
+      if (direct_scratch_bytes_ == 0) {
+        jump_to_call(condition);
+        return;
+      }
+      to_scratch[to_scratch_count++] = code_->cursor;
+      x86::JccRel8(emitter_, condition, 0);
+    };
+    EmitDirectRamPrologue(kOffRam, jump_to_call, jump_to_scratch);
 
     if (opcode == 0x23 || opcode == 0x21 || opcode == 0x25) {
       x86::TestRegImm(emitter_, kScratchC, opcode == 0x23 ? 3 : 1);
@@ -1649,6 +1708,24 @@ class BlockCompiler {
 
     const size_t past_call = code_->cursor;
     x86::JmpRel8(emitter_, 0);
+    if (to_scratch_count != 0) {
+      // The scratchpad: the same read at no stall, so no cycles are added (Cpu::Load charges 0 there),
+      // and back to the jump over the call that RAM's read just made.
+      for (int i = 0; i < to_scratch_count; ++i)
+        PatchRel8(code_, to_scratch[i], code_->cursor);
+      if (opcode == 0x23 || opcode == 0x21 || opcode == 0x25) {
+        x86::TestRegImm(emitter_, kScratchC, opcode == 0x23 ? 3 : 1);
+        jump_to_call(x86::Cc::kNotEqual);
+      }
+      EmitScratchpadAddress(jump_to_call);
+      if (opcode == 0x20 || opcode == 0x24)
+        x86::MovzxRegMem8(emitter_, kScratchA, kScratchA, 0);
+      else if (opcode == 0x21 || opcode == 0x25)
+        x86::MovzxRegMem16(emitter_, kScratchA, kScratchA, 0);
+      else
+        x86::MovRegMem(emitter_, kScratchA, kScratchA, 0);
+      JumpBack8(past_call);
+    }
     for (int i = 0; i < to_call_count; ++i)
       PatchRel8(code_, to_call[i], code_->cursor);
     return past_call;
@@ -1658,8 +1735,12 @@ class BlockCompiler {
   // base into RAX, or out through `jump_to_call` if the host gave none (`ram_offset` is which
   // of BlockState's two); out again unless the address is in KUSEG's first 512 MB, KSEG0 or
   // KSEG1; and the physical address into ECX, out unless it is inside RAM's window.
-  template <typename JumpToCall>
-  void EmitDirectRamPrologue(int8_t ram_offset, JumpToCall& jump_to_call) {
+  //
+  // The last check, "inside RAM's window", leaves through `jump_out_of_window` rather than
+  // `jump_to_call`: that is where the scratchpad is tried, when it is compiled (EmitScratchpad).
+  template <typename JumpToCall, typename JumpOutOfWindow>
+  void EmitDirectRamPrologue(int8_t ram_offset, JumpToCall& jump_to_call,
+                             JumpOutOfWindow& jump_out_of_window) {
     x86::Mov64RegMem(emitter_, kScratchA, kStatePtr, ram_offset);   // mov rax, [rbx+ram]
     x86::Test64RegReg(emitter_, kScratchA);
     jump_to_call(x86::Cc::kEqual);
@@ -1679,7 +1760,39 @@ class BlockCompiler {
     x86::MovRegReg(emitter_, kScratchB, kScratchC);              // the physical address
     x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 0x1FFFFFFF);
     x86::AluRegImm(emitter_, x86::AluImmOp::kCmp, kScratchB, direct_ram_window_);
+    jump_out_of_window(x86::Cc::kAboveEqual);
+  }
+
+  // What a direct access does past RAM's window, when the scratchpad is compiled: the physical address
+  // still in ECX, minus the scratchpad's base, has to be inside its bytes, and the host has to have
+  // given it - then RAX is where it is, and the caller reads or writes there. Anything else is the
+  // caller's way out, as in the prologue. Misses in two instructions what is not the scratchpad.
+  // Only called with the prologue's jumps as they were: RAM given, a view of the physical memory.
+  // `word_aligned` takes the offset down to its word, for the unaligned pairs.
+  template <typename JumpToCall>
+  void EmitScratchpadAddress(JumpToCall& jump_to_call, bool word_aligned = false) {
+    x86::AluRegImm(emitter_, x86::AluImmOp::kSub, kScratchB, direct_scratch_base_);
+    x86::AluRegImm(emitter_, x86::AluImmOp::kCmp, kScratchB, direct_scratch_bytes_);
     jump_to_call(x86::Cc::kAboveEqual);
+    if (word_aligned)
+      x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 0xFFFFFFFCu);
+    x86::Mov64RegMemDisp32(emitter_, kScratchA, kStatePtr, kOffScratchpad);
+    x86::Test64RegReg(emitter_, kScratchA);
+    jump_to_call(x86::Cc::kEqual);
+    x86::Add64RegReg(emitter_, kScratchA, kScratchB);
+  }
+
+  // Points a JccRel32 emitted at `site` at `target`.
+  void PatchJcc32(size_t site, size_t target) {
+    PatchRel32(code_, site + 2,
+               static_cast<int32_t>(static_cast<ptrdiff_t>(target) - static_cast<ptrdiff_t>(site + 6)));
+  }
+
+  // A jump back to `target`, which is behind it (PatchRel8 takes either direction).
+  void JumpBack8(size_t target) {
+    const size_t site = code_->cursor;
+    x86::JmpRel8(emitter_, 0);
+    PatchRel8(code_, site, target);
   }
 
   // A store writing main RAM itself, with the address in EDX and the value in R8D - EmitStore's
@@ -1698,14 +1811,24 @@ class BlockCompiler {
   // EAX, ECX, EDX, R9 and R10 are touched, all of which a call would have clobbered anyway;
   // R8 holds the value and is left alone until the write.
   size_t EmitDirectRamWrite(uint32_t opcode) {
-    size_t to_call[8];
+    size_t to_call[16];
     int to_call_count = 0;
     auto jump_to_call = [&](x86::Cc condition) {
       to_call[to_call_count++] = code_->cursor;
       x86::JccRel8(emitter_, condition, 0);
     };
 
-    EmitDirectRamPrologue(kOffRamStore, jump_to_call);
+    size_t to_scratch[2];
+    int to_scratch_count = 0;
+    auto jump_to_scratch = [&](x86::Cc condition) {
+      if (direct_scratch_bytes_ == 0) {
+        jump_to_call(condition);
+        return;
+      }
+      to_scratch[to_scratch_count++] = code_->cursor;
+      x86::JccRel8(emitter_, condition, 0);
+    };
+    EmitDirectRamPrologue(kOffRamStore, jump_to_call, jump_to_scratch);
 
     if (opcode == 0x2B || opcode == 0x29) {
       x86::TestRegImm(emitter_, kScratchC, opcode == 0x2B ? 3 : 1);
@@ -1732,6 +1855,23 @@ class BlockCompiler {
 
     const size_t past_call = code_->cursor;
     x86::JmpRel8(emitter_, 0);
+    if (to_scratch_count != 0) {
+      // The scratchpad, which no compiled code is ever fetched from: no page to look up.
+      for (int i = 0; i < to_scratch_count; ++i)
+        PatchRel8(code_, to_scratch[i], code_->cursor);
+      if (opcode == 0x2B || opcode == 0x29) {
+        x86::TestRegImm(emitter_, kScratchC, opcode == 0x2B ? 3 : 1);
+        jump_to_call(x86::Cc::kNotEqual);
+      }
+      EmitScratchpadAddress(jump_to_call);
+      if (opcode == 0x28)
+        x86::MovMem8Reg(emitter_, kScratchA, kArg3);
+      else if (opcode == 0x29)
+        x86::MovMem16Reg(emitter_, kScratchA, kArg3);
+      else
+        x86::MovMem32Reg(emitter_, kScratchA, kArg3);
+      JumpBack8(past_call);
+    }
     for (int i = 0; i < to_call_count; ++i)
       PatchRel8(code_, to_call[i], code_->cursor);
     return past_call;
@@ -1894,6 +2034,8 @@ class BlockCompiler {
   uint32_t direct_ram_bytes_ = 0;
   uint8_t direct_ram_read_cycles_ = 0;
   uint32_t direct_ram_window_ = 0;
+  uint32_t direct_scratch_base_ = 0;
+  uint32_t direct_scratch_bytes_ = 0;
 
   // set_special_ops, and where the block being compiled starts - an instruction's index in it is
   // what a call to BlockState::special reports.

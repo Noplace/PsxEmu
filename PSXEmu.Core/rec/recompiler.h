@@ -127,6 +127,12 @@ struct HostInterface {
   // `ram_bytes` has to be a power of two for this to mean anything.
   uint32_t ram_window_bytes = 0;
 
+  // The scratchpad, which compiled loads and stores reach directly as they do RAM (set_scratchpad
+  // gives the memory, and RAM's being withheld withholds it too): `scratchpad_bytes` from physical
+  // address `scratchpad_base`, with no stall. Zero bytes leaves every access to it a call.
+  uint32_t scratchpad_base = 0;
+  uint32_t scratchpad_bytes = 0;
+
   // Runs the instruction at `pc` and returns the address of the next one.
   //
   // "The instruction" includes its delay slot when it has one: a branch and
@@ -237,6 +243,7 @@ class Recompiler {
     state_.store8 = &StoreThunk8;
     state_.move = &MoveThunk;
     compiler_.set_direct_ram(host.ram_bytes, host.ram_read_cycles, host.ram_window_bytes);
+    compiler_.set_direct_scratchpad(host.scratchpad_base, host.scratchpad_bytes);
     state_.code_pages = cache_.code_pages();
     state_.special = &SpecialThunk;
     compiler_.set_special_ops(host.overflow != nullptr && host.hilo != nullptr);
@@ -439,6 +446,10 @@ class Recompiler {
   // code in it), or nullptr for every store to call out. Separate from set_ram because a store
   // has more to be plain about - the emulator withholds it for a watched address as well.
   void set_ram_store(uint8_t* ram) { state_.ram_store = ram; }
+
+  // The memory behind HostInterface::scratchpad_base. Needs RAM too: the direct accesses start by
+  // asking for it, so the host withholding RAM withholds this.
+  void set_scratchpad(uint8_t* scratchpad) { state_.scratchpad = scratchpad; }
 
   // For tests: see BlockCompiler::set_minimum_block_instructions.
   void set_minimum_block_instructions(uint32_t instructions) {

@@ -97,6 +97,8 @@ class RecompilerBridge {
     host.ram_bytes = kRamBytes;
     host.ram_window_bytes = kRamWindowBytes;
     host.ram_read_cycles = Cpu::kRamLoadStall;
+    host.scratchpad_base = kScratchpadBase;
+    host.scratchpad_bytes = kScratchpadBytes;
 
     recompiler_.reset(new emulation::rec::Recompiler(
         host, system_->cpu().context()->gp.reg));
@@ -122,6 +124,10 @@ class RecompilerBridge {
   // And its mirrors: Cpu::Load and Cpu::Store decode every physical address up to 8 MB as RAM,
   // reduced to its first 2 MB. Wild Arms makes half its RAM loads through them.
   static const uint32_t kRamWindowBytes = 0x800000;
+
+  // The scratchpad, IOInterface::scratchpad: 1 KB at physical 0x1F800000, on the chip - no stall.
+  static const uint32_t kScratchpadBase = 0x1F800000;
+  static const uint32_t kScratchpadBytes = 0x400;
 
   // Runs one step of the machine at the current pc, and returns how many guest
   // instructions ran *as compiled code*.
@@ -154,6 +160,7 @@ class RecompilerBridge {
                              ? system_->io().ram_buffer.u8 : nullptr);
     recompiler_->set_ram_store(!pgxp && processor->RamStoreIsPlain()
                                    ? system_->io().ram_buffer.u8 : nullptr);
+    recompiler_->set_scratchpad(system_->io().scratchpad.u8);
 
     // A chain runs for as long as the devices have no use for the machine: the cycles left
     // in the current batch, which is the next event any of them has scheduled. Never less
