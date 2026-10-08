@@ -71,6 +71,17 @@ typedef void (*MoveFn)(void* context, uint32_t to, uint32_t from);
 typedef uint32_t (*SpecialFn)(void* context, uint32_t operation, uint32_t a, uint32_t b);
 const uint32_t kSpecialOverflow = 0x3F;
 
+// The coprocessor 2 operations, in the same `operation` field and past every funct. For the host's
+// `gte` (HostInterface): `a` is the value to write, and `b` the GTE register, or for a command the
+// instruction word.
+const uint32_t kSpecialGteCommand = 0x40;     // a cop2 command: b is the instruction
+const uint32_t kSpecialGteMfc2 = 0x41;        // data register b -> the value returned
+const uint32_t kSpecialGteCfc2 = 0x42;        // control register b -> the value returned
+const uint32_t kSpecialGteMtc2 = 0x43;        // data register b <- a
+const uint32_t kSpecialGteCtc2 = 0x44;        // control register b <- a
+const uint32_t kSpecialGteLoad = 0x45;        // lwc2: data register b <- a, the word just loaded
+const uint32_t kSpecialGteStore = 0x46;       // swc2: data register b -> the value returned
+
 // The layout the emitted code addresses by offset. Field order is load-bearing
 // in the sense that the compiler hard-codes the offsets - keep the two in step,
 // and BlockCompiler asserts the ones it uses against offsetof.
@@ -133,6 +144,12 @@ struct BlockState {
   // chain runs and charged with its instructions. The budget is left alone, so
   // it still bounds a chain in instructions.
   uint32_t extra_cycles = 0;
+
+  // The guest address of the block that is running, written at its start when it has a memory
+  // access. A callout that reaches past RAM is handed only the instruction's address, and the engine
+  // needs to know how far into its block that is - and so how far into the chain - to bring the
+  // machine's clock up to the instruction before the hardware is touched (HostInterface::sync).
+  uint32_t block_pc = 0;
 
   // Main RAM for the stores compiled to write it directly, or nullptr and every store
   // calls out - decided per step like `ram`, but separately, since a store has more to

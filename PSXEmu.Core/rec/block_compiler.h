@@ -274,6 +274,14 @@ class BlockCompiler {
     PlanAllocation(block, count);
 
     EmitPrologue();
+    // A block with a memory access says where it starts, so a call that goes past RAM can work out
+    // how far into the chain the instruction making it is (HostInterface::sync).
+    for (uint32_t i = 0; i < count; ++i) {
+      if (IsMemoryWord(block.instructions[i].word)) {
+        x86::MovMemImm(emitter_, kStatePtr, kOffBlockPc, block.start_pc);
+        break;
+      }
+    }
     for (uint32_t i = 0; i < count; ++i)
       Emit(block.instructions[i]);
 
@@ -429,11 +437,41 @@ class BlockCompiler {
     return opcode == 0x01 || (opcode >= 0x02 && opcode <= 0x07);
   }
 
-  // Whether this compiler admits the instruction - Compilable, and IsSpecialOp when the host
-  // has said it can answer for those.
-  bool CanCompile(uint32_t word) const {
-    return Compilable(word) || (special_ops_ && IsSpecialOp(word));
+  // Coprocessor 2, the GTE. A command is cop2 with bit 25 set; the moves are selected by rs
+  // (mfc2 0, cfc2 2, mtc2 4, ctc2 6); lwc2 and swc2 are opcodes of their own. Cop0 and the
+  // other coprocessors are not here: cop0 is rare in game code, and a compiled mtc0 could isolate
+  // the cache or change the interrupt mask in the middle of a chain, which nothing here is ready
+  // for.
+  static bool IsGteCommand(uint32_t word) {
+    return (word >> 26) == 0x12 && (word & (1u << 25)) != 0;
   }
+  static bool IsGteMove(uint32_t word) {
+    if ((word >> 26) != 0x12 || (word & (1u << 25)) != 0)
+      return false;
+    const uint32_t rs = (word >> 21) & 0x1F;
+    return rs == 0 || rs == 2 || rs == 4 || rs == 6;
+  }
+  static bool IsGteMemory(uint32_t word) {
+    const uint32_t opcode = word >> 26;
+    return opcode == 0x32 || opcode == 0x3A;   // lwc2, swc2
+  }
+
+  // Whether this compiler admits the instruction - Compilable, IsSpecialOp when the host has said
+  // it can answer for those, and the GTE's when it has said it can answer for them. The register
+  // moves, lwc2 and swc2 are left to the interpreter while the host tracks PGXP's shadows
+  // (set_track_moves): the interpreter carries one with each of them and compiled code does not.
+  // A command carries none, so it compiles either way.
+  bool CanCompile(uint32_t word) const {
+    if (Compilable(word) || (special_ops_ && IsSpecialOp(word)))
+      return true;
+    if (!gte_ops_)
+      return false;
+    return IsGteCommand(word) || ((IsGteMove(word) || IsGteMemory(word)) && !track_moves_);
+  }
+
+  // Compile the GTE's instructions, calling BlockState::special for them. Off, the default, they
+  // stay the interpreter's.
+  void set_gte_ops(bool on) { gte_ops_ = on; }
 
   // Compile the trapping add and addi and the multiply/divide unit, calling BlockState::special
   // for what compiled code cannot do itself. Off, the default, they stay the interpreter's.
@@ -454,6 +492,10 @@ class BlockCompiler {
       if (funct == 0x11 || funct == 0x13 || (funct >= 0x18 && funct <= 0x1B))
         return 0;                         // mthi, mtlo and mult/div write HI and LO, not rd
       return (word >> 11) & 0x1F;         // rd, including jalr's
+    }
+    if (opcode == 0x12) {                 // mfc2 and cfc2 load a register; nothing else of cop2 does
+      const uint32_t rs = (word >> 21) & 0x1F;
+      return ((word & (1u << 25)) == 0 && (rs == 0 || rs == 2)) ? (word >> 16) & 0x1F : 0;
     }
     switch (opcode) {
       case 0x03:                          // jal
@@ -479,6 +521,8 @@ class BlockCompiler {
     }
     if (opcode == 0x01 || (opcode >= 0x02 && opcode <= 0x07))
       return true;                             // the branches and jumps
+    if (opcode == 0x12)                        // mfc2 and cfc2 deliver late, as a load does
+      return Destination(word) != 0;
     switch (opcode) {
       case 0x20: case 0x21: case 0x23: case 0x24: case 0x25:
         // A load into r0 delivers nothing, so nothing lands late. The memory
@@ -514,7 +558,8 @@ class BlockCompiler {
   static const int8_t kOffRamStore = static_cast<int8_t>(offsetof(BlockState, ram_store));
   static const int8_t kOffCodePages = static_cast<int8_t>(offsetof(BlockState, code_pages));
   static const int8_t kOffSpecial = static_cast<int8_t>(offsetof(BlockState, special));
-  static_assert(offsetof(BlockState, ram_store) <= 127 &&
+  static const int8_t kOffBlockPc = static_cast<int8_t>(offsetof(BlockState, block_pc));
+  static_assert(offsetof(BlockState, block_pc) <= 127 && offsetof(BlockState, ram_store) <= 127 &&
                 offsetof(BlockState, code_pages) <= 127 &&
                 offsetof(BlockState, special) <= 127,
                 "every BlockState field has to be in reach of a disp8");
@@ -524,7 +569,8 @@ class BlockCompiler {
   // can be: a branch needs its delay slot, and a load needs somewhere to land.
   static bool IsMemoryWord(uint32_t word) {
     const uint32_t opcode = word >> 26;
-    return (opcode >= 0x20 && opcode <= 0x26) || (opcode >= 0x28 && opcode <= 0x2E);
+    return (opcode >= 0x20 && opcode <= 0x26) || (opcode >= 0x28 && opcode <= 0x2E) ||
+           opcode == 0x32 || opcode == 0x3A;   // lwc2 and swc2 reach memory too
   }
 
   static bool IsLoadWord(uint32_t word) {
@@ -543,9 +589,11 @@ class BlockCompiler {
     // access, since a load needs a follower either way.
     for (size_t i = 1; i < n; ++i) {
       const uint32_t previous = block.instructions[i - 1].word;
-      if (!IsLoadWord(previous))
+      // What leaves a value in flight: a load, and mfc2 and cfc2, which deliver late the same way.
+      const bool late_gte = IsGteMove(previous) && Destination(previous) != 0;
+      if (!IsLoadWord(previous) && !late_gte)
         continue;
-      const uint32_t pending = (previous >> 16) & 0x1F;
+      const uint32_t pending = late_gte ? Destination(previous) : (previous >> 16) & 0x1F;
       const uint32_t word = block.instructions[i].word;
       if (IsMemoryWord(word) && MemoryOpBlockedByPendingLoad(word, pending)) {
         n = i - 1;
@@ -846,8 +894,107 @@ class BlockCompiler {
       FlushPending(Destination(word));
       return;
     }
+    if (opcode == 0x12) {
+      EmitCop2(instruction);   // flushes and arms the load delay itself, as a load does
+      return;
+    }
+    if (opcode == 0x32) {
+      EmitLwc2(instruction);
+      return;
+    }
+    if (opcode == 0x3A) {
+      EmitSwc2(instruction);
+      FlushPending(Destination(word));
+      return;
+    }
     EmitImmediate(instruction);
     FlushPending(Destination(word));
+  }
+
+  // Coprocessor 2. A command and the register moves go to BlockState::special with what the host
+  // needs - the register number or the instruction in arg 4, the value to write in arg 3. A command
+  // and a read have to wait for the command before them by the machine's clock, which the host does
+  // from `elapsed`; mfc2 and cfc2 then deliver late, as a load does, so they arm the load delay the
+  // way EmitLoad does.
+  void EmitCop2(const Instruction& instruction) {
+    const uint32_t word = instruction.word;
+    const uint32_t rs = (word >> 21) & 0x1F;
+    const uint32_t rt = (word >> 16) & 0x1F;
+    const uint32_t rd = (word >> 11) & 0x1F;
+
+    if (IsGteCommand(word)) {
+      x86::MovRegImm(emitter_, kArg4, word);
+      EmitSpecialCall(instruction, kSpecialGteCommand);
+      FlushPending(0);
+      return;
+    }
+    switch (rs) {
+      case 0x00:   // mfc2
+      case 0x02:   // cfc2
+        x86::MovRegImm(emitter_, kArg4, rd);
+        EmitSpecialCall(instruction, rs == 0x00 ? kSpecialGteMfc2 : kSpecialGteCfc2);
+        FlushPending(rt);   // a load already in flight lands now, unless this writes its register
+        if (rt != 0) {
+          x86::Mov64RegReg(emitter_, kPending, kScratchA);
+          pending_active_ = true;
+          pending_reg_ = rt;
+        }
+        return;
+      case 0x04:   // mtc2
+      case 0x06:   // ctc2
+        LoadReg(kArg3, rt);
+        x86::MovRegImm(emitter_, kArg4, rd);
+        EmitSpecialCall(instruction, rs == 0x04 ? kSpecialGteMtc2 : kSpecialGteCtc2);
+        FlushPending(0);
+        return;
+      default:
+        return;   // CanCompile admitted nothing else
+    }
+  }
+
+  // lwc2: a word loaded as lw loads one, the way EmitLoad loads it, and then written to GTE data
+  // register rt instead of to a register of the CPU's - at once, with no delay slot to wait out.
+  void EmitLwc2(const Instruction& instruction) {
+    const uint32_t word = instruction.word;
+    const uint32_t rs = (word >> 21) & 0x1F;
+    const uint32_t rt = (word >> 16) & 0x1F;
+    const uint16_t immediate = static_cast<uint16_t>(word & 0xFFFF);
+
+    FlushPendingBeforeMemory();
+    EmitAddress(rs, immediate);
+    size_t past_call = 0;
+    if (direct_ram_bytes_ != 0)
+      past_call = EmitDirectRamRead(0x23);
+    EmitCall(kOffLoad32, instruction.pc, kArg3);   // (context, address, pc)
+    EmitFaultCheck(code_, block_start_);
+    if (direct_ram_bytes_ != 0)
+      PatchRel8(code_, past_call, code_->cursor);
+
+    x86::MovRegReg(emitter_, kArg3, kScratchA);    // the word
+    x86::MovRegImm(emitter_, kArg4, rt);           // the GTE register
+    EmitSpecialCall(instruction, kSpecialGteLoad);
+  }
+
+  // swc2: GTE data register rt, read first - the address is worked out after, since the read is a
+  // call that does not keep EDX - and stored as sw stores a word, the way EmitStore stores it.
+  void EmitSwc2(const Instruction& instruction) {
+    const uint32_t word = instruction.word;
+    const uint32_t rs = (word >> 21) & 0x1F;
+    const uint32_t rt = (word >> 16) & 0x1F;
+    const uint16_t immediate = static_cast<uint16_t>(word & 0xFFFF);
+
+    FlushPendingBeforeMemory();
+    x86::MovRegImm(emitter_, kArg4, rt);
+    EmitSpecialCall(instruction, kSpecialGteStore);
+    x86::MovRegReg(emitter_, kArg3, kScratchA);    // the value, whole
+    EmitAddress(rs, immediate);
+    size_t past_call = 0;
+    if (direct_ram_bytes_ != 0)
+      past_call = EmitDirectRamWrite(0x2B);
+    EmitCall(kOffStore32, instruction.pc, kArg4);  // (context, address, value, pc)
+    EmitFaultCheck(code_, block_start_);
+    if (direct_ram_bytes_ != 0)
+      PatchRel8(code_, past_call, code_->cursor);
   }
 
   void EmitImmediate(const Instruction& instruction) {
@@ -1497,6 +1644,7 @@ class BlockCompiler {
   // set_special_ops, and where the block being compiled starts - an instruction's index in it is
   // what a call to BlockState::special reports.
   bool special_ops_ = false;
+  bool gte_ops_ = false;
   uint32_t block_pc_ = 0;
 
   // Set by PatchRel8 when a jump would not reach, for Compile to see.

@@ -354,6 +354,14 @@ class Cpu : public Component {
   uint32_t CompiledHiLo(uint32_t funct, uint32_t a, uint32_t b, uint32_t elapsed,
                         uint32_t* extra_cycles);
 
+  // Coprocessor 2, for compiled code: what COP2, LWC2 and SWC2 do with the GTE, by the operation
+  // (kSpecialGte* in rec/runtime.h), without the interpreter's register fields or its tick, and
+  // under the same hold: a command and a register read wait for the command before them, by the
+  // machine's clock as `elapsed` carries it forward from where the chain began. `*extra_cycles` is
+  // that wait. Not for PGXP, which the compiler leaves to the interpreter's moves, loads and stores.
+  uint32_t CompiledGte(uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed,
+                       uint32_t* extra_cycles);
+
   // The instruction cache as a timing model (bug 94) - see EmuConfig::icache_
   // timing. System turns it on and off, between instructions and only while the
   // interpreter is running. Counters are for the harnesses.

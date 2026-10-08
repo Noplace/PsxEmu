@@ -91,6 +91,8 @@ class RecompilerBridge {
     host.load_in_flight_fn = &LoadInFlight;
     host.overflow = &Overflow;
     host.hilo = &HiLo;
+    host.gte = &GteOp;
+    host.sync = &Sync;
     host.ram_bytes = kRamBytes;
     host.ram_window_bytes = kRamWindowBytes;
     host.ram_read_cycles = Cpu::kRamLoadStall;
@@ -244,6 +246,17 @@ class RecompilerBridge {
   static uint32_t HiLo(void* context, uint32_t funct, uint32_t a, uint32_t b, uint32_t elapsed,
                        uint32_t* extra_cycles) {
     return Of(context)->cpu()->CompiledHiLo(funct, a, b, elapsed, extra_cycles);
+  }
+
+  // The machine's clock brought up to where the chain is, before compiled code touches hardware.
+  static void Sync(void* context, uint32_t cycles) {
+    Of(context)->cpu()->TickCycles(cycles);
+  }
+
+  // The GTE (Cpu::CompiledGte).
+  static uint32_t GteOp(void* context, uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed,
+                      uint32_t* extra_cycles) {
+    return Of(context)->cpu()->CompiledGte(operation, a, b, elapsed, extra_cycles);
   }
 
   // Asked before every step: a plain function, not a std::function's thunk.

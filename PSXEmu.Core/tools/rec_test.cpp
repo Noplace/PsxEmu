@@ -723,6 +723,50 @@ class FakeBus {
                        uint32_t* extra) {
     return Bus(c)->HiLoImpl(funct, a, b, elapsed, extra);
   }
+
+  // The host's clock brought up to a chain (HostInterface::sync): each call's cycles, and the clock the
+  // unit and the GTE above measure from.
+  std::vector<uint32_t> synced;
+  static void Sync(void* c, uint32_t cycles) {
+    Bus(c)->synced.push_back(cycles);
+    Bus(c)->clock += cycles;
+  }
+
+  // A toy coprocessor 2, as a host provides it: thirty-two data and thirty-two control registers, and
+  // commands that add their low sixteen bits into data register 31 and take 5 + (their low four bits)
+  // cycles, during which a command or a read of a register waits (one cycle more than the command has
+  // left, as Cpu::COP2 holds). What it computes is nothing like the GTE; what it holds to is the
+  // GTE's rules about when - which is what a compiled instruction can get wrong.
+  uint32_t gdata[32] = {};
+  uint32_t gctrl[32] = {};
+  uint64_t gte_busy_until = 0;
+  int gte_commands = 0;
+  uint32_t GteImpl(uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed, uint32_t* extra) {
+    const uint64_t now = clock + elapsed;
+    *extra = 0;
+    auto hold = [&]() {
+      if (now < gte_busy_until)
+        *extra = static_cast<uint32_t>(gte_busy_until - now) + 1;
+    };
+    switch (operation) {
+      case emulation::rec::kSpecialGteCommand:
+        hold();
+        ++gte_commands;
+        gdata[31] += b & 0xFFFF;
+        gte_busy_until = now + *extra + 1 + ((5 + (b & 0xF)) - 1);
+        return 0;
+      case emulation::rec::kSpecialGteMfc2: hold(); return gdata[b];
+      case emulation::rec::kSpecialGteCfc2: hold(); return gctrl[b];
+      case emulation::rec::kSpecialGteMtc2:
+      case emulation::rec::kSpecialGteLoad: gdata[b] = a; return 0;
+      case emulation::rec::kSpecialGteCtc2: gctrl[b] = a; return 0;
+      default: return gdata[b];   // kSpecialGteStore
+    }
+  }
+  static uint32_t Gte(void* c, uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed,
+                      uint32_t* extra) {
+    return Bus(c)->GteImpl(operation, a, b, elapsed, extra);
+  }
   static void Overflow(void* c, uint32_t pc) {
     FakeBus* bus = Bus(c);
     ++bus->overflows;
@@ -742,7 +786,10 @@ class FakeBus {
     FakeBus* bus = Bus(c);
     const uint32_t owed = bus->block_state != nullptr ? bus->block_state->extra_cycles : 0;
     uint32_t extra = 0;
-    const uint32_t value = bus->HiLoImpl(operation & 0xFF, a, b, (operation >> 8) + owed, &extra);
+    const uint32_t value =
+        (operation & 0xFF) >= emulation::rec::kSpecialGteCommand
+            ? bus->GteImpl(operation & 0xFF, a, b, (operation >> 8) + owed, &extra)
+            : bus->HiLoImpl(operation & 0xFF, a, b, (operation >> 8) + owed, &extra);
     if (bus->block_state != nullptr)
       bus->block_state->extra_cycles += extra;
     return value;
@@ -810,6 +857,10 @@ bool g_direct_ram = false;
 // And the trapping add and the multiply/divide unit, which the compiler only takes when its host can
 // answer for them: off for everything above, on for the tests of those instructions.
 bool g_special_ops = false;
+// And the coprocessor 2 instructions, which wait for the same kind of host.
+bool g_gte_ops = false;
+// And the host bringing its clock up to the chain before a load or store past RAM.
+bool g_sync = false;
 // What each direct read owes - Cpu::kRamLoadStall's value, though nothing here
 // depends on which number it is.
 const uint8_t kRamReadCycles = 4;
@@ -820,6 +871,7 @@ emulation::rec::BlockCompiler MakeCompiler(Emitter* emitter) {
   compiler.set_link_blocks(g_link_blocks);
   compiler.set_direct_ram(g_direct_ram ? kBusBytes : 0, kRamReadCycles);
   compiler.set_special_ops(g_special_ops);
+  compiler.set_gte_ops(g_gte_ops);
   // Allocate however short the block is. In the emulator a block has to be
   // long enough for allocation to pay; here it has to happen at all, or the
   // second pass over the suite would compile the same thing as the first and
@@ -1745,6 +1797,12 @@ class Engine {
     if (g_special_ops) {
       host.overflow = &FakeBus::Overflow;
       host.hilo = &FakeBus::HiLo;
+    }
+    if (g_gte_ops)
+      host.gte = &FakeBus::Gte;
+    if (g_sync) {
+      host.sync = &FakeBus::Sync;
+      host.ram_window_bytes = g_direct_ram ? kBusBytes : 0;
     }
     recompiler_.reset(new emulation::rec::Recompiler(host, machine.r));
     bus.overflow_target = recompiler_.get();
@@ -3308,6 +3366,441 @@ void TestTheUnitsClockFollowsTheChain() {
              "and so does the same code run as a chain of linked blocks");
 }
 
+// ---------------------------------------------------------------------------
+// Coprocessor 2
+// ---------------------------------------------------------------------------
+
+uint32_t COP2CMD(uint32_t code) { return (0x12u << 26) | (1u << 25) | (code & 0x1FFFFFF); }
+uint32_t COP2MOVE(uint32_t rs, uint32_t rt, uint32_t rd) {
+  return (0x12u << 26) | (rs << 21) | (rt << 16) | (rd << 11);
+}
+uint32_t MFC2_(uint32_t rt, uint32_t rd) { return COP2MOVE(0, rt, rd); }
+uint32_t CFC2_(uint32_t rt, uint32_t rd) { return COP2MOVE(2, rt, rd); }
+uint32_t MTC2_(uint32_t rt, uint32_t rd) { return COP2MOVE(4, rt, rd); }
+uint32_t CTC2_(uint32_t rt, uint32_t rd) { return COP2MOVE(6, rt, rd); }
+uint32_t LWC2_(uint32_t rt, uint32_t rs, uint16_t imm) { return (0x32u << 26) | (rs << 21) | (rt << 16) | imm; }
+uint32_t SWC2_(uint32_t rt, uint32_t rs, uint16_t imm) { return (0x3Au << 26) | (rs << 21) | (rt << 16) | imm; }
+
+// What the interpreter does with a straight run of ADDU, ADDIU, nops and the coprocessor 2
+// instructions, written from Cpu::COP2 and the load pipeline (Cpu::ArmLoad, AdvanceLoadDelay,
+// WriteReg), not from the compiler: a register file, a load in flight and one a stage behind, the
+// toy GTE's registers, and the clock the GTE's busy time is measured on.
+struct GteReference {
+  uint32_t r[32] = {};
+  uint32_t data[32] = {};
+  uint32_t ctrl[32] = {};
+  uint64_t cycles = 0;
+  uint64_t busy_until = 0;
+};
+
+GteReference RunGteReference(const std::vector<uint32_t>& program, const uint32_t initial[32]) {
+  GteReference m;
+  for (int i = 0; i < 32; ++i)
+    m.r[i] = initial[i];
+  struct Late { uint32_t reg = 0, value = 0; bool active = false; } pending, armed;
+  auto advance = [&]() {
+    if (pending.active) {
+      if (pending.reg != 0)
+        m.r[pending.reg] = pending.value;
+      pending.active = false;
+    }
+    if (armed.active) {
+      pending = armed;
+      armed.active = false;
+    }
+  };
+  auto write = [&](uint32_t index, uint32_t value) {
+    if (index != 0)
+      m.r[index] = value;
+    if (pending.active && pending.reg == index)
+      pending.active = false;
+  };
+  auto hold = [&]() {
+    if (m.cycles < m.busy_until)
+      m.cycles = m.busy_until + 1;   // until it finishes, and the cycle after
+  };
+  for (uint32_t word : program) {
+    advance();
+    const uint32_t opcode = word >> 26;
+    const uint32_t rs = (word >> 21) & 31, rt = (word >> 16) & 31, rd = (word >> 11) & 31;
+    if (opcode == 0x12 && (word & (1u << 25))) {
+      hold();
+      m.data[31] += word & 0xFFFF;
+      m.cycles += 1;
+      m.busy_until = m.cycles + (5 + (word & 0xF)) - 1;
+    } else if (opcode == 0x12) {
+      if (rs == 0 || rs == 2) {
+        hold();
+        const uint32_t value = rs == 0 ? m.data[rd] : m.ctrl[rd];
+        if (pending.active && pending.reg == rt)
+          pending.active = false;
+        armed.reg = rt; armed.value = value; armed.active = rt != 0;
+      } else if (rs == 4) {
+        m.data[rd] = m.r[rt];
+      } else if (rs == 6) {
+        m.ctrl[rd] = m.r[rt];
+      }
+      m.cycles += 1;
+    } else if (opcode == 0x00 && (word & 0x3F) == 0x21) {
+      write(rd, m.r[rs] + m.r[rt]);
+      m.cycles += 1;
+    } else if (opcode == 0x09) {
+      write(rt, m.r[rs] + static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(word & 0xFFFF))));
+      m.cycles += 1;
+    } else {
+      m.cycles += 1;   // a nop
+    }
+  }
+  advance();   // the pipeline stage a following instruction would start with
+  return m;
+}
+
+struct GteRun {
+  uint32_t regs[32] = {};
+  uint32_t compiled = 0;
+  uint32_t fault = 0;
+  uint64_t cycles = 0;
+  FakeBus bus;
+};
+
+void RunGte(const std::vector<uint32_t>& program, const uint32_t initial[32], GteRun* run,
+            bool track_moves = false) {
+  FakeMemory memory;
+  memory.Write(kProgramBase, program);
+  BlockDecoder decoder(memory.Fetch());
+  const DecodedBlock decoded = decoder.Decode(kProgramBase, static_cast<uint32_t>(program.size()));
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(16384);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+  compiler.set_gte_ops(true);
+  compiler.set_track_moves(track_moves);
+  const emulation::rec::CompiledBlock compiled = compiler.Compile(decoded, code);
+  for (int i = 0; i < 32; ++i)
+    run->regs[i] = initial[i];
+  emulation::rec::BlockState state = MakeState(run->regs, &run->bus);
+  run->bus.block_state = &state;
+  RunBlock(code, &state);
+  run->bus.block_state = nullptr;
+  run->compiled = compiled.compiled;
+  run->fault = state.fault;
+  run->cycles = compiled.compiled + state.extra_cycles;
+  emitter.destroy_block(code);
+}
+
+void TestTheGteMatchesTheInterpreter() {
+  printf("compiled cop2 commands and register moves leave what the interpreter leaves, and cost the same\n");
+
+  // A command, a gap, and then a read of a register that is the command's result - the GTE busy and
+  // then not - with the read's value used in its own delay slot (where it must still be the old one) and
+  // after it, and a second command straight after, which waits for the first as well.
+  const uint32_t codes[] = { 0x00000001, 0x0000000F, 0x00000013, 0x00000FF8 };
+  const int gaps[] = { 0, 1, 2, 4, 5, 8, 12, 25 };
+  int runs = 0, failures = 0;
+  for (int reader = 0; reader < 2; ++reader) {
+    for (uint32_t code : codes) {
+      for (int gap : gaps) {
+        std::vector<uint32_t> program = {
+            MTC2_(1, 4),                       // data 4 <- r1
+            CTC2_(2, 9),                       // control 9 <- r2
+            COP2CMD(code),
+        };
+        for (int i = 0; i < gap; ++i)
+          program.push_back(NOP());
+        program.push_back(reader == 0 ? MFC2_(5, 31) : CFC2_(5, 9));
+        program.push_back(ADDU(6, 5, 0));      // the delay slot: the register's old value
+        program.push_back(ADDU(7, 5, 0));      // and after it: the new one
+        program.push_back(COP2CMD(code + 1));  // straight after
+        program.push_back(MFC2_(8, 31));
+        program.push_back(NOP());
+        program.push_back(MTC2_(8, 12));
+        program.push_back(NOP());
+        uint32_t initial[32] = {};
+        initial[1] = 0x1234;
+        initial[2] = 0xCAFE;
+        initial[5] = 0x5555;                   // the old value
+        const GteReference expected = RunGteReference(program, initial);
+        GteRun run;
+        RunGte(program, initial, &run);
+        ++runs;
+        bool same = run.compiled == program.size() && run.cycles == expected.cycles &&
+                    run.bus.gdata[31] == expected.data[31] && run.bus.gdata[4] == expected.data[4] &&
+                    run.bus.gdata[12] == expected.data[12] && run.bus.gctrl[9] == expected.ctrl[9];
+        for (int i = 5; i <= 8 && same; ++i)
+          same = run.regs[i] == expected.r[i];
+        if (!same) {
+          ++failures;
+          if (failures <= 4)
+            printf("  FAIL  reader %d code %X gap %d: compiled %u of %zu, %llu cycles (want %llu), "
+                   "r5-r8 %X %X %X %X (want %X %X %X %X)\n", reader, code, gap, run.compiled,
+                   program.size(), static_cast<unsigned long long>(run.cycles),
+                   static_cast<unsigned long long>(expected.cycles), run.regs[5], run.regs[6],
+                   run.regs[7], run.regs[8], expected.r[5], expected.r[6], expected.r[7], expected.r[8]);
+        }
+      }
+    }
+  }
+  CheckEqual(failures, 0, "every command, gap and reader agrees with the interpreter");
+  Check(runs >= 64, "and the sweep covered what it says");
+
+  // The old value really is what the delay slot sees, and the new one what comes after.
+  {
+    const std::vector<uint32_t> program = { MFC2_(5, 3), ADDU(6, 5, 0), ADDU(7, 5, 0), NOP() };
+    uint32_t initial[32] = {};
+    initial[5] = 0x1111;
+    GteRun run;
+    run.bus.gdata[3] = 0x9999;
+    RunGte(program, initial, &run);
+    CheckEqual(run.regs[6], 0x1111, "mfc2's value is not there for the next instruction");
+    CheckEqual(run.regs[7], 0x9999, "and is there for the one after");
+  }
+}
+
+void TestLwc2AndSwc2MoveWordsBetweenMemoryAndTheGte() {
+  printf("lwc2 and swc2 move a word between memory and a GTE register, with RAM direct or called\n");
+
+  for (int direct = 0; direct < 2; ++direct) {
+    const bool saved = g_direct_ram;
+    g_direct_ram = direct != 0;
+    uint32_t initial[32] = {};
+    initial[1] = kBusBase + 0x100;
+    const std::vector<uint32_t> program = {
+        LWC2_(5, 1, 0),        // data 5 <- the word at 0x100
+        LWC2_(6, 1, 4),
+        SWC2_(6, 1, 0x20),     // the word at 0x120 <- data 6
+        SWC2_(5, 1, 0x24),
+        NOP(),
+    };
+    GteRun run;
+    run.bus.Write(kBusBase + 0x100, 4, 0x11223344);
+    run.bus.Write(kBusBase + 0x104, 4, 0x55667788);
+    RunGte(program, initial, &run);
+    g_direct_ram = saved;
+    const char* how = direct ? "RAM direct" : "through the callbacks";
+    CheckEqual(run.compiled, static_cast<int64_t>(program.size()),
+               direct ? "the whole block compiled, RAM direct" : "the whole block compiled, called");
+    CheckEqual(run.bus.gdata[5], 0x11223344, direct ? "lwc2 loaded data 5, RAM direct" : "lwc2 loaded data 5, called");
+    CheckEqual(run.bus.gdata[6], 0x55667788, direct ? "and data 6, RAM direct" : "and data 6, called");
+    CheckEqual(run.bus.Read(kBusBase + 0x120, 4), 0x55667788, direct ? "swc2 stored data 6, RAM direct" : "swc2 stored data 6, called");
+    CheckEqual(run.bus.Read(kBusBase + 0x124, 4), 0x11223344, direct ? "and data 5, RAM direct" : "and data 5, called");
+    (void)how;
+  }
+
+  // A misaligned lwc2 faults before it writes the register, and stops the block.
+  {
+    g_direct_ram = true;
+    g_gte_ops = true;
+    const std::vector<uint32_t> program = {
+        ADDIU(3, 0, 5),
+        LWC2_(5, 0, 0x4001),   // misaligned
+        ADDIU(4, 0, 7),        // must not run
+        JR(0),
+        NOP(),
+    };
+    Engine engine;
+    engine.bus.WriteProgram(kProgramBase, program);
+    engine.bus.gdata[5] = 0xABCD;
+    engine.AttachRecompiler();
+    engine.bus.faults_on_unaligned = engine.recompiler();
+    const uint32_t next = engine.recompiler()->Step(kProgramBase);
+    g_direct_ram = false;
+    g_gte_ops = false;
+    CheckEqual(engine.machine.r[3], 5, "the instruction before ran");
+    CheckEqual(engine.bus.gdata[5], 0xABCD, "the faulting lwc2 wrote nothing");
+    CheckEqual(engine.machine.r[4], 0, "and nothing after it ran");
+    Check(next == emulation::rec::Recompiler::kFaulted, "the block stopped as faulted");
+  }
+
+  // The address register of a memory access cannot be one a load is still bringing in, since the
+  // value is written out early; the same for one that mfc2 is still bringing in.
+  {
+    FakeMemory memory;
+    memory.Write(kProgramBase, { MFC2_(5, 3), LWC2_(7, 5, 0), NOP(), NOP() });
+    BlockDecoder decoder(memory.Fetch());
+    Emitter emitter;
+    CodeBlock* code = emitter.create_block(8192);
+    emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+    compiler.set_gte_ops(true);
+    const emulation::rec::CompiledBlock compiled = compiler.Compile(decoder.Decode(kProgramBase, 4), code);
+    CheckEqual(compiled.compiled, 0, "an lwc2 off a register mfc2 is bringing in stops the block before the mfc2");
+    emitter.destroy_block(code);
+  }
+}
+
+void TestThePgxpHostKeepsTheMovesButNotTheCommands() {
+  printf("while the host tracks PGXP, commands compile and the moves, lwc2 and swc2 do not\n");
+
+  FakeMemory memory;
+  memory.Write(kProgramBase, {
+      ADDIU(1, 0, 1),
+      COP2CMD(0x12),          // compiled whatever the host tracks
+      MTC2_(1, 4),            // the register moves carry a shadow in the interpreter
+      NOP(),
+  });
+  BlockDecoder decoder(memory.Fetch());
+  for (int track = 0; track < 2; ++track) {
+    Emitter emitter;
+    CodeBlock* code = emitter.create_block(8192);
+    emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+    compiler.set_gte_ops(true);
+    compiler.set_track_moves(track != 0);
+    const emulation::rec::CompiledBlock compiled = compiler.Compile(decoder.Decode(kProgramBase, 4), code);
+    CheckEqual(compiled.compiled, track ? 2 : 4,
+               track ? "tracking: the command compiles, the move after it does not"
+                     : "not tracking: the whole block compiles");
+    emitter.destroy_block(code);
+  }
+  for (uint32_t word : { MFC2_(3, 3), CFC2_(3, 3), MTC2_(3, 3), CTC2_(3, 3), LWC2_(3, 0, 0), SWC2_(3, 0, 0) }) {
+    Emitter emitter;
+    emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+    compiler.set_gte_ops(true);
+    compiler.set_track_moves(true);
+    Check(!compiler.CanCompile(word), "each of the six is the interpreter's while tracking");
+    compiler.set_track_moves(false);
+    Check(compiler.CanCompile(word), "and the compiler's when not");
+  }
+}
+
+void TestWhatItAdmitsWithTheGteOnIsWhatItCompiles() {
+  printf("with the GTE's instructions on, what is admitted is exactly what is emitted\n");
+
+  std::vector<uint32_t> words;
+  // Bits 25-21: 16-31 have bit 25 set, which is a command; 0-15 are the moves' rs, of which four are real.
+  for (uint32_t field = 0; field < 32; ++field)
+    words.push_back((0x12u << 26) | (field << 21) | (3u << 16) | (4u << 11) | 0x5);
+  for (uint32_t opcode : { 0x10u, 0x11u, 0x13u, 0x32u, 0x3Au, 0x31u, 0x33u, 0x39u, 0x3Bu })
+    words.push_back((opcode << 26) | (2u << 21) | (3u << 16) | 0x0008);
+
+  int mismatches = 0, admitted = 0;
+  for (uint32_t word : words) {
+    FakeMemory memory;
+    memory.Write(kProgramBase, { word, ADDIU(6, 6, 1) });
+    BlockDecoder decoder(memory.Fetch());
+    Emitter emitter;
+    CodeBlock* code = emitter.create_block(8192);
+    emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+    compiler.set_gte_ops(true);
+    const bool admits = compiler.CanCompile(word);
+    const emulation::rec::CompiledBlock compiled = compiler.Compile(decoder.Decode(kProgramBase, 2), code);
+    emitter.destroy_block(code);
+    // A load that is the last of a block has nowhere to land, so mfc2 and cfc2 into a register are
+    // refused when they are all the block has - the follower is what is compiled with them.
+    const uint32_t expected = admits ? 2u : 0u;
+    if (admits)
+      ++admitted;
+    if (compiled.compiled != expected) {
+      ++mismatches;
+      if (mismatches <= 3)
+        printf("  FAIL  %08X: CanCompile says %s, compiled %u\n", word, admits ? "yes" : "no", compiled.compiled);
+    }
+  }
+  CheckEqual(mismatches, 0, "every word is compiled if and only if it is admitted");
+  // The sixteen command forms, mfc2 cfc2 mtc2 ctc2, lwc2 and swc2.
+  CheckEqual(admitted, 16 + 4 + 2, "and what is admitted is the commands, the four moves, lwc2 and swc2");
+
+  // mfc2 and cfc2 deliver an instruction late, so one that is the last of a block has nowhere to
+  // land: it is left to the interpreter, as a load is.
+  for (uint32_t word : { MFC2_(5, 3), CFC2_(5, 3) }) {
+    FakeMemory memory;
+    memory.Write(kProgramBase, { ADDIU(1, 0, 1), word });
+    BlockDecoder decoder(memory.Fetch());
+    Emitter emitter;
+    CodeBlock* code = emitter.create_block(8192);
+    emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+    compiler.set_gte_ops(true);
+    const emulation::rec::CompiledBlock compiled = compiler.Compile(decoder.Decode(kProgramBase, 2), code);
+    CheckEqual(compiled.compiled, 1, "a register read that ends the block is not compiled");
+    emitter.destroy_block(code);
+  }
+}
+
+void TestTheGteClockFollowsTheChain() {
+  printf("a read waits for a command by the chain's clock, across linked blocks as across entries\n");
+
+  const uint32_t second = kProgramBase + 20;
+  const std::vector<uint32_t> program = {
+      MTC2_(1, 4),                 // 0: block one
+      COP2CMD(0x00000003),         // 1: eight cycles
+      NOP(),                       // 2
+      J(second >> 2),              // 3: ends the block
+      NOP(),                       // 4
+      MFC2_(5, 31),                // 5: block two - reads it while the GTE is still busy
+      ADDU(6, 5, 0),               // 6
+      JR(0),                       // 7
+      NOP(),                       // 8
+  };
+  const uint32_t initial[32] = {};
+  const GteReference expected = RunGteReference(
+      { program[0], program[1], program[2], NOP(), NOP(), program[5], program[6], program[7], program[8] },
+      initial);
+
+  g_gte_ops = true;
+  uint64_t one_by_one = 0, chained = 0;
+  Engine engine;
+  engine.bus.WriteProgram(kProgramBase, program);
+  engine.AttachRecompiler();
+  for (int round = 0; round < 3; ++round) {
+    engine.bus.clock = 0;
+    engine.bus.gte_busy_until = 0;
+    uint32_t pc = kProgramBase;
+    uint64_t cycles = 0;
+    int steps = 0;
+    while (pc != 0 && steps++ < 8) {
+      pc = engine.recompiler()->Step(pc);
+      cycles += engine.recompiler()->last_cycles();
+      engine.bus.clock += engine.recompiler()->last_cycles();
+    }
+    if (round == 0)
+      one_by_one = cycles;
+    if (round == 2)
+      chained = cycles;
+  }
+  g_gte_ops = false;
+  Check(engine.recompiler()->stats().links_made > 0, "the blocks were linked");
+  CheckEqual(static_cast<int64_t>(one_by_one), static_cast<int64_t>(expected.cycles),
+             "one block per entry costs what the interpreter's clock says");
+  CheckEqual(static_cast<int64_t>(chained), static_cast<int64_t>(expected.cycles),
+             "and so does the same code run as a chain of linked blocks");
+}
+
+void TestTheClockIsBroughtUpBeforeHardwareIsTouched() {
+  printf("a load or store past RAM brings the host's clock up to the instruction first, once, and is not charged twice\n");
+
+  // The hardware's register at 1F801120h, through KSEG1: past RAM, so a callout, and the callout
+  // needs to know what time it is. The loads and stores before it are the chain's, and run ahead of the
+  // host's clock by as many cycles as there were instructions.
+  const std::vector<uint32_t> program = {
+      LUI_(1, 0xBF80),          // 0
+      ORI_(1, 1, 0x1120),       // 1
+      ADDIU(2, 0, 7),           // 2
+      ADDIU(2, 2, 1),           // 3
+      LW(3, 1, 0),              // 4: the first access - four instructions have run
+      NOP(),                    // 5
+      SW(2, 1, 0),              // 6: the second - two more since
+      ADDIU(4, 0, 9),           // 7
+      JR(0),                    // 8
+      NOP(),                    // 9
+  };
+
+  g_direct_ram = true;
+  g_sync = true;
+  Engine engine;
+  engine.bus.WriteProgram(kProgramBase, program);
+  engine.AttachRecompiler();
+  engine.recompiler()->Step(kProgramBase);
+  const uint32_t charged = engine.recompiler()->last_cycles();
+  g_direct_ram = false;
+  g_sync = false;
+
+  CheckEqual(static_cast<int64_t>(engine.bus.synced.size()), 2, "two accesses past RAM, two calls to sync");
+  if (engine.bus.synced.size() == 2) {
+    CheckEqual(engine.bus.synced[0], 4, "the first brings it up by the four instructions before it");
+    CheckEqual(engine.bus.synced[1], 2, "the second by the two since");
+  }
+  CheckEqual(charged, 4, "and the chain is charged only the rest of its ten instructions");
+  CheckEqual(static_cast<int64_t>(engine.bus.clock + charged), 10, "ten cycles in all, as without it");
+  CheckEqual(engine.machine.r[4], 9, "and the run was not disturbed");
+}
+
 int main() {
   printf("rec_test - emitter, block cache, decoder, compiler, engine\n");
   printf("           (Docs/Recompiler-Plan.md steps 1 to 6)\n\n");
@@ -3360,6 +3853,12 @@ int main() {
   TestAnOverflowingAddInADelaySlotIsLeftToTheInterpreter();
   TestWhatItAdmitsWithTheUnitOnIsWhatItCompiles();
   TestTheUnitsClockFollowsTheChain();
+  TestTheGteMatchesTheInterpreter();
+  TestLwc2AndSwc2MoveWordsBetweenMemoryAndTheGte();
+  TestThePgxpHostKeepsTheMovesButNotTheCommands();
+  TestWhatItAdmitsWithTheGteOnIsWhatItCompiles();
+  TestTheGteClockFollowsTheChain();
+  TestTheClockIsBroughtUpBeforeHardwareIsTouched();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

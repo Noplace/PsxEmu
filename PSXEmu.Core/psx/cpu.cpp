@@ -1884,6 +1884,44 @@ void Cpu::DIVU() {
   hilo_busy_until_cycles_ = context_->cycles + 35;
 }
 
+// What compiled code asks of the GTE: Cpu::COP2, LWC2 and SWC2 without their ticks. The hold is
+// COP2's - an access arriving while the last command runs waits until it finishes plus one cycle,
+// and one arriving as it finishes waits for nothing - and what follows a command is too: one cycle
+// to issue, then busy for the rest of what Execute says it takes.
+uint32_t Cpu::CompiledGte(uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed,
+                          uint32_t* extra_cycles) {
+  const uint64_t now = context_->cycles + elapsed;
+  Gte& gte = system_->gte();
+  *extra_cycles = 0;
+  auto hold = [&]() {
+    if (now < gte_busy_until_cycles_)
+      *extra_cycles = static_cast<uint32_t>(gte_busy_until_cycles_ - now) + 1;
+  };
+  switch (operation) {
+    case 0x40: {   // a command, whose instruction word is in b
+      hold();
+      const uint32_t total_cycles = gte.Execute(b);
+      gte_busy_until_cycles_ = now + *extra_cycles + 1 + (total_cycles > 0 ? total_cycles - 1 : 0);
+      return 0;
+    }
+    case 0x41:     // mfc2
+      hold();
+      return gte.ReadData(b);
+    case 0x42:     // cfc2
+      hold();
+      return gte.ReadControl(b);
+    case 0x43:     // mtc2
+    case 0x45:     // lwc2, which writes the data register as mtc2 does
+      gte.WriteData(b, a);
+      return 0;
+    case 0x44:     // ctc2
+      gte.WriteControl(b, a);
+      return 0;
+    default:       // 0x46, swc2
+      return gte.ReadData(b);
+  }
+}
+
 // What compiled code asks of the unit. Where the interpreter ticks the machine inside each
 // instruction and compares its own clock, this is told how far the chain has got and answers with
 // what the instruction costs on top of its cycle. `now` is the clock as the interpreter would read

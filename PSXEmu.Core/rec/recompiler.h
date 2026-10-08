@@ -163,6 +163,24 @@ struct HostInterface {
   // cycle goes in `*extra_cycles`: the rest of a multiply or divide, a read waiting for one.
   uint32_t (*hilo)(void* context, uint32_t funct, uint32_t a, uint32_t b, uint32_t elapsed,
                    uint32_t* extra_cycles) = nullptr;
+
+  // Coprocessor 2, the GTE: its commands, its register moves, and lwc2 and swc2's side of the
+  // transfer (kSpecialGte* in runtime.h are the operations). `elapsed` and `*extra_cycles` are
+  // `hilo`'s, and for the same reason: a command and a read of a register wait for the one before
+  // them, by the machine's clock, which compiled code does not advance as it goes. With it set the
+  // compiler compiles cop2 commands everywhere, and the register moves, lwc2 and swc2 unless the
+  // host keeps PGXP's shadows beside the registers (set_track_moves), which the compiled form does
+  // not carry.
+  uint32_t (*gte)(void* context, uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed,
+                  uint32_t* extra_cycles) = nullptr;
+
+  // Advance the machine by `cycles`: the cycles a chain has run that the machine has not been
+  // charged yet. Called just before a load or store that goes past RAM - a counter, the GPU, the
+  // CD, DMA - because hardware answers by the clock, and compiled code does not tick as it goes: a
+  // game that reads a root counter before and after some code, to time it, would otherwise read the
+  // same time twice. What is advanced here is not charged again when the chain ends. Optional; without
+  // it a chain is charged in one piece at the end, as it was.
+  void (*sync)(void* context, uint32_t cycles) = nullptr;
 };
 
 class Recompiler {
@@ -213,6 +231,8 @@ class Recompiler {
     state_.code_pages = cache_.code_pages();
     state_.special = &SpecialThunk;
     compiler_.set_special_ops(host.overflow != nullptr && host.hilo != nullptr);
+    compiler_.set_gte_ops(host.gte != nullptr);
+    ram_window_ = host.ram_window_bytes > host.ram_bytes ? host.ram_window_bytes : host.ram_bytes;
   }
 
   ~Recompiler() {
@@ -260,6 +280,7 @@ class Recompiler {
     state_.fault = 0;
     state_.extra_cycles = 0;
     special_extra_ = 0;
+    synced_ = 0;
     ++executing_;
     reinterpret_cast<void (*)(BlockState*)>(code)(&state_);
     --executing_;
@@ -273,8 +294,13 @@ class Recompiler {
     // is worse than a flat one everybody can see. On top of that, the stall of
     // every load that read RAM directly: through the callback it would have
     // charged that itself.
-    last_cycles_ = static_cast<uint32_t>(budget_ - state_.budget) + state_.extra_cycles;
-    stats_.cycles_compiled += last_cycles_;
+    //
+    // Less what the machine was brought up to along the way (SyncFor), which it has been charged
+    // already. A block that faulted never charged itself, so what was synced for the instructions it
+    // ran can be more than what is left: nothing more is owed then.
+    const uint32_t chain = static_cast<uint32_t>(budget_ - state_.budget) + state_.extra_cycles;
+    last_cycles_ = chain > synced_ ? chain - synced_ : 0;
+    stats_.cycles_compiled += chain;
     // What direct reads owed, for stats() to divide into reads: not what the multiply and divide
     // unit asked for, which is in the same sum for the chain's charge.
     stall_cycles_direct_ += state_.extra_cycles - special_extra_;
@@ -588,10 +614,13 @@ class Recompiler {
       self->host_.overflow(self->host_.context, a);
       return 0;
     }
-    const uint32_t elapsed = static_cast<uint32_t>(self->budget_ - self->state_.budget) +
-                             self->state_.extra_cycles + (operation >> 8);
+    // From where the host's clock is - what was synced to it is already in it.
+    const uint32_t elapsed = self->ChainCycles(operation >> 8) - self->synced_;
     uint32_t extra = 0;
-    const uint32_t value = self->host_.hilo(self->host_.context, funct, a, b, elapsed, &extra);
+    const uint32_t value =
+        funct >= kSpecialGteCommand
+            ? self->host_.gte(self->host_.context, funct, a, b, elapsed, &extra)
+            : self->host_.hilo(self->host_.context, funct, a, b, elapsed, &extra);
     self->state_.extra_cycles += extra;
     self->special_extra_ += extra;
     return value;
@@ -602,16 +631,40 @@ class Recompiler {
     if (self->host_.move != nullptr)
       self->host_.move(self->host_.context, to, from);
   }
+  // How many cycles the chain has run as the machine counts them, up to the instruction at `index`
+  // in the block that is running: the blocks already finished (the budget they spent), what direct
+  // reads and the multiply/divide unit and the GTE owe, and the instructions of this block before
+  // that one. Compiled code ticks nothing as it goes, so this is where in time it is.
+  uint32_t ChainCycles(uint32_t index) const {
+    return static_cast<uint32_t>(budget_ - state_.budget) + state_.extra_cycles + index;
+  }
+
+  // Before a load or store past RAM, brings the machine's clock up to the instruction making it
+  // (HostInterface::sync), so the hardware answers for the time it is, not for the time the chain
+  // began. RAM and its mirrors have no clock and are skipped.
+  void SyncFor(uint32_t address, uint32_t pc) {
+    if (host_.sync == nullptr || (address & 0x1FFFFFFFu) < ram_window_)
+      return;
+    const uint32_t total = ChainCycles((pc - state_.block_pc) >> 2);
+    if (total > synced_) {
+      host_.sync(host_.context, total - synced_);
+      synced_ = total;
+    }
+  }
+
   static uint32_t LoadThunk32(void* c, uint32_t a, uint32_t pc) {
     Recompiler* self = Self(c);
+    self->SyncFor(a, pc);
     return self->host_.load32(self->host_.context, a, pc);
   }
   static uint32_t LoadThunk16(void* c, uint32_t a, uint32_t pc) {
     Recompiler* self = Self(c);
+    self->SyncFor(a, pc);
     return self->host_.load16(self->host_.context, a, pc);
   }
   static uint32_t LoadThunk8(void* c, uint32_t a, uint32_t pc) {
     Recompiler* self = Self(c);
+    self->SyncFor(a, pc);
     return self->host_.load8(self->host_.context, a, pc);
   }
 
@@ -620,16 +673,19 @@ class Recompiler {
   // is the same thing here - but not once a store can fault.
   static void StoreThunk32(void* c, uint32_t a, uint32_t v, uint32_t pc) {
     Recompiler* self = Self(c);
+    self->SyncFor(a, pc);
     self->host_.store32(self->host_.context, a, v, pc);
     self->NoteStore(a);
   }
   static void StoreThunk16(void* c, uint32_t a, uint32_t v, uint32_t pc) {
     Recompiler* self = Self(c);
+    self->SyncFor(a, pc);
     self->host_.store16(self->host_.context, a, v, pc);
     self->NoteStore(a);
   }
   static void StoreThunk8(void* c, uint32_t a, uint32_t v, uint32_t pc) {
     Recompiler* self = Self(c);
+    self->SyncFor(a, pc);
     self->host_.store8(self->host_.context, a, v, pc);
     self->NoteStore(a);
   }
@@ -644,6 +700,8 @@ class Recompiler {
   mutable Stats stats_;
   uint64_t stall_cycles_direct_ = 0;
   uint32_t special_extra_ = 0;   // extra cycles the current chain's SpecialThunk calls asked for
+  uint32_t synced_ = 0;          // cycles of the current chain the host has already been brought up to
+  uint32_t ram_window_ = 0;      // physical addresses below this are RAM, which has no clock
   int executing_ = 0;
   bool reclaim_pending_ = false;
 

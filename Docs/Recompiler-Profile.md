@@ -293,6 +293,75 @@ two checks fail each time.
 What is left of the steps: Wild Arms now takes 6.8M interpreted steps in 1,500 frames, of which about 4.4M is
 the BIOS boot. The remainder is `lwl`/`lwr`/`swl`/`swr`, the coprocessor moves and the GTE.
 
+## Done: the GTE is compiled, and compiled code keeps the machine's clock (same day)
+
+The re-profile on 3D games (Ridge Racer, 3,000 frames): 63.8M interpreted instructions, 37.7M of them
+the GTE and its neighbours - `mfc2` 5.0M, `mtc2` 7.7M, `ctc2` 4.3M, `cfc2` 0.5M, `lwc2` 4.0M, `swc2` 5.3M,
+the commands ~4M - and 26M more behind them (the instruction after an interpreted load is interpreted too).
+Cop0 is a few thousand and is not compiled: a compiled `mtc0` could isolate the cache or move the interrupt
+mask in the middle of a chain, which the loads and stores assume cannot happen.
+
+- **Commands, `mfc2`/`cfc2`, `mtc2`/`ctc2`, `lwc2`, `swc2`** go to `BlockState::special` with the GTE
+  operations (`kSpecialGte*`, `HostInterface::gte`, `Cpu::CompiledGte`). A command and a register read wait for
+  the command before them by the machine's clock, as `Cpu::COP2` holds (one cycle past the end), which the
+  host works out from `elapsed` exactly as for the multiply/divide unit. `mfc2` and `cfc2` deliver an
+  instruction late like a load, so they arm the load delay the same way, need a follower in the block, and
+  count as a load in flight for the rule that keeps a memory access's address register out of the way.
+  `lwc2` and `swc2` are the existing compiled load and store with the GTE's register in place of one of the
+  CPU's. While the host tracks PGXP the moves, `lwc2` and `swc2` stay the interpreter's - it carries a shadow
+  with each - and commands still compile. An address error on `lwc2` stops the block before the register is
+  written; the interpreter writes the zero `Load` returned. Nothing else differs.
+- **The first version failed amidog's TIMING group**, every command, while the flag and value columns were
+  right. That test times a command by reading a root counter before and after it. Until now each GTE command
+  ended a chain, which charged the cycles so far to the machine; with the commands compiled the whole loop is
+  one chain, and a counter read in the middle of it sees the clock where the chain began. It was an old,
+  silent limit of compiled code - any compiled loop that times itself with a counter reads the same time twice -
+  that the interpreted GTE had been hiding. **Fixed in general, not for the GTE:** before a load or store past
+  RAM (counters, GPU, CD, DMA, the BIOS, everything with a clock) the engine brings the machine up to the
+  instruction making it (`HostInterface::sync` -> `Cpu::TickCycles`), working out how far into its block that
+  is from `BlockState::block_pc`, which a block with a memory access now writes when it starts; the chain is
+  charged only what has not been synced. RAM and its mirrors are skipped.
+
+Ridge Racer, 3,000 frames, back to back with the previous commit: **8.3x -> 10.5x (+26%)**, interpreted
+instructions 63.8M -> 16.9M. Wild Arms +3%, Ace Combat 3 and FF7 within noise (their remaining steps are
+elsewhere - see below). Final checksums unchanged on all four.
+
+Twelve-disc table, `--recompiler`: every picture identical at all 36 checkpoints, 77.6 s -> 71.3 s. **Area
+51 has read 5,651 sectors by frame 3,000** where the previous recompiler had read 5,691 - and 5,651 is what the
+interpreter reads: the recompiled run's checkpoints (picture, MDEC, CD sectors and GP0 words at frames 1,000,
+2,000 and 3,000, and the CD command count) now equal the interpreter's exactly. The sync is why - events land by
+the clock the interpreter would have had at the access - and it is the first disc on which the two CPUs agree to
+the sector (the other eleven still differ by a few, as the recompiler's flat cycle per instruction is not the
+interpreter's). The 42 hardware
+test programs (cpu, dma, gpu, mdec, gte, gte-fuzz, cop) draw the same pictures; `psxtest_cpu` gives the
+interpreter's results screen; FF7 with PGXP on the hardware rasteriser still draws 25,854 of 44,978 vertices from
+shadows with the same checksum; `cpu_test` 297, `timing_test` 38, `timer_test` 80, `gpu_test` 95, `media_test`
+479 unchanged.
+
+**amidog's `psxtest_gte`, through the compiled path, passes**: run for 558,200 frames with the start button
+pressed at frame 1,000 (it waits at its menu otherwise - a first comparison of two menus proved nothing and
+was thrown away), the final results screen is byte-identical to the previous recompiler's, with every
+group's X, F, V and T green in the TOTAL row, and at frame 40,000 the three builds' pictures agree exactly
+once the sync is in (the build without it differs). The suite runs 43% faster, 8.97x to 12.84x.
+
+`rec_test` 985 -> 1031: a reference written from `Cpu::COP2` and the load pipeline (its own clock, a
+load in flight and one a stage behind) against compiled code over four command costs, eight gaps and two
+readers, with the delay slot's old value and the next instruction's new one; `lwc2` and `swc2` with RAM direct
+and called, and a misaligned `lwc2` faulting; the pending-load rule for `mfc2`; PGXP gating; an
+admission sweep; a read waiting for a command by the chain's clock, across linked blocks as across entries; and
+the sync's exact cycle counts. Three guards were removed in turn - the load delay on `mfc2`, the in-flight rule,
+the follower rule - and one or two checks fail each time; the sync's two halves, the subtraction and
+`block_pc`, likewise.
+
+**What is left**, from the same histogram: on 2D games nearly all of the remaining interpreted steps (FF7:
+6.6M of 7.1M in 3,000 frames) are not uncompilable instructions at all. They are loops whose back edge is a
+branch with a **load in its delay slot**: the load lands after the instruction at the branch's target, which is
+in another block, so the compiler refuses the load, and with it the branch, and the three instructions around
+the loop's edge cost a full dispatcher trip each iteration (one loop in FF7: 1.2M iterations in 1,000 frames).
+Both targets of a conditional branch are known when it is compiled, so the load can be written out at the end of
+the block when neither first instruction reads or writes its register. After that: `lwl`/`lwr`/`swl`/`swr`
+(1.8M each in Ridge Racer), and every BIOS call's entry at 0xB0, which stays the interpreter's by design.
+
 ## Method and caveats
 
 - `boot_runner` built `/O2 /Zi /DEBUG /INCREMENTAL:NO` (no incremental-link
