@@ -867,6 +867,9 @@ bool g_special_ops = false;
 bool g_gte_ops = false;
 // And the host bringing its clock up to the chain before a load or store past RAM.
 bool g_sync = false;
+// And an engine whose host has withheld RAM (PGXP, a watched address, an isolated cache), so every access
+// the compiler would have done itself has to leave for the interpreter.
+bool g_withhold_ram = false;
 // What each direct read owes - Cpu::kRamLoadStall's value, though nothing here
 // depends on which number it is.
 const uint8_t kRamReadCycles = 4;
@@ -1069,6 +1072,40 @@ void Machine::Step(uint32_t pc, uint32_t word) {
     case 0x25: Arm(rt, bus->Read(address, 2)); return;
     case 0x23: Arm(rt, bus->Read(address, 4)); return;
 
+    // The unaligned pairs, from Cpu::LWL, LWR, SWL and SWR: each reads the aligned word and replaces
+    // the bytes from the addressed one to one end of it. lwl and lwr merge into rt as it is about to be
+    // - a load in flight to it is forwarded - and deliver late; swl and swr merge into the memory.
+    case 0x22: case 0x26: {
+      const uint32_t mem = bus->Read(address & ~3u, 4);
+      const uint32_t current = (pending_.active && pending_.reg == rt) ? pending_.value : r[rt];
+      const uint32_t lane = address & 3;
+      uint32_t value;
+      if (opcode == 0x22) {
+        static const uint32_t keep[4] = { 0x00FFFFFF, 0x0000FFFF, 0x000000FF, 0 };
+        value = (current & keep[lane]) | (mem << (24 - 8 * lane));
+      } else {
+        static const uint32_t keep[4] = { 0, 0xFF000000, 0xFFFF0000, 0xFFFFFF00 };
+        value = (current & keep[lane]) | (lane == 0 ? mem : (mem >> (8 * lane)));
+      }
+      Arm(rt, value);
+      return;
+    }
+    case 0x2A: case 0x2E: {
+      const uint32_t mem = bus->Read(address & ~3u, 4);
+      const uint32_t lane = address & 3;
+      uint32_t value;
+      if (opcode == 0x2A) {
+        static const uint32_t keep[4] = { 0xFFFFFF00, 0xFFFF0000, 0xFF000000, 0 };
+        value = (mem & keep[lane]) | (r[rt] >> (24 - 8 * lane));
+      } else {
+        static const uint32_t keep[4] = { 0, 0x000000FF, 0x0000FFFF, 0x00FFFFFF };
+        value = (mem & keep[lane]) | (r[rt] << (8 * lane));
+      }
+      bus->Write(address & ~3u, 4, value);
+      Stored(address & ~3u);
+      return;
+    }
+
     case 0x28: bus->Write(address, 1, r[rt]); Stored(address); return;
     case 0x29: bus->Write(address, 2, r[rt]); Stored(address); return;
     case 0x2B: bus->Write(address, 4, r[rt]); Stored(address); return;
@@ -1110,6 +1147,9 @@ uint32_t BGEZAL(uint32_t rs, uint16_t offset) { return (0x01u << 26) | (rs << 21
 uint32_t JAL(uint32_t target) { return (0x03u << 26) | (target & 0x3FFFFFF); }
 uint32_t JALR(uint32_t rd, uint32_t rs) { return Special(rs, 0, rd, 0x09); }
 uint32_t LWL(uint32_t rt, uint32_t rs, uint16_t imm) { return (0x22u << 26) | (rs << 21) | (rt << 16) | imm; }
+uint32_t LWR(uint32_t rt, uint32_t rs, uint16_t imm) { return (0x26u << 26) | (rs << 21) | (rt << 16) | imm; }
+uint32_t SWL(uint32_t rt, uint32_t rs, uint16_t imm) { return (0x2Au << 26) | (rs << 21) | (rt << 16) | imm; }
+uint32_t SWR(uint32_t rt, uint32_t rs, uint16_t imm) { return (0x2Eu << 26) | (rs << 21) | (rt << 16) | imm; }
 
 const uint32_t kProgramBase = 0x80001000;
 
@@ -1589,7 +1629,7 @@ void TestABranchWithoutItsDelaySlotIsNotCompiled() {
   second.Write(kProgramBase, {
       ADDIU(1, 0, 1),
       LW(2, 1, 0),
-      LWL(3, 1, 0),             // not compilable: it reads a load in flight
+      ADD_TRAPPING(3, 1, 1),    // not compilable: the load has nowhere to land
   });
   BlockDecoder second_decoder(second.Fetch());
   CodeBlock* second_code = emitter.create_block(4096);
@@ -1727,7 +1767,7 @@ void TestWhatItClaimsToCompileIsWhatItCompiles() {
   }
 
   for (uint32_t word : words) {
-    const bool admits = emulation::rec::BlockCompiler::Compilable(word);
+    bool admits = false;
 
     FakeMemory memory;
     memory.Write(kProgramBase, { word, ADDIU(6, 6, 1) });
@@ -1735,6 +1775,7 @@ void TestWhatItClaimsToCompileIsWhatItCompiles() {
     Emitter emitter;
     CodeBlock* code = emitter.create_block(4096);
     emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+    admits = compiler.CanCompile(word);
     const emulation::rec::CompiledBlock compiled =
         compiler.Compile(decoder.Decode(kProgramBase, 2), code);
     emitter.destroy_block(code);
@@ -1862,6 +1903,10 @@ bool RunProgramBothWays(const std::vector<uint32_t>& program, const char* what,
   if (seed)
     seed(&engine.bus);
   engine.AttachRecompiler();
+  if (g_withhold_ram) {
+    engine.recompiler()->set_ram(nullptr);
+    engine.recompiler()->set_ram_store(nullptr);
+  }
   const int engine_steps = engine.Run(kProgramBase);
 
   if (stats_out)
@@ -4037,6 +4082,165 @@ void TestAStoreToWhereABlockGoesThrowsItAway() {
   Check(stats.blocks_invalidated > 0, "and a block was thrown away by the store");
 }
 
+// ---------------------------------------------------------------------------
+// lwl, lwr, swl and swr
+// ---------------------------------------------------------------------------
+
+void TestTheUnalignedPairsMatchTheInterpreter() {
+  printf("compiled lwl, lwr, swl and swr leave what the interpreter leaves, at every lane\n");
+
+  const bool saved = g_direct_ram;
+  g_direct_ram = true;
+  const uint32_t ops_load[] = { 0x22, 0x26 };
+  int runs = 0, failures = 0, uncompiled = 0;
+  auto sweep = [&](const std::vector<uint32_t>& program, const uint32_t initial[32],
+                   const char* what, uint32_t expect_compiled) {
+    ++runs;
+    if (!RunBothWays(program, initial, what, false)) {
+      ++failures;
+      if (failures <= 3)
+        printf("  FAIL  %s\n", what);
+    }
+    if (CompileASlotLoad(program, static_cast<uint32_t>(program.size())).compiled != expect_compiled)
+      ++uncompiled;
+  };
+
+  // Each of the four alone, at all four lanes, over a register with something in it to keep.
+  for (uint32_t lane = 0; lane < 4; ++lane) {
+    uint32_t initial[32] = {};
+    initial[1] = kBusBase + 0x100;
+    initial[3] = 0xAABBCCDD;
+    sweep({ LWL(3, 1, static_cast<uint16_t>(lane)), NOP(), NOP() }, initial, "lwl", 3);
+    sweep({ LWR(3, 1, static_cast<uint16_t>(lane)), NOP(), NOP() }, initial, "lwr", 3);
+    sweep({ SWL(3, 1, static_cast<uint16_t>(lane)), NOP(), NOP() }, initial, "swl", 3);
+    sweep({ SWR(3, 1, static_cast<uint16_t>(lane)), NOP(), NOP() }, initial, "swr", 3);
+    // The address from a negative offset and a register that is not aligned itself.
+    initial[1] = kBusBase + 0x103 + lane;
+    sweep({ LWL(3, 1, 0xFFFF), LWR(3, 1, 0xFFFC), NOP(), NOP() }, initial, "lwl, lwr, negative offsets", 4);
+    sweep({ SWL(3, 1, 0xFFFF), SWR(3, 1, 0xFFFC), NOP() }, initial, "swl, swr, negative offsets", 3);
+  }
+
+  // The idiom: the two halves of an unaligned word, back to back - the second sees the first's value
+  // before it has landed - and then used, in the delay slot (where the register is still old) and after.
+  for (uint32_t offset = 0; offset < 4; ++offset) {
+    uint32_t initial[32] = {};
+    initial[1] = kBusBase + 0x100 + offset;
+    initial[3] = 0x12345678;
+    sweep({ LWL(3, 1, 3), LWR(3, 1, 0), ADDU(4, 3, 0), ADDU(5, 3, 0), NOP() }, initial, "lwl then lwr", 5);
+    sweep({ LWR(3, 1, 0), LWL(3, 1, 3), ADDU(4, 3, 0), ADDU(5, 3, 0), NOP() }, initial, "lwr then lwl", 5);
+    // And a copy: an unaligned load stored through the other pair.
+    sweep({ LWL(3, 1, 3), LWR(3, 1, 0), NOP(), SWL(3, 1, 0x43), SWR(3, 1, 0x40), NOP() }, initial,
+          "unaligned copy", 6);
+    // A load still arriving at rt is forwarded; one arriving at the address register is in the way.
+    sweep({ LW(3, 1, 0), LWL(3, 1, 5), ADDU(4, 3, 0), NOP(), ADDU(5, 3, 0) }, initial, "lw then lwl", 5);
+    sweep({ LW(2, 1, 8), SWL(3, 2, 1), NOP(), NOP() }, initial, "the address in flight", 0);
+    sweep({ LW(3, 1, 8), SWL(3, 1, 1), NOP(), NOP() }, initial, "the value in flight", 0);
+  }
+  CheckEqual(failures, 0, "every one agrees with the interpreter, in registers and memory");
+  CheckEqual(uncompiled, 0, "and compiled what it should have, and stopped where it must");
+  Check(runs >= 48, "and the sweep covered what it says");
+  (void)ops_load;
+  g_direct_ram = saved;
+}
+
+// The access the compiler cannot do - not RAM the host has given, a page with compiled code in it - leaves
+// the block before the instruction and has the interpreter run it, one instruction, and then the code goes
+// on compiled. Run against the interpreter on a program that makes the pairs in a loop, in a delay slot too.
+void TestAnUnalignedAccessItCannotDoLeavesForTheInterpreter() {
+  printf("an lwl, lwr, swl or swr the compiler cannot do leaves the block for the interpreter, once\n");
+
+  const std::vector<uint32_t> program = {
+      LUI_(1, 0x8000),            // 0
+      ORI_(1, 1, 0x4001),         // 1: r1 walks the data, one byte a pass
+      ADDIU(6, 0, 4),             // 2: four passes
+      LWL(3, 1, 3),               // 3: loop:
+      LWR(3, 1, 0),               // 4
+      ADDU(4, 4, 3),              // 5: summed
+      SWL(4, 1, 0x47),            // 6
+      SWR(4, 1, 0x44),            // 7
+      ADDIU(1, 1, 1),             // 8
+      ADDIU(6, 6, 0xFFFF),        // 9
+      BNE(6, 0, 0xFFF8),          // 10: back to 3
+      SWR(4, 1, 0x50),            // 11: its delay slot is one of them
+      ADDU(8, 3, 0),              // 12
+      JR(0),                      // 13
+      NOP(),                      // 14
+  };
+
+  g_direct_ram = true;
+  emulation::rec::Recompiler::Stats given;
+  Check(RunProgramBothWays(program, "unaligned loop, RAM given", &given, &SeedSlotLoopData),
+        "with RAM given, registers and memory agree with the interpreter");
+  CheckEqual(static_cast<int64_t>(given.bails), 0, "and nothing left for the interpreter");
+  Check(given.instructions_compiled > 0, "all of it compiled");
+
+  g_withhold_ram = true;
+  emulation::rec::Recompiler::Stats withheld;
+  Check(RunProgramBothWays(program, "unaligned loop, RAM withheld", &withheld, &SeedSlotLoopData),
+        "with RAM withheld, the same: every one leaves for the interpreter and the answer is unchanged");
+  Check(withheld.bails > 8, "and they did leave");
+  g_withhold_ram = false;
+
+  // A store into a page that has code in it: the page's bit is set, so it leaves; the interpreter's
+  // store then does what a store beside code does.
+  const std::vector<uint32_t> beside = {
+      ADDIU(1, 0, 3),             // 0
+      LUI_(2, 0x8000),            // 1
+      ORI_(2, 2, 0x1201),         // 2: r2 is past the code, in its page
+      SWR(1, 2, 0),               // 3: loop:
+      SWL(1, 2, 3),               // 4
+      ADDIU(1, 1, 0xFFFF),        // 5
+      BNE(1, 0, 0xFFFC),          // 6
+      NOP(),                      // 7
+      JR(0),                      // 8
+      NOP(),                      // 9
+  };
+  emulation::rec::Recompiler::Stats page;
+  Check(RunProgramBothWays(beside, "unaligned stores into a code page", &page),
+        "stores into a page with compiled code agree with the interpreter");
+  Check(page.bails > 0, "and left for it");
+  g_direct_ram = false;
+}
+
+// swl and swr that land on compiled code have to discard it, like sw does: the same self-rewriting
+// program as above, the instruction replaced by an swr at lane 0 and by an swl at lane 3, each of which
+// writes the whole word. Without the page's check the store goes in and the old block runs again.
+void TestAnUnalignedStoreIntoCodeIsNoticed() {
+  printf("an swl or swr into compiled code discards it, and the new code runs\n");
+
+  const uint32_t patch_address = kProgramBase + 28;   // index 7
+  const uint32_t patched_word = ADDIU(4, 0, 22);
+  g_direct_ram = true;
+  for (int form = 0; form < 2; ++form) {
+    const std::vector<uint32_t> program = {
+        ADDIU(5, 0, 2),                                  // 0: two passes
+        LUI_(1, static_cast<uint16_t>(patch_address >> 16)),
+        ORI_(1, 1, static_cast<uint16_t>(patch_address & 0xFFFF)),
+        LUI_(2, static_cast<uint16_t>(patched_word >> 16)),
+        ORI_(2, 2, static_cast<uint16_t>(patched_word & 0xFFFF)),
+        BEQ(0, 0, 1),                                    // 5: to index 7, so a block starts there
+        NOP(),                                           // 6
+        ADDIU(4, 0, 11),                                 // 7: this is what gets overwritten
+        form == 0 ? SWR(2, 1, 0) : SWL(2, 1, 3),         // 8: overwrite it, whole
+        ADDIU(5, 5, 0xFFFF),                             // 9
+        BNE(5, 0, 0xFFFC),                               // 10: go back to index 7
+        NOP(),                                           // 11
+        JR(0),                                           // 12
+        NOP(),                                           // 13
+    };
+    emulation::rec::Recompiler::Stats stats;
+    Check(RunProgramBothWays(program, form == 0 ? "self-modifying, swr" : "self-modifying, swl", &stats),
+          form == 0 ? "swr: the two agree" : "swl: the two agree");
+    Engine engine;
+    engine.bus.WriteProgram(kProgramBase, program);
+    engine.AttachRecompiler();
+    engine.Run(kProgramBase);
+    CheckEqual(engine.machine.r[4], 22, form == 0 ? "swr: the replaced instruction is what ran"
+                                                  : "swl: the replaced instruction is what ran");
+  }
+  g_direct_ram = false;
+}
+
 int main() {
   printf("rec_test - emitter, block cache, decoder, compiler, engine\n");
   printf("           (Docs/Recompiler-Plan.md steps 1 to 6)\n\n");
@@ -4097,6 +4301,9 @@ int main() {
   TestTheClockIsBroughtUpBeforeHardwareIsTouched();
   TestABlockIsDroppedByAStoreToAWordItWatches();
   TestADelaySlotLoadIsDeliveredOnlyWhenTheSuccessorsCannotTell();
+  TestTheUnalignedPairsMatchTheInterpreter();
+  TestAnUnalignedAccessItCannotDoLeavesForTheInterpreter();
+  TestAnUnalignedStoreIntoCodeIsNoticed();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

@@ -190,6 +190,7 @@ inline void ShiftRegImm(Emitter* e, ShiftOp op, uint8_t reg,
 
 // The shift group, by CL, for the guest's variable shifts.
 inline void ShiftRegCl(Emitter* e, ShiftOp op, uint8_t reg) {
+  EmitRex(e, false, 0, reg);   // R8-R15, which the unaligned loads and stores shift
   e->emit8(0xD3);
   e->emit8(ModRM(3, static_cast<uint8_t>(op), reg));
 }

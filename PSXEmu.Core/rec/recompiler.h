@@ -199,6 +199,7 @@ class Recompiler {
     uint64_t links_broken = 0;
     uint64_t blocks_with_allocation = 0;   // blocks that cached any register
     uint64_t faults = 0;                   // accesses that raised an exception
+    uint64_t bails = 0;                    // blocks that left for the interpreter to run one instruction
     uint64_t cycles_compiled = 0;          // what compiled code owes the machine
     uint64_t ram_reads_direct = 0;         // loads that read RAM without a call
 
@@ -258,6 +259,13 @@ class Recompiler {
     if (reclaim_pending_ && executing_ == 0)
       Reclaim();
 
+    // A block left before an instruction it cannot do (kBail) and asked for the interpreter to do it.
+    // Once: compiling the block that starts here would meet the same instruction and leave again.
+    if (pc == interpret_pc_) {
+      interpret_pc_ = kNoPc;
+      return Interpret(pc);
+    }
+
     // Never enter compiled code with a load still on its way to a register.
     if (host_.load_in_flight_fn != nullptr ? host_.load_in_flight_fn(host_.context)
                                            : (host_.load_in_flight && host_.load_in_flight()))
@@ -311,6 +319,15 @@ class Recompiler {
     // A memory access raised a guest exception and the block stopped where it
     // was. Whoever raised it has already moved the CPU's pc, so there is
     // nothing here to say about where to go next - the caller asks the machine.
+    //
+    // Or the block left on purpose, before an instruction it does not do (lwl, lwr, swl and swr, for
+    // anything but RAM): next_pc is that instruction - or the branch whose delay slot it is - and the
+    // interpreter is to run it, which is the next step and only that one.
+    if (state_.fault == BlockState::kBail) {
+      ++stats_.bails;
+      interpret_pc_ = state_.next_pc;
+      return state_.next_pc;
+    }
     if (state_.fault != 0) {
       ++stats_.faults;
       return kFaulted;
@@ -727,6 +744,10 @@ class Recompiler {
   // the host still hears from the CPU promptly.
   int32_t budget_ = 1024;
   uint32_t last_cycles_ = 0;
+
+  // The address a block asked the interpreter to run next, or kNoPc.
+  static const uint32_t kNoPc = 0xFFFFFFFFu;
+  uint32_t interpret_pc_ = kNoPc;
 };
 
 }  // namespace rec

@@ -442,6 +442,14 @@ class BlockCompiler {
     return opcode == 0x01 || (opcode >= 0x02 && opcode <= 0x07);
   }
 
+  // lwl, lwr, swl and swr: an unaligned word's two halves, each touching the bytes of one aligned word
+  // from the addressed byte to one end of it. Compiled for RAM and left, for everything else, to the
+  // interpreter (EmitUnalignedBail).
+  static bool IsUnalignedOp(uint32_t word) {
+    const uint32_t opcode = word >> 26;
+    return opcode == 0x22 || opcode == 0x26 || opcode == 0x2A || opcode == 0x2E;
+  }
+
   // Coprocessor 2, the GTE. A command is cop2 with bit 25 set; the moves are selected by rs
   // (mfc2 0, cfc2 2, mtc2 4, ctc2 6); lwc2 and swc2 are opcodes of their own. Cop0 and the
   // other coprocessors are not here: cop0 is rare in game code, and a compiled mtc0 could isolate
@@ -468,6 +476,10 @@ class BlockCompiler {
   // A command carries none, so it compiles either way.
   bool CanCompile(uint32_t word) const {
     if (Compilable(word) || (special_ops_ && IsSpecialOp(word)))
+      return true;
+    // lwl, lwr, swl and swr, which have a fast path for RAM and leave the rest to the interpreter - so
+    // they need RAM to be one of the things this compiler can reach directly.
+    if (IsUnalignedOp(word) && direct_ram_bytes_ != 0)
       return true;
     if (!gte_ops_)
       return false;
@@ -507,7 +519,7 @@ class BlockCompiler {
         return 31;
       case 0x08: case 0x09: case 0x0A: case 0x0B:
       case 0x0C: case 0x0D: case 0x0E: case 0x0F:
-      case 0x20: case 0x21: case 0x23: case 0x24: case 0x25:
+      case 0x20: case 0x21: case 0x22: case 0x23: case 0x24: case 0x25: case 0x26:
         return (word >> 16) & 0x1F;       // rt
       default:
         return 0;                         // branches, jumps, stores
@@ -529,7 +541,7 @@ class BlockCompiler {
     if (opcode == 0x12)                        // mfc2 and cfc2 deliver late, as a load does
       return Destination(word) != 0;
     switch (opcode) {
-      case 0x20: case 0x21: case 0x23: case 0x24: case 0x25:
+      case 0x20: case 0x21: case 0x22: case 0x23: case 0x24: case 0x25: case 0x26:
         // A load into r0 delivers nothing, so nothing lands late. The memory
         // read still happens - it can have side effects on this machine.
         return ((word >> 16) & 0x1F) != 0;
@@ -580,7 +592,7 @@ class BlockCompiler {
 
   static bool IsLoadWord(uint32_t word) {
     const uint32_t opcode = word >> 26;
-    return opcode >= 0x20 && opcode <= 0x25;
+    return opcode >= 0x20 && opcode <= 0x26;   // including lwl and lwr
   }
 
   // A load, or mfc2/cfc2 into a register, which delivers its value an instruction late.
@@ -650,6 +662,16 @@ class BlockCompiler {
     for (size_t i = n; i-- > 0;) {
       const uint32_t word = block.instructions[i].word;
       bool can = CanCompile(word);
+      // Leaving the block at one of these in a branch's delay slot goes back to the branch, for the
+      // interpreter to run with its slot; that is the same as having run it once only if running it
+      // twice changes nothing, and `jalr rd, rs` with rd == rs reads the register it has already
+      // overwritten.
+      if (can && i > 0 && IsUnalignedOp(word)) {
+        const uint32_t before = block.instructions[i - 1].word;
+        if ((before >> 26) == 0 && (before & 0x3F) == 0x09 &&
+            ((before >> 21) & 0x1F) == ((before >> 11) & 0x1F))
+          can = false;
+      }
       if (can && NeedsFollower(word)) {
         bool follower = (i + 1 < n) && ok[i + 1];
         // The one load that may be the last instruction of a block: the delay slot of the branch that
@@ -933,6 +955,15 @@ class BlockCompiler {
       FlushPending(Destination(word));
       return;
     }
+    if (opcode == 0x22 || opcode == 0x26) {
+      EmitLwlLwr(instruction);   // a load: arms the load delay itself
+      return;
+    }
+    if (opcode == 0x2A || opcode == 0x2E) {
+      EmitSwlSwr(instruction);
+      FlushPending(Destination(word));
+      return;
+    }
     if (opcode >= 0x20 && opcode <= 0x25) {
       EmitLoad(instruction);   // flushes at its own point, mid-instruction
       return;
@@ -957,6 +988,167 @@ class BlockCompiler {
     }
     EmitImmediate(instruction);
     FlushPending(Destination(word));
+  }
+
+  // The way out of the block for lwl, lwr, swl and swr when the access is not one compiled code can
+  // do: not main RAM the host has given, a page with compiled code in it, an address in no view of RAM.
+  // The block leaves *before* the instruction, having charged what it has run, and says where the
+  // interpreter picks up (BlockState::fault = 2, which Recompiler::Step reads as "interpret next_pc
+  // once", and which is how the interpreter's exact timing, exceptions and watches come with it
+  // rather than being written again here). In a branch's delay slot that is the branch, which the
+  // interpreter runs again with its slot; the branch has done nothing that running it twice would
+  // show, which CompilablePrefix saw to.
+  void EmitUnalignedBail(const Instruction& instruction, bool deliver_pending = false) {
+    // A load in flight that lwl or lwr was to merge into is delivered here, where the interpreter will
+    // read it as the register: the only place its value is not simply dropped (the merge replaces it).
+    if (deliver_pending && pending_active_)
+      StoreReg(pending_reg_, kPending);
+    const uint32_t before = instruction.in_delay_slot ? 1u : 0u;
+    const uint32_t executed = ((instruction.pc - block_pc_) >> 2) - before;
+    if (executed != 0)
+      x86::SubMemImm8(emitter_, kStatePtr, kOffBudget, static_cast<uint8_t>(executed));
+    x86::MovMemImm(emitter_, kStatePtr, kOffNextPc, instruction.pc - before * 4);
+    x86::MovMemImm(emitter_, kStatePtr, kOffFault, BlockState::kBail);
+    fault_exits_.push_back(code_->cursor);
+    x86::JmpRel32(emitter_, 0);
+  }
+
+  // lwl and lwr. The aligned word is read as lw reads one, with its stall; the bytes from the addressed
+  // one to the word's end replace the same count of rt's, and rt is read as the register is about to be -
+  // a load that was in flight to it lands first, which is how the usual `lwl t0, 3(a0)` / `lwr t0, 0(a0)`
+  // pair works with nothing between. The lane is the address's low two bits, known only when it runs,
+  // so the shifts take their count from CL: lwl keeps 0x00FFFFFF >> (8 * lane) of rt and ors in the word
+  // shifted left by 24 - 8 * lane, lwr the word shifted right by 8 * lane over the top bytes
+  // 0xFFFFFF00 << (24 - 8 * lane) of rt; and 24 - n is n ^ 24 for the four multiples of 8 there are.
+  void EmitLwlLwr(const Instruction& instruction) {
+    const uint32_t word = instruction.word;
+    const bool left = (word >> 26) == 0x22;
+    const uint32_t rs = (word >> 21) & 0x1F;
+    const uint32_t rt = (word >> 16) & 0x1F;
+    const uint16_t immediate = static_cast<uint16_t>(word & 0xFFFF);
+
+    // A load in flight to rt is what this merges into, read from where it is: it is not written to the
+    // register, because the merge replaces it - the interpreter drops the first of two loads to a register
+    // (ArmLoad), so the instruction after sees the register as it was before both, and writing it out
+    // early would show it the first. Any other load in flight lands now, as before a memory access.
+    const bool forwarded = pending_active_ && pending_reg_ == rt;
+    if (!forwarded)
+      FlushPendingBeforeMemory();
+    EmitAddress(rs, immediate);
+
+    size_t to_bail[8];
+    int to_bail_count = 0;
+    auto jump_to_bail = [&](x86::Cc condition) {
+      to_bail[to_bail_count++] = code_->cursor;
+      x86::JccRel8(emitter_, condition, 0);
+    };
+    EmitDirectRamPrologue(kOffRam, jump_to_bail);
+    if (direct_ram_window_ > direct_ram_bytes_)
+      x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, direct_ram_bytes_ - 1);
+    x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 0xFFFFFFFCu);   // the aligned word
+    x86::Add64RegReg(emitter_, kScratchA, kScratchB);
+    x86::MovRegMem(emitter_, kScratchA, kScratchA, 0);
+    if (direct_ram_read_cycles_ != 0)
+      x86::AddMemImm8(emitter_, kStatePtr, kOffExtraCycles, direct_ram_read_cycles_);
+
+    x86::MovRegReg(emitter_, kScratchB, kScratchC);                          // CL = 8 * lane
+    x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 3);
+    x86::ShiftRegImm(emitter_, x86::ShiftOp::kShl, kScratchB, 3);
+    if (forwarded)
+      x86::MovRegReg(emitter_, kArg3, kPending);
+    else
+      LoadReg(kArg3, rt);
+    if (left) {
+      x86::MovRegImm(emitter_, kArg4, 0x00FFFFFFu);
+      x86::ShiftRegCl(emitter_, x86::ShiftOp::kShr, kArg4);                  // what of rt is kept
+      x86::AluRegReg(emitter_, x86::AluOp::kAnd, kArg3, kArg4);
+      x86::AluRegImm(emitter_, x86::AluImmOp::kXor, kScratchB, 24);
+      x86::ShiftRegCl(emitter_, x86::ShiftOp::kShl, kScratchA);              // the word, moved up
+    } else {
+      x86::ShiftRegCl(emitter_, x86::ShiftOp::kShr, kScratchA);              // the word, moved down
+      x86::AluRegImm(emitter_, x86::AluImmOp::kXor, kScratchB, 24);
+      x86::MovRegImm(emitter_, kArg4, 0xFFFFFF00u);
+      x86::ShiftRegCl(emitter_, x86::ShiftOp::kShl, kArg4);                  // what of rt is kept
+      x86::AluRegReg(emitter_, x86::AluOp::kAnd, kArg3, kArg4);
+    }
+    x86::AluRegReg(emitter_, x86::AluOp::kOr, kScratchA, kArg3);
+
+    const size_t past_bail = code_->cursor;
+    x86::JmpRel8(emitter_, 0);
+    for (int i = 0; i < to_bail_count; ++i)
+      PatchRel8(code_, to_bail[i], code_->cursor);
+    EmitUnalignedBail(instruction, forwarded);
+    PatchRel8(code_, past_bail, code_->cursor);
+
+    // The merged word arrives an instruction late, as a load's does.
+    FlushPending(rt);
+    if (rt != 0) {
+      x86::Mov64RegReg(emitter_, kPending, kScratchA);
+      pending_active_ = true;
+      pending_reg_ = rt;
+    }
+  }
+
+  // swl and swr: the aligned word is read (with no stall, which is how the interpreter's read-to-merge
+  // is charged), rt's bytes from one end to the lane replace the same count of its own, and the word is
+  // written back - to a page with no compiled code, as sw writes one. The merge, by lane = 8 * lane in CL:
+  // swl keeps 0xFFFFFF00 << (8 * lane) of the word and ors in rt >> (24 - 8 * lane); swr keeps
+  // 0x00FFFFFF >> (24 - 8 * lane) and ors in rt << (8 * lane).
+  void EmitSwlSwr(const Instruction& instruction) {
+    const uint32_t word = instruction.word;
+    const bool left = (word >> 26) == 0x2A;
+    const uint32_t rs = (word >> 21) & 0x1F;
+    const uint32_t rt = (word >> 16) & 0x1F;
+    const uint16_t immediate = static_cast<uint16_t>(word & 0xFFFF);
+
+    FlushPendingBeforeMemory();
+    EmitAddress(rs, immediate);
+
+    size_t to_bail[8];
+    int to_bail_count = 0;
+    auto jump_to_bail = [&](x86::Cc condition) {
+      to_bail[to_bail_count++] = code_->cursor;
+      x86::JccRel8(emitter_, condition, 0);
+    };
+    EmitDirectRamPrologue(kOffRamStore, jump_to_bail);
+    x86::MovRegReg(emitter_, kArg4, kScratchB);                              // the page's bit, as sw reads it
+    x86::ShiftRegImm(emitter_, x86::ShiftOp::kShr, kArg4, BlockCache::kPageShift);
+    x86::Mov64RegMem(emitter_, kScratchD, kStatePtr, kOffCodePages);
+    x86::BtMemReg(emitter_, kScratchD, kArg4);
+    jump_to_bail(x86::Cc::kBelow);                                           // set: code lives here
+    if (direct_ram_window_ > direct_ram_bytes_)
+      x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, direct_ram_bytes_ - 1);
+    x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 0xFFFFFFFCu);   // the aligned word
+    x86::Add64RegReg(emitter_, kScratchA, kScratchB);
+    x86::MovRegMem(emitter_, kScratchD, kScratchA, 0);                       // what is there
+
+    x86::MovRegReg(emitter_, kScratchB, kScratchC);                          // CL = 8 * lane
+    x86::AluRegImm(emitter_, x86::AluImmOp::kAnd, kScratchB, 3);
+    x86::ShiftRegImm(emitter_, x86::ShiftOp::kShl, kScratchB, 3);
+    LoadReg(kArg3, rt);
+    if (left) {
+      x86::MovRegImm(emitter_, kArg4, 0xFFFFFF00u);
+      x86::ShiftRegCl(emitter_, x86::ShiftOp::kShl, kArg4);                  // what of the word is kept
+      x86::AluRegReg(emitter_, x86::AluOp::kAnd, kScratchD, kArg4);
+      x86::AluRegImm(emitter_, x86::AluImmOp::kXor, kScratchB, 24);
+      x86::ShiftRegCl(emitter_, x86::ShiftOp::kShr, kArg3);                  // rt, moved down
+    } else {
+      x86::MovRegImm(emitter_, kArg4, 0x00FFFFFFu);
+      x86::AluRegImm(emitter_, x86::AluImmOp::kXor, kScratchB, 24);
+      x86::ShiftRegCl(emitter_, x86::ShiftOp::kShr, kArg4);                  // what of the word is kept
+      x86::AluRegReg(emitter_, x86::AluOp::kAnd, kScratchD, kArg4);
+      x86::AluRegImm(emitter_, x86::AluImmOp::kXor, kScratchB, 24);          // back to 8 * lane
+      x86::ShiftRegCl(emitter_, x86::ShiftOp::kShl, kArg3);                  // rt, moved up
+    }
+    x86::AluRegReg(emitter_, x86::AluOp::kOr, kScratchD, kArg3);
+    x86::MovMem32Reg(emitter_, kScratchA, kScratchD);
+
+    const size_t past_bail = code_->cursor;
+    x86::JmpRel8(emitter_, 0);
+    for (int i = 0; i < to_bail_count; ++i)
+      PatchRel8(code_, to_bail[i], code_->cursor);
+    EmitUnalignedBail(instruction);
+    PatchRel8(code_, past_bail, code_->cursor);
   }
 
   // Coprocessor 2. A command and the register moves go to BlockState::special with what the host
@@ -1557,6 +1749,12 @@ class BlockCompiler {
       return false;
     const uint32_t rs = (word >> 21) & 0x1F;
     const uint32_t rt = (word >> 16) & 0x1F;
+    // lwl and lwr merge into rt as the register will be, so a load still arriving there is what
+    // they are meant to see - the usual back-to-back pair - and only an address register in flight
+    // is in the way. (A store's rt is its value, read as it is now: in the way too.)
+    const uint32_t opcode = word >> 26;
+    if (opcode == 0x22 || opcode == 0x26)
+      return pending == rs;
     return pending == rs || pending == rt;
   }
 

@@ -115,6 +115,9 @@ struct BlockState {
   // a fault is the host's business, not this struct's: the exception has
   // already set the CPU's own pc.
   uint32_t fault = 0;
+  // fault = 2 is not a fault: the block left on purpose before an instruction it does not do, `next_pc`
+  // says where, and the interpreter is to run that one (lwl, lwr, swl and swr for anything but RAM).
+  static const uint32_t kBail = 2;
 
   // How many more guest instructions compiled code may run before handing
   // control back. Every block subtracts its own length on the way out and
