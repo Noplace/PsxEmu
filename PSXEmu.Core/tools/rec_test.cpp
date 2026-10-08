@@ -36,6 +36,10 @@ using emulation::rec::Emitter;
 using emulation::rec::CodeBlock;
 namespace x86 = emulation::rec::x86;
 
+// Defined with the later tests, outside the namespace below, and called from inside it.
+void TestADelaySlotLoopMatchesTheInterpreter();
+void TestAStoreToWhereABlockGoesThrowsItAway();
+
 namespace {
 
 int g_checks = 0;
@@ -677,6 +681,7 @@ class FakeBus {
   uint64_t unit_busy_until = 0;
   uint64_t clock = 0;
   int overflows = 0;
+  bool overflow_in_slot = false;
   uint32_t overflow_pc = 0;
   // Where an overflow sets its fault: the engine's recompiler, or, for a block run by itself, its state.
   emulation::rec::Recompiler* overflow_target = nullptr;
@@ -767,10 +772,11 @@ class FakeBus {
                       uint32_t* extra) {
     return Bus(c)->GteImpl(operation, a, b, elapsed, extra);
   }
-  static void Overflow(void* c, uint32_t pc) {
+  static void Overflow(void* c, uint32_t pc, bool in_delay_slot) {
     FakeBus* bus = Bus(c);
     ++bus->overflows;
     bus->overflow_pc = pc;
+    bus->overflow_in_slot = in_delay_slot;
     if (bus->overflow_target != nullptr)
       bus->overflow_target->SetFault();
     else if (bus->block_state != nullptr)
@@ -780,7 +786,7 @@ class FakeBus {
   // chain it is: the instruction's index and what the block has asked for so far are all there is.
   static uint32_t Special(void* c, uint32_t operation, uint32_t a, uint32_t b) {
     if ((operation & 0xFF) == emulation::rec::kSpecialOverflow) {
-      Overflow(c, a);
+      Overflow(c, a, b != 0);
       return 0;
     }
     FakeBus* bus = Bus(c);
@@ -2413,6 +2419,7 @@ void TestAFaultingAccessStopsTheBlock() {
 // 6's register allocator off, once with it on - because the allocator's whole
 // risk is that it changes an answer somewhere, and the only convincing way to
 // say it does not is to ask every question again.
+
 void RunEverythingThatCompiles() {
   TestCompiledArithmeticMatchesTheInterpreter();
   TestRegisterZeroStaysZero();
@@ -2440,6 +2447,8 @@ void RunEverythingThatCompiles() {
   TestABlockIsNotEnteredWithALoadInFlight();
   TestAnUncompilableInstructionIsCachedAsOne();
   TestManyBlocksShareOneArena();
+  TestADelaySlotLoopMatchesTheInterpreter();
+  TestAStoreToWhereABlockGoesThrowsItAway();
 }
 
 // The switches the later steps added, in every combination. Linking changes
@@ -3064,6 +3073,7 @@ struct SpecialRun {
   uint32_t regs[32] = {};
   uint32_t compiled = 0;
   uint32_t fault = 0;
+  uint32_t next_pc = 0;
   uint64_t cycles = 0;
   FakeBus bus;
 };
@@ -3086,6 +3096,7 @@ void RunSpecial(const std::vector<uint32_t>& program, const uint32_t initial[32]
   run->bus.block_state = nullptr;
   run->compiled = compiled.compiled;
   run->fault = state.fault;
+  run->next_pc = state.next_pc;
   run->cycles = compiled.compiled + state.extra_cycles;
   emitter.destroy_block(code);
 }
@@ -3234,42 +3245,60 @@ void TestATrappingAddOverflowsOrAdds() {
   }
 }
 
-void TestAnOverflowingAddInADelaySlotIsLeftToTheInterpreter() {
-  printf("an add or addi in a branch's delay slot is not compiled, and takes the branch with it\n");
+void TestAnAddInADelaySlotIsCompiledAndSaysSo() {
+  printf("an add or addi in a branch's delay slot is compiled, and its overflow says it is the branch's\n");
 
+  // beq r0, r0 always takes, to the instruction after the slot's neighbour.
+  const std::vector<uint32_t> add_program = { BEQ(0, 0, 4), ADD_(3, 1, 2), NOP(), NOP(), NOP() };
+  const std::vector<uint32_t> addi_program = { BEQ(0, 0, 4), ADDI_(3, 1, 1), NOP(), NOP(), NOP() };
+  for (const auto* program : { &add_program, &addi_program }) {
+    const bool immediate = program == &addi_program;
+    // No overflow: the slot runs, the branch is taken.
+    uint32_t initial[32] = {};
+    initial[1] = 5;
+    initial[2] = 7;
+    SpecialRun ok;
+    RunSpecial(*program, initial, &ok);
+    CheckEqual(ok.compiled, 2, immediate ? "branch and addi in its slot both compiled"
+                                         : "branch and add in its slot both compiled");
+    CheckEqual(ok.regs[3], immediate ? 6 : 12, "the slot ran");
+    CheckEqual(ok.next_pc, kProgramBase + 20, "and the branch was taken");
+    CheckEqual(ok.fault, 0, "with no exception");
+
+    // Overflow in the slot: the callback is told it is in a delay slot, at the slot's own address.
+    initial[1] = 0x7FFFFFFF;
+    initial[2] = 1;
+    initial[3] = 0xC0DEC0DE;
+    SpecialRun bad;
+    RunSpecial(*program, initial, &bad);
+    CheckEqual(bad.fault, 1, "an overflow stops the block");
+    CheckEqual(bad.bus.overflow_pc, kProgramBase + 4, "at the slot's address");
+    Check(bad.bus.overflow_in_slot, "and says it was in a delay slot");
+    CheckEqual(bad.regs[3], 0xC0DEC0DE, "leaving the destination alone");
+  }
+
+  // The same add outside a slot says it is not.
+  {
+    uint32_t initial[32] = {};
+    initial[1] = 0x7FFFFFFF;
+    initial[2] = 1;
+    SpecialRun run;
+    RunSpecial({ ADDIU(6, 0, 1), ADD_(3, 1, 2), NOP() }, initial, &run);
+    CheckEqual(run.bus.overflow_pc, kProgramBase + 4, "an add outside a slot overflows at its own address");
+    Check(!run.bus.overflow_in_slot, "and does not say it is in one");
+  }
+
+  // Without a host for the special ops, neither is compiled.
   FakeMemory memory;
-  memory.Write(kProgramBase, {
-      ADDIU(1, 0, 1),             // compiled
-      BEQ(0, 0, 4),               // a branch ...
-      ADD_(3, 1, 1),              // ... whose delay slot is a trapping add: neither is compiled
-      NOP(),
-  });
+  memory.Write(kProgramBase, add_program);
   BlockDecoder decoder(memory.Fetch());
   Emitter emitter;
   CodeBlock* code = emitter.create_block(4096);
-  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
-  compiler.set_special_ops(true);
-  const emulation::rec::CompiledBlock compiled = compiler.Compile(decoder.Decode(kProgramBase, 4), code);
-  CheckEqual(compiled.compiled, 1, "only the instruction before the branch is compiled");
-  emitter.destroy_block(code);
-
-  // The same add anywhere else is.
-  memory.Write(kProgramBase, { ADDIU(1, 0, 1), ADD_(3, 1, 1), ADDI_(4, 1, 5), NOP() });
-  BlockDecoder again(memory.Fetch());
-  CodeBlock* code2 = emitter.create_block(4096);
-  emulation::rec::BlockCompiler compiler2 = MakeCompiler(&emitter);
-  compiler2.set_special_ops(true);
-  const emulation::rec::CompiledBlock outside = compiler2.Compile(again.Decode(kProgramBase, 4), code2);
-  CheckEqual(outside.compiled, 4, "outside a delay slot the add and the addi are compiled");
-  emitter.destroy_block(code2);
-
-  // Without a host for them they stay the interpreter's, delay slot or not.
-  CodeBlock* code3 = emitter.create_block(4096);
   emulation::rec::BlockCompiler plain = MakeCompiler(&emitter);
   plain.set_special_ops(false);
-  const emulation::rec::CompiledBlock refused = plain.Compile(again.Decode(kProgramBase, 4), code3);
-  CheckEqual(refused.compiled, 1, "and without the host's say-so, neither is");
-  emitter.destroy_block(code3);
+  const emulation::rec::CompiledBlock refused = plain.Compile(decoder.Decode(kProgramBase, 5), code);
+  CheckEqual(refused.compiled, 0, "without the host's say-so, the branch is not either");
+  emitter.destroy_block(code);
 }
 
 void TestWhatItAdmitsWithTheUnitOnIsWhatItCompiles() {
@@ -3801,6 +3830,213 @@ void TestTheClockIsBroughtUpBeforeHardwareIsTouched() {
   CheckEqual(engine.machine.r[4], 9, "and the run was not disturbed");
 }
 
+// ---------------------------------------------------------------------------
+// A load in a branch's delay slot, delivered by the block that ends with it
+// ---------------------------------------------------------------------------
+
+// What a block's compile makes of [prefix, branch, load in its delay slot, ...], with the words
+// at both places it goes next written by the caller.
+struct SlotCompile {
+  uint32_t compiled = 0;
+  int watched = 0;
+  uint32_t watched_pc[2] = {};
+};
+
+SlotCompile CompileASlotLoad(const std::vector<uint32_t>& program, uint32_t count) {
+  FakeMemory memory;
+  memory.Write(kProgramBase, program);
+  BlockDecoder decoder(memory.Fetch());
+  Emitter emitter;
+  CodeBlock* code = emitter.create_block(8192);
+  emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+  const emulation::rec::CompiledBlock compiled = compiler.Compile(decoder.Decode(kProgramBase, count), code);
+  SlotCompile result;
+  result.compiled = compiled.compiled;
+  result.watched = compiled.watched_count;
+  for (int i = 0; i < compiled.watched_count; ++i)
+    result.watched_pc[i] = compiled.watched[i];
+  emitter.destroy_block(code);
+  return result;
+}
+
+// A block that depends on a word beyond its own code is found by a store to that word, and its page
+// stays code for as long as it is there.
+void TestABlockIsDroppedByAStoreToAWordItWatches() {
+  printf("a store to a word a block watches discards it, and the word's page is code while it lasts\n");
+
+  BlockCache cache;
+  Block watching = MakeBlock(0x80001000, 32);
+  watching.watched[0] = 0x80005010;      // another page, KSEG0's view
+  watching.watched[1] = 0x80001400;      // and one in its own page, but past its code
+  watching.watched_count = 2;
+  cache.Insert(watching);
+  cache.Insert(MakeBlock(0x80005000, 16));   // a block in the watched page, not at the watched word
+
+  Check(cache.IsCodePage(0x80005010), "the page of a watched word is code");
+  std::vector<uint32_t> hit;
+  cache.CollectWritten(0x80005010, 4, &hit);
+  Check(hit.size() == 1 && hit[0] == 0x00001000, "a store to the watched word finds the watching block");
+  hit.clear();
+  cache.CollectWritten(0x80005014, 4, &hit);
+  CheckEqual(static_cast<int64_t>(hit.size()), 0, "the next word is nobody's");
+  hit.clear();
+  cache.CollectWritten(0xA0001400, 4, &hit);
+  Check(hit.size() == 1 && hit[0] == 0x00001000, "so is the one in its own page, by any view of the address");
+  hit.clear();
+  cache.CollectWritten(0x80005000, 4, &hit);
+  Check(hit.size() == 1 && hit[0] == 0x00005000, "and a store to the other block's code finds only that block");
+
+  cache.Remove(0x80005000);
+  Check(cache.IsCodePage(0x80005010), "with the other block gone the page is still code: a block watches it");
+  cache.Remove(0x80001000);
+  Check(!cache.IsCodePage(0x80005010) && !cache.IsCodePage(0x80001000), "and with the watcher gone, neither page is");
+  hit.clear();
+  cache.CollectWritten(0x80005010, 4, &hit);
+  CheckEqual(static_cast<int64_t>(hit.size()), 0, "nothing is found for the word any more");
+
+  cache.Insert(watching);
+  Check(cache.InvalidateRange(0x80005010, 4) == 1 && cache.Find(0x80001000) == nullptr,
+        "InvalidateRange takes the watcher out too");
+}
+
+void TestADelaySlotLoadIsDeliveredOnlyWhenTheSuccessorsCannotTell() {
+  printf("a load in a branch's delay slot is compiled when neither place the branch goes can tell\n");
+
+  // idx 1 is a bne to idx 5 (offset 3); idx 3 is where it goes if it does not take.
+  auto program = [](uint32_t not_taken, uint32_t taken) {
+    return std::vector<uint32_t>{ ADDIU(6, 0, 1), BNE(1, 0, 3), LW(3, 2, 0), not_taken, NOP(), taken };
+  };
+  const uint32_t taken_pc = kProgramBase + 20;
+  const uint32_t fall_pc = kProgramBase + 12;
+
+  // The decoder reports where the branch goes, taken first, and the word there.
+  {
+    FakeMemory memory;
+    memory.Write(kProgramBase, program(ADDIU(7, 0, 2), ADDIU(8, 0, 3)));
+    BlockDecoder decoder(memory.Fetch());
+    const DecodedBlock decoded = decoder.Decode(kProgramBase, 3);
+    CheckEqual(decoded.successor_count, 2, "a conditional branch has two successors");
+    Check(decoded.successors[0].pc == taken_pc && decoded.successors[0].valid &&
+              decoded.successors[0].word == ADDIU(8, 0, 3),
+          "the taken one first, with its word");
+    Check(decoded.successors[1].pc == fall_pc && decoded.successors[1].word == ADDIU(7, 0, 2),
+          "then the one after the slot");
+  }
+
+  const SlotCompile safe = CompileASlotLoad(program(ADDIU(7, 0, 2), ADDIU(8, 0, 3)), 3);
+  CheckEqual(safe.compiled, 3, "neither names r3: the whole block compiles, load and all");
+  CheckEqual(safe.watched, 2, "and depends on the two words");
+  Check(safe.watched_pc[0] == taken_pc && safe.watched_pc[1] == fall_pc, "which are the two successors");
+
+  CheckEqual(CompileASlotLoad(program(ADDIU(7, 0, 2), ADDU(9, 3, 0)), 3).compiled, 1,
+             "the taken one reads r3: the block stops before the branch");
+  CheckEqual(CompileASlotLoad(program(ADDU(9, 3, 0), ADDIU(8, 0, 3)), 3).compiled, 1,
+             "the one after the slot reads it: the same");
+  CheckEqual(CompileASlotLoad(program(ADDIU(7, 0, 2), ADDIU(3, 0, 9)), 3).compiled, 1,
+             "one that writes r3 is left alone too, which costs a block it could have had");
+  CheckEqual(CompileASlotLoad(program(ADDIU(3, 0, 9), ADDIU(8, 0, 3)), 3).compiled, 1,
+             "on either side");
+
+  // jr goes anywhere, so there is nothing to look at; and a word that cannot be fetched is not known.
+  CheckEqual(CompileASlotLoad({ ADDIU(6, 0, 1), JR(5), LW(3, 2, 0), NOP() }, 3).compiled, 1,
+             "a load in the slot of a jr is not delivered");
+  CheckEqual(CompileASlotLoad({ ADDIU(6, 0, 1), BNE(1, 0, 3), LW(3, 2, 0), ADDIU(7, 0, 2), NOP() }, 3).compiled, 1,
+             "a successor nobody can read is unknown, so the same");
+
+  // mfc2 in a slot is a load too.
+  {
+    FakeMemory memory;
+    memory.Write(kProgramBase, { ADDIU(6, 0, 1), BEQ(0, 0, 3), MFC2_(3, 4), ADDIU(7, 0, 2), NOP(), ADDIU(8, 0, 3) });
+    BlockDecoder decoder(memory.Fetch());
+    Emitter emitter;
+    CodeBlock* code = emitter.create_block(8192);
+    emulation::rec::BlockCompiler compiler = MakeCompiler(&emitter);
+    compiler.set_gte_ops(true);
+    const emulation::rec::CompiledBlock compiled = compiler.Compile(decoder.Decode(kProgramBase, 3), code);
+    CheckEqual(compiled.compiled, 3, "an mfc2 in the slot is delivered the same way");
+    emitter.destroy_block(code);
+  }
+}
+
+// A loop whose back edge is a branch with a load in its slot, and a pointer that walks, so each pass loads a
+// different word; the result is compared with the interpreter's.
+static void SeedSlotLoopData(FakeBus* bus) {
+  for (uint32_t i = 0; i < 8; ++i)
+    bus->Write(kBusBase + 0x4000 + i * 4, 4, 0x1111 * (i + 1));
+}
+
+void TestADelaySlotLoopMatchesTheInterpreter() {
+  printf("a loop with a load in its back edge's delay slot runs as the interpreter runs it\n");
+
+  const std::vector<uint32_t> program = {
+      ADDIU(1, 0, 5),             // 0: five passes
+      LUI_(2, 0x8000),            // 1
+      ORI_(2, 2, 0x4000),         // 2: r2 walks the data
+      ADDIU(6, 6, 1),             // 3: loop: r6 counts - the branch's target, and it names no r3
+      ADDU(4, 4, 3),              // 4: r4 sums what the previous pass loaded
+      ADDIU(2, 2, 4),             // 5
+      ADDIU(1, 1, 0xFFFF),        // 6
+      BNE(1, 0, 0xFFFB),          // 7: back to 3
+      LW(3, 2, 0xFFFC),           // 8: its delay slot loads, one word behind r2
+      ADDIU(7, 7, 1),             // 9: where it goes when done - names no r3
+      ADDU(8, 3, 0),              // 10: and r3 has arrived by now
+      JR(0),                      // 11
+      NOP(),                      // 12
+  };
+  emulation::rec::Recompiler::Stats stats;
+  Check(RunProgramBothWays(program, "slot-load loop", &stats, &SeedSlotLoopData),
+        "registers and memory agree with the interpreter");
+  Check(stats.instructions_compiled > 0, "and the loop ran compiled");
+  CheckEqual(static_cast<int64_t>(stats.instructions_interpreted), 0,
+             "with nothing left for the interpreter, not even the branch that ends it");
+}
+
+// The block was compiled on the strength of what is at the places it goes next, so a store there has to
+// take it away. Without that it would go on delivering a load a stage early to an instruction that now
+// reads the register - and the interpreter would give another answer.
+void TestAStoreToWhereABlockGoesThrowsItAway() {
+  printf("a store to where a block with a delivered load goes next discards the block\n");
+
+  // The block at index 10 is the branch and its load, entered first by a jump so that it is compiled -
+  // watching X, which is harmless then - before X is rewritten to read r3. The jump back to it after
+  // the rewrite finds that block in the cache unless the store to X took it away; then the load would
+  // be delivered a stage early to an instruction that reads the register, and r13 would come out as
+  // what the load fetched instead of what r3 held when the instruction ran.
+  const uint32_t x_index = 17;
+  const uint32_t x_address = kProgramBase + 4 * x_index;
+  const uint32_t branch_address = kProgramBase + 4 * 10;
+  const uint32_t patched_word = ADDU(13, 3, 0);
+  const std::vector<uint32_t> program = {
+      LUI_(12, static_cast<uint16_t>(x_address >> 16)),                          // 0
+      ORI_(12, 12, static_cast<uint16_t>(x_address & 0xFFFF)),                    // 1: r12 = &X
+      LUI_(11, static_cast<uint16_t>(patched_word >> 16)),                        // 2
+      ORI_(11, 11, static_cast<uint16_t>(patched_word & 0xFFFF)),                 // 3: r11 = the new word
+      LUI_(2, 0x8000),                                                            // 4
+      ORI_(2, 2, 0x4000),                                                         // 5: r2 walks the data
+      ADDIU(3, 0, 0x55),                                                          // 6
+      ADDIU(1, 0, 2),                                                             // 7: passes
+      J(branch_address >> 2),                                                     // 8: so a block starts at 10
+      NOP(),                                                                      // 9
+      BNE(1, 0, 6),                                                               // 10: to X, index 17
+      LW(3, 2, 0),                                                                // 11: the slot's load
+      ADDIU(14, 14, 1),                                                           // 12: if it does not take
+      NOP(),                                                                      // 13
+      JR(0),                                                                      // 14
+      NOP(),                                                                      // 15
+      NOP(),                                                                      // 16
+      ADDIU(5, 5, 1),                                                             // 17: X - what is rewritten
+      SW(11, 12, 0),                                                              // 18
+      ADDIU(2, 2, 4),                                                             // 19
+      ADDIU(1, 1, 0xFFFF),                                                        // 20
+      J(branch_address >> 2),                                                     // 21: back to the branch
+      NOP(),                                                                      // 22
+  };
+  emulation::rec::Recompiler::Stats stats;
+  Check(RunProgramBothWays(program, "slot load, then its target rewritten", &stats, &SeedSlotLoopData),
+        "registers and memory agree with the interpreter, with the target rewritten under it");
+  Check(stats.blocks_invalidated > 0, "and a block was thrown away by the store");
+}
+
 int main() {
   printf("rec_test - emitter, block cache, decoder, compiler, engine\n");
   printf("           (Docs/Recompiler-Plan.md steps 1 to 6)\n\n");
@@ -3850,7 +4086,7 @@ int main() {
   TestMirrorsReachRamDirectly();
   TestTheMultiplyAndDivideUnitMatchesTheInterpreter();
   TestATrappingAddOverflowsOrAdds();
-  TestAnOverflowingAddInADelaySlotIsLeftToTheInterpreter();
+  TestAnAddInADelaySlotIsCompiledAndSaysSo();
   TestWhatItAdmitsWithTheUnitOnIsWhatItCompiles();
   TestTheUnitsClockFollowsTheChain();
   TestTheGteMatchesTheInterpreter();
@@ -3859,6 +4095,8 @@ int main() {
   TestWhatItAdmitsWithTheGteOnIsWhatItCompiles();
   TestTheGteClockFollowsTheChain();
   TestTheClockIsBroughtUpBeforeHardwareIsTouched();
+  TestABlockIsDroppedByAStoreToAWordItWatches();
+  TestADelaySlotLoadIsDeliveredOnlyWhenTheSuccessorsCannotTell();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

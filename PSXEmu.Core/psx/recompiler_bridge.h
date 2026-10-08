@@ -232,13 +232,17 @@ class RecompilerBridge {
 
   // A compiled add or addi overflowed: the exception the interpreter's ADD and ADDI raise, with prev_pc
   // on the instruction as they have it, and the block told to stop - as for a memory access that
-  // faulted. Not compiled in a delay slot (BlockCompiler::CompilablePrefix), so the branch flag the
-  // exception reads is clear, as it is for any instruction the interpreter runs outside one.
-  static void Overflow(void* context, uint32_t pc) {
+  // faulted. In a branch's delay slot the exception is the branch's, and RaiseException reads that
+  // from the branch flag, which the interpreter's Jump holds up around the slot it runs: EPC is the
+  // branch's address and Cause's BD bit is set. Compiled code never sets it, so it is held here for
+  // the one call.
+  static void Overflow(void* context, uint32_t pc, bool in_delay_slot) {
     RecompilerBridge* self = Of(context);
     Cpu* const processor = self->cpu();
     processor->context()->prev_pc = pc;
+    processor->context()->branch_flag = in_delay_slot;
     processor->RaiseException(pc, kOtherException, kExceptionCodeOv);
+    processor->context()->branch_flag = false;
     self->recompiler_->SetFault();
   }
 

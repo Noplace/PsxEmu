@@ -362,6 +362,60 @@ Both targets of a conditional branch are known when it is compiled, so the load 
 the block when neither first instruction reads or writes its register. After that: `lwl`/`lwr`/`swl`/`swr`
 (1.8M each in Ridge Racer), and every BIOS call's entry at 0xB0, which stays the interpreter's by design.
 
+## Done: a load in a branch's delay slot, and an add in one (same day)
+
+The pattern the last section ended on, and a second one found behind it. Both are loops' back edges, in the
+code a compiler of the era emitted for nearly every loop: `bne ... ; lw` and `beq ... ; addi`.
+
+- **A load in the delay slot** lands after the instruction at the branch's target, which is in another
+  block, so the compiler had refused the load and the branch before it. Now the block delivers it itself, at its
+  end, which is before that instruction instead of after: the same thing unless that instruction can tell. For
+  `j`, `jal` and the conditional branches both places the branch can go are known when it is compiled, so the
+  decoder reports them with the word at each (`DecodedBlock::successors`) and the compiler delivers the load only
+  if neither word names the loaded register in any field - wider than "reads it", and a word that writes it is
+  refused too, which costs a block it could have had. `jr`, `jalr`, an unfetchable word and the BIOS vectors are
+  not known, and stay as they were.
+- **That decision is a dependency**, and an overlay loaded over the target would silently make it wrong, so the
+  block now depends on those words: `Block::watched`, which the cache marks like code (the page is code, a store
+  to the word finds the block), keeps the page code while the block lasts, and drops it from `Remove` and the page
+  rebuild cleanly. Two tests are built to fail without it - one removes the registration, one the lookup - and
+  both do, with the predicted wrong answer: the stale block delivers the load a stage early to a target rewritten
+  to read it, and r13 comes out `0x2222` where the interpreter's is `0x1111`.
+- **An `add` or `addi` in a delay slot** had been refused because an overflow there is the branch's exception: EPC
+  is the branch, Cause's BD bit is set. That was a shortcut. The compiled overflow now says whether it is in a
+  slot, and the bridge holds the CPU's branch flag up around the one `RaiseException`, as the interpreter's `Jump`
+  does around the slot it runs. `cpu_test`'s new `overflowslot` runs the same programs on both CPUs - EPC, BD,
+  destination untouched, and the no-overflow case - and removing the flag fails the compiled half.
+
+Where it was going: Wild Arms ran 14.7M interpreted instructions in 3,000 frames and 9.8M after the load fix
+alone; the top five entries were all `bne`/`beq` over `addi` in the slot (`20a50002`), 7.7M of the 9.8M.
+
+| Run, 3,000 frames | Before | After | | Interpreted instructions |
+|---|---|---|---|---|
+| Wild Arms | 10.4x | 12.5x | +20% | 14.7M -> 2.0M |
+| Legend of Mana | 7.7x | 9.3x | +20% | 15.3M -> 1.4M |
+| Final Fantasy VII | 10.7x | 12.2x | +14% | 6.5M -> 1.8M |
+| Ace Combat 3 | 10.5x | 11.8x | +12% | 13.7M -> 4.9M |
+| Ridge Racer | 7.2x | 7.7x | +7% | 16.9M -> 11.6M |
+
+(Back to back with the previous commit, alternated; the machine ran slower for these than for the last set, so
+compare down the columns, not across the sections.) Every final checksum is unchanged.
+
+Twelve-disc table, `--recompiler`: **all 36 pictures and all 12 sector counts identical, 63.1 s -> 55.9 s**. The 42
+hardware test programs draw the same pictures; `psxtest_cpu` gives the interpreter's results screen; amidog's
+`psxtest_gte`, 558,200 frames, ends on the same results screen byte for byte (12.75x real time); PGXP on FF7
+still draws 25,854 of 44,978 vertices from shadows. `rec_test` 1031 -> 1125, `cpu_test` 297 -> 341, the rest
+unchanged.
+
+**Exceptions in compiled delay slots, not done:** a compiled *load or store* that faults in a delay slot has the
+same wrong EPC and BD bit - `Access` sets `prev_pc` but not the branch flag - and always has had. Nothing in
+the twelve discs or the hardware tests takes one. It wants the same one-line treatment in `Access`, once there is a
+program that raises it to check against.
+
+**What is left to interpret:** Ridge Racer still has 11.6M in 3,000 frames, mostly `lwl`/`lwr`/`swl`/`swr`
+(1.8M each) and what follows them; Ace Combat 3 4.9M, the same family. After that every BIOS call's entry at
+0xA0/0xB0/0xC0 (1M in Wild Arms), which stays the interpreter's by design.
+
 ## Method and caveats
 
 - `boot_runner` built `/O2 /Zi /DEBUG /INCREMENTAL:NO` (no incremental-link

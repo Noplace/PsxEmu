@@ -149,7 +149,10 @@ struct HostInterface {
   // exception, as the memory callbacks do for an address error, and calls Recompiler::SetFault.
   // Both this and `hilo` have to be set for the compiler to compile `add`, `addi` and the
   // multiply/divide unit at all; without them they stay the interpreter's.
-  void (*overflow)(void* context, uint32_t pc) = nullptr;
+  // `in_delay_slot` is whether the instruction is the delay slot of the branch before it in its block: the
+  // exception then belongs to the branch - its address in EPC, the BD bit set - which is what the
+  // interpreter does for an instruction its Jump runs as a slot, and what the host has to arrange.
+  void (*overflow)(void* context, uint32_t pc, bool in_delay_slot) = nullptr;
 
   // The multiply and divide unit: mult 0x18, multu 0x19, div 0x1A, divu 0x1B (operands `a` and
   // `b`, the values of rs and rt), mfhi 0x10, mflo 0x12 (the value read comes back) and mthi
@@ -481,6 +484,10 @@ class Recompiler {
       // much of the page map needs to be watched for stores.
       block.guest_bytes = compiled.compiled * 4;
       block.cycles = compiled.compiled;   // one each; see the timing note below
+      // The words it is only right for, beyond its own code (a delivered delay-slot load).
+      block.watched_count = compiled.watched_count;
+      for (int i = 0; i < compiled.watched_count; ++i)
+        block.watched[i] = compiled.watched[i];
       ++stats_.blocks_compiled;
       stats_.host_bytes += compiled.host_bytes;
       if (compiled.registers_allocated > 0)
@@ -611,7 +618,7 @@ class Recompiler {
     Recompiler* self = Self(c);
     const uint32_t funct = operation & 0xFF;
     if (funct == kSpecialOverflow) {
-      self->host_.overflow(self->host_.context, a);
+      self->host_.overflow(self->host_.context, a, b != 0);
       return 0;
     }
     // From where the host's clock is - what was synced to it is already in it.

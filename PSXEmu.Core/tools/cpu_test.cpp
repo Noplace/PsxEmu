@@ -1524,6 +1524,69 @@ void TestBiosConsole(Machine& m) {
   m.system()->EnableRecompiler(false);
 }
 
+// An add or addi that overflows in a branch's delay slot raises the *branch's* exception: EPC is
+// the branch's address, Cause's BD bit is set, and the destination is left alone; outside a slot,
+// EPC is the instruction itself and BD is clear. Run on both CPUs - compiled code compiles the
+// add in the slot, and is told it is in one, which is how it gets the exception the interpreter's
+// Jump gives it by holding its branch flag up around the slot (bug: it used to refuse the slot,
+// and the branch with it, to leave this to the interpreter).
+void TestOverflowInADelaySlot(Machine& m) {
+  // The program is written straight into RAM, which tells the recompiler nothing: a fresh one each
+  // time, or what it compiled for the last program is what it runs.
+  auto Fresh = [](Machine& machine, bool compiled) {
+    machine.system()->EnableRecompiler(false);
+    machine.system()->EnableRecompiler(compiled);
+  };
+  const int kCop0Epc = 14;
+  const uint32_t kUntouched = 0xDEADBEEF;
+  struct Case { const char* name; uint32_t slot; };
+  for (int pass = 0; pass < 2; ++pass) {
+    const bool compiled = (pass == 1);
+    for (const Case& c : { Case{"add", ADD(t2, t0, t1)}, Case{"addi", ADDI(t2, t0, 1)} }) {
+      const std::string where = std::string(compiled ? "recompiled: " : "interpreted: ") + c.name;
+
+      BeginTest((where + " in a branch's delay slot raises the branch's exception").c_str());
+      m.Reset();
+      Fresh(m, compiled);
+      m.set_reg(t0, 0x7FFFFFFF);
+      m.set_reg(t1, 1);
+      m.set_reg(t2, kUntouched);
+      m.Load({ BEQ(zero, zero, 8), c.slot, NOP(), NOP() });   // always taken; the slot is the add
+      m.Run(1);
+      CheckEqual(m.pc(), kExceptionVector, "vectored");
+      CheckEqual((m.cop0(kCop0Cause) >> 2) & 0x1F, 12, "cause code is Overflow");
+      CheckEqual(m.cop0(kCop0Epc), kProgramBase, "EPC is the branch, not the add");
+      CheckEqual(m.cop0(kCop0Cause) >> 31, 1, "and BD is set");
+      CheckEqual(m.reg(t2), kUntouched, "the destination was not written");
+
+      BeginTest((where + " outside a delay slot raises its own").c_str());
+      m.Reset();
+      Fresh(m, compiled);
+      m.set_reg(t0, 0x7FFFFFFF);
+      m.set_reg(t1, 1);
+      m.set_reg(t2, kUntouched);
+      m.Load({ NOP(), c.slot, NOP() });
+      m.Run(compiled ? 1 : 2);   // a compiled step is the whole block; an interpreted one, an instruction
+      CheckEqual(m.pc(), kExceptionVector, "vectored");
+      CheckEqual(m.cop0(kCop0Epc), kProgramBase + 4, "EPC is the add itself");
+      CheckEqual(m.cop0(kCop0Cause) >> 31, 0, "and BD is clear");
+      CheckEqual(m.reg(t2), kUntouched, "the destination was not written");
+
+      BeginTest((where + " in a delay slot, without overflow, adds and the branch is taken").c_str());
+      m.Reset();
+      Fresh(m, compiled);
+      m.set_reg(t0, 5);
+      m.set_reg(t1, 1);
+      m.set_reg(t2, kUntouched);
+      m.Load({ BEQ(zero, zero, 8), c.slot, ADDIU(t3, zero, 1), ADDIU(t4, zero, 2) });
+      m.Run(1);
+      CheckEqual(m.reg(t2), 6, "the slot ran");
+      CheckEqual(m.pc(), kProgramBase + 12, "and the branch went to the instruction after the next");
+    }
+  }
+  m.system()->EnableRecompiler(false);
+}
+
 // The edges amidog's psxtest_cpu found wrong, one check each so they cannot
 // quietly come back (bug 68). Expected values are the R3000A's, from psx-spx
 // and the suite itself - not from this implementation.
@@ -1653,6 +1716,7 @@ const Group kGroups[] = {
   { "cacheisolation", TestCacheIsolation },
   { "biosconsole", TestBiosConsole },
   { "cpuedges",   TestCpuEdges },
+  { "overflowslot", TestOverflowInADelaySlot },
 };
 
 }  // namespace

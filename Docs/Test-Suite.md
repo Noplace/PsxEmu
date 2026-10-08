@@ -15,7 +15,7 @@ Each test assembles a handful of MIPS instructions into RAM, runs them through
 the real CPU, and checks what came out - the same path a game takes. No BIOS,
 no window. A group name runs only that group.
 
-**Current: 297 checks, 0 failures.**
+**Current: 341 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -36,6 +36,7 @@ no window. A group name runs only that group.
 | `cacheisolation` | a store with Isolate Cache set not reaching the scratchpad, and an ordinary store still landing |
 | `biosconsole` | BIOS putchar/puts calls through the A0h/B0h/C0h vectors reaching the console feed exactly once each, interpreted and then recompiled (bug 66) |
 | `cpuedges` | what amidog's psxtest_cpu found (bug 68): sub/addi trapping on signed overflow without writing their destination, sltiu's sign-extended immediate, a misaligned lh/lw faulting without loading, all 32 REGIMM encodings branching (and linking only for 10h/11h, after reading rs), jalr with rd == rs, and a misaligned jump target faulting at the target |
+| `overflowslot` | an add or addi that overflows in a branch's delay slot raising the *branch's* exception - EPC its address, Cause's BD bit set, the destination untouched - and outside a slot its own; run on the interpreter and, with the recompiler compiling the add in the slot, on that, which has to agree |
 
 Two of these are worth reading twice, because both encode a bug that cost real
 time to find the hard way:
@@ -765,13 +766,13 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 297 | | `gpu_test` | 95 |
+| `cpu_test` | 341 | | `gpu_test` | 95 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 479 |
 | `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,780 checks, 0 failures**, all ten green. Each harness's own section above
+**1,824 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -849,7 +850,7 @@ negated 0.054, motion as given 0.094 on the Radeon, every other sign 0.08-0.22);
 time. AMD's loader finds its effect DLLs only beside the running executable, so
 `build_tools.bat` copies them into `Temp\tools`.
 
-`rec_test` (1031 checks) is not counted either, and for a different reason: it
+`rec_test` (1125 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
 `psx/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,

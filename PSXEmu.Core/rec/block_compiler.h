@@ -134,6 +134,13 @@ struct CompiledBlock {
   };
   LinkSlot links[2];
   int link_count = 0;
+
+  // Guest addresses outside the block whose first instruction the compiled code is only right for:
+  // set when the block ends in a load in a branch's delay slot that it delivers itself, on the
+  // strength of what the instruction at each place it goes next does not touch. The engine has the
+  // block thrown away when any of them is written (Block::watched).
+  uint32_t watched[2] = {};
+  int watched_count = 0;
 };
 
 class BlockCompiler {
@@ -285,12 +292,18 @@ class BlockCompiler {
     for (uint32_t i = 0; i < count; ++i)
       Emit(block.instructions[i]);
 
-    // A load is never the last instruction of the compiled prefix - it needs a
-    // follower, and CompilablePrefix enforces that - so this should never fire.
-    // It is here because the alternative to a redundant store is a value that
+    // A load is the last instruction of the compiled prefix only as the delay slot of the branch that
+    // ends the block, when CompilablePrefix has seen that the instructions it goes to cannot tell the
+    // difference (SlotLoadIsDeliverable); then this is what delivers it. Otherwise it needs a follower
+    // and this does not fire. It is here because the alternative to a redundant store is a value that
     // silently never reaches its register.
     if (pending_active_)
       EmitPendingStore();
+    result.watched_count = 0;
+    if (EndsWithSlotLoad(block, count)) {
+      for (int i = 0; i < block.successor_count; ++i)
+        result.watched[result.watched_count++] = block.successors[i].pc;
+    }
 
     // Where the interpreter picks up. A branch already wrote it; otherwise it
     // is the address after the last instruction the compiled code performed,
@@ -420,14 +433,6 @@ class BlockCompiler {
       default:
         return false;
     }
-  }
-
-  // The two that trap, which are the two that cannot be compiled in a branch's delay slot: the
-  // exception they raise has to be taken as the branch's, with its address and the BD bit, and
-  // the interpreter is what knows how.
-  static bool TrapsOnOverflow(uint32_t word) {
-    const uint32_t opcode = word >> 26;
-    return opcode == 0x08 || (opcode == 0x00 && (word & 0x3F) == 0x20);
   }
 
   static bool IsBranchOrJump(uint32_t word) {
@@ -578,6 +583,46 @@ class BlockCompiler {
     return opcode >= 0x20 && opcode <= 0x25;
   }
 
+  // A load, or mfc2/cfc2 into a register, which delivers its value an instruction late.
+  static bool IsLateLoad(uint32_t word) {
+    return NeedsFollower(word) && !IsBranchOrJump(word);
+  }
+
+  // Whether an instruction names register `reg` in any of the three fields registers go in. Wider than
+  // "reads it": a jump's target bits and a coprocessor's fields are caught too, which only ever costs a
+  // block it could have compiled.
+  static bool NamesRegister(uint32_t word, uint32_t reg) {
+    return ((word >> 21) & 0x1F) == reg || ((word >> 16) & 0x1F) == reg ||
+           ((word >> 11) & 0x1F) == reg;
+  }
+
+  // A load in a branch's delay slot lands after the instruction the branch goes to - which is in another
+  // block - so a block that ends with one can only write it out itself, at its end, which is before that
+  // instruction instead of after: and that is the same thing only if that instruction cannot tell, by
+  // reading the register, or writing it (it would win in one order and lose in the other). With one or
+  // two places to go and a known word at each, that is a question the compiler can answer; with jr and
+  // jalr, which go anywhere, it cannot, and the answer is no.
+  static bool SlotLoadIsDeliverable(const DecodedBlock& block) {
+    if (block.successor_count == 0 || block.instructions.empty())
+      return false;
+    const uint32_t reg = Destination(block.instructions.back().word);
+    if (reg == 0)
+      return false;
+    for (int i = 0; i < block.successor_count; ++i) {
+      const DecodedBlock::Successor& successor = block.successors[i];
+      if (!successor.valid || NamesRegister(successor.word, reg))
+        return false;
+    }
+    return true;
+  }
+
+  // Whether the compiled prefix ends in such a load, and so the block depends on its successors' words.
+  static bool EndsWithSlotLoad(const DecodedBlock& block, uint32_t count) {
+    const size_t size = block.instructions.size();
+    return count == size && size >= 2 && IsBranchOrJump(block.instructions[size - 2].word) &&
+           IsLateLoad(block.instructions[size - 1].word);
+  }
+
   uint32_t CompilablePrefix(const DecodedBlock& block) const {
     size_t n = block.instructions.size();
 
@@ -605,14 +650,17 @@ class BlockCompiler {
     for (size_t i = n; i-- > 0;) {
       const uint32_t word = block.instructions[i].word;
       bool can = CanCompile(word);
-      // An add that overflows in a branch's delay slot is the branch's exception, taken with its
-      // address and the BD bit, which the interpreter does and compiled code does not: the add
-      // is left to it, and so is the branch before it, whose slot would not be compiled.
-      if (can && i > 0 && TrapsOnOverflow(word) &&
-          IsBranchOrJump(block.instructions[i - 1].word))
-        can = false;
-      if (can && NeedsFollower(word))
-        can = (i + 1 < n) && ok[i + 1];
+      if (can && NeedsFollower(word)) {
+        bool follower = (i + 1 < n) && ok[i + 1];
+        // The one load that may be the last instruction of a block: the delay slot of the branch that
+        // ends it, delivered by the block itself when the instruction at each place it goes next
+        // (SlotLoadIsDeliverable) cannot tell.
+        if (!follower && i + 1 == n && n == block.instructions.size() && IsLateLoad(word) &&
+            i > 0 && IsBranchOrJump(block.instructions[i - 1].word) &&
+            SlotLoadIsDeliverable(block))
+          follower = true;
+        can = follower;
+      }
       ok[i] = can;
     }
     uint32_t count = 0;
@@ -1189,6 +1237,7 @@ class BlockCompiler {
     if (pending_active_)
       StoreReg(pending_reg_, kPending);
     x86::MovRegImm(emitter_, kScratchC, kSpecialOverflow);                // arg 2: the operation
+    x86::MovRegImm(emitter_, kArg4, instruction.in_delay_slot ? 1 : 0);   // arg 4: a delay slot?
     EmitCall(kOffSpecial, instruction.pc, kArg3);                         // arg 3: where
     fault_exits_.push_back(code_->cursor);
     x86::JmpRel32(emitter_, 0);                                           // the host set the fault

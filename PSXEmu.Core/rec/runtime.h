@@ -67,7 +67,8 @@ typedef void (*MoveFn)(void* context, uint32_t to, uint32_t from);
 // compiled code reaches by a one-byte offset into BlockState has to fit in the first 128 bytes.
 // `operation` is the instruction's funct field, or kSpecialOverflow, with the instruction's index in
 // its block shifted up by 8 (what the host needs to know how far into the chain this is); `a` and `b`
-// are the operands, or for an overflow, `a` is the instruction's pc. A read returns its value.
+// are the operands, or for an overflow, `a` is the instruction's pc and `b` is 1 when it is in a branch's
+// delay slot. A read returns its value.
 typedef uint32_t (*SpecialFn)(void* context, uint32_t operation, uint32_t a, uint32_t b);
 const uint32_t kSpecialOverflow = 0x3F;
 

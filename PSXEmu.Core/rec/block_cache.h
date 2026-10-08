@@ -47,6 +47,14 @@ struct Block {
   // The interpreter is always the fallback, so a block that could not be fully
   // compiled is still worth caching: it records where the compiled part stops.
   uint32_t compiled_instructions = 0;
+
+  // Words outside the block's own range that what was compiled depends on: the first instruction at
+  // each place the block goes next, when a load in its delay slot was written out at the end of the
+  // block on the strength of what those instructions are. A store into one throws the block away,
+  // exactly as a store into the block's own code does. Addresses in any view; Insert normalises them.
+  static const int kMaxWatched = 2;
+  uint32_t watched[kMaxWatched] = {};
+  int watched_count = 0;
 };
 
 // A guest address to Block map, and what a store has to throw away.
@@ -97,6 +105,17 @@ class BlockCache {
       MarkWords(&entry, page, key, end);
       MarkCodePage(page);
     }
+    // The words it depends on, in whatever pages they are in, which may be ones it has no code in.
+    Block& stored = blocks_[key];
+    for (int i = 0; i < stored.watched_count; ++i) {
+      stored.watched[i] = Normalise(stored.watched[i]);
+      const uint32_t page = stored.watched[i] >> kPageShift;
+      Page& entry = pages_[page];
+      if (std::find(entry.blocks.begin(), entry.blocks.end(), key) == entry.blocks.end())
+        entry.blocks.push_back(key);
+      MarkWords(&entry, page, stored.watched[i], stored.watched[i] + 4);
+      MarkCodePage(page);
+    }
   }
 
   // Takes the block starting at this address out, if there is one.
@@ -105,13 +124,16 @@ class BlockCache {
     const auto it = blocks_.find(key);
     if (it == blocks_.end())
       return false;
-    const uint32_t end = End(it->second);
+    const Block removed = it->second;
+    const uint32_t end = End(removed);
     FastSlot& slot = fast_[(key >> 2) & (kFastSlots - 1)];
     if (slot.key == key)
       slot = FastSlot();
     blocks_.erase(it);
     for (uint32_t page = key >> kPageShift; page <= (end - 1) >> kPageShift; ++page)
       ForgetInPage(page, key);
+    for (int i = 0; i < removed.watched_count; ++i)
+      ForgetInPage(removed.watched[i] >> kPageShift, key);   // a page already done is a no-op
     return true;
   }
 
@@ -132,8 +154,10 @@ class BlockCache {
         continue;
       for (const uint32_t key : found->second.blocks) {
         const Block& block = blocks_.at(key);
-        if (key < end && begin < End(block) &&
-            std::find(out->begin(), out->end(), key) == out->end())
+        bool hit = key < end && begin < End(block);
+        for (int i = 0; i < block.watched_count && !hit; ++i)
+          hit = block.watched[i] < end && begin < block.watched[i] + 4;
+        if (hit && std::find(out->begin(), out->end(), key) == out->end())
           out->push_back(key);
       }
     }
@@ -295,7 +319,14 @@ class BlockCache {
       bits = 0;
     for (const uint32_t other : entry.blocks) {
       const Block& block = blocks_.at(other);
-      MarkWords(&entry, page, other, End(block));
+      // A block is listed in a page for its own code in it, for a word it depends on in it, or both.
+      const uint32_t page_begin = page << kPageShift;
+      if (other < page_begin + kPageSize && End(block) > page_begin)
+        MarkWords(&entry, page, other, End(block));
+      for (int i = 0; i < block.watched_count; ++i) {
+        if ((block.watched[i] >> kPageShift) == page)
+          MarkWords(&entry, page, block.watched[i], block.watched[i] + 4);
+      }
     }
   }
 

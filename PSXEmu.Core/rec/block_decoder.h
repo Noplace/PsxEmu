@@ -92,6 +92,21 @@ struct DecodedBlock {
   uint32_t static_cycles = 0;
   bool dynamic_cost = false;
 
+  // Where a block that ends in a branch or jump and its delay slot goes next, and what the first
+  // instruction there is - for the one thing the compiler needs it for: a load in the delay slot
+  // lands after that instruction, which is in another block, and can be written out at the end of this
+  // one only if that instruction cannot tell. A conditional branch has two successors, taken first; j
+  // and jal one; jr and jalr go somewhere only they know, and a block that does not end in a branch has
+  // none (count 0 - the answer is "unknown" and the compiler assumes the worst). An address whose word
+  // could not be fetched is not valid.
+  struct Successor {
+    uint32_t pc = 0;
+    uint32_t word = 0;
+    bool valid = false;
+  };
+  Successor successors[2];
+  int successor_count = 0;
+
   uint32_t guest_bytes() const {
     return static_cast<uint32_t>(instructions.size()) * 4;
   }
@@ -159,6 +174,7 @@ class BlockDecoder {
       // than starting a second delay slot.
       if (ending_after_delay_slot) {
         block.end_reason = EndReason::kBranchDelaySlot;
+        FindSuccessors(&block);
         return block;
       }
 
@@ -278,6 +294,35 @@ class BlockDecoder {
   }
 
  private:
+  // Fills in DecodedBlock::successors for a block that ends in a branch or jump and its delay slot:
+  // the branch is the second-to-last instruction. Reading the words is harmless - it is the same
+  // fetch the decoder makes - and the compiler decides what to do with them.
+  void FindSuccessors(DecodedBlock* block) const {
+    const size_t count = block->instructions.size();
+    if (count < 2)
+      return;
+    const Instruction& branch = block->instructions[count - 2];
+    const uint32_t word = branch.word;
+    const uint32_t opcode = word >> 26;
+    uint32_t targets[2] = {};
+    int n = 0;
+    if (opcode == 0x02 || opcode == 0x03) {   // j, jal: the top four bits are the delay slot's
+      targets[n++] = ((branch.pc + 4) & 0xF0000000u) | ((word & 0x03FFFFFFu) << 2);
+    } else if (opcode == 0x01 || (opcode >= 0x04 && opcode <= 0x07)) {
+      const uint32_t offset = static_cast<uint32_t>(
+          static_cast<int32_t>(static_cast<int16_t>(word & 0xFFFF))) << 2;
+      targets[n++] = branch.pc + 4 + offset;
+      targets[n++] = branch.pc + 8;
+    } else {
+      return;   // jr and jalr: nowhere that can be known
+    }
+    block->successor_count = n;
+    for (int i = 0; i < n; ++i) {
+      block->successors[i].pc = targets[i];
+      block->successors[i].valid = fetch_(targets[i], &block->successors[i].word);
+    }
+  }
+
   FetchWord fetch_;
 };
 
