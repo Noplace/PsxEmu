@@ -459,6 +459,55 @@ frames; the first version did not); amidog's `psxtest_gte` ends on the same resu
 and the full 558,200 (14.8x real time); PGXP on FF7 still draws 25,854 of 44,978 vertices from shadows with the same
 checksum.
 
+## Done: the scratchpad is reached directly (same day)
+
+Ridge Racer's hot loop from the last section reads the scratchpad, and so does every game's inner loop that keeps
+a table there; a load or store past RAM's window still called out, and `lwl`/`lwr`/`swl`/`swr` bailed to the
+interpreter. Past the window a direct access now tries the scratchpad (1 KB at `0x1F800000`) before it calls: the
+physical address minus the base inside its bytes, and `BlockState::scratchpad` given. The same direct access as
+RAM's at no stall (`Cpu::Load` charges 0 there) and without the code-page check (nothing compiled is fetched from
+the scratchpad). It is gated by RAM's own pointers, so PGXP, a watched address, an isolated cache and the write queue
+withhold it too. All the loads and stores, `lwc2`/`swc2` and the unaligned pairs use it; the pairs' bail jumps went
+rel32 because the scratchpad block no longer fits a rel8.
+
+Ridge Racer: interpreted instructions in 3,000 frames 9.6M -> 1.9M, about +5% (7.6x -> 8.0x); the other games, which
+the profile says touch the scratchpad less, are unchanged inside run-to-run noise (about +-8% here). `rec_test`
+1792 -> 2003, two mutants caught. Validation as above: the twelve discs, the 42 hardware programs, `psxtest_cpu`,
+`psxtest_gte` in full all agree.
+
+## Done: the software rasteriser draws a row's covered run, and the profile moves off the machine thread (same day)
+
+With the CPU compiled, the machine thread spent 30-50% of its time *waiting*: at each vblank `Gpu::ResolveFramebuffer`
+waits for the rasteriser's thread to finish the frame (`SyncRaster`), and the rasteriser was busy for 18-55% of the
+wall time (Ridge Racer 55%, Ace Combat 3 47%, Final Fantasy VII 39%). A new stat, `raster_busy_ns` ("the
+rasteriser's thread drew for"), measures it. Taking the wait out altogether (a timing-only experiment, pictures
+racy) bought +8-15%: the two threads overlap little because a game's draws arrive in a burst at the end of its
+frame, so making the rasteriser itself faster is the lever, and an asynchronous resolve is not worth its risk by
+itself (a front end that publishes each frame's picture right after the frame would wait for it anyway).
+
+- **Triangles:** `ShadeRows`, one loop per kind (Gouraud, textured, dithered - eight, as templates), finds a row's
+  covered run from the three edge functions with a division each per row and visits only that, instead of testing
+  every pixel of the bounding box against all three; the write is inlined and the counts are kept in locals.
+- **Rectangles wholly inside the drawing area on a frame that skips no field:** `ShadeRectangle`, and an opaque
+  untextured one with no mask to respect is a `std::fill` a row.
+- **Tried and dropped:** walking each interpolated value's quotient and remainder instead of dividing, 20% slower
+  on its own - the divides were never the cost, and a carry the predictor cannot see was.
+
+| Run, 3,000 frames, alternated | Rasteriser thread, before | after | Speed, before | after |
+|---|---|---|---|---|
+| Ridge Racer | 3.04 s | 1.96 s | 10.6x | 13.4x |
+| Final Fantasy VII | 1.56 s | 0.92 s | 12.7x | 15.9x |
+| Wild Arms | 1.19 s | 0.70 s | 12.9x | 15.2x |
+| Ace Combat 3 | 2.02 s | 1.56 s | 11.9x | 13.4x |
+| Legend of Mana | 0.66 s | 0.25 s | 10.4x | 11.6x |
+
+Every checksum is unchanged. Twelve-disc table: all 36 pictures and 12 sector counts identical, **56.6 s -> 47.7 s**;
+the 42 hardware programs, `psxtest_cpu` and `psxtest_gte` agree. `gpu_test` 95 -> 98: a differential test of the
+rasteriser against the old per-pixel arithmetic written out again, on random triangles and rectangles that spill
+off every side of the drawing area, are wound either way, degenerate, in every blend, dither, mask, window and
+field combination, comparing VRAM and every count; the reference agrees with the code it replaced, and three
+mutants (a run's start rounded down, its end one short, the flat run's mask bit) are each caught.
+
 ## Method and caveats
 
 - `boot_runner` built `/O2 /Zi /DEBUG /INCREMENTAL:NO` (no incremental-link

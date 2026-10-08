@@ -54,6 +54,21 @@ namespace psx {
                         const RasterState& state);
     void DrawLineSegment(const RasterVertex& v0, const RasterVertex& v1,
                          const RasterState& state);
+    // A triangle once its corners are worked out: the drawing bounds, the three edge functions and
+    // each interpolated quantity as its value at (left, top) and its step per pixel and per row.
+    struct Stepped { int32_t at, dx, dy; };
+    struct TriSetup {
+      int32_t left, right, top, bottom;
+      int32_t double_area;
+      int32_t bias[3];
+      Stepped edge[3];
+      Stepped red, green, blue, tex_u, tex_v;
+      uint8_t flat_r, flat_g, flat_b;
+    };
+    template <bool kGouraud, bool kTextured, bool kDither>
+    void ShadeRows(const TriSetup& setup, const RasterState& state);
+    template <bool kTextured>
+    void ShadeRectangle(const DrawJob& job);
     void RasterRectangle(const DrawJob& job);
     void RasterFill(const DrawJob& job);
     void RasterVramCopy(const DrawJob& job);

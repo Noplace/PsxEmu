@@ -18,6 +18,7 @@
 *****************************************************************************************************************/
 #include "psx/psx.h"
 
+#include <chrono>
 #include <algorithm>
 #include <cmath>
 #include <emmintrin.h>
@@ -1495,8 +1496,12 @@ namespace emulation {
                 --jobs_count_;
                 raster_busy_ = true;
                 lock.unlock();
+                const auto began = std::chrono::steady_clock::now();
                 backend_->Apply(job);
+                const auto took = std::chrono::steady_clock::now() - began;
                 lock.lock();
+                stats_.raster_busy_ns += static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(took).count());
                 raster_busy_ = false;
                 jobs_drained_.notify_all();
             }

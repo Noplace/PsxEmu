@@ -13,8 +13,10 @@
 #include "graphics/hw_raster/hardware_raster.h"
 #endif
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 using emulation::psx::Gpu;
 using emulation::psx::kInterruptGPU;
@@ -1070,6 +1072,333 @@ void TestBreakDrawStopsAPausedList(System* system) {
   system->gpu().WriteStatus(0x04000000);
 }
 
+// ---------------------------------------------------------------------------
+// The software rasteriser's triangle and rectangle loops against a plain one
+// ---------------------------------------------------------------------------
+//
+// The rasteriser walks each row's covered run from the edge functions and keeps its counts in
+// locals; the pictures of twelve discs say it draws what it drew, and this says so for what they do
+// not reach - triangles that spill off every side of the drawing area, are wound either way or are
+// degenerate, with every combination of shading, texture depth and window, blend, dither and mask
+// rule, and a displayed field skipped. The reference below is the old per-pixel arithmetic written
+// out again: each pixel's three edge functions and each quantity from its own barycentric sum, from
+// scratch. VRAM, and every count the rasteriser keeps, must come out the same.
+namespace raster_check {
+
+using emulation::psx::DrawJob;
+using emulation::psx::RasterCounters;
+using emulation::psx::RasterEnv;
+using emulation::psx::RasterState;
+using emulation::psx::RasterVertex;
+
+uint32_t g_state = 0x12345678u;
+uint32_t Random() {
+  g_state ^= g_state << 13;
+  g_state ^= g_state >> 17;
+  g_state ^= g_state << 5;
+  return g_state;
+}
+int32_t Between(int32_t lo, int32_t hi) {   // inclusive
+  return lo + static_cast<int32_t>(Random() % static_cast<uint32_t>(hi - lo + 1));
+}
+
+uint8_t Clamp8(int32_t v) { return static_cast<uint8_t>(v < 0 ? 0 : (v > 255 ? 255 : v)); }
+uint16_t To15(uint8_t r, uint8_t g, uint8_t b) {
+  return static_cast<uint16_t>(((b >> 3) << 10) | ((g >> 3) << 5) | (r >> 3));
+}
+uint8_t From5(uint32_t c) { return static_cast<uint8_t>((c << 3) | (c >> 2)); }
+const int8_t kDither[4][4] = { { -4, 0, -3, 1 }, { 2, -2, 3, -1 }, { -3, 1, -4, 0 }, { 3, -1, 2, -2 } };
+
+struct Reference {
+  uint16_t* vram;
+  RasterEnv env;
+  RasterCounters counters = {};
+
+  uint16_t& At(uint32_t x, uint32_t y) { return vram[((y & 511) * 1024) + (x & 1023)]; }
+  bool Skips(int32_t y) const {
+    return env.skip_field && (static_cast<uint32_t>(y) & 1u) == env.active_line_lsb;
+  }
+
+  uint16_t Sample(uint32_t u, uint32_t v, const RasterState& s) {
+    ++counters.texels_by_depth[s.texpage_colors & 3];
+    u = (u & ~(env.tw_mask_x * 8)) | ((env.tw_offset_x & env.tw_mask_x) * 8);
+    v = (v & ~(env.tw_mask_y * 8)) | ((env.tw_offset_y & env.tw_mask_y) * 8);
+    u &= 0xFF;
+    v &= 0xFF;
+    switch (s.texpage_colors) {
+    case 0: {
+      const uint16_t block = At(s.texpage_x + (u / 4), s.texpage_y + v);
+      return At(s.clut_x + ((block >> ((u & 3) * 4)) & 0x0F), s.clut_y);
+    }
+    case 1: {
+      const uint16_t block = At(s.texpage_x + (u / 2), s.texpage_y + v);
+      return At(s.clut_x + ((block >> ((u & 1) * 8)) & 0xFF), s.clut_y);
+    }
+    default:
+      return At(s.texpage_x + u, s.texpage_y + v);
+    }
+  }
+
+  void Blend(uint16_t* dst, uint8_t r, uint8_t g, uint8_t b, uint32_t mode) {
+    const uint16_t back = *dst;
+    const int32_t br = From5(back & 0x1F), bg = From5((back >> 5) & 0x1F), bb = From5((back >> 10) & 0x1F);
+    int32_t nr, ng, nb;
+    switch (mode) {
+    case 0: nr = (br + r) / 2; ng = (bg + g) / 2; nb = (bb + b) / 2; break;
+    case 1: nr = br + r; ng = bg + g; nb = bb + b; break;
+    case 2: nr = br - r; ng = bg - g; nb = bb - b; break;
+    default: nr = br + r / 4; ng = bg + g / 4; nb = bb + b / 4; break;
+    }
+    *dst = To15(Clamp8(nr), Clamp8(ng), Clamp8(nb));
+  }
+
+  void Write(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, const RasterState& s,
+             bool from_texture, bool texture_mask) {
+    uint16_t& target = At(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+    if (env.check_mask && (target & 0x8000)) {
+      ++counters.mask_rejected;
+      return;
+    }
+    if (s.semi_transparent && (!from_texture || texture_mask))
+      Blend(&target, r, g, b, s.semi_mode);
+    else
+      target = To15(r, g, b);
+    const bool set_mask = env.force_set_mask || (from_texture && texture_mask);
+    target = static_cast<uint16_t>((target & 0x7FFF) | (set_mask ? 0x8000 : 0));
+    ++counters.pixels;
+  }
+
+  void Plot(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, const RasterState& s,
+            bool from_texture, bool texture_mask) {
+    if (x < env.area_left || x > env.area_right || y < env.area_top || y > env.area_bottom) {
+      ++counters.clipped;
+      return;
+    }
+    if (Skips(y)) {
+      ++counters.field_skipped;
+      return;
+    }
+    Write(x, y, r, g, b, s, from_texture, texture_mask);
+  }
+
+  static int32_t Bias(int32_t dx, int32_t dy) { return ((dy < 0) || (dy == 0 && dx > 0)) ? 0 : -1; }
+
+  void Triangle(const RasterVertex& v0, const RasterVertex& v1, const RasterVertex& v2,
+                const RasterState& s) {
+    const int32_t min_x = std::min(v0.x, std::min(v1.x, v2.x)), max_x = std::max(v0.x, std::max(v1.x, v2.x));
+    const int32_t min_y = std::min(v0.y, std::min(v1.y, v2.y)), max_y = std::max(v0.y, std::max(v1.y, v2.y));
+    if (max_x - min_x >= 1024 || max_y - min_y >= 512)
+      return;
+    const int32_t left = std::max(min_x, env.area_left), right = std::min(max_x - 1, env.area_right);
+    const int32_t top = std::max(min_y, env.area_top), bottom = std::min(max_y - 1, env.area_bottom);
+    if (left > right || top > bottom)
+      return;
+    const int32_t area = (v1.x - v0.x) * (v2.y - v0.y) - (v2.x - v0.x) * (v1.y - v0.y);
+    if (area == 0)
+      return;
+    const RasterVertex& a = v0;
+    const RasterVertex& b = (area > 0) ? v1 : v2;
+    const RasterVertex& c = (area > 0) ? v2 : v1;
+    const int32_t D = (area > 0) ? area : -area;
+    const int32_t bias0 = Bias(b.x - a.x, b.y - a.y);
+    const int32_t bias1 = Bias(c.x - b.x, c.y - b.y);
+    const int32_t bias2 = Bias(a.x - c.x, a.y - c.y);
+    for (int32_t y = top; y <= bottom; ++y) {
+      for (int32_t x = left; x <= right; ++x) {
+        const int32_t w0 = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
+        const int32_t w1 = (c.x - b.x) * (y - b.y) - (c.y - b.y) * (x - b.x);
+        const int32_t w2 = (a.x - c.x) * (y - c.y) - (a.y - c.y) * (x - c.x);
+        if (!(w0 + bias0 >= 0 && w1 + bias1 >= 0 && w2 + bias2 >= 0))
+          continue;
+        if (Skips(y)) {
+          ++counters.field_skipped;
+          continue;
+        }
+        uint8_t r, g, bl;
+        if (s.gouraud) {
+          r = Clamp8((w1 * a.r + w2 * b.r + w0 * c.r) / D);
+          g = Clamp8((w1 * a.g + w2 * b.g + w0 * c.g) / D);
+          bl = Clamp8((w1 * a.b + w2 * b.b + w0 * c.b) / D);
+        }
+        else {
+          r = a.r; g = a.g; bl = a.b;
+        }
+        if (s.dither) {
+          const int8_t d = kDither[y & 3][x & 3];
+          r = Clamp8(r + d); g = Clamp8(g + d); bl = Clamp8(bl + d);
+        }
+        if (!s.textured) {
+          Write(x, y, r, g, bl, s, false, false);
+          continue;
+        }
+        const int32_t u = (w1 * a.u + w2 * b.u + w0 * c.u) / D;
+        const int32_t v = (w1 * a.v + w2 * b.v + w0 * c.v) / D;
+        const uint16_t texel = Sample(static_cast<uint32_t>(u), static_cast<uint32_t>(v), s);
+        if (texel == 0) {
+          ++counters.transparent_texels;
+          continue;
+        }
+        uint8_t tr = From5(texel & 0x1F), tg = From5((texel >> 5) & 0x1F), tb = From5((texel >> 10) & 0x1F);
+        if (!s.raw_texture) {
+          tr = Clamp8((tr * r) >> 7); tg = Clamp8((tg * g) >> 7); tb = Clamp8((tb * bl) >> 7);
+        }
+        Write(x, y, tr, tg, tb, s, true, (texel & 0x8000) != 0);
+      }
+    }
+  }
+
+  void Rectangle(const DrawJob& j) {
+    const RasterState& s = j.state;
+    for (int32_t row = 0; row < j.h; ++row)
+      for (int32_t col = 0; col < j.w; ++col) {
+        if (!s.textured) {
+          Plot(j.x + col, j.y + row, j.r, j.g, j.b, s, false, false);
+          continue;
+        }
+        const int32_t tu = s.flip_x ? (j.base_u - col) : (j.base_u + col);
+        const int32_t tv = s.flip_y ? (j.base_v - row) : (j.base_v + row);
+        const uint16_t texel = Sample(static_cast<uint8_t>(tu), static_cast<uint8_t>(tv), s);
+        if (texel == 0) {
+          ++counters.transparent_texels;
+          continue;
+        }
+        uint8_t tr = From5(texel & 0x1F), tg = From5((texel >> 5) & 0x1F), tb = From5((texel >> 10) & 0x1F);
+        if (!s.raw_texture) {
+          tr = Clamp8((tr * j.r) >> 7); tg = Clamp8((tg * j.g) >> 7); tb = Clamp8((tb * j.b) >> 7);
+        }
+        Plot(j.x + col, j.y + row, tr, tg, tb, s, true, (texel & 0x8000) != 0);
+      }
+  }
+};
+
+RasterVertex RandomVertex(int32_t lo, int32_t hi) {
+  RasterVertex v;
+  v.x = Between(lo, hi);
+  v.y = Between(lo, hi);
+  v.r = static_cast<uint8_t>(Random());
+  v.g = static_cast<uint8_t>(Random());
+  v.b = static_cast<uint8_t>(Random());
+  v.u = static_cast<uint8_t>(Random());
+  v.v = static_cast<uint8_t>(Random());
+  return v;
+}
+
+RasterState RandomState() {
+  RasterState s = {};
+  s.textured = (Random() & 3) != 0;
+  s.raw_texture = (Random() & 3) == 0;
+  s.semi_transparent = (Random() & 3) == 0;
+  s.gouraud = (Random() & 1) != 0;
+  s.dither = (Random() & 3) == 0;
+  s.flip_x = (Random() & 3) == 0;
+  s.flip_y = (Random() & 3) == 0;
+  s.semi_mode = Random() & 3;
+  s.texpage_colors = Random() % 3;
+  s.texpage_x = (Random() & 7) * 64;
+  s.texpage_y = (Random() & 1) * 256;
+  s.clut_x = (Random() & 63) * 16;
+  s.clut_y = 400 + Random() % 100;
+  return s;
+}
+
+RasterEnv RandomEnv() {
+  RasterEnv e = {};
+  e.area_left = Between(0, 30);
+  e.area_top = Between(0, 30);
+  e.area_right = Between(e.area_left, 150);
+  e.area_bottom = Between(e.area_top, 150);
+  if ((Random() & 3) == 0) {
+    e.tw_mask_x = Random() & 31;
+    e.tw_mask_y = Random() & 31;
+    e.tw_offset_x = Random() & 31;
+    e.tw_offset_y = Random() & 31;
+  }
+  e.force_set_mask = (Random() & 3) == 0;
+  e.check_mask = (Random() & 3) == 0;
+  e.skip_field = (Random() & 7) == 0;
+  e.active_line_lsb = Random() & 1;
+  return e;
+}
+
+void Test() {
+  printf("the software rasteriser's triangles and rectangles match the per-pixel arithmetic\n");
+
+  const size_t words = 1024 * 512;
+  std::vector<uint16_t> vram_a(words), vram_b(words);
+  emulation::psx::SoftwareRaster raster(vram_a.data());
+  int mismatches = 0, counter_mismatches = 0, jobs = 0, drawn = 0;
+
+  for (int round = 0; round < 40 && mismatches < 3; ++round) {
+    for (size_t i = 0; i < words; ++i)
+      vram_a[i] = vram_b[i] = static_cast<uint16_t>(Random() & ((Random() & 7) == 0 ? 0 : 0xFFFF));
+    Reference reference;
+    reference.vram = vram_b.data();
+    raster.counters() = RasterCounters();
+
+    for (int n = 0; n < 150; ++n) {
+      DrawJob job = {};
+      job.env = RandomEnv();
+      job.state = RandomState();
+      reference.env = job.env;
+      const bool triangle = (Random() % 3) != 0;
+      if (triangle) {
+        // From inside the area to far beyond every side of it, and sometimes huge.
+        const int32_t lo = (Random() & 3) == 0 ? -300 : -10, hi = (Random() & 3) == 0 ? 900 : 170;
+        job.kind = DrawJob::kTriangle;
+        for (int k = 0; k < 3; ++k)
+          job.v[k] = RandomVertex(lo, hi);
+        if ((Random() & 15) == 0)
+          job.v[2] = job.v[0];   // degenerate
+        reference.Triangle(job.v[0], job.v[1], job.v[2], job.state);
+      }
+      else {
+        job.kind = DrawJob::kRectangle;
+        job.x = Between(-10, 140);
+        job.y = Between(-10, 140);
+        job.w = Between(0, 70);
+        job.h = Between(0, 70);
+        job.r = static_cast<uint8_t>(Random());
+        job.g = static_cast<uint8_t>(Random());
+        job.b = static_cast<uint8_t>(Random());
+        job.base_u = static_cast<uint8_t>(Random());
+        job.base_v = static_cast<uint8_t>(Random());
+        reference.Rectangle(job);
+      }
+      raster.Apply(job);
+      ++jobs;
+    }
+
+    drawn += static_cast<int>(reference.counters.pixels);
+    if (memcmp(vram_a.data(), vram_b.data(), words * sizeof(uint16_t)) != 0) {
+      ++mismatches;
+      printf("  FAIL  round %d: VRAM differs\n", round);
+    }
+    const RasterCounters& got = raster.counters();
+    const RasterCounters& want = reference.counters;
+    if (got.pixels != want.pixels || got.clipped != want.clipped ||
+        got.field_skipped != want.field_skipped || got.mask_rejected != want.mask_rejected ||
+        got.transparent_texels != want.transparent_texels ||
+        memcmp(got.texels_by_depth, want.texels_by_depth, sizeof(got.texels_by_depth)) != 0) {
+      ++counter_mismatches;
+      printf("  FAIL  round %d: counts differ (pixels %llu/%llu clipped %llu/%llu skipped %llu/%llu "
+             "rejected %llu/%llu transparent %llu/%llu)\n", round,
+             static_cast<unsigned long long>(got.pixels), static_cast<unsigned long long>(want.pixels),
+             static_cast<unsigned long long>(got.clipped), static_cast<unsigned long long>(want.clipped),
+             static_cast<unsigned long long>(got.field_skipped),
+             static_cast<unsigned long long>(want.field_skipped),
+             static_cast<unsigned long long>(got.mask_rejected),
+             static_cast<unsigned long long>(want.mask_rejected),
+             static_cast<unsigned long long>(got.transparent_texels),
+             static_cast<unsigned long long>(want.transparent_texels));
+    }
+  }
+  CheckEqual(static_cast<uint32_t>(mismatches), 0, "every VRAM the rasteriser leaves is the reference's");
+  CheckEqual(static_cast<uint32_t>(counter_mismatches), 0, "and every count it keeps");
+  Check(jobs == 40 * 150 && drawn > 100000, "and the rounds drew a good deal");
+}
+
+}  // namespace raster_check
+
 int main(int argc, char** argv) {
   System* system = new System();
   // --hw-raster: every scene drawn by the Direct3D 11 rasteriser on WARP instead, which must
@@ -1122,6 +1451,7 @@ int main(int argc, char** argv) {
   TestBurstDmaStartsOnTheDevicesRequest(system);
   TestBreakDrawStopsAPausedList(system);
   TestCulledPolygonCostsSetupOnly(system);
+  raster_check::Test();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete system;

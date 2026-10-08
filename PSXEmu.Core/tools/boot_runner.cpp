@@ -1976,6 +1976,8 @@ int main(int argc, char** argv) {
     printf("               %llu jobs to the rasteriser, %llu barriers waited\n",
            static_cast<unsigned long long>(gpu_stats.raster_jobs),
            static_cast<unsigned long long>(gpu_stats.raster_waits));
+    printf("               the rasteriser's thread drew for %.2f s\n",
+           static_cast<double>(gpu_stats.raster_busy_ns) / 1e9);
   }
   printf("               GP0 queue peaked at %u words, %llu dropped\n",
          gpu_stats.queue_peak,

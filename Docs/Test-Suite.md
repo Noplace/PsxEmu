@@ -94,7 +94,12 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 95 checks, 0 failures.**
+**Current: 98 checks, 0 failures.**
+
+The last three are one test: the software rasteriser's triangle and rectangle loops against a plain per-pixel
+reference, on random primitives that spill off every side of the drawing area, are wound either way or are
+degenerate, in every combination of shading, texture depth and window, blend, dither, mask rule and skipped field -
+VRAM and every count it keeps (the reference agrees with the rasteriser it replaced, and three mutants are caught).
 
 This is a starting set, not full coverage - the rasteriser is exercised
 indirectly by every `boot_runner` run and the framebuffer checksums below, so
@@ -744,7 +749,7 @@ was, and the console has a texture cache - there is no right answer to check.
 
 **`gpu_test --hw-raster`** runs gpu_test's own scenes through the hardware
 rasteriser the same way, and **`gpu_test --d3d12`** through the Direct3D 12 one:
-all 95 checks pass on each.
+all 98 checks pass on each.
 
 ## Baselines
 
@@ -766,13 +771,13 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 341 | | `gpu_test` | 95 |
+| `cpu_test` | 341 | | `gpu_test` | 98 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 479 |
 | `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,824 checks, 0 failures**, all ten green. Each harness's own section above
+**1,827 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -822,7 +827,7 @@ correctness count: it records how far off the timing is), `host_test` (34 checks
 threads and the channels between them - its own section above), and `hw_raster_test` (78
 checks, 81 with `--d3d12`, bugs 122-123, 127, 137 and 138 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
-which runs gpu_test's 95 through it), and `dlss_choice_test` (42 checks, the
+which runs gpu_test's 98 through it), and `dlss_choice_test` (42 checks, the
 arithmetic of sizes around DLSS in `graphics/dlss/dlss_choice.h` - the rasteriser's
 scale for each mode and window, never 1x, always inside the range DLSS 310.9.1 gave
 on the RTX 4060; the jitter's length; and the output asked for, the screen's or the

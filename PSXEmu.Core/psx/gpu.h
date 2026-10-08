@@ -164,6 +164,9 @@ class Gpu : public GpuCore {
     // serialised by something reading VRAM back, and is not going to be faster
     // for it - see bug 91.
     uint64_t raster_jobs;
+    // How long the rasteriser's thread spent drawing them, in nanoseconds: against the machine's
+    // own time, which of the two a threaded run is waiting for.
+    uint64_t raster_busy_ns;
     // PGXP: polygon vertices, and how many of them arrived with a precise position.
     uint64_t polygon_vertices;
     uint64_t precise_vertices;

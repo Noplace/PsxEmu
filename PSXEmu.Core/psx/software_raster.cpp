@@ -133,8 +133,125 @@ namespace emulation {
             }
         }
 
+        // A rectangle lying wholly inside the drawing area, on a frame that skips no field: nothing is
+        // clipped and no row is left alone, so a pixel is its colour or its texel and the write, and
+        // the loop has nothing in it for the checks that settled that. An untextured, opaque one with
+        // no mask to respect is a run of one value a row. Counts as RasterRectangle's generic loop
+        // makes them, kept in locals.
+        template <bool kTextured>
+        void SoftwareRaster::ShadeRectangle(const DrawJob& job) {
+            const RasterState& state = job.state;
+            const bool check_mask = env_.check_mask;
+            const bool force_mask = env_.force_set_mask;
+            const bool semi = state.semi_transparent;
+            const bool raw = state.raw_texture;
+            const uint32_t mode = state.semi_mode;
+            const bool watching = watch_.w != 0;
+            const uint32_t u_keep = ~(env_.tw_mask_x * 8);
+            const uint32_t u_set = (env_.tw_offset_x & env_.tw_mask_x) * 8;
+            const uint32_t v_keep = ~(env_.tw_mask_y * 8);
+            const uint32_t v_set = (env_.tw_offset_y & env_.tw_mask_y) * 8;
+            const uint32_t page_x = state.texpage_x, page_y = state.texpage_y;
+            const uint32_t clut_x = state.clut_x, clut_y = state.clut_y;
+            const uint32_t depth = state.texpage_colors;
+            const uint8_t r = job.r, g = job.g, b = job.b;
+            const uint16_t flat = static_cast<uint16_t>(To15Bit(r, g, b) | (force_mask ? 0x8000 : 0));
+
+            uint64_t pixels = 0, rejected = 0, transparent = 0, texels = 0;
+
+            for (int32_t row = 0; row < job.h; ++row) {
+                const uint32_t vy = static_cast<uint32_t>(job.y + row);
+                uint16_t* const vram_row = &VramAt(0, vy);
+                const uint32_t x0 = static_cast<uint32_t>(job.x);
+
+                if (!kTextured && !semi && !check_mask) {
+                    // The whole row is the one value, which the mask bit is in already.
+                    std::fill(vram_row + x0, vram_row + x0 + job.w, flat);
+                    pixels += static_cast<uint64_t>(job.w);
+                    if (watching)
+                        for (int32_t col = 0; col < job.w; ++col)
+                            NoteWatchWrite(x0 + col, vy);
+                    continue;
+                }
+
+                for (int32_t col = 0; col < job.w; ++col) {
+                    uint8_t pr = r, pg = g, pb = b;
+                    bool from_texture = false, texture_mask = false;
+                    if (kTextured) {
+                        // A flipped rectangle walks its texture backwards from the base.
+                        const int32_t tu = state.flip_x ? (job.base_u - col) : (job.base_u + col);
+                        const int32_t tv = state.flip_y ? (job.base_v - row) : (job.base_v + row);
+                        uint32_t u = static_cast<uint8_t>(tu);
+                        uint32_t v = static_cast<uint8_t>(tv);
+                        u = ((u & u_keep) | u_set) & 0xFF;
+                        v = ((v & v_keep) | v_set) & 0xFF;
+                        ++texels;
+                        uint16_t texel;
+                        switch (depth) {
+                        case 0: {   // 4 bits per texel, via CLUT
+                            const uint16_t block = VramAt(page_x + (u / 4), page_y + v);
+                            texel = VramAt(clut_x + ((block >> ((u & 3) * 4)) & 0x0F), clut_y);
+                            break;
+                        }
+                        case 1: {   // 8 bits per texel, via CLUT
+                            const uint16_t block = VramAt(page_x + (u / 2), page_y + v);
+                            texel = VramAt(clut_x + ((block >> ((u & 1) * 8)) & 0xFF), clut_y);
+                            break;
+                        }
+                        default:    // 15 bits per texel, direct
+                            texel = VramAt(page_x + u, page_y + v);
+                            break;
+                        }
+                        if (texel == 0) {   // fully transparent texel
+                            ++transparent;
+                            continue;
+                        }
+                        pr = From5Bit(texel & 0x1F);
+                        pg = From5Bit((texel >> 5) & 0x1F);
+                        pb = From5Bit((texel >> 10) & 0x1F);
+                        if (!raw) {
+                            pr = Clamp8((pr * r) >> 7);
+                            pg = Clamp8((pg * g) >> 7);
+                            pb = Clamp8((pb * b) >> 7);
+                        }
+                        from_texture = true;
+                        texture_mask = (texel & 0x8000) != 0;
+                    }
+
+                    uint16_t& target = vram_row[(x0 + static_cast<uint32_t>(col)) & (kVramWidth - 1)];
+                    if (check_mask && (target & 0x8000)) {
+                        ++rejected;
+                        continue;
+                    }
+                    if (semi && (!from_texture || texture_mask))
+                        BlendSemiTransparent(&target, pr, pg, pb, mode);
+                    else
+                        target = To15Bit(pr, pg, pb);
+                    const bool set_mask = force_mask || (from_texture && texture_mask);
+                    target = static_cast<uint16_t>((target & 0x7FFF) | (set_mask ? 0x8000 : 0));
+                    ++pixels;
+                    if (watching)
+                        NoteWatchWrite(x0 + static_cast<uint32_t>(col), vy);
+                }
+            }
+
+            counters_.pixels += pixels;
+            counters_.mask_rejected += rejected;
+            counters_.transparent_texels += transparent;
+            counters_.texels_by_depth[depth & 3] += texels;
+        }
+
         // A rectangle's pixels, from the job the command left behind.
         void SoftwareRaster::RasterRectangle(const DrawJob& job) {
+            if (!env_.skip_field && job.w > 0 && job.h > 0 && job.x >= env_.area_left &&
+                job.x + job.w - 1 <= env_.area_right && job.y >= env_.area_top &&
+                job.y + job.h - 1 <= env_.area_bottom) {
+                if (job.state.textured)
+                    ShadeRectangle<true>(job);
+                else
+                    ShadeRectangle<false>(job);
+                return;
+            }
             const RasterState& state = job.state;
             const int32_t x = job.x, y = job.y, w = job.w, h = job.h;
             const uint8_t r = job.r, g = job.g, b = job.b;
@@ -418,82 +535,200 @@ namespace emulation {
                 tex_v = weighted(a.v, b.v, c.v);
             }
 
-            // One covered pixel: its colour, dithered, then its texel if it has one, then the
-            // write. Inside the drawing area and on a row that is drawn, both of which the loop
-            // below has already settled.
-            auto shade = [&](int32_t x, int32_t y, int32_t sum_r, int32_t sum_g, int32_t sum_b,
-                             int32_t sum_u, int32_t sum_v) {
-                uint8_t r, g, bl;
-                if (state.gouraud) {
-                    r = Clamp8(sum_r / double_area);
-                    g = Clamp8(sum_g / double_area);
-                    bl = Clamp8(sum_b / double_area);
-                }
-                else {
-                    r = a.r; g = a.g; bl = a.b;
-                }
+            // Everything the rows need, handed to the loop that is built for this triangle's kind.
+            TriSetup setup;
+            setup.left = left; setup.right = right; setup.top = top; setup.bottom = bottom;
+            setup.double_area = double_area;
+            setup.bias[0] = bias0; setup.bias[1] = bias1; setup.bias[2] = bias2;
+            setup.edge[0] = { e0.at, e0.dx, e0.dy };
+            setup.edge[1] = { e1.at, e1.dx, e1.dy };
+            setup.edge[2] = { e2.at, e2.dx, e2.dy };
+            setup.red = { red.at, red.dx, red.dy };
+            setup.green = { green.at, green.dx, green.dy };
+            setup.blue = { blue.at, blue.dx, blue.dy };
+            setup.tex_u = { tex_u.at, tex_u.dx, tex_u.dy };
+            setup.tex_v = { tex_v.at, tex_v.dx, tex_v.dy };
+            setup.flat_r = a.r; setup.flat_g = a.g; setup.flat_b = a.b;
 
-                if (state.dither) {
-                    const int8_t offset = kDitherTable[y & 3][x & 3];
-                    r = Clamp8(r + offset);
-                    g = Clamp8(g + offset);
-                    bl = Clamp8(bl + offset);
-                }
-
-                if (!state.textured) {
-                    WritePixel(x, y, r, g, bl, state, false, false);
-                    return;
-                }
-
-                const int32_t u = sum_u / double_area;
-                const int32_t v = sum_v / double_area;
-                const uint16_t texel = SampleTexture(static_cast<uint32_t>(u),
-                    static_cast<uint32_t>(v), state);
-                if (texel == 0) {  // fully transparent texel
-                    ++counters_.transparent_texels;
-                    return;
-                }
-
-                uint8_t tr = From5Bit(texel & 0x1F);
-                uint8_t tg = From5Bit((texel >> 5) & 0x1F);
-                uint8_t tb = From5Bit((texel >> 10) & 0x1F);
-                if (!state.raw_texture) {
-                    tr = Clamp8((tr * r) >> 7);
-                    tg = Clamp8((tg * g) >> 7);
-                    tb = Clamp8((tb * bl) >> 7);
-                }
-                WritePixel(x, y, tr, tg, tb, state, true, (texel & 0x8000) != 0);
-            };
-
-            // Inclusive now: `right` and `bottom` are the last pixel to draw, not one past it -
-            // and both are inside the drawing area, so no pixel here needs PlotPixel's clip.
-            for (int32_t y = top; y <= bottom; ++y) {
-                int32_t w0 = e0.at, w1 = e1.at, w2 = e2.at;
-                if (SkipsVramRow(y)) {
-                    // The displayed field's row, which hardware leaves alone (bug 89): what the
-                    // triangle covers of it is counted, and nothing is worked out for it - no
-                    // colour, and no texel fetched, so a transparent one counts as skipped too.
-                    for (int32_t x = left; x <= right; ++x) {
-                        if (w0 + bias0 >= 0 && w1 + bias1 >= 0 && w2 + bias2 >= 0)
-                            ++counters_.field_skipped;
-                        w0 += e0.dx; w1 += e1.dx; w2 += e2.dx;
-                    }
-                }
-                else {
-                    int32_t sum_r = red.at, sum_g = green.at, sum_b = blue.at;
-                    int32_t sum_u = tex_u.at, sum_v = tex_v.at;
-                    for (int32_t x = left; x <= right; ++x) {
-                        if (w0 + bias0 >= 0 && w1 + bias1 >= 0 && w2 + bias2 >= 0)
-                            shade(x, y, sum_r, sum_g, sum_b, sum_u, sum_v);
-                        w0 += e0.dx; w1 += e1.dx; w2 += e2.dx;
-                        sum_r += red.dx; sum_g += green.dx; sum_b += blue.dx;
-                        sum_u += tex_u.dx; sum_v += tex_v.dx;
-                    }
-                }
-                e0.at += e0.dy; e1.at += e1.dy; e2.at += e2.dy;
-                red.at += red.dy; green.at += green.dy; blue.at += blue.dy;
-                tex_u.at += tex_u.dy; tex_v.at += tex_v.dy;
+            const int kind = (state.gouraud ? 4 : 0) | (state.textured ? 2 : 0) | (state.dither ? 1 : 0);
+            switch (kind) {
+            case 0: ShadeRows<false, false, false>(setup, state); break;
+            case 1: ShadeRows<false, false, true>(setup, state); break;
+            case 2: ShadeRows<false, true, false>(setup, state); break;
+            case 3: ShadeRows<false, true, true>(setup, state); break;
+            case 4: ShadeRows<true, false, false>(setup, state); break;
+            case 5: ShadeRows<true, false, true>(setup, state); break;
+            case 6: ShadeRows<true, true, false>(setup, state); break;
+            default: ShadeRows<true, true, true>(setup, state); break;
             }
+        }
+
+        // The triangle's rows, for one kind of triangle - whether it is Gouraud-shaded, textured and
+        // dithered being known as it is compiled rather than asked of every pixel - and so a loop with
+        // nothing in it but what its pixels do.
+        //
+        // The covered pixels of a row are one run: each of the three edge functions is a line in x and a
+        // pixel is covered when all three are not negative, so each edge cuts the row at a place a
+        // division finds, and only what is between the cuts is visited - not every pixel of the
+        // bounding box tested three times. The same pixels, the same colour and texel each, and the same
+        // counts, which are kept in locals and added to the rasteriser's at the end.
+        template <bool kGouraud, bool kTextured, bool kDither>
+        void SoftwareRaster::ShadeRows(const TriSetup& t, const RasterState& state) {
+            const bool check_mask = env_.check_mask;
+            const bool force_mask = env_.force_set_mask;
+            const bool semi = state.semi_transparent;
+            const bool raw = state.raw_texture;
+            const uint32_t mode = state.semi_mode;
+            const bool watching = watch_.w != 0;
+            const int32_t area = t.double_area;
+            // The texture window folds the coordinates before they index the page.
+            const uint32_t u_keep = ~(env_.tw_mask_x * 8);
+            const uint32_t u_set = (env_.tw_offset_x & env_.tw_mask_x) * 8;
+            const uint32_t v_keep = ~(env_.tw_mask_y * 8);
+            const uint32_t v_set = (env_.tw_offset_y & env_.tw_mask_y) * 8;
+            const uint32_t page_x = state.texpage_x, page_y = state.texpage_y;
+            const uint32_t clut_x = state.clut_x, clut_y = state.clut_y;
+            const uint32_t depth = state.texpage_colors;
+
+            uint64_t pixels = 0, rejected = 0, transparent = 0, texels = 0, skipped = 0;
+
+            int32_t w[3] = { t.edge[0].at, t.edge[1].at, t.edge[2].at };
+            // Each is a uint32_t that wraps as the int32_t sums it replaces did.
+            uint32_t row_r = static_cast<uint32_t>(t.red.at), row_g = static_cast<uint32_t>(t.green.at);
+            uint32_t row_b = static_cast<uint32_t>(t.blue.at);
+            uint32_t row_u = static_cast<uint32_t>(t.tex_u.at), row_v = static_cast<uint32_t>(t.tex_v.at);
+
+            for (int32_t y = t.top; y <= t.bottom; ++y) {
+                // Where the three edges let this row start and stop, as offsets from `left`.
+                int32_t lo = 0, hi = t.right - t.left;
+                bool empty = false;
+                for (int i = 0; i < 3; ++i) {
+                    const int32_t c = w[i] + t.bias[i];     // the edge function at `left`, biased
+                    const int32_t dx = t.edge[i].dx;
+                    if (dx == 0) {
+                        if (c < 0)
+                            empty = true;
+                    }
+                    else if (dx > 0) {
+                        if (c < 0)
+                            lo = std::max(lo, (-c + dx - 1) / dx);   // c + offset * dx >= 0
+                    }
+                    else {
+                        if (c < 0)
+                            empty = true;
+                        else
+                            hi = std::min(hi, c / -dx);
+                    }
+                }
+
+                if (!empty && lo <= hi) {
+                    if (SkipsVramRow(y)) {
+                        // The displayed field's row, which hardware leaves alone (bug 89): what the
+                        // triangle covers of it is counted, and nothing is worked out for it.
+                        skipped += static_cast<uint64_t>(hi - lo + 1);
+                    }
+                    else {
+                        uint16_t* const vram_row = &VramAt(0, static_cast<uint32_t>(y));
+                        const uint32_t offset = static_cast<uint32_t>(lo);
+                        uint32_t sum_r = row_r + offset * static_cast<uint32_t>(t.red.dx);
+                        uint32_t sum_g = row_g + offset * static_cast<uint32_t>(t.green.dx);
+                        uint32_t sum_b = row_b + offset * static_cast<uint32_t>(t.blue.dx);
+                        uint32_t sum_u = row_u + offset * static_cast<uint32_t>(t.tex_u.dx);
+                        uint32_t sum_v = row_v + offset * static_cast<uint32_t>(t.tex_v.dx);
+                        const int32_t x_end = t.left + hi;
+                        for (int32_t x = t.left + lo; x <= x_end; ++x) {
+                            uint8_t r, g, bl;
+                            if (kGouraud) {
+                                r = Clamp8(static_cast<int32_t>(sum_r) / area);
+                                g = Clamp8(static_cast<int32_t>(sum_g) / area);
+                                bl = Clamp8(static_cast<int32_t>(sum_b) / area);
+                                sum_r += static_cast<uint32_t>(t.red.dx);
+                                sum_g += static_cast<uint32_t>(t.green.dx);
+                                sum_b += static_cast<uint32_t>(t.blue.dx);
+                            }
+                            else {
+                                r = t.flat_r; g = t.flat_g; bl = t.flat_b;
+                            }
+                            if (kDither) {
+                                const int8_t dither = kDitherTable[y & 3][x & 3];
+                                r = Clamp8(r + dither);
+                                g = Clamp8(g + dither);
+                                bl = Clamp8(bl + dither);
+                            }
+
+                            bool from_texture = false, texture_mask = false;
+                            if (kTextured) {
+                                uint32_t u = static_cast<uint32_t>(static_cast<int32_t>(sum_u) / area);
+                                uint32_t v = static_cast<uint32_t>(static_cast<int32_t>(sum_v) / area);
+                                sum_u += static_cast<uint32_t>(t.tex_u.dx);
+                                sum_v += static_cast<uint32_t>(t.tex_v.dx);
+                                u = ((u & u_keep) | u_set) & 0xFF;
+                                v = ((v & v_keep) | v_set) & 0xFF;
+                                ++texels;
+                                uint16_t texel;
+                                switch (depth) {
+                                case 0: {   // 4 bits per texel, via CLUT
+                                    const uint16_t block = VramAt(page_x + (u / 4), page_y + v);
+                                    texel = VramAt(clut_x + ((block >> ((u & 3) * 4)) & 0x0F), clut_y);
+                                    break;
+                                }
+                                case 1: {   // 8 bits per texel, via CLUT
+                                    const uint16_t block = VramAt(page_x + (u / 2), page_y + v);
+                                    texel = VramAt(clut_x + ((block >> ((u & 1) * 8)) & 0xFF), clut_y);
+                                    break;
+                                }
+                                default:    // 15 bits per texel, direct
+                                    texel = VramAt(page_x + u, page_y + v);
+                                    break;
+                                }
+                                if (texel == 0) {   // fully transparent texel
+                                    ++transparent;
+                                    continue;
+                                }
+                                uint8_t tr = From5Bit(texel & 0x1F);
+                                uint8_t tg = From5Bit((texel >> 5) & 0x1F);
+                                uint8_t tb = From5Bit((texel >> 10) & 0x1F);
+                                if (!raw) {
+                                    tr = Clamp8((tr * r) >> 7);
+                                    tg = Clamp8((tg * g) >> 7);
+                                    tb = Clamp8((tb * bl) >> 7);
+                                }
+                                r = tr; g = tg; bl = tb;
+                                from_texture = true;
+                                texture_mask = (texel & 0x8000) != 0;
+                            }
+
+                            // WritePixel: the mask check, the blend, and the mask bit written.
+                            uint16_t& target = vram_row[static_cast<uint32_t>(x) & (kVramWidth - 1)];
+                            if (check_mask && (target & 0x8000)) {
+                                ++rejected;
+                                continue;
+                            }
+                            if (semi && (!from_texture || texture_mask))
+                                BlendSemiTransparent(&target, r, g, bl, mode);
+                            else
+                                target = To15Bit(r, g, bl);
+                            const bool set_mask = force_mask || (from_texture && texture_mask);
+                            target = static_cast<uint16_t>((target & 0x7FFF) | (set_mask ? 0x8000 : 0));
+                            ++pixels;
+                            if (watching)
+                                NoteWatchWrite(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+                        }
+                    }
+                }
+
+                for (int i = 0; i < 3; ++i)
+                    w[i] += t.edge[i].dy;
+                row_r += static_cast<uint32_t>(t.red.dy); row_g += static_cast<uint32_t>(t.green.dy);
+                row_b += static_cast<uint32_t>(t.blue.dy);
+                row_u += static_cast<uint32_t>(t.tex_u.dy); row_v += static_cast<uint32_t>(t.tex_v.dy);
+            }
+
+            counters_.pixels += pixels;
+            counters_.mask_rejected += rejected;
+            counters_.transparent_texels += transparent;
+            counters_.texels_by_depth[depth & 3] += texels;
+            counters_.field_skipped += skipped;
         }
 
         void SoftwareRaster::DrawLineSegment(const RasterVertex& v0, const RasterVertex& v1,
