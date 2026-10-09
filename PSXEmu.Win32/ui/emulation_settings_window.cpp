@@ -97,6 +97,9 @@ namespace psxemu {
             { &EmuConfig::skip_bios_intro, L"CD-ROM and BIOS", 1, L"S&kip BIOS intro",
               L"A disc boots straight into the game, past the logo and the disc check. Not "
               L"changed by the presets." },
+            { &EmuConfig::hle_bios, L"CD-ROM and BIOS", 1, L"&HLE BIOS",
+              L"The BIOS emulated rather than run from a dump: no file needed, no intro. "
+              L"Takes effect at the next boot. Not changed by the presets." },
             { &EmuConfig::pause_in_menus, L"Front end", 1, L"&Pause while in menus",
               L"The game stops while one of the main window's menus is open. Not changed by the "
               L"presets." },
@@ -124,8 +127,8 @@ namespace psxemu {
                     return L"The interpreter, with every timing model off: the timing every test "
                            L"here is measured with, and what a new install starts with.";
                 default:
-                    return L"Your own mix. A preset sets every switch here except Skip BIOS Intro "
-                           L"and Pause While in Menus.";
+                    return L"Your own mix. A preset sets every switch here except Skip BIOS Intro, "
+                           L"HLE BIOS and Pause While in Menus.";
             }
         }
 

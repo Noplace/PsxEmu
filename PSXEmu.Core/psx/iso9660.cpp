@@ -249,6 +249,25 @@ bool Iso9660::Find(const char* path, File* out) const {
   }
 }
 
+bool Iso9660::List(const char* path, std::vector<File>* out) const {
+  if (!loaded_ || out == nullptr)
+    return false;
+  std::string remaining = path != nullptr ? path : "";
+  const size_t colon = remaining.find(':');
+  if (colon != std::string::npos)
+    remaining.erase(0, colon + 1);
+  while (!remaining.empty() && (remaining[0] == '\\' || remaining[0] == '/'))
+    remaining.erase(0, 1);
+  if (remaining.empty()) {
+    *out = root_;
+    return true;
+  }
+  File directory;
+  if (!Find(remaining.c_str(), &directory) || !directory.directory)
+    return false;
+  return ReadDirectory(directory.lba, directory.size, out);
+}
+
 bool Iso9660::Read(const File& file, std::vector<uint8_t>* out) const {
   if (!loaded_ || out == nullptr)
     return false;

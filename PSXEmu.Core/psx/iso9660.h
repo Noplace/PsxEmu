@@ -64,6 +64,11 @@ class Iso9660 {
   // in any case, and with or without the ";1" version suffix.
   bool Find(const char* path, File* out) const;
 
+  // Every entry of the directory `path` names - the root for an empty path or a lone
+  // backslash - in the order the disc stores them, "." and ".." first. For the HLE BIOS's
+  // firstfile and nextfile.
+  bool List(const char* path, std::vector<File>* out) const;
+
   // Reads a whole file. Rejects anything implausibly large rather than
   // trusting a size field off the disc.
   bool Read(const File& file, std::vector<uint8_t>* out) const;

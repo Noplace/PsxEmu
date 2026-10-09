@@ -481,6 +481,10 @@ What it does not measure:
 | `--boot-disc` | Read SYSTEM.CNF from the mounted disc and start its executable |
 | `--auto-boot` | Let the BIOS run for real, then take over at pc=80030000 - the point it would hand a game control at |
 | `--exe <file>` | Side-load a PS-EXE. Alone, immediately - before the BIOS has run at all. With `--auto-boot`, deferred until the BIOS writes POST code 7 (kernel initialised): BEV and Isolate Cache cleared and the kernel's tables set up, which a standalone test program can assume, and the shell not yet copied over the program's uninitialised data (bug 65) |
+| `--hle` | Boot the HLE BIOS ([HLE-BIOS.md](HLE-BIOS.md)) rather than a dump; `hle` in place of the BIOS file is the same. `--exe` then side-loads through the HLE kernel, once it is built. The end of the run lists every kernel function called and the HLE BIOS's own messages |
+| `--call-trace <file>` | Every kernel call, one line each with its arguments and caller: from the traps under `--hle`, from the A0h/B0h/C0h vectors on a dump - the same format, so the two can be lined up |
+| `--time-calls <csv>` | Every kernel call's arguments and the cycles until it returned to its caller, a CSV line each - on a dump, what the HLE BIOS's timing table (`psx/hle_bios_timing.cpp`) was made from; under `--hle`, how close it comes |
+| `--card1 <file>`, `--card2 <file>` | A memory card in the slot. Written back as the machine changes it, so pass a copy |
 | `--frames <n>` | Run for n frames, then stop (default 300) |
 | `--ppm <file>` | Write the final visible frame as a PPM |
 | `--vram <file>` | Write the whole 1024x512 of VRAM as a PPM |

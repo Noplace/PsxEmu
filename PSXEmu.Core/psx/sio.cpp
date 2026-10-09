@@ -1107,6 +1107,35 @@ void Sio::Write16(uint32_t address, uint16_t data) {
   }
 }
 
+int Sio::ExchangeDirect(int port, const uint8_t* out, uint8_t* in, int count) {
+  const uint16_t control = control_;
+  const int step = transfer_step_;
+  const Target target = target_;
+  const bool acknowledge = acknowledge_;
+  const uint8_t pad_command = pad_command_;
+  const uint8_t scratch = exchange_scratch_;
+
+  // The port selected and a fresh exchange begun, as a chip select would.
+  control_ = static_cast<uint16_t>((control_ & ~0x2000) | (port != 0 ? 0x2000 : 0) | 0x0002);
+  transfer_step_ = 0;
+  target_ = kTargetNone;
+  int exchanged = 0;
+  for (int i = 0; i < count; ++i) {
+    in[i] = Exchange(out[i]);
+    exchanged = i + 1;
+    if (!acknowledge_)
+      break;
+  }
+
+  control_ = control;
+  transfer_step_ = step;
+  target_ = target;
+  acknowledge_ = acknowledge;
+  pad_command_ = pad_command;
+  exchange_scratch_ = scratch;
+  return exchanged;
+}
+
 void Sio::Write32(uint32_t address, uint32_t data) {
   Write16(address, static_cast<uint16_t>(data));
 }

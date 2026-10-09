@@ -38,7 +38,13 @@ class System {
   System();
   ~System();
 
-  // The BIOS path is a setting, not a constant: the user supplies the dump.
+  // The BIOS path is a setting, not a constant: the user supplies the dump. With
+  // EmuConfig::hle_bios on, or no dump to be had, the machine boots the HLE BIOS instead
+  // (psx/hle_bios.h) - so a missing file is a failure only when HLE is off.
+  //
+  // Which of the two is chosen is settled at the first instruction, not here: a disc's own
+  // settings are applied after Initialize (the front end only knows the game once the disc is
+  // in), and they may say otherwise.
   int Initialize(const char* bios_path);
 
   // Brings every device up without a BIOS, for tests that drive a device
@@ -63,6 +69,13 @@ class System {
 
   void LoadBiosFromMemory(const void* buffer);
   bool LoadBiosFromFile(const char* filename);
+
+  // The HLE BIOS, and whether the machine is running it rather than a dump.
+  HleBios& hle() { return hle_; }
+  bool hle_active() const { return hle_active_; }
+  // Puts the chosen BIOS in the ROM: the HLE one when EmuConfig::hle_bios says so or there is no
+  // dump. Done by Initialize, and again at the first instruction if the setting changed since.
+  void SelectBios();
   bool LoadPsExe(const char* filename);
   bool LoadPsExeFromMemory(const void* data, size_t size);
 
@@ -215,8 +228,14 @@ class System {
   // StepInstruction and StepInstructionUnarmed: one body, with and without the debugger.
   template <bool kDebugger>
   bool StepImpl();
+  void SettleBios();
 
   std::unique_ptr<RecompilerBridge> recompiler_;
+  HleBios hle_;
+  bool hle_active_ = false;
+  // Until the first instruction runs, the BIOS can still be swapped for the other one.
+  bool bios_pending_ = false;
+  std::vector<uint8_t> bios_file_;   // the dump Initialize was given, if it could be read
   double base_freq_hz_;
   uint64_t interrupts_taken_;
   // How many interrupts were taken with each I_STAT bit pending, so "the

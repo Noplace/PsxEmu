@@ -371,6 +371,15 @@ struct EmuConfig {
   // back the same way rather than refusing to boot.
   std::string bios_file = "";
 
+  // Boot the HLE BIOS (psx/hle_bios.h, Docs/HLE-BIOS.md) instead of a dump: the kernel's
+  // functions run as host code behind the same tables, vectors and control blocks software sees
+  // on a console, and a disc starts straight away, with no intro and no shell. No dump is
+  // needed - with none in the folder the machine boots this whichever way the switch is.
+  //
+  // Off by default: the real BIOS is what everything here is measured against, and this is
+  // the newer and less proven of the two. Takes effect at the next boot or reset.
+  bool hle_bios = false;
+
   // --- Speed --------------------------------------------------------------
   // How fast to run the machine against the wall clock: 1.0 is a console, 2.0
   // is twice as fast. Nothing about the emulated machine changes - it is still

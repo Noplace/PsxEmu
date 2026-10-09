@@ -64,5 +64,6 @@
 #include "psx/debugger.h"
 #include "psx/mc.h"
 #include "psx/iso9660.h"
+#include "psx/hle_bios.h"
 #include "psx/system.h"
 #include "psx/settings.h"

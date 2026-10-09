@@ -65,7 +65,20 @@ class Kernel : public Component {
   // console output ends and the next one's begins.
   uint32_t session() const { return session_; }
 
+  // Every call through A0h/B0h/C0h with its arguments and caller, one line each - the same
+  // format as HleBios::set_trace, so a run on a dump and one on the HLE BIOS can be diffed.
+  // Null turns it off.
+  void set_trace(FILE* trace) { trace_ = trace; }
+
+  // Told of every call through A0h/B0h/C0h as it is made - for a harness timing them
+  // (boot_runner --time-calls). Empty when nothing asks.
+  void set_observer(std::function<void(uint32_t vector, uint32_t number)> observer) {
+    observer_ = std::move(observer);
+  }
+
  private:
+   std::function<void(uint32_t, uint32_t)> observer_;
+   FILE* trace_ = nullptr;
    Stats stats_;
    std::string console_pending_;
    uint64_t console_dropped_ = 0;

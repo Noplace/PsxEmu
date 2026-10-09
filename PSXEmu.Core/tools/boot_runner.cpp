@@ -248,6 +248,10 @@ struct Options {
   bool write_queue_timing;
   int recompiler_toggle;
   bool recompiler_diff;
+  bool hle;                 // --hle: the HLE BIOS (psx/hle_bios.h) rather than a dump
+  const char* hle_trace;    // --call-trace <file>: every kernel call, HLE or a dump
+  const char* time_calls;   // --time-calls <csv>: every kernel call and the cycles it took
+  const char* cards[2];     // --card1/--card2 <file>: a memory card in each slot
   // --break: execute breakpoints (psx/debugger.h). Each hit prints the registers and the code
   // around the pc, up to break_print of them, then carries on.
   std::vector<uint32_t> breaks;
@@ -642,6 +646,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->write_queue_timing = false;
   options->recompiler_toggle = 0;
   options->recompiler_diff = false;
+  options->hle = false;
+  options->hle_trace = nullptr;
+  options->time_calls = nullptr;
+  options->cards[0] = options->cards[1] = nullptr;
   options->track_calls = false;
   options->frame_log = 0;
   options->break_print = 20;
@@ -738,6 +746,14 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->auto_boot = true;
     } else if (strcmp(arg, "--cd-mechanical") == 0) {
       options->cd_mechanical = true;
+    } else if ((strcmp(arg, "--card1") == 0 || strcmp(arg, "--card2") == 0) && i + 1 < argc) {
+      options->cards[arg[6] - '1'] = argv[++i];
+    } else if (strcmp(arg, "--time-calls") == 0 && i + 1 < argc) {
+      options->time_calls = argv[++i];
+    } else if (strcmp(arg, "--call-trace") == 0 && i + 1 < argc) {
+      options->hle_trace = argv[++i];
+    } else if (strcmp(arg, "--hle") == 0) {
+      options->hle = true;
     } else if (strcmp(arg, "--quiet") == 0) {
       options->quiet = true;
     } else if (strcmp(arg, "--gpu-thread") == 0) {
@@ -882,6 +898,13 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   // count out of reach rather than at zero.
   if (options->trace_at_set || options->trace_irq != 0)
     options->trace_skip = ~0ull;
+  // "hle" in place of a BIOS file is the same as --hle.
+  if (options->bios != nullptr && strcmp(options->bios, "hle") == 0) {
+    options->hle = true;
+    options->bios = "";
+  }
+  if (options->hle && options->bios == nullptr)
+    options->bios = "";
   return options->bios != nullptr;
 }
 
@@ -950,6 +973,7 @@ const char* kRegisterNames[32] = {
 };
 
 bool SetUpDiffMachine(System* system, const Options& options, bool recompiler) {
+  system->config().hle_bios = options.hle;
   if (system->Initialize(options.bios) != 0)
     return false;
   if (options.cd_mechanical)
@@ -1230,9 +1254,34 @@ int main(int argc, char** argv) {
     return 2;
 #endif
   }
+  system->config().hle_bios = options.hle;
   if (system->Initialize(options.bios) != 0) {
     fprintf(stderr, "failed to initialise the core (bios: %s)\n", options.bios);
     return 1;
+  }
+  if (system->hle_active())
+    printf("bios           HLE (psx/hle_bios.h)\n");
+  // Cards are written back to their files as the machine changes them: pass copies.
+  for (int slot = 0; slot < 2; ++slot) {
+    if (options.cards[slot] == nullptr)
+      continue;
+    if (system->mc(slot).LoadFile(options.cards[slot]) != S_OK) {
+      fprintf(stderr, "--card%d: cannot load %s\n", slot + 1, options.cards[slot]);
+      return 2;
+    }
+    printf("card %d         %s\n", slot + 1, options.cards[slot]);
+  }
+  if (options.hle_trace != nullptr) {
+    FILE* trace = fopen(options.hle_trace, "w");
+    if (trace == nullptr) {
+      fprintf(stderr, "--call-trace: cannot write %s\n", options.hle_trace);
+      return 2;
+    }
+    // Closed by the process exiting. On a dump, the calls through the vectors instead.
+    if (system->hle_active())
+      system->hle().set_trace(trace);
+    else
+      system->kernel().set_trace(trace);
   }
   if (options.hw_raster) {
     if (!system->gpu().hardware_raster()) {
@@ -1374,7 +1423,11 @@ int main(int argc, char** argv) {
              system->cpu().context()->pc);
     }
 
-    if (options.exe != nullptr && !defer_exe_to_auto_boot) {
+    if (options.exe != nullptr && !defer_exe_to_auto_boot && system->hle_active()) {
+      // The HLE BIOS loads it itself, once its kernel is built (HleBios::Reset).
+      system->set_auto_boot_exe(true, options.exe);
+      printf("side-load      %s, by the HLE BIOS\n", options.exe);
+    } else if (options.exe != nullptr && !defer_exe_to_auto_boot) {
       if (!system->LoadPsExe(options.exe)) {
         fprintf(stderr, "failed to load %s\n", options.exe);
         return 1;
@@ -1441,6 +1494,31 @@ int main(int argc, char** argv) {
   const bool debugging =
       !options.breaks.empty() || !options.watches.empty() || options.track_calls;
   uint64_t break_hits = 0;
+
+  // --time-calls: every kernel call's arguments and how many cycles it took to come back, one CSV
+  // line each, for the HLE BIOS's timing model (Docs/HLE-BIOS.md).
+  struct OpenCall {
+    uint32_t vector, number, ra, sp;
+    uint32_t a[4];
+    uint64_t start;
+  };
+  std::vector<OpenCall> open_calls;
+  FILE* time_calls = nullptr;
+  if (options.time_calls != nullptr) {
+    time_calls = fopen(options.time_calls, "w");
+    if (time_calls == nullptr) {
+      fprintf(stderr, "--time-calls: cannot write %s\n", options.time_calls);
+      return 2;
+    }
+    fprintf(time_calls, "vector,number,a0,a1,a2,a3,cycles\n");
+    system->kernel().set_observer([&](uint32_t vector, uint32_t number) {
+      const emulation::psx::CpuContext* c = system->cpu().context();
+      if (open_calls.size() >= 64)
+        open_calls.erase(open_calls.begin());
+      open_calls.push_back(OpenCall{ vector, number, c->gp.ra, c->gp.sp,
+                                     { c->gp.a0, c->gp.a1, c->gp.a2, c->gp.a3 }, c->cycles });
+    });
+  }
   while (frames < options.frames && instructions < kInstructionLimit) {
     if (options.hot > 0)
       ++pc_counts[system->cpu().context()->pc];
@@ -1494,6 +1572,23 @@ int main(int argc, char** argv) {
       continue;
     }
     ++instructions;
+
+    // --time-calls: a call has returned when the pc is back at its return address with the stack
+    // it was made with. One that never comes back that way (a longjmp, an exit from inside an
+    // exception) is dropped when one made before it returns.
+    if (time_calls != nullptr && !open_calls.empty()) {
+      const emulation::psx::CpuContext* c = system->cpu().context();
+      for (size_t i = open_calls.size(); i-- > 0;) {
+        const OpenCall& call = open_calls[i];
+        if (c->pc != call.ra || c->gp.sp != call.sp)
+          continue;
+        fprintf(time_calls, "%02X,%02X,%08X,%08X,%08X,%08X,%llu\n", call.vector, call.number,
+                call.a[0], call.a[1], call.a[2], call.a[3],
+                static_cast<unsigned long long>(c->cycles - call.start));
+        open_calls.resize(i);
+        break;
+      }
+    }
 
     const uint64_t now = system->gpu().frame_count();
     if (now != last_frame) {
@@ -1783,7 +1878,7 @@ int main(int argc, char** argv) {
     const Row rows[3] = { { "A0", k.a0 }, { "B0", k.b0 }, { "C0", k.c0 } };
     for (int r = 0; r < 3; ++r) {
       for (int i = 0; i < 256; ++i) {
-        if (rows[r].counts[i] < 1000)
+        if (rows[r].counts[i] < (system->hle_active() ? 1u : 1000u))
           continue;   // only the ones called enough to matter
         printf("  %s(%02X)  %10u\n", rows[r].table, i, rows[r].counts[i]);
       }
@@ -1807,6 +1902,11 @@ int main(int argc, char** argv) {
     }
   }
 
+  if (system->hle_active() && !system->hle().messages().empty()) {
+    printf("\nhle bios       %zu message(s)\n", system->hle().messages().size());
+    for (const std::string& message : system->hle().messages())
+      printf("  %s\n", message.c_str());
+  }
 
   if (options.watch_ram != 0) {
     emulation::psx::Cpu& cpu = system->cpu();

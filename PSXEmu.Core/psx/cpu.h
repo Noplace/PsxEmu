@@ -464,6 +464,19 @@ class Cpu : public Component {
   // the whole cost.
   void set_debug_watch(bool on) { debug_watch_ = on; }
 
+  // Lands every load still in flight, now. The HLE BIOS's functions (psx/hle_bios.h) run between
+  // two instructions and read and write the registers the way a whole function would, so a load
+  // issued in the delay slot of the jump that called one has to have arrived first - and must not
+  // arrive later, over whatever the function returned.
+  void SettleLoads() {
+    if (pending_load_.active && pending_load_.reg != 0)
+      context_->gp.reg[pending_load_.reg] = pending_load_.value;
+    if (armed_load_.active && armed_load_.reg != 0)
+      context_->gp.reg[armed_load_.reg] = armed_load_.value;
+    pending_load_.active = false;
+    armed_load_.active = false;
+  }
+
   // Drops any load still on its way to register `index` - for the debugger
   // setting that register by hand, which the load would otherwise overwrite.
   void CancelLoadsTo(uint32_t index) {

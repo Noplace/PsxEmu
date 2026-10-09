@@ -256,6 +256,7 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("skip_bios_intro", c.skip_bios_intro);
   f.SetBool("recompiler", c.recompiler);
   f.SetString("bios_file", c.bios_file);
+  f.SetBool("hle_bios", c.hle_bios);
   f.SetFloat("emulation_speed", c.emulation_speed);
   f.SetBool("pause_in_menus", c.pause_in_menus);
   f.SetBool("show_timings", c.show_timings);
@@ -388,6 +389,7 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   // No list to validate against - what is valid is whatever is in the folder,
   // which only the front end can see. It checks before using it.
   c.bios_file = f.GetString("bios_file", c.bios_file);
+  c.hle_bios = f.GetBool("hle_bios", c.hle_bios);
 
   // Snapped to one of the offered speeds rather than clamped to a range: the
   // menu has six entries and can only tick one of them, so a hand-edited 1.23
@@ -434,6 +436,8 @@ inline std::vector<std::string> GameSettingKeys() {
       "dma_stops_cpu",      "measured_bus_timing", "write_queue_timing",
       "gpu_thread",         "gpu_transfer_timing", "cdrom_mechanical_timing",
       "skip_bios_intro",    "controller_type_port1", "controller_type_port2",
+      // A game the HLE BIOS cannot run yet can keep the real one (Docs/HLE-BIOS.md).
+      "hle_bios",
       // A game the hardware rasteriser gets wrong can be kept on software, or at its own
       // resolution (Docs/Hardware-Renderer-Plan.md).
       "gpu_rasteriser",     "resolution_scale",    "true_color",

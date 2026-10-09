@@ -562,9 +562,9 @@ unproven:
 source per port, the multitap player sources and types, `frame_limiter`,
 `cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `gpu_thread`,
 `gpu_transfer_timing`, `icache_timing`, `exact_event_timing`, `dma_stops_cpu`,
-`measured_bus_timing`, `write_queue_timing`, `bios_file`,
+`measured_bus_timing`, `write_queue_timing`, `bios_file`, `hle_bios`,
 `emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console`,
-`sio1_to_console`, `mouse_motion` and `mouse_dpi` - twenty-four keys, which is
+`sio1_to_console`, `mouse_motion` and `mouse_dpi` - twenty-five keys, which is
 every field `StoreConfig` writes.
 Beside those, the front end keeps its own keys in the same file: the eight
 most recent discs (`recent_disc_1`..`8`, File > Recent Discs) and the controller

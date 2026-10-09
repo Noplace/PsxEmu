@@ -51,11 +51,33 @@ int System::Initialize(const char* bios_path) {
   const int result = InitializeWithoutBios();
   if (result != 0)
     return result;
-  // A BIOS dump is required, not optional, so a missing one is a hard failure
-  // rather than something to run past with a buffer full of zeroes.
-  if (!LoadBiosFromFile(bios_path))
+  // A dump that was named but cannot be read is a hard failure rather than something to run
+  // past with a buffer full of zeroes - unless the HLE BIOS is what was asked for, which needs
+  // none. No dump named at all is the HLE BIOS.
+  bios_file_.clear();
+  const bool named = bios_path != nullptr && *bios_path != '\0';
+  if (named && LoadBiosFromFile(bios_path))
+    bios_file_.assign(io_.bios_buffer.u8, io_.bios_buffer.u8 + kBiosSize);
+  if (named && bios_file_.empty() && !config_.hle_bios)
     return -1;
+  SelectBios();
+  bios_pending_ = true;
   return 0;
+}
+
+void System::SelectBios() {
+  const bool hle = config_.hle_bios || bios_file_.empty();
+  if (hle)
+    HleBios::BuildRom(io_.bios_buffer.u8);
+  else
+    memcpy(io_.bios_buffer.u8, &bios_file_[0], kBiosSize);
+  hle_active_ = hle;
+}
+
+void System::SettleBios() {
+  bios_pending_ = false;
+  if ((config_.hle_bios || bios_file_.empty()) != hle_active_)
+    SelectBios();
 }
 
 int System::InitializeWithoutBios() {
@@ -65,6 +87,9 @@ int System::InitializeWithoutBios() {
   #endif
 
   io_.set_system(this);
+  hle_.set_system(this);
+  hle_active_ = false;
+  bios_pending_ = false;
   cpu_.set_system(this);
   gpu_.set_system(this);
   spu_.set_system(this);
@@ -144,6 +169,10 @@ bool System::StepImpl() {
   const bool recompile = config_.recompiler;
   if (recompile != (recompiler_ != nullptr))
     EnableRecompiler(recompile);
+
+  // The BIOS, settled once a disc's own settings have had their say (see Initialize).
+  if (bios_pending_) [[unlikely]]
+    SettleBios();
 
   cpu_.context()->current_cycles = 0;
 
@@ -246,6 +275,16 @@ bool System::StepImpl() {
       kernel_.Call();
       debugger_.OnBiosCall();   // the call log (psx/debugger.h) - every call, armed or not
     }
+
+    // The HLE BIOS's kernel functions (psx/hle_bios.h): a pc on one's entry point runs the host
+    // function in place of the instruction there, and that is the whole step. The recompiler
+    // never compiles the trap region, so compiled code always comes back here first, as it does
+    // for the vectors above.
+    if (hle_active_ && HleBios::IsTrap(pc)) [[unlikely]] {
+      cpu_.SettleLoads();
+      cpu_.TickCycles(hle_.Trap(pc));
+      return true;
+    }
   }
 
   // With the recompiler on, one step is a chain of compiled blocks rather than
@@ -301,6 +340,8 @@ template bool System::StepImpl<false>();
 
 void System::LoadBiosFromMemory(const void* buffer) {
   memcpy(io_.bios_buffer.u8, buffer, kBiosSize);
+  hle_active_ = false;
+  bios_pending_ = false;
 }
 
 // A BIOS dump is required, so a missing or wrong-sized file is a hard failure
@@ -545,6 +586,8 @@ bool System::BootDisc(DiscBootInfo* info) {
 // cpu_context_, cpu_, gte_, io_ (which cascades into its own sub-components,
 // see IOInterface::Serialise), gpu_, spu_.
 std::string System::SaveState(const std::string& path) {
+  if (bios_pending_)
+    SettleBios();
   StateIO state(/*saving=*/true);
   cpu_context_.Serialise(state);
   cpu_.Serialise(state);
@@ -576,6 +619,8 @@ std::string System::SaveState(const std::string& path) {
 }
 
 std::string System::LoadState(const std::string& path) {
+  if (bios_pending_)
+    SettleBios();
   FILE* fp = fopen(path.c_str(), "rb");
   if (fp == nullptr)
     return "could not open " + path;

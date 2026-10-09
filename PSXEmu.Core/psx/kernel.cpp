@@ -51,6 +51,14 @@ void Kernel::Call() {
   CpuContext* context = system().cpu().context();
 
   ++stats_.total;
+  if (trace_ != nullptr) {
+    fprintf(trace_, "%10llu  %-40.40s a0=%08X a1=%08X a2=%08X a3=%08X ra=%08X\n",
+            static_cast<unsigned long long>(context->cycles),
+            BiosCallName(call_type, call_index).c_str(), context->gp.a0, context->gp.a1,
+            context->gp.a2, context->gp.a3, context->gp.ra);
+  }
+  if (observer_)
+    observer_(call_type, call_index);
   if (call_type == 0xA0)      ++stats_.a0[call_index];
   else if (call_type == 0xB0) ++stats_.b0[call_index];
   else if (call_type == 0xC0) ++stats_.c0[call_index];

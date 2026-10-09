@@ -198,6 +198,11 @@
     <ClCompile Include="psx\mc_directory.cpp" />
     <ClCompile Include="psx\debugger.cpp" />
     <ClCompile Include="psx\bios_calls.cpp" />
+    <ClCompile Include="psx\hle_bios.cpp" />
+    <ClCompile Include="psx\hle_bios_libc.cpp" />
+    <ClCompile Include="psx\hle_bios_io.cpp" />
+    <ClCompile Include="psx\hle_bios_timing.cpp" />
+    <ClCompile Include="psx\hle_shell.cpp" />
     <ClCompile Include="psx\root_counter.cpp" />
     <ClCompile Include="psx\sio.cpp" />
     <ClCompile Include="psx\sio1.cpp" />
@@ -254,6 +259,8 @@
     <ClInclude Include="psx\debugger.h" />
     <ClInclude Include="psx\disasm.h" />
     <ClInclude Include="psx\bios_calls.h" />
+    <ClInclude Include="psx\hle_bios.h" />
+    <ClInclude Include="psx\mips_assembler.h" />
     <ClInclude Include="psx\psx.h" />
     <ClInclude Include="psx\root_counter.h" />
     <ClInclude Include="psx\sio.h" />

@@ -110,16 +110,9 @@ namespace psxemu {
         // and be scanned to know whether the one the settings file names is still in it.
         SetUpDataDirectories();
         bios_files_ = ScanBiosFolder(bios_root_);
+        // With no dump anywhere the machine boots the HLE BIOS (psx/hle_bios.h), which needs none
+        // - so an empty path is not an error, just the one choice there is.
         bios_path_ = ResolveBiosPath(command_line.bios);
-        if (bios_path_.empty()) {
-            ShowError(nullptr,
-                      L"No BIOS image found.\n\n"
-                      L"A PlayStation BIOS dump is required. Put one in\n"
-                      L"Documents\\My Games\\PSXEmu\\bios, or in a 'bios' folder beside "
-                      L"the executable, or pass its path as the first argument.\n\n"
-                      L"A dump is exactly 512 KB.");
-            return false;
-        }
 
         if (!CreateAppWindow(instance))
             return false;
@@ -2637,13 +2630,16 @@ namespace psxemu {
             machine.ResetPacing();
             RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
-            PostToUi([this, bios] {
+            const bool hle = system.hle_active();
+            PostToUi([this, bios, hle] {
                 paused_by_user_ = false;
                 SetWindowTitleForPath(std::string());
                 SendMouseSettingsToInput();
                 const size_t slash = bios.find_last_of("/\\");
+                // With no disc the HLE BIOS runs its own shell (psx/hle_shell.cpp).
                 Notify(OverlayIcon::kInfo, ToastKind::kInfo, L"BIOS started",
-                       Wide(slash == std::string::npos ? bios : bios.substr(slash + 1)));
+                       hle ? std::wstring(L"HLE BIOS shell")
+                           : Wide(slash == std::string::npos ? bios : bios.substr(slash + 1)));
             });
         });
     }

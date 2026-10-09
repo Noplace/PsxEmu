@@ -251,6 +251,13 @@ class Sio : public Component {
   // `player` - see set_buttons.
   void PressAnalogButton(int port, int player = 0);
 
+  // One whole transfer with what is on `port`, at once: `out` sent byte by byte, each reply into
+  // `in`, stopping after the first byte the device does not acknowledge. Returns how many bytes
+  // were exchanged. No serial timing, no interrupt, and the port's registers as they were - for
+  // the HLE BIOS's pad driver (psx/hle_bios.h), which talks to the pads from inside the vblank
+  // interrupt the way the kernel's does, and has no use for the bus between bytes.
+  int ExchangeDirect(int port, const uint8_t* out, uint8_t* in, int count);
+
   void Serialise(StateIO& io);
 
  private:
