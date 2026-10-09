@@ -141,6 +141,7 @@ void Dma::RunChannel(int channel, bool acknowledge) {
     case 2: Dma2(); break;
     case 3: Dma3(); break;
     case 4: Dma4(); break;
+    case 5: Dma5(); break;
     case 6: Dma6(); break;
     default: return;
   }
@@ -410,12 +411,16 @@ void Dma::Write(uint32_t address,uint32_t data) {
 
      case 0x1f8010d0:   channels[5].madr=data;  break;
      case 0x1f8010d4:   channels[5].bcr=data;  break;
-     case 0x1f8010d8:   
-      if (!(channels[5].chcr&0x01000000))  {
-        channels[5].chcr=data;
-        channels[5].chcr&=0xfeffffff;  
-        SetInterrupt(5);
-      }
+     case 0x1f8010d8:
+      // The same rules as every other channel: DPCR's enable, the start bit, and in burst mode
+      // the trigger (Dma5). It used to raise its interrupt on any write at all while idle -
+      // writing 0 included, enabled or not - and never be busy.
+      if ((data & 0x01000000) == 0 &&
+          channels[5].busy_cycles == DmaChannel::kAwaitingRequest)
+        channels[5].busy_cycles = 0;   // a request-mode wait abandoned: no interrupt
+      channels[5].chcr = data;
+      if (ShouldStart(channels[5].chcr, channels[5].enable, DeviceRequest(5)))
+        RunChannel(5);
       break;
 
     case 0x1f8010e0:   channels[6].madr=data;  break;
@@ -930,6 +935,25 @@ void Dma::Dma3() {
   NoteRamWritten(channels[3].madr & 0x1FFFFC, words, step);
   NoteTransfer(3, words, address, cdrom.delivered_lba(), first_word);
   channels[3].madr = address;
+}
+
+// The expansion port (PIO). Behind it on a retail console is nothing - the port was left off later
+// boards altogether - and psx-spx lists the channel as used by no known game, without saying which
+// expansion address it would read or write. So no data moves, in either direction: inventing where
+// it came from would be a model of nothing. What is kept is what software can see of a channel.
+//
+// - Burst (sync 0), started with the trigger: busy for psx-spx's 20 cycles a word, holding the bus
+//   as any transfer does, then complete with its interrupt. MADR stays where it was written, as a
+//   burst leaves it on the hardware.
+// - Request modes (sync 1 and 2): the transfer waits for the device to ask, and with no device it
+//   never does - busy until software clears the start bit, which ends it without an interrupt.
+void Dma::Dma5() {
+  const uint32_t sync = (channels[5].chcr >> 9) & 3;
+  if (sync != 0) {
+    channels[5].busy_cycles = DmaChannel::kAwaitingRequest;
+    return;
+  }
+  ChargeCycles(TransferWords(channels[5].bcr, sync) * kPioCyclesPerWord);
 }
 
 /*Create Empty List*/

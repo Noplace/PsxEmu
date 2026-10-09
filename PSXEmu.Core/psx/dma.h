@@ -217,7 +217,12 @@ class Dma : public Component {
   void Dma2();
   void Dma3();
   void Dma4();
+  // The expansion port's channel (PIO). Nothing on a retail console is behind it and no known
+  // game uses it, so it moves no data; it keeps the channel's own behaviour - see Dma5.
+  void Dma5();
   void Dma6();
+  // psx-spx's rate for it: 20 cycles a word ("DMA Transfer Rates"), as for nothing measured.
+  static const uint32_t kPioCyclesPerWord = 20;
 };
 
 }

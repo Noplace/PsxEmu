@@ -439,7 +439,10 @@ gathers the completion interrupts.
   - channel 4 is paced by the SPU (bug 145).
 - **DICR's master flag** follows the hardware rule: any channel's flag, gated by the master
   enable (bug 55).
-- **Not modelled:** chopping (CHCR bit 8), and the PIO channel moving any data.
+- **Channel 5 (PIO)** follows the same start, busy and interrupt rules, at psx-spx's 20 cycles a
+  word, but moves no data: nothing on a retail console is behind it, and no known game uses it
+  (bug 150).
+- **Not modelled:** chopping (CHCR bit 8).
 
 ### 5.6 CD-ROM controller and disc images
 

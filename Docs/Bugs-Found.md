@@ -9115,3 +9115,42 @@ notification on a scratch Wild Arms `.cue` with a two-sector `.sbi`, booted from
 whether the game survives the point where it sabotages a copy. Also modelled rather than measured:
 "the sector before" assumes the drive was reading along, and a seek that lands straight on a failing
 sector may report wherever the head last was.
+
+## 150. DMA channel 5 raised its interrupt on any write, and was never busy
+
+`psx/dma.h/.cpp`, `tools/media_test.cpp`
+
+Asked for from Gaps.md's "Barely started": channel 5, the expansion port's (PIO), "accepts register
+writes and raises its interrupt; transfers nothing".
+
+**What it did.** A write to its control register (`1F8010D8h`) while the channel was idle stored
+the value, cleared the busy bit and raised the channel's interrupt, whatever the value was: writing
+0 raised it, a channel disabled in DPCR raised it, a start in burst mode without its trigger raised
+it, and nothing was ever busy for any time at all. Every other channel follows the same rules - the
+DPCR enable, the start bit, the trigger in burst mode, a busy bit for the transfer's time, and the
+interrupt when it completes - and this one followed none of them.
+
+**What there is to emulate.** Not the data. On a retail console nothing is behind the port (later
+boards and every PSone left it off), psx-spx lists the channel as used by no known game, and nothing
+documents which expansion address it would read or write. DuckStation runs the channel through its
+ordinary machinery and moves nothing either way. Inventing a device to move data from would be a
+model of nothing, so none moves.
+
+**Now** it is a channel like the others (`Dma::Dma5`):
+- started by `ShouldStart` - DPCR's enable, the start bit, and in burst mode the trigger;
+- in burst mode, busy for psx-spx's 20 cycles a word ("DMA Transfer Rates"), holding the bus as any
+  transfer does, then complete, with its interrupt; MADR left as written, as a burst leaves it;
+- in request mode (sync 1 or 2), waiting for a request the empty port never makes - busy until
+  software clears the start bit, which ends it without an interrupt, as channels 0, 1, 2 and 4 do.
+
+**Checked.** `media_test` 517 -> 531: a write of 0 raises nothing; a burst without its trigger, and a
+triggered start with the channel disabled, do nothing; a triggered 256-word burst is busy at once,
+still busy 3,200 cycles in, done with its interrupt by 6,400, MADR and RAM untouched; request mode
+busy for 50,000 cycles with nothing raised, and ended by clearing the start bit, with nothing raised.
+Against the old channel nine of them fail. The BIOS boot, Wild Arms, Final Fantasy VII and Ridge
+Racer at 3,000 frames: identical to the build before in every line, and none of them reads or writes
+a channel 5 register.
+
+**Not checked.** Anything against a console: no test ROM here exercises channel 5, and without a
+device on the port there is nothing a program could read back from it but the timing. The 20 cycles
+a word are psx-spx's figure for a channel it notes nothing uses.

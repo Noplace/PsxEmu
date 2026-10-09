@@ -542,9 +542,16 @@ unproven:
 
 ## Barely started
 
-- **Parallel / expansion port** - a readable buffer with nothing behind it.
-- **DMA channel 5 (PIO)** - accepts register writes and raises its interrupt;
-  transfers nothing.
+- **Parallel / expansion port** - a readable buffer with nothing behind it. It reads as zeros, where
+  DuckStation's empty port reads FFh; nothing here has settled which a console gives. The BIOS's
+  check for an expansion ROM looks for a text signature that neither value spells, so it should
+  take the same path either way - reasoned, not tested.
+- **DMA channel 5 (PIO)** - a channel like the others since bug 150: the DPCR enable, start and
+  trigger, busy for psx-spx's 20 cycles a word in burst mode, its interrupt when it completes, and
+  in request mode a wait for a request the empty port never makes. It moves no data: nothing on a
+  retail console is behind it, psx-spx lists it as used by no known game, and nothing says which
+  expansion address it would read or write. Neither the BIOS nor any of the games checked touches
+  its registers. Unverified against a console - there is no test ROM for it.
 
 ## Blocking use rather than correctness
 

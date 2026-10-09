@@ -174,7 +174,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 517 checks, 0 failures.**
+**Current: 531 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -791,11 +791,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 341 | | `gpu_test` | 98 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 517 |
+| `timer_test` | 80 | | `media_test` | 531 |
 | `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,865 checks, 0 failures**, all ten green. Each harness's own section above
+**1,879 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -814,7 +814,10 @@ turned off when a file has both, and the mode and Frame Generation among a game'
 The seven after that are GetlocL and the seeking status, bug 147; and thirty-one are LibCrypt,
 bug 149: the subchannel CRC against psx-spx's and against two of Final Fantasy VIII's own, an
 .sbi and an .lsd beside a .cue and the sector before answering at each failing one, files that
-are not patches ignored, a .sub's failing sector, and a .sub with no CRCs believed as before.)
+are not patches ignored, a .sub's failing sector, and a .sub with no CRCs believed as before. And
+fourteen are DMA channel 5, bug 150: no interrupt from a write that starts nothing, the DPCR enable
+and the trigger obeyed, busy for 20 cycles a word, RAM and MADR left alone, and a request that never
+comes.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12

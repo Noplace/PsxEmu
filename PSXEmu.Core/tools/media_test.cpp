@@ -1173,6 +1173,80 @@ void TestDmaBusyBit(emulation::psx::System* system) {
              "with the completion interrupt landing at the same moment");
 }
 
+// Channel 5, the expansion port's (PIO): nothing behind it, so no data moves - but the channel
+// keeps the rules every channel has. It used to raise its interrupt on any write to its control
+// register while idle, writing 0 included and enabled or not, and was never busy.
+void TestDma5Pio(emulation::psx::System* system) {
+  BeginTest("dma channel 5 (PIO)");
+
+  emulation::psx::IOInterface& io = system->io();
+  const uint32_t kMadr = 0x1F8010D0;
+  const uint32_t kBcr  = 0x1F8010D4;
+  const uint32_t kChcr = 0x1F8010D8;
+  const uint32_t kDpcr = 0x1F8010F0;
+  const uint32_t kDicr = 0x1F8010F4;
+  const uint32_t kFlag = 1u << 29;              // DICR's channel 5 flag
+  const uint32_t kEnables = (1u << 21) | (1u << 23);   // its interrupt enable, and the master
+  const uint32_t kBusy = 0x01000000;
+  auto clear_flag = [&] { io.Write32(kDicr, kEnables | kFlag); };
+
+  // Somewhere for a transfer to land, holding something it would overwrite.
+  const uint32_t kRam = 0x00020000;
+  uint32_t* ram = reinterpret_cast<uint32_t*>(system->ram());
+  for (uint32_t i = 0; i < 4; ++i)
+    ram[kRam / 4 + i] = 0xA5A5A5A5u;
+  io.Write32(kMadr, kRam);
+  io.Write32(kBcr, 256);
+  io.Write32(kDicr, kEnables);
+  clear_flag();
+
+  io.Write32(kDpcr, 1u << 23);   // channel 5 enabled
+  io.Write32(kChcr, 0);
+  io.Tick(64);
+  CheckEqual(io.Read32(kDicr) & kFlag, 0, "writing 0 to its control register raises nothing");
+
+  io.Write32(kChcr, 0x01000000);   // burst, started without the trigger
+  io.Tick(20000);
+  CheckEqual(io.Read32(kDicr) & kFlag, 0,
+             "a burst started without its trigger waits for a request the port never makes");
+  io.Write32(kChcr, 0);
+
+  io.Write32(kDpcr, 0);   // disabled in DPCR
+  io.Write32(kChcr, 0x11000000);
+  io.Tick(20000);
+  CheckEqual(io.Read32(kDicr) & kFlag, 0, "disabled in DPCR, a triggered start does nothing");
+  io.Write32(kChcr, 0);
+
+  io.Write32(kDpcr, 1u << 23);
+  io.Write32(kChcr, 0x11000000);   // burst, start and trigger: 256 words, 20 cycles each
+  CheckEqual(io.Read32(kChcr) & kBusy, kBusy, "a triggered burst is busy at once");
+  io.Tick(3200);
+  CheckEqual(io.Read32(kChcr) & kBusy, kBusy, "and still busy 3,200 cycles into 5,120");
+  CheckEqual(io.Read32(kDicr) & kFlag, 0, "with no interrupt yet");
+  io.Tick(3200);
+  CheckEqual(io.Read32(kChcr) & kBusy, 0, "done once 5,120 cycles have gone by");
+  CheckEqual(io.Read32(kDicr) & kFlag, kFlag, "with its interrupt");
+  CheckEqual(io.Read32(kMadr), kRam, "MADR left where it was, as a burst leaves it");
+  bool untouched = true;
+  for (uint32_t i = 0; i < 4; ++i)
+    untouched = untouched && ram[kRam / 4 + i] == 0xA5A5A5A5u;
+  Check(untouched, "and RAM as it was: nothing on the port, nothing moved");
+  clear_flag();
+
+  io.Write32(kChcr, 0x01000200);   // request mode (sync 1)
+  io.Tick(50000);
+  CheckEqual(io.Read32(kChcr) & kBusy, kBusy,
+             "in request mode it waits for the device, which never asks");
+  CheckEqual(io.Read32(kDicr) & kFlag, 0, "and raises nothing while it waits");
+  io.Write32(kChcr, 0x00000200);   // start bit cleared
+  io.Tick(64);
+  CheckEqual(io.Read32(kChcr) & kBusy, 0, "clearing the start bit ends the wait");
+  CheckEqual(io.Read32(kDicr) & kFlag, 0, "without an interrupt: nothing completed");
+
+  io.Write32(kDpcr, 0);
+  io.Write32(kDicr, kFlag);
+}
+
 // Channel 4 in request mode (sync 1) is paced by the SPU: a block whenever its
 // FIFO has been written out, at 16 cycles a halfword - 512 cycles for a
 // 16-word block - with the CPU running in between. It used to move the whole
@@ -3255,6 +3329,7 @@ int main(int argc, char** argv) {
   TestCdExtraCommands(system, directory);
   TestDmaBusyBit(system);
   TestDmaChannel2RefusesWhileBusy(system);
+  TestDma5Pio(system);
   TestSpuDmaIsPacedBySpu(system);
   TestDiscBoot(system, directory);
   system->Deinitialize();
