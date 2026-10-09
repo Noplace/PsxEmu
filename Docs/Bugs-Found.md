@@ -9058,3 +9058,60 @@ refreshes a frame, only in the harness. The sound during a disc's boot from the 
 short in both modes, display's three runs somewhat more than the console's (2,679-4,002 samples
 against 0-2,870) - the drop after an un-pause Docs/DLSS-Plan.md already leaves open, and three
 runs each cannot say whether matching adds to it.
+
+## 149. LibCrypt: .sbi and .lsd patches, and the subchannel's CRC
+
+`psx/disc.h/.cpp`, `psx/cdrom.h/.cpp`, `app/app.cpp`, `tools/media_test.cpp`
+
+Not a bug: a request - "implement sbi support", after LibCrypt was named the largest compatibility
+gap left.
+
+**What LibCrypt is, as it bears here** (psx-spx, CDROM Protection - LibCrypt). About a hundred
+games, nearly all PAL, keep a 16-bit key in subchannel Q: of some thirty-two chosen sectors on a
+pressed disc, the ones whose bit is set carry a Q with a changed position and a CRC that fails. The
+drive does not take in a Q that fails its CRC, so GetlocP at such a sector answers with the
+position of the sector before; the game asks at each, and the pattern is its key. A rip without
+its subchannel - a `.bin`/`.cue`, a CHD, an ISO - has lost it, every sector answers as itself, and
+the game sabotages itself later: Legacy of Kain hangs when the first enemies appear, Spyro 3 and
+MediEvil break in their own ways.
+
+**What was missing was not only the `.sbi`.** The `.sub` of a CloneCD dump (bug 110) was read for
+its positions but its CRC was never looked at, so a dump that did keep the failing sectors answered
+GetlocP with their changed positions - neither what a console does nor what a rip does.
+
+**Now:**
+- `Disc::SubchannelQCrc` / `SubchannelQCrcValid`: CRC-16-CCITT over the first ten bytes, from
+  zero, inverted, high byte first. Checked against psx-spx's own working of it on a thousand random
+  Qs, and against two entries of Final Fantasy VIII's `.sub`.
+- `Disc::SubchannelQ(lba, q, &crc_ok)`: a patch's entry if there is one, else the `.sub`'s, and
+  whether it passes. A `.sub` whose CRCs mostly fail on a sample of 64 sectors is taken as one
+  written without them and believed everywhere, as before.
+- An `.sbi` (`"SBI\0"`, then position, type, and ten bytes of Q for type 1 or three for the rarer
+  2 and 3) or an `.lsd` (fifteen bytes an entry, the Q with its CRC) named after the image, beside
+  it, whatever the image's format. An `.sbi`'s entries are given a failing CRC - the right one
+  XORed with 0080h, as psx-spx describes one of LibCrypt's own schemes - since the sectors it lists
+  are the ones that fail. A file that is not one, or is cut short, or has a position that is not
+  BCD, is ignored whole.
+- `Cdrom::GetPosition` (GetlocP, and the reports sent while CD audio plays): past a failing Q to the
+  last sector that passed, at most 16 back. `PositionAt` is the old body for one sector.
+- The disc's notification says "LibCrypt .sbi" (or `.lsd`) when one was found.
+
+**Measured on real `.sub` files.** Final Fantasy VIII disc 1 (SLUS-00892): 311,082 of 311,340
+sectors pass, 258 fail, every one alone. Dino Crisis (SLUS-00922): 589 alone and one pair of 177,458.
+Those are read errors in the dumps of discs with no protection, and GetlocP at each now answers with
+the sector before - what a drive does with a damaged sector, and nothing a game polling its position
+can tell from a sector late. Tomb Raider, Final Fantasy VIII and Dino Crisis from their `.ccd`s,
+3,000 frames each: the same checksums, sectors and everything else as the build before.
+
+**Checked.** `media_test` 486 -> 517, all passing: the CRC; an `.sbi` beside a `.cue` - four
+sectors found, GetlocP answering with the sector before at each listed one, two back for two in a
+row, its own just after; three malformed `.sbi`s ignored; an `.lsd` whose failing entry answers with
+the sector before and whose passing one is read as it is; a `.sub` with one failing sector; and a
+`.sub` with no CRCs believed as before. With the look-back taken out, four of them fail. The
+notification on a scratch Wild Arms `.cue` with a two-sector `.sbi`, booted from Recent Discs.
+
+**Not checked.** Any LibCrypt game. The protected disc found on the share, Gekido - Urban Fighters
+(SLES-01241), a raw image with no `.sbi`; Redump publishes one for it, and with it the check is
+whether the game survives the point where it sabotages a copy. Also modelled rather than measured:
+"the sector before" assumes the drive was reading along, and a seek that lands straight on a failing
+sector may report wherever the head last was.

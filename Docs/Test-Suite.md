@@ -174,7 +174,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 486 checks, 0 failures.**
+**Current: 517 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -791,11 +791,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 341 | | `gpu_test` | 98 |
 | `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 479 |
+| `timer_test` | 80 | | `media_test` | 517 |
 | `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,827 checks, 0 failures**, all ten green. Each harness's own section above
+**1,865 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -810,7 +810,11 @@ not settings: a sector held in the buffer until its interrupt is acknowledged, b
 are the seventeen of SPU DMA in request mode, bug 145, or the twenty-eight of the decoded
 header and how far a seek reaches, bug 146. Five more are AMD FSR's settings, Docs/FSR-Plan.md:
 the defaults, the round trip, values the menu does not offer ignored, DLSS kept and FSR
-turned off when a file has both, and the mode and Frame Generation among a game's own keys.)
+turned off when a file has both, and the mode and Frame Generation among a game's own keys.
+The seven after that are GetlocL and the seeking status, bug 147; and thirty-one are LibCrypt,
+bug 149: the subchannel CRC against psx-spx's and against two of Final Fantasy VIII's own, an
+.sbi and an .lsd beside a .cue and the sector before answering at each failing one, files that
+are not patches ignored, a .sub's failing sector, and a .sub with no CRCs believed as before.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12

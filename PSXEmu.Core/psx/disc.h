@@ -18,7 +18,9 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <array>
 #include <cstdio>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -113,6 +115,27 @@ class Disc {
   // ReadSector.
   bool ReadSubchannelQ(uint32_t lba, uint8_t* q) const;
   bool has_subchannel() const { return sub_file_ != nullptr; }
+
+  // The Q a drive reads at `lba` where the image knows it - a LibCrypt patch's entry (.sbi or
+  // .lsd beside the image), else the .sub's - and whether it passes its CRC. False where neither
+  // has the sector, and the position is worked out from the layout instead.
+  //
+  // A Q that fails its CRC is one the drive does not take in: it goes on reporting the last
+  // position that passed (psx-spx, CDROM Protection - LibCrypt). That is all LibCrypt is - a key
+  // spelt out in which of some thirty sectors fail - so it is the one thing that matters about a
+  // patched sector. A .sub whose CRCs are not to be trusted at all (most of them failing, as from
+  // a tool that wrote none) is taken as passing everywhere.
+  bool SubchannelQ(uint32_t lba, uint8_t* q, bool* crc_ok) const;
+
+  // The sectors a LibCrypt patch lists, 0 without one; and its path.
+  size_t subchannel_patch_sectors() const { return patch_.size(); }
+  const std::string& subchannel_patch_path() const { return patch_path_; }
+
+  // The CRC subchannel Q ends with: CRC-16-CCITT over its first ten bytes, from zero, inverted,
+  // most significant byte first (psx-spx, CD-TEXT and Subchannel Q). Whether `q`'s last two
+  // bytes are it.
+  static uint16_t SubchannelQCrc(const uint8_t* q);
+  static bool SubchannelQCrcValid(const uint8_t* q);
   // Whether `lba` is in a pregap that was assumed, not recorded (Track::pregap_assumed):
   // there the image's subchannel is not what a drive would read.
   bool InAssumedPregap(uint32_t lba) const;
@@ -183,6 +206,18 @@ class Disc {
   uint32_t sub_sectors_ = 0;
   mutable std::vector<uint8_t> sub_block_;
   mutable long long sub_block_first_ = -1;   // the first sector the block holds
+  // Whether the .sub's CRCs mean anything: false if most of a sample of its sectors fail them.
+  bool sub_crc_trusted_ = true;
+
+  // A LibCrypt patch: the twelve bytes of Q of each sector it lists, by absolute sector. An .sbi
+  // carries ten bytes and no CRC, its sectors being the ones whose CRC fails, so they are given
+  // a failing one; an .lsd carries all twelve as the disc has them.
+  std::map<uint32_t, std::array<uint8_t, 12>> patch_;
+  std::string patch_path_;
+  // Looks for `<image>.sbi`, then `.lsd`, beside `image_path` and loads the first that reads.
+  void LoadSubchannelPatch(const std::string& image_path);
+  bool LoadSbi(const std::string& path);
+  bool LoadLsd(const std::string& path);
 
   // Where a CHD keeps each stretch of the disc: `count` sectors from `lba`
   // are frames from `frame` on. A track is one run, and a pregap the CHD

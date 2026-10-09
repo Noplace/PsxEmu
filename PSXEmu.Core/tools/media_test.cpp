@@ -1276,6 +1276,261 @@ void TestDmaChannel2RefusesWhileBusy(emulation::psx::System* system) {
              "and it clears on the first transfer's own schedule");
 }
 
+// psx-spx's CRC for subchannel Q, transcribed as it is written there (CD-TEXT and Subchannel
+// Q), so Disc's own is checked against a second working of it rather than against itself.
+void SpxSubchannelCrc(const uint8_t* q, uint8_t* msb_out, uint8_t* lsb_out) {
+  uint8_t lsb = 0, msb = 0;
+  for (int i = 0; i < 10; ++i) {
+    uint8_t x = q[i] ^ msb;
+    x = static_cast<uint8_t>(x ^ (x >> 4));
+    msb = static_cast<uint8_t>(lsb ^ (x >> 3) ^ (x << 4));
+    lsb = static_cast<uint8_t>(x ^ (x << 5));
+  }
+  *msb_out = static_cast<uint8_t>(msb ^ 0xFF);
+  *lsb_out = static_cast<uint8_t>(lsb ^ 0xFF);
+}
+
+// A data sector's Q as a pressed disc has it, CRC and all: track 1, index 1, at `file_sector`.
+void MakeDataQ(uint32_t file_sector, uint8_t* q) {
+  memset(q, 0, 12);
+  q[0] = 0x41;
+  q[1] = 0x01;
+  q[2] = 0x01;
+  Disc::LbaToMsf(file_sector, &q[3], &q[4], &q[5]);
+  Disc::LbaToMsf(Disc::kLeadInSectors + file_sector, &q[7], &q[8], &q[9]);
+  const uint16_t crc = Disc::SubchannelQCrc(q);
+  q[10] = static_cast<uint8_t>(crc >> 8);
+  q[11] = static_cast<uint8_t>(crc & 0xFF);
+}
+
+// LibCrypt (psx-spx, CDROM Protection - LibCrypt): some thirty sectors of a protected disc
+// carry a Q that fails its CRC, the drive ignores those and goes on answering GetlocP with the
+// sector before, and which sectors do that is the game's key. A rip without its subchannel has
+// lost them; an .sbi beside it (or an .lsd) gives them back, and a CloneCD .sub kept them.
+void TestLibCrypt(emulation::psx::System* system, const std::string& directory) {
+  printf("libcrypt: the subchannel's failing sectors\n");
+
+  BeginTest("the subchannel CRC");
+  {
+    // Two of Final Fantasy VIII's own, from its .sub: sectors 1,000 and 60,000 of the data.
+    const uint8_t real[2][12] = {
+        { 0x41, 0x01, 0x01, 0x00, 0x13, 0x25, 0x00, 0x00, 0x15, 0x25, 0x39, 0x96 },
+        { 0x41, 0x01, 0x01, 0x13, 0x20, 0x00, 0x00, 0x13, 0x22, 0x00, 0xEE, 0x16 } };
+    Check(Disc::SubchannelQCrcValid(real[0]) && Disc::SubchannelQCrcValid(real[1]),
+          "a pressed disc's Q passes");
+    uint8_t flipped[12];
+    memcpy(flipped, real[0], 12);
+    flipped[9] ^= 0x01;
+    Check(!Disc::SubchannelQCrcValid(flipped), "and with one bit of its position changed, fails");
+    uint32_t seed = 1, agree = 0;
+    for (int n = 0; n < 1000; ++n) {
+      uint8_t q[10];
+      for (uint8_t& b : q) {
+        seed = seed * 1103515245u + 12345u;
+        b = static_cast<uint8_t>(seed >> 16);
+      }
+      uint8_t msb, lsb;
+      SpxSubchannelCrc(q, &msb, &lsb);
+      const uint16_t crc = Disc::SubchannelQCrc(q);
+      agree += (crc >> 8) == msb && (crc & 0xFF) == lsb ? 1 : 0;
+    }
+    CheckEqual(agree, 1000, "and it is psx-spx's CRC, on a thousand random Qs");
+  }
+
+  // 700 sectors of data, the patched ones within it.
+  const std::string bin = directory + "media_lc.bin";
+  const std::string cue = directory + "media_lc.cue";
+  const std::string sbi = directory + "media_lc.sbi";
+  const std::string lsd = directory + "media_lc.lsd";
+  if (!WriteMixedImage(bin, 700, 0) ||
+      !WriteText(cue, "FILE \"media_lc.bin\" BINARY\r\n  TRACK 01 MODE2/2352\r\n"
+                      "    INDEX 01 00:00:00\r\n")) {
+    Check(false, "could not write the image");
+    return;
+  }
+  auto write_bytes = [](const std::string& path, const std::vector<uint8_t>& bytes) {
+    FILE* fp = fopen(path.c_str(), "wb");
+    if (fp == nullptr)
+      return false;
+    const bool ok = fwrite(bytes.data(), 1, bytes.size(), fp) == bytes.size();
+    fclose(fp);
+    return ok;
+  };
+  // An .sbi entry: the sector's position on the disc, its type, and the type's bytes - a type 1
+  // with the position's two bits changed, as LibCrypt's are.
+  auto sbi_entry = [](std::vector<uint8_t>* out, uint32_t file_sector, uint8_t type) {
+    uint8_t m, s, f;
+    Disc::LbaToMsf(Disc::kLeadInSectors + file_sector, &m, &s, &f);
+    out->insert(out->end(), { m, s, f, type });
+    if (type == 1) {
+      uint8_t q[12];
+      MakeDataQ(file_sector, q);
+      q[5] ^= 0x01;
+      q[9] ^= 0x01;
+      out->insert(out->end(), q, q + 10);
+    } else {
+      out->insert(out->end(), { m, s, f });
+    }
+  };
+
+  ControllerHarness cd(system);
+  uint8_t response[16];
+  int length = 0;
+  // Setloc, SeekP, GetlocP: where the drive says it is at `file_sector`, as its absolute frame.
+  auto frame_at = [&](uint32_t file_sector) -> int {
+    uint8_t minute, second, frame;
+    Disc::LbaToMsf(Disc::kLeadInSectors + file_sector, &minute, &second, &frame);
+    const uint8_t msf[3] = { minute, second, frame };
+    cd.Command(0x02, msf, 3);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.Command(0x16, nullptr, 0);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.WaitForInterrupt(response, &length, 16);
+    uint8_t at[16];
+    cd.Command(0x11, nullptr, 0);
+    cd.WaitForInterrupt(at, &length, 16);
+    if (length != 8)
+      return -1;
+    return static_cast<int>(Disc::MsfToLba(at[5], at[6], at[7]) - Disc::kLeadInSectors);
+  };
+
+  BeginTest("an .sbi beside a .cue");
+  std::vector<uint8_t> patch = { 'S', 'B', 'I', 0 };
+  sbi_entry(&patch, 300, 1);
+  sbi_entry(&patch, 305, 1);
+  sbi_entry(&patch, 400, 1);
+  sbi_entry(&patch, 401, 2);   // two in a row, the second an older kind of entry
+  Check(write_bytes(sbi, patch), "write the .sbi");
+  {
+    Disc disc;
+    Check(disc.Open(cue.c_str()), "open");
+    CheckEqual(static_cast<uint32_t>(disc.subchannel_patch_sectors()), 4,
+               "the .sbi beside it is found, four sectors");
+    uint8_t q[12];
+    bool crc_ok = true;
+    Check(disc.SubchannelQ(Disc::kLeadInSectors + 300, q, &crc_ok) && !crc_ok,
+          "a listed sector's Q fails its CRC");
+    Check(disc.SubchannelQ(Disc::kLeadInSectors + 401, q, &crc_ok) && !crc_ok,
+          "a type 2 entry's as well");
+    Check(!disc.SubchannelQ(Disc::kLeadInSectors + 301, q, &crc_ok),
+          "and an unlisted one has none, a rip having no subchannel");
+  }
+  system->EjectDisc();
+  Check(system->LoadDisc(cue.c_str()), "mount it");
+  CheckEqual(frame_at(299), 299, "GetlocP before a listed sector: that sector");
+  CheckEqual(frame_at(300), 299, "at a listed sector: the one before, its Q being ignored");
+  CheckEqual(frame_at(301), 301, "after it: its own again");
+  CheckEqual(frame_at(305), 304, "the five-sectors-apart copy: the one before it too");
+  CheckEqual(frame_at(401), 399, "two failing in a row: the last that passed, two back");
+  system->EjectDisc();
+
+  BeginTest("an .sbi that is not one");
+  {
+    std::vector<uint8_t> bad = patch;
+    bad[0] = 'X';
+    write_bytes(sbi, bad);
+    Disc disc;
+    Check(disc.Open(cue.c_str()) && disc.subchannel_patch_sectors() == 0,
+          "the wrong header: ignored");
+    bad = patch;
+    bad.pop_back();
+    write_bytes(sbi, bad);
+    Check(disc.Open(cue.c_str()) && disc.subchannel_patch_sectors() == 0,
+          "an entry cut short: the whole file ignored");
+    bad = patch;
+    bad[5] = 0x7A;   // the first entry's second, not BCD
+    write_bytes(sbi, bad);
+    Check(disc.Open(cue.c_str()) && disc.subchannel_patch_sectors() == 0,
+          "a position that is not BCD: ignored");
+  }
+  Check(system->LoadDisc(cue.c_str()), "mount it with the bad .sbi");
+  CheckEqual(frame_at(300), 300, "and the sector answers as a rip's does");
+  system->EjectDisc();
+  remove(sbi.c_str());
+
+  BeginTest("an .lsd");
+  {
+    // Fifteen bytes an entry: the position, then the whole Q. One fails its CRC; one passes,
+    // and then what it says is what the drive reads - here, a track 5 the layout knows nothing of.
+    std::vector<uint8_t> entries;
+    for (const uint32_t file_sector : { 300u, 310u }) {
+      uint8_t m, s, f;
+      Disc::LbaToMsf(Disc::kLeadInSectors + file_sector, &m, &s, &f);
+      uint8_t q[12];
+      MakeDataQ(file_sector, q);
+      if (file_sector == 300) {
+        q[9] ^= 0x01;   // CRC left as it was: now wrong
+      } else {
+        q[1] = 0x05;
+        const uint16_t crc = Disc::SubchannelQCrc(q);
+        q[10] = static_cast<uint8_t>(crc >> 8);
+        q[11] = static_cast<uint8_t>(crc & 0xFF);
+      }
+      entries.insert(entries.end(), { m, s, f });
+      entries.insert(entries.end(), q, q + 12);
+    }
+    Check(write_bytes(lsd, entries), "write the .lsd");
+    Disc disc;
+    Check(disc.Open(cue.c_str()) && disc.subchannel_patch_sectors() == 2, "found, two sectors");
+  }
+  Check(system->LoadDisc(cue.c_str()), "mount it");
+  CheckEqual(frame_at(300), 299, "a failing entry answers with the sector before");
+  {
+    uint8_t minute, second, frame;
+    Disc::LbaToMsf(Disc::kLeadInSectors + 310, &minute, &second, &frame);
+    const uint8_t msf[3] = { minute, second, frame };
+    cd.Command(0x02, msf, 3);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.Command(0x16, nullptr, 0);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.WaitForInterrupt(response, &length, 16);
+    cd.Command(0x11, nullptr, 0);
+    cd.WaitForInterrupt(response, &length, 16);
+    Check(length == 8 && response[0] == 0x05, "a passing one is read as it is: track 5");
+  }
+  system->EjectDisc();
+  remove(lsd.c_str());
+
+  // A CloneCD dump of a protected disc: the .sub kept the failing sectors, and nothing beside
+  // it is needed. And one written by a tool that put no CRCs in at all, which is believed
+  // everywhere, as every .sub was before CRCs were checked.
+  BeginTest("a .sub with a failing sector");
+  const std::string img = directory + "media_lc.img";
+  const std::string ccd = directory + "media_lc.ccd";
+  const std::string sub = directory + "media_lc.sub";
+  if (!WriteMixedImage(img, 400, 300) || !WriteText(ccd, MakeCcd(400, 300, false).c_str())) {
+    Check(false, "could not write the CloneCD set");
+  } else {
+    std::vector<uint8_t> channels(700 * 96, 0);
+    for (uint32_t s = 0; s < 700; ++s)
+      MakeDataQ(s, &channels[s * 96 + 12]);
+    channels[350 * 96 + 12 + 9] ^= 0x01;   // sector 350's position changed, its CRC not
+    write_bytes(sub, channels);
+    Check(system->LoadDisc(ccd.c_str()), "mount it");
+    CheckEqual(frame_at(350), 349, "the failing sector answers with the one before");
+    CheckEqual(frame_at(351), 351, "the next with its own");
+    system->EjectDisc();
+
+    BeginTest("a .sub with no CRCs");
+    // Every CRC zero, so every one fails: were they believed, each sector would answer with the
+    // one sixteen before it, as far as the drive looks back.
+    channels[350 * 96 + 12 + 9] ^= 0x01;
+    for (uint32_t s = 0; s < 700; ++s)
+      channels[s * 96 + 12 + 10] = channels[s * 96 + 12 + 11] = 0;
+    write_bytes(sub, channels);
+    Check(system->LoadDisc(ccd.c_str()), "mount it");
+    CheckEqual(frame_at(350), 350, "its CRCs are not believed: each sector answers as itself");
+    CheckEqual(frame_at(380), 380, "everywhere");
+    system->EjectDisc();
+  }
+
+  remove(cue.c_str());
+  remove(bin.c_str());
+  remove(ccd.c_str());
+  remove(img.c_str());
+  remove(sub.c_str());
+}
+
 // The five commands that used to fall through to the "unknown command" error:
 // Forward and Backward (fast scan during CD-DA play), SetSession (the session
 // switch on a multi-session disc), Reset (a controller reboot), and GetQ (one
@@ -2996,6 +3251,7 @@ int main(int argc, char** argv) {
   TestCdAudioControl(system, directory);
   TestPregapPosition(system, directory);
   TestAssumedPregaps(system, directory);
+  TestLibCrypt(system, directory);
   TestCdExtraCommands(system, directory);
   TestDmaBusyBit(system);
   TestDmaChannel2RefusesWhileBusy(system);

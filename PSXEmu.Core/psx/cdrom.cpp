@@ -574,10 +574,32 @@ uint32_t Cdrom::CyclesToNextEvent() const {
 // A CloneCD image with its .sub is answered from the subchannel itself, which
 // is where the drive gets all of this: every sector's own track, index and
 // times, as the disc was read.
+//
+// A sector whose Q fails its CRC is not taken in, and the drive answers with the
+// last one that passed - the sector before, when it is reading along (psx-spx,
+// CDROM Protection - LibCrypt). That is LibCrypt: on a pressed disc some thirty
+// chosen sectors fail, a game asks GetlocP at each, and which ones answer with
+// the sector before is its key. A copy made from a rip that lost the subchannel
+// fails none, and the game breaks itself somewhere later on. The failing sectors
+// come from a .sub that kept them, or an .sbi beside a rip that did not
+// (Disc::SubchannelQ).
 void Cdrom::GetPosition(uint8_t* data) {
+  uint32_t lba = read_lba_;
   uint8_t q[12];
+  bool crc_ok = true;
+  for (int back = 0; back < kMaxFailedQSectors && lba > 0; ++back) {
+    if (!disc_.SubchannelQ(lba, q, &crc_ok) || crc_ok)
+      break;
+    --lba;
+  }
+  PositionAt(lba, data);
+}
+
+void Cdrom::PositionAt(uint32_t read_lba, uint8_t* data) {
+  uint8_t q[12];
+  bool crc_ok = true;
   // Not in a pregap that was only assumed: the subchannel is what left it out.
-  if (!disc_.InAssumedPregap(read_lba_) && disc_.ReadSubchannelQ(read_lba_, q) &&
+  if (!disc_.InAssumedPregap(read_lba) && disc_.SubchannelQ(read_lba, q, &crc_ok) &&
       (q[0] & 0x0F) == 1) {
     // ADR 1 is a position. The other kinds (the catalogue number, an ISRC)
     // turn up now and then instead; for those the position is worked out, as
@@ -594,14 +616,14 @@ void Cdrom::GetPosition(uint8_t* data) {
   }
 
   uint8_t absolute_minute, absolute_second, absolute_frame;
-  Disc::LbaToMsf(read_lba_, &absolute_minute, &absolute_second,
+  Disc::LbaToMsf(read_lba, &absolute_minute, &absolute_second,
                  &absolute_frame);
 
   // Past the last track: the lead-out, which the subchannel calls track AA,
   // index 1, with its own time counting up from where it begins (bug 146).
-  if (read_lba_ >= disc_.total_sectors() && disc_.track_count() > 0) {
+  if (read_lba >= disc_.total_sectors() && disc_.track_count() > 0) {
     uint8_t relative_minute, relative_second, relative_frame;
-    Disc::LbaToMsf(read_lba_ - disc_.total_sectors(), &relative_minute,
+    Disc::LbaToMsf(read_lba - disc_.total_sectors(), &relative_minute,
                    &relative_second, &relative_frame);
     data[0] = 0xAA;
     data[1] = 0x01;
@@ -621,7 +643,7 @@ void Cdrom::GetPosition(uint8_t* data) {
   uint32_t track_start = Disc::kLeadInSectors;
   for (int i = disc_.track_count() - 1; i >= 0; --i) {
     const Disc::Track& t = disc_.track(i);
-    if (read_lba_ + t.pregap >= t.start_lba) {
+    if (read_lba + t.pregap >= t.start_lba) {
       current_track = static_cast<uint8_t>(t.number);
       track_start = t.start_lba;
       break;
@@ -631,12 +653,12 @@ void Cdrom::GetPosition(uint8_t* data) {
   // In a pregap the time counts down to index 1: two seconds before it reads
   // 00:02:00, the sector before it 00:00:01.
   uint8_t relative_minute, relative_second, relative_frame;
-  if (read_lba_ >= track_start) {
-    Disc::LbaToMsf(read_lba_ - track_start, &relative_minute,
+  if (read_lba >= track_start) {
+    Disc::LbaToMsf(read_lba - track_start, &relative_minute,
                    &relative_second, &relative_frame);
   } else {
     index = 0;
-    Disc::LbaToMsf(track_start - read_lba_, &relative_minute,
+    Disc::LbaToMsf(track_start - read_lba, &relative_minute,
                    &relative_second, &relative_frame);
   }
 

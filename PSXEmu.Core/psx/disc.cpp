@@ -257,6 +257,143 @@ void Disc::Close() {
   sub_sectors_ = 0;
   sub_block_.clear();
   sub_block_first_ = -1;
+  sub_crc_trusted_ = true;
+  patch_.clear();
+  patch_path_.clear();
+}
+
+uint16_t Disc::SubchannelQCrc(const uint8_t* q) {
+  uint16_t crc = 0;
+  for (int i = 0; i < 10; ++i) {
+    crc ^= static_cast<uint16_t>(q[i]) << 8;
+    for (int bit = 0; bit < 8; ++bit)
+      crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021)
+                           : static_cast<uint16_t>(crc << 1);
+  }
+  return static_cast<uint16_t>(~crc);
+}
+
+bool Disc::SubchannelQCrcValid(const uint8_t* q) {
+  const uint16_t crc = SubchannelQCrc(q);
+  return q[10] == (crc >> 8) && q[11] == (crc & 0xFF);
+}
+
+bool Disc::SubchannelQ(uint32_t lba, uint8_t* q, bool* crc_ok) const {
+  const auto patched = patch_.find(lba);
+  if (patched != patch_.end()) {
+    memcpy(q, patched->second.data(), 12);
+    *crc_ok = SubchannelQCrcValid(q);
+    return true;
+  }
+  if (!ReadSubchannelQ(lba, q))
+    return false;
+  *crc_ok = !sub_crc_trusted_ || SubchannelQCrcValid(q);
+  return true;
+}
+
+// A LibCrypt patch, as Redump publishes one for each protected disc: the few sectors whose Q a
+// rip without its subchannel has lost. Named after the image, beside it. An .sbi is the usual;
+// an .lsd is the same with each entry's CRC kept.
+void Disc::LoadSubchannelPatch(const std::string& image_path) {
+  const std::string sbi = FindSibling(image_path, "sbi");
+  if (!sbi.empty() && LoadSbi(sbi)) {
+    patch_path_ = sbi;
+    return;
+  }
+  const std::string lsd = FindSibling(image_path, "lsd");
+  if (!lsd.empty() && LoadLsd(lsd))
+    patch_path_ = lsd;
+}
+
+namespace {
+
+// The whole of a small file, or nothing if it is not one. A patch is a few hundred bytes; one of
+// a megabyte is not a patch.
+bool ReadSmallFile(const std::string& path, std::vector<uint8_t>* out) {
+  FILE* fp = fopen(path.c_str(), "rb");
+  if (fp == nullptr)
+    return false;
+  out->clear();
+  uint8_t buffer[4096];
+  size_t got = 0;
+  while ((got = fread(buffer, 1, sizeof(buffer), fp)) > 0) {
+    out->insert(out->end(), buffer, buffer + got);
+    if (out->size() > (1u << 20)) {
+      fclose(fp);
+      return false;
+    }
+  }
+  fclose(fp);
+  return true;
+}
+
+bool IsBcd(uint8_t value) { return (value & 0x0F) <= 9 && (value >> 4) <= 9; }
+
+}  // namespace
+
+// "SBI\0", then for each sector: its position on the disc as BCD minute, second and frame, a
+// type, and the type's data - ten bytes of Q for type 1, which is what every Redump file holds;
+// three for types 2 and 3, older and rarer, which carry part of a position. What a patched
+// sector says hardly matters - a drive ignores a Q that fails its CRC, and a sector is listed
+// because it does - so a type 1 entry keeps its ten bytes, a type 2 or 3 entry the position the
+// layout gives rather than a guess at which part its three bytes are, and every one a CRC made
+// to fail the way LibCrypt's own do (psx-spx: the right one XORed with 0080h). Anything
+// malformed refuses the whole file: a half-read key is a wrong one.
+bool Disc::LoadSbi(const std::string& path) {
+  std::vector<uint8_t> data;
+  if (!ReadSmallFile(path, &data) || data.size() < 4 || memcmp(data.data(), "SBI\0", 4) != 0)
+    return false;
+  std::map<uint32_t, std::array<uint8_t, 12>> entries;
+  size_t at = 4;
+  while (at < data.size()) {
+    if (data.size() - at < 4)
+      return false;
+    const uint8_t minute = data[at], second = data[at + 1], frame = data[at + 2];
+    const uint8_t type = data[at + 3];
+    at += 4;
+    const size_t length = type == 1 ? 10 : (type == 2 || type == 3) ? 3 : 0;
+    if (length == 0 || data.size() - at < length || !IsBcd(minute) || !IsBcd(second) ||
+        !IsBcd(frame))
+      return false;
+    const uint32_t lba = MsfToLba(minute, second, frame);
+    std::array<uint8_t, 12> q = {};
+    if (type == 1) {
+      memcpy(q.data(), &data[at], 10);
+    } else {
+      // An ADR 1 position on a data track; nothing reads it, the CRC failing.
+      q[0] = 0x41;
+      q[1] = 0x01;
+      q[2] = 0x01;
+      LbaToMsf(lba, &q[7], &q[8], &q[9]);
+    }
+    const uint16_t crc = SubchannelQCrc(q.data()) ^ 0x0080;
+    q[10] = static_cast<uint8_t>(crc >> 8);
+    q[11] = static_cast<uint8_t>(crc & 0xFF);
+    entries[lba] = q;
+    at += length;
+  }
+  if (entries.empty())
+    return false;
+  patch_ = std::move(entries);
+  return true;
+}
+
+// No header: fifteen bytes a sector, its position as BCD minute, second and frame, then the
+// twelve bytes of its Q as the disc has them, CRC and all.
+bool Disc::LoadLsd(const std::string& path) {
+  std::vector<uint8_t> data;
+  if (!ReadSmallFile(path, &data) || data.empty() || data.size() % 15 != 0)
+    return false;
+  std::map<uint32_t, std::array<uint8_t, 12>> entries;
+  for (size_t at = 0; at < data.size(); at += 15) {
+    if (!IsBcd(data[at]) || !IsBcd(data[at + 1]) || !IsBcd(data[at + 2]))
+      return false;
+    std::array<uint8_t, 12> q;
+    memcpy(q.data(), &data[at + 3], 12);
+    entries[MsfToLba(data[at], data[at + 1], data[at + 2])] = q;
+  }
+  patch_ = std::move(entries);
+  return true;
 }
 
 bool Disc::ReadSubchannelQ(uint32_t lba, uint8_t* q) const {
@@ -409,6 +546,8 @@ bool Disc::Open(const char* path) {
     return false;
   }
   path_ = text;
+  // Whatever the image's format, a LibCrypt patch named after it applies to it.
+  LoadSubchannelPatch(text);
   return true;
 }
 
@@ -872,6 +1011,23 @@ bool Disc::OpenCcd(const char* path, bool* scrambled_out) {
         sub_file_ = nullptr;
       }
     }
+  }
+  // Whether its CRCs are worth believing (SubchannelQ): on a disc read cleanly every one passes
+  // but a LibCrypt game's thirty-odd, so a sample where most fail says the CRCs were never
+  // written, not that the disc is protected everywhere.
+  if (sub_file_ != nullptr) {
+    const uint32_t kSamples = 64;
+    uint32_t sampled = 0, passed = 0;
+    for (uint32_t i = 0; i < kSamples; ++i) {
+      uint8_t q[12];
+      const uint32_t sector = static_cast<uint32_t>(
+          static_cast<uint64_t>(sub_sectors_) * i / kSamples);
+      if (!ReadSubchannelQ(kLeadInSectors + sector, q))
+        continue;
+      ++sampled;
+      passed += SubchannelQCrcValid(q) ? 1 : 0;
+    }
+    sub_crc_trusted_ = sampled > 0 && passed * 2 > sampled;
   }
   AssumeStandardPregaps();
   return true;

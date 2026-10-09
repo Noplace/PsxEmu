@@ -427,8 +427,16 @@ tens of thousands of commands with none unrecognised. The MVMVA garbage matrix
   Reading data sectors, GetQ (which
   synthesises its answer from the track table, see CD-ROM above) and
   copy-protection checks that read the subchannel some other way still do not
-  use it. There is no `.sbi` support either, the patch files that carry a
-  LibCrypt disc's altered subchannel beside a `.cue`.
+  use it.
+- **LibCrypt: an `.sbi` or `.lsd` beside any image, and the CRCs of a `.sub`**
+  (bug 149). A sector whose Q fails its CRC makes GetlocP answer with the
+  sector before, as the drive does, which is all LibCrypt reads. Never run
+  against a LibCrypt game: Gekido (SLES-01241), the protected disc found on the
+  share, has no `.sbi` beside it, and a `.sub` dump of one has not been tried
+  either. Two more limits: the drive is modelled as having read the sector before
+  (a seek that lands on a failing sector reports the one before it, not wherever
+  the head last was), and a run of more than 16 failing sectors stops looking
+  back.
 - **A scrambled `.ccd` is refused rather than descrambled.**
   `DataTracksScrambled=1` means the image holds the raw channel, not sectors.
   Both the descriptor and its image are refused, deliberately - mounting one

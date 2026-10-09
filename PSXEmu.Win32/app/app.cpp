@@ -2596,6 +2596,18 @@ namespace psxemu {
                 serial = L"Disc loaded";
             if (game.separate)
                 serial += L" \x00B7 its own settings";
+            // A LibCrypt patch found beside the image: said, since a protected game without one
+            // runs normally until it breaks itself, and with one the difference is invisible.
+            // Short, to fit the toast's line: "SCES-01420 · Europe · LibCrypt .sbi".
+            const emulation::psx::Disc& disc = system.cdrom().disc();
+            if (disc.subchannel_patch_sectors() > 0) {
+                const std::string& patch = disc.subchannel_patch_path();
+                const size_t dot = patch.find_last_of('.');
+                std::string kind = dot == std::string::npos ? "patch" : patch.substr(dot);
+                for (char& c : kind)
+                    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                serial += L" \x00B7 LibCrypt " + Wide(kind);
+            }
             PostToUi([this, path, serial, game = std::move(game)]() mutable {
                 paused_by_user_ = false;
                 EnterGame(std::move(game));

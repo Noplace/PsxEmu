@@ -241,6 +241,11 @@ class Cdrom : public Component {
   void StepRead(uint32_t cycles);
   void LoadSector();
   void GetPosition(uint8_t* data);   // 8 subchannel bytes, no status
+  // The same, for the sector at `lba` as though its Q passed its CRC.
+  void PositionAt(uint32_t lba, uint8_t* data);
+  // How far back GetPosition looks for a sector whose Q passed, past ones that failed. LibCrypt's
+  // stand alone; a run longer than this is a .sub gone bad, not a protection.
+  static const int kMaxFailedQSectors = 16;
 
   // The last sector header the drive decoded, and whether it has one - what
   // GetlocL answers with, or fails for want of (bug 146). The header is the
