@@ -330,7 +330,7 @@ concrete, in-game mechanism that depends on it.
 ## The DMA-pacing fix was built and shipped - and did not fix this
 
 The architecture change described above ("What an actual fix needs") was
-implemented: see [bug 38](Bugs-Found.md). A DMA channel's busy bit and
+implemented: see [bug 38](../Bugs-Found.md). A DMA channel's busy bit and
 completion interrupt now defer to `Dma::Tick`, observable for real across
 subsequent instructions, instead of clearing within the triggering write.
 It is real, it is regression-verified (719 checks across every harness, the
@@ -599,7 +599,7 @@ question with a bounded answer:
 
 Request-paced ("DREQ") DMA is no longer the leading theory for this game - the
 film never arms channel 3 at all, so there is nothing for a data request to
-drive. It remains a real gap in the DMA model ([Gaps.md](Gaps.md)), just not
+drive. It remains a real gap in the DMA model ([Gaps.md](../Gaps.md)), just not
 this game's gap.
 
 Harness note: `--trace-at` now accepts `<hex>[:<n>]` to skip the first *n*
@@ -608,7 +608,7 @@ first call of any of these routines is always the one that worked.
 
 ## Status
 
-One real fix landed as a result of this investigation - [bug 38](Bugs-Found.md),
+One real fix landed as a result of this investigation - [bug 38](../Bugs-Found.md),
 the DMA busy-bit/completion pacing change - and is a permanent, verified part
 of the tree. It did not resolve Air Combat's freeze; see above. The DMA0
 clamp mentioned earlier in this document was a separate, local, uncommitted

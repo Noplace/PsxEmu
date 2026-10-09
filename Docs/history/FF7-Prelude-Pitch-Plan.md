@@ -178,10 +178,10 @@ a small `tools/wav_pitch.cpp` (autocorrelation, dominant frequency per 100 ms
 window) is the before/after instrument. The prelude's arpeggio should read as
 a rising run with clean octave ratios, no folded notes and no dropouts. Then
 re-capture the FMV audio and run every harness against the
-[Test-Suite.md](Test-Suite.md) baselines: these eight lines feed every voice in
+[Test-Suite.md](../Test-Suite.md) baselines: these eight lines feed every voice in
 every game.
 
-**Phase 5 - document** as bug 39 in [Bugs-Found.md](Bugs-Found.md) with the
+**Phase 5 - document** as bug 39 in [Bugs-Found.md](../Bugs-Found.md) with the
 measured numbers, and update the `spu_test` check count in Test-Suite.md.
 
 ## The branch point
@@ -309,7 +309,7 @@ Phase 0 predicted before any of this was read.
 
 `KeyOn` no longer touches the repeat address, and the dead `repeat_set` flag
 became `ignore_loop_start` with the hardware's meaning. Full write-up as
-**bug 39** in [Bugs-Found.md](Bugs-Found.md).
+**bug 39** in [Bugs-Found.md](../Bugs-Found.md).
 
 | Before | After |
 |---|---|
@@ -339,5 +339,5 @@ H5 - a layer keyed on but never sounding - was never needed: the six prelude
 voices all key on, all play, and all measure correctly after the fix.
 
 `PSXEmu.Core/tools/wav_pitch.cpp` is new, built by `build_tools.bat` and
-documented in [Test-Suite.md](Test-Suite.md), along with `--trace-spu`,
+documented in [Test-Suite.md](../Test-Suite.md), along with `--trace-spu`,
 `--spu-ram` and the `spu requests` / `spu modes` counters on `boot_runner`.

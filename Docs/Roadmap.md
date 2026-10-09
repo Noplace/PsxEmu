@@ -148,7 +148,7 @@ implemented directly against D3D11.
 Several of these now have plans of their own, written against the tree as it
 actually is rather than from memory:
 
-- [x] **[MDEC-Plan.md](MDEC-Plan.md)** - the motion decoder. DONE. See bug 23;
+- [x] **[MDEC-Plan.md](history/MDEC-Plan.md)** - the motion decoder. DONE. See bug 23;
       the plan step 3 described work the hardware does not do - software does
       the variable-length decoding, not the MDEC. Covered by mdec_test.
 - [x] **[Save-States-Plan.md](Save-States-Plan.md)** - DONE. `StateIO`
@@ -164,10 +164,10 @@ actually is rather than from memory:
       inserts, creates and ejects per slot while running; and the Memory Card
       Editor lists, deletes, undeletes, exports and imports `.mcs`, copies
       between slots and formats. Covered by `mc_test`.
-- [x] **[Wild-Arms-Press-Start-Plan.md](Wild-Arms-Press-Start-Plan.md)** - DONE.
+- [x] **[Wild-Arms-Press-Start-Plan.md](history/Wild-Arms-Press-Start-Plan.md)** - DONE.
       Bugs 25 and 26: a seek did not stop the running read, so every read began
       one sector late. Harness input (`--press`) and `--frame-log` came out of it.
-- [x] **[FF7-Prelude-Pitch-Plan.md](FF7-Prelude-Pitch-Plan.md)** - DONE. Not the
+- [x] **[FF7-Prelude-Pitch-Plan.md](history/FF7-Prelude-Pitch-Plan.md)** - DONE. Not the
       pitch path the plan set out to fix (H1-H4 were all cleared by
       instrumentation) but bug 39: key-on was discarding the loop point FF7 had
       just set, so every note played a third too much sample and came out a

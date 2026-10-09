@@ -1,0 +1,324 @@
+<mxfile host="app.diagrams.net" agent="PSXEmu Docs/Architecture.md" version="24.0.0">
+  <diagram id="hardware" name="PlayStation components">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- Title and legend -->
+        <mxCell id="title" value="&lt;b&gt;PSXEmu - the emulated PlayStation&lt;/b&gt;&lt;br&gt;psx::System and its components (PSXEmu.Core/psx), and where the host plugs in" style="text;html=1;align=left;verticalAlign=top;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="40" y="10" width="760" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="legend" value="&lt;b&gt;Legend&lt;/b&gt;&lt;br&gt;blue - processors&lt;br&gt;green - devices&lt;br&gt;yellow - memories&lt;br&gt;purple lines - DMA&lt;br&gt;red dashed - interrupt requests&lt;br&gt;grey dashed - the host (other threads)" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;spacingLeft=8;fillColor=#ffffff;strokeColor=#999999;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="635" width="230" height="110" as="geometry" />
+        </mxCell>
+
+        <!-- Processors -->
+        <mxCell id="cpu" value="&lt;b&gt;CPU - MIPS R3000A&lt;/b&gt;&lt;br&gt;33.87 MHz · interpreter or x64 recompiler&lt;br&gt;load/branch delay slots · COP0 exceptions&lt;br&gt;I-cache timing (optional)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="300" width="230" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="gte" value="&lt;b&gt;GTE (COP2)&lt;/b&gt;&lt;br&gt;22 fixed-point commands&lt;br&gt;RTPS/RTPT projection · lighting · NCLIP&lt;br&gt;+ PGXP unrounded vertices" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="440" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="rec" value="&lt;b&gt;Recompiler (rec/)&lt;/b&gt;&lt;br&gt;BlockCache · BlockDecoder · BlockCompiler&lt;br&gt;page invalidation on stores" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;dashed=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="180" width="230" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Interrupts and timers -->
+        <mxCell id="irq" value="&lt;b&gt;Interrupt controller&lt;/b&gt;&lt;br&gt;I_STAT / I_MASK (1F801070)&lt;br&gt;11 sources → one line → Cause bit 10" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="620" width="230" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="tmr" value="&lt;b&gt;Root counters 0-2&lt;/b&gt;&lt;br&gt;system clock · dot clock · hblank · clock/8&lt;br&gt;targets, wrap, sync modes" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="760" width="230" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- The bus -->
+        <mxCell id="bus" value="&lt;b&gt;IOInterface&lt;/b&gt;&lt;br&gt;memory map&lt;br&gt;and bus&lt;br&gt;&lt;br&gt;register decode&lt;br&gt;bus timing&lt;br&gt;device ticking&lt;br&gt;(32-cycle batches,&lt;br&gt;or exact events)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="350" y="80" width="120" height="830" as="geometry" />
+        </mxCell>
+
+        <!-- Memories -->
+        <mxCell id="ram" value="&lt;b&gt;Main RAM&lt;/b&gt;&lt;br&gt;2 MB (mirrored to 8 MB)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="70" width="170" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="spad" value="&lt;b&gt;Scratchpad&lt;/b&gt;&lt;br&gt;1 KB (D-cache as RAM)" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="160" width="170" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="bios" value="&lt;b&gt;BIOS ROM&lt;/b&gt;&lt;br&gt;512 KB - real image, run as-is" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="240" width="170" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Devices -->
+        <mxCell id="gpu" value="&lt;b&gt;GPU&lt;/b&gt;&lt;br&gt;GP0/GP1, GPUSTAT, 16-word queue&lt;br&gt;draw cost · display timing&lt;br&gt;DrawJob → RasterBackend" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="330" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="vram" value="&lt;b&gt;VRAM&lt;/b&gt;&lt;br&gt;1 MB = 1024x512x16" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="335" width="150" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="raster" value="&lt;b&gt;Rasterisers&lt;/b&gt;&lt;br&gt;SoftwareRaster (native)&lt;br&gt;Hardware D3D11/D3D12 (1x-8x)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;dashed=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="240" width="190" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="cd" value="&lt;b&gt;CD-ROM controller&lt;/b&gt;&lt;br&gt;28 commands · INT1-INT5&lt;br&gt;sector buffer · XA-ADPCM · CD-DA&lt;br&gt;subchannel Q (LibCrypt)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="440" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="disc" value="&lt;b&gt;Disc + ISO9660&lt;/b&gt;&lt;br&gt;cue/bin · chd · mds · ccd/sub&lt;br&gt;iso · drive · .sbi/.lsd" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="440" width="170" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="spu" value="&lt;b&gt;SPU&lt;/b&gt;&lt;br&gt;24 ADPCM voices · ADSR · sweeps&lt;br&gt;Gaussian interp · reverb · CD input&lt;br&gt;44.1 kHz (1 sample / 768 cycles)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="550" width="230" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="sram" value="&lt;b&gt;Sound RAM&lt;/b&gt;&lt;br&gt;512 KB" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=8;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="555" width="150" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mdec" value="&lt;b&gt;MDEC&lt;/b&gt;&lt;br&gt;dequantise · IDCT · YCbCr→RGB&lt;br&gt;4/8/15/24-bit macroblocks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="660" width="230" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sio0" value="&lt;b&gt;SIO0&lt;/b&gt;&lt;br&gt;controller &amp;amp; memory card bus" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="760" width="230" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="pads" value="&lt;b&gt;Ports&lt;/b&gt;&lt;br&gt;pad · DualShock · mouse · GunCon&lt;br&gt;multitap · memory cards (128 KB)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="850" y="755" width="210" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="sio1" value="&lt;b&gt;SIO1&lt;/b&gt; serial port (nothing plugged in)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="560" y="850" width="230" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- DMA -->
+        <mxCell id="dma" value="&lt;b&gt;DMA controller&lt;/b&gt;&lt;br&gt;7 channels · DPCR · DICR&lt;br&gt;burst · block · linked list&lt;br&gt;&lt;br&gt;0 MDEC in · 1 MDEC out&lt;br&gt;2 GPU · 3 CD-ROM&lt;br&gt;4 SPU · 5 PIO · 6 OTC" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="330" width="190" height="140" as="geometry" />
+        </mxCell>
+
+        <!-- Host side -->
+        <mxCell id="hostvideo" value="&lt;b&gt;Video thread&lt;/b&gt;&lt;br&gt;FrameMailbox → presenter&lt;br&gt;(pixels or a shared picture)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="160" width="190" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="hostaudio" value="&lt;b&gt;Audio thread&lt;/b&gt;&lt;br&gt;SampleRing → WASAPI/DirectSound" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="560" width="190" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="hostinput" value="&lt;b&gt;Input thread&lt;/b&gt;&lt;br&gt;InputExchange (pads in, rumble out)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;dashed=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1370" y="755" width="190" height="70" as="geometry" />
+        </mxCell>
+
+        <!-- Edges: processors -->
+        <mxCell id="e_cpu_gte" value="COP2 moves&lt;br&gt;LWC2/SWC2" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="cpu" target="gte">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_rec_cpu" value="compiled blocks" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;dashed=1;fontSize=10;" edge="1" parent="1" source="rec" target="cpu">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cpu_bus" value="loads / stores&lt;br&gt;fetches" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="cpu" target="bus">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- Edges: bus to memories and devices -->
+        <mxCell id="e_bus_ram" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="bus" target="ram">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="500" y="105" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_bus_spad" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="bus" target="spad">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="500" y="190" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_bus_bios" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="bus" target="bios">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="500" y="270" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_bus_gpu" value="1F801810/14" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="bus" target="gpu">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="500" y="370" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_bus_cd" value="1F801800-03" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="bus" target="cd">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="500" y="480" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_bus_spu" value="1F801C00+" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="bus" target="spu">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="500" y="590" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_bus_mdec" value="1F801820/24" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="bus" target="mdec">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="500" y="695" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_bus_sio0" value="1F801040" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="bus" target="sio0">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="500" y="790" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_bus_sio1" value="1F801050" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="bus" target="sio1">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="500" y="870" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_bus_irq" value="1F801070/74" style="exitX=0;exitY=0.693;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="bus" target="irq">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_bus_tmr" value="1F801100-2F" style="exitX=0;exitY=0.861;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="bus" target="tmr">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_bus_dma" value="1F801080-FF" style="exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.75;entryY=0;entryDx=0;entryDy=0;endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=9;" edge="1" parent="1" source="bus" target="dma">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="410" y="64" /><mxPoint x="1252" y="64" /></Array></mxGeometry>
+        </mxCell>
+
+        <!-- Device to private memory / peripherals -->
+        <mxCell id="e_gpu_raster" value="DrawJobs" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="gpu" target="raster">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_raster_vram" value="pixels" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="raster" target="vram">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_gpu_vram" value="transfers · resolve" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="gpu" target="vram">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cd_disc" value="sectors · subchannel" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="disc" target="cd">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_spu_sram" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="spu" target="sram">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_sio_pads" value="byte exchange" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="sio0" target="pads">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e_cd_spu" value="CD-DA / XA audio" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeColor=#82b366;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="cd" target="spu">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="820" y="480" /><mxPoint x="820" y="590" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="e_gpu_tmr" value="dot clock · hblank · vblank" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeColor=#82b366;fontSize=10;" edge="1" parent="1" source="gpu" target="tmr">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="540" y="400" /><mxPoint x="540" y="745" /><mxPoint x="155" y="745" /></Array></mxGeometry>
+        </mxCell>
+
+        <!-- DMA edges -->
+        <mxCell id="d_ram" value="RAM side" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeColor=#9673a6;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="dma" target="ram">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1060" y="350" /><mxPoint x="1060" y="105" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="d_gpu" value="ch 2" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeColor=#9673a6;fontSize=10;" edge="1" parent="1" source="dma" target="gpu">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1080" y="390" /><mxPoint x="1080" y="420" /><mxPoint x="675" y="420" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="d_cd" value="ch 3" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeColor=#9673a6;fontSize=10;" edge="1" parent="1" source="cd" target="dma">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="675" y="530" /><mxPoint x="1090" y="530" /><mxPoint x="1090" y="440" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="d_spu" value="ch 4" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeColor=#9673a6;fontSize=10;" edge="1" parent="1" source="dma" target="spu">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1250" y="540" /><mxPoint x="830" y="540" /><mxPoint x="830" y="610" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="d_mdec" value="ch 0 in / ch 1 out" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeColor=#9673a6;fontSize=10;" edge="1" parent="1" source="dma" target="mdec">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1270" y="695" /></Array></mxGeometry>
+        </mxCell>
+
+        <!-- Interrupt requests -->
+        <mxCell id="i_tmr" value="IRQ 4-6" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;dashed=1;strokeColor=#b85450;fontSize=9;" edge="1" parent="1" source="tmr" target="irq">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="i_cpu" value="IRQ line" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;dashed=1;strokeColor=#b85450;strokeWidth=2;fontSize=9;" edge="1" parent="1" source="irq" target="cpu">
+          <mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="20" y="655" /><mxPoint x="20" y="345" /></Array></mxGeometry>
+        </mxCell>
+        <mxCell id="irq_note" value="&lt;font color=&quot;#b85450&quot;&gt;IRQ sources: 0 VBLANK · 1 GPU · 2 CD-ROM · 3 DMA · 4-6 timers · 7 SIO0 · 8 SIO1 · 9 SPU · 10 PIO&lt;br&gt;Each device raises its bit through IOInterface::SetInterrupt. The line is Cop0 Cause bit 10, checked before every instruction.&lt;/font&gt;" style="text;html=1;align=left;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="40" y="920" width="760" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- Host links -->
+        <mxCell id="h_video" value="PublishFrame at vblank" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;dashed=1;strokeColor=#666666;fontSize=10;" edge="1" parent="1" source="raster" target="hostvideo">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="h_audio" value="PumpAudio (resampled)" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;dashed=1;strokeColor=#666666;fontSize=10;" edge="1" parent="1" source="sram" target="hostaudio">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="h_input" value="once a frame" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;dashed=1;strokeColor=#666666;fontSize=10;" edge="1" parent="1" source="hostinput" target="pads">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="threads" name="Threads and data flow">
+    <mxGraphModel dx="1600" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1600" pageHeight="1000" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="t_title" value="&lt;b&gt;PSXEmu - threads and the channels between them&lt;/b&gt;&lt;br&gt;each thread owns its objects; work crosses only through the channels (PSXEmu.Core/host, Docs/Threading-Plan.md)" style="text;html=1;align=left;verticalAlign=top;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="40" y="10" width="1100" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- Threads -->
+        <mxCell id="ui" value="&lt;b&gt;UI thread - App&lt;/b&gt;&lt;br&gt;window · menus · settings windows&lt;br&gt;psxemu.ini · per-game settings&lt;br&gt;notifications · full screen" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="160" width="260" height="100" as="geometry" />
+        </mxCell>
+
+        <mxCell id="machine" value="&lt;b&gt;Machine thread - host::Machine&lt;/b&gt;&lt;br&gt;&lt;br&gt;requests → apply input → RunOneFrame (psx::System, until vblank)&lt;br&gt;→ PublishFrame → PumpAudio → memory cards → Pace&lt;br&gt;&lt;br&gt;FrameLimiter · SpeedResampler · display match &amp;amp; phase lock" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="560" y="370" width="400" height="140" as="geometry" />
+        </mxCell>
+
+        <mxCell id="video" value="&lt;b&gt;Video thread - VideoOutput&lt;/b&gt;&lt;br&gt;D3DPresenter → IGraphicsEngine&lt;br&gt;D3D11 · D3D12 · OpenGL · Vulkan&lt;br&gt;filters · custom chain · DLSS · FSR · overlay&lt;br&gt;vsync, or immediate (VRR)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="160" width="300" height="120" as="geometry" />
+        </mxCell>
+
+        <mxCell id="audio" value="&lt;b&gt;Audio thread - AudioOutput&lt;/b&gt;&lt;br&gt;WASAPI (event-driven) or DirectSound" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="1260" y="590" width="300" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="input" value="&lt;b&gt;Input thread - InputThread&lt;/b&gt;&lt;br&gt;1 kHz: keyboard · XInput&lt;br&gt;DS4 / DualSense (HID) · raw mouse&lt;br&gt;rumble out" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="590" width="260" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="rast" value="&lt;b&gt;Rasteriser thread&lt;/b&gt; (gpu_thread)&lt;br&gt;SoftwareRaster, or the hardware&lt;br&gt;rasteriser's D3D11 / D3D12 device" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="560" y="770" width="400" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="dclock" value="&lt;b&gt;Display clock thread&lt;/b&gt;&lt;br&gt;DXGI WaitForVBlank on the window's monitor&lt;br&gt;exact refresh from QueryDisplayConfig&lt;br&gt;(only for &quot;Match the display&quot;)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="370" width="260" height="100" as="geometry" />
+        </mxCell>
+
+        <!-- Channels -->
+        <mxCell id="c_req_m" value="RequestQueue&amp;lt;Machine&amp;gt;&lt;br&gt;settings · boot · save/load state" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="380" y="250" width="240" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c_req_v" value="RequestQueue&amp;lt;VideoOutput&amp;gt;&lt;br&gt;renderer · filter · chain · vsync" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="720" y="170" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c_ui" value="PostToUi&lt;br&gt;reports · status · notifications" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="380" y="90" width="240" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c_mailbox" value="FrameMailbox&lt;br&gt;3 slots, newest wins&lt;br&gt;pixels or shared picture" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="330" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="c_ring" value="SampleRing&lt;br&gt;lock-free, held at ~40 ms" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="490" width="220" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c_input" value="InputExchange&lt;br&gt;pads in · motors out" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="330" y="540" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c_jobs" value="DrawJob queue&lt;br&gt;barriers before VRAM reads" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="640" y="630" width="240" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c_timing" value="DisplayTiming&lt;br&gt;refresh Hz · last vblank&lt;br&gt;(sampled once a frame)" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="330" y="400" width="200" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="c_shared" value="Shared pictures&lt;br&gt;textures on the graphics card&lt;br&gt;(opened by the renderer)" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="770" width="260" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="c_skip" value="last present time · skip request&lt;br&gt;(display queue drained)" style="shape=parallelogram;perimeter=parallelogramPerimeter;whiteSpace=wrap;html=1;fixedSize=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1000" y="240" width="240" height="60" as="geometry" />
+        </mxCell>
+
+        <!-- Flows -->
+        <mxCell id="f1" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="ui" target="c_req_m"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f2" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="c_req_m" target="machine"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f3" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="ui" target="c_req_v"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="320" y="200" /></Array></mxGeometry></mxCell>
+        <mxCell id="f4" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="c_req_v" target="video"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f5" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="c_ui" target="ui"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f6" value="" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="machine" target="c_ui"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="700" y="120" /></Array></mxGeometry></mxCell>
+        <mxCell id="f7" value="PublishFrame" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="machine" target="c_mailbox"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f8" value="TakeNew" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="c_mailbox" target="video"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f9" value="PumpAudio" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="machine" target="c_ring"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f10" value="device pulls" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;strokeWidth=2;fontSize=10;" edge="1" parent="1" source="c_ring" target="audio"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f11" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="input" target="c_input"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f12" value="once a frame" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="c_input" target="machine"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f13" value="GPU parses + costs" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="machine" target="c_jobs"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f14" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="c_jobs" target="rast"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f15" value="upscaled picture" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="rast" target="c_shared"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f16" value="opened by handle /&lt;br&gt;same D3D12 device" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="c_shared" target="video"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1580" y="805" /><mxPoint x="1580" y="220" /></Array></mxGeometry></mxCell>
+        <mxCell id="f17" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="dclock" target="c_timing"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f18" value="" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;fontSize=10;" edge="1" parent="1" source="c_timing" target="machine"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f19" value="monitor, start/stop" style="endArrow=classic;html=1;labelBackgroundColor=#ffffff;dashed=1;fontSize=10;" edge="1" parent="1" source="ui" target="dclock"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f20" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;dashed=1;" edge="1" parent="1" source="video" target="c_skip"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="f21" style="endArrow=classic;startArrow=classic;html=1;labelBackgroundColor=#ffffff;dashed=1;" edge="1" parent="1" source="c_skip" target="machine"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="1000" y="350" /><mxPoint x="900" y="350" /></Array></mxGeometry></mxCell>
+
+        <mxCell id="t_note" value="&lt;b&gt;Rule:&lt;/b&gt; the machine thread never waits on a device - presenting is the video thread's, the sound device the audio thread's - so the only thing it waits for is the frame limiter." style="text;html=1;align=left;whiteSpace=wrap;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="40" y="930" width="900" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

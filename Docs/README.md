@@ -10,31 +10,41 @@ Working notes for anything spanning more than one sitting. Status per document.
 |---|---|---|
 | [Emulator-Project-Standards.md](Emulator-Project-Standards.md) | reference | The structure and working practices this project is being rebuilt to, copied from GBAEmu |
 | [Project-Layout.md](Project-Layout.md) | live | How the projects split, include conventions, how to build, how to run |
+| [Architecture.md](Architecture.md) | live | How the emulator works: the threads and channels, the step loop and timing, the memory map, each emulated PlayStation part (the console, then this model of it), the front end and its enhancements, a frame end to end. Diagrams in [Architecture.drawio](Architecture.drawio) |
 | [Test-Suite.md](Test-Suite.md) | live | Every harness, and the baselines to check after any change |
 | [Gaps.md](Gaps.md) | live | Hardware and features still missing, ordered by impact. Also what is deliberately not done. The most recently audited status document |
 | [Bugs-Found.md](Bugs-Found.md) | live | Bugs fixed in the revived code, with the symptom each produced |
 | [Roadmap.md](Roadmap.md) | history | The plan phase by phase. Phases 0-3 and 6 are accurate; for current status trust Gaps.md |
-| [Threading-Plan.md](Threading-Plan.md) | built | **Built 2026-09-18**: a thread each for the window, the machine, video, audio and input, with the channels between them in `PSXEmu.Core/host/` and `host_test` holding them. The standard it follows is DuckStation's, PCSX2's and Dolphin's; phase 7, a thread for the rasteriser, is the part not done |
+| [Threading-Plan.md](Threading-Plan.md) | built | **Built 2026-09-18**: a thread each for the window, the machine, video, audio and input, with the channels between them in `PSXEmu.Core/host/` and `host_test` holding them. The standard it follows is DuckStation's, PCSX2's and Dolphin's. Phase 7, a thread for the rasteriser, was finished too (bug 91), so the plan is complete; frame pacing against the display was added on top in bug 148 |
 | [Hardware-Renderer-Plan.md](Hardware-Renderer-Plan.md) | live | Higher internal resolution and PGXP: a Direct3D 11 rasteriser behind the same GPU command and timing code as the software one, two copies of VRAM, a float shadow of the GTE's vertices carried through RAM, and the software rasteriser as the reference it is checked against. All six phases done: the software rasteriser behind `RasterBackend`, and a Direct3D 11 one, chosen at Settings > Video > Rasteriser, that draws everything it does at 1x-8x with true colour, and with PGXP at the GTE's unrounded vertex positions with perspective-correct textures, under the interpreter or the recompiler - its picture handed to all four renderers on the graphics card, nothing read back, on the card the user picks (Settings > Video > Graphics Card); identical to the pixel at native size on 26 discs, and what the machine sees identical at every scale, PGXP on or off. Since 2026-10-01 a Direct3D 12 rasteriser sits beside it, chosen in the same place, from the same shaders, giving the same pictures - and with the Direct3D 12 renderer it draws on the renderer's own device, its pictures handed over as they are |
 | [DLSS-Plan.md](DLSS-Plan.md) | live | NVIDIA DLSS 4.5 - Super Resolution, DLAA and Frame Generation - in the Direct3D 12 renderer through Streamline, and what DLSS 5 would take. The work is the inputs the PlayStation lacks: a depth and motion plane beside VRAM, motion vectors from the GTE carried like PGXP's shadows, and jitter; all built and scored on the Radeon before the RTX 4060 is needed. **Phases 1-3 done 2026-09-30**: the plane, with PGXP's depth and motion from the GTE and 2D matching, handed over beside each shared picture with its jitter, and View > Depth and Motion; scored by `boot_runner --motion`'s warp check on 26 discs, never worse than no motion and about half the error where 3D moves, and unchanged by jittered drawing; the machine runs exactly as without it. **Phases 0, 4 and 5 built 2026-09-30 to 10-01**: Settings > Video's NVIDIA DLSS group runs DLSS 310.9.1 Super Resolution, DLAA and 2x Frame Generation on the RTX 4060 through Streamline 2.14.1, fetched by a script and never committed; the jitter's and motion's signs measured by `sl_probe --jitter-test`, 0.6-2 ms a picture; Frame Generation exactly doubling Ridge Racer with the overlay kept out of the generated frames, Reflex on for it and measured; the review of the pictures in motion is to do. DLSS 5 gated on a public SDK and RTX 40 support |
 | [FSR-Plan.md](FSR-Plan.md) | live | AMD FSR - Upscaling (FSR 4 where the card has it, FSR 3.1.5 everywhere else), Native AA and Frame Generation - in the Direct3D 12 renderer through AMD's FidelityFX SDK 2.3.0, on any Direct3D 12 card, from the same plane, motion and jitter as DLSS. **Built 2026-10-07**: Settings > Video's AMD FSR group, never on with DLSS; AMD's signed DLLs fetched by a script, MIT; the signs measured by `ffx_probe` (DLSS's: jitter negated, motion as given); on the Radeon 780M Ridge Racer at full speed with FSR Quality (5 ms a picture), and with Frame Generation exactly doubling it at Ultra Performance, the overlay composed by AMD's swap chain. The review in motion is to do; FSR 4 itself needs a card this laptop lacks |
-| [Recompiler-Plan.md](Recompiler-Plan.md) | live | Dynamic recompilation, on the **Settings > Emulation > Recompiler** menu and off by default. 3.0-3.9x real time against the interpreter's 1.5-1.7x; BIOS boot identical. The differential harness has both CPUs agreeing exactly for millions of instructions - what is left is cycle accounting, not correctness |
+| [Recompiler-Plan.md](Recompiler-Plan.md) | live | Dynamic recompilation, the Recompiler switch in **Settings > Emulation**, off by default. Games at 3.4-5.4x real time on the 2026-10-07 profile ([Recompiler-Profile.md](Recompiler-Profile.md)), against about 1.3x for the interpreter; BIOS boot identical; on the twelve-disc table the same picture at every checkpoint. The differential harness has both CPUs agreeing exactly for millions of instructions - what is left is cycle accounting, not correctness |
 | [CPU-Timing-Plan.md](CPU-Timing-Plan.md) | live | Real per-instruction cycle costs. Multiply/divide and branches done (bug 43), and amidog's `psxtest_cpu` passes in full (bug 68); memory-region costs (phase 3) are not |
 | [Memory-Cards-Plan.md](Memory-Cards-Plan.md) | built | Per-disc cards, an in-memory card written whole once a game stops writing, insert/create/eject per slot while running, and the Memory Card Editor. Bug 69 |
 | [Debugger-Plan.md](Debugger-Plan.md) | done | An in-app CPU debugger: breakpoints, stepping, memory and watchpoints, halting mid-frame without changing what the machine computes. **Emulation > Debugger**: disassembly, registers, breakpoints, step into/over/out, run to cursor, and `boot_runner --break`. A memory pane that reads hardware registers without side effects, and memory and register editing. Read and write watchpoints, CPU and DMA, with `boot_runner --watchpoint`. A BIOS call log with breaks on a call, an approximate call stack, labels, and device panes. PsyQ `.SYM` files are not read |
 | [Disc-Formats-Plan.md](Disc-Formats-Plan.md) | live | `.mds`/`.mdf`, `.ccd`/`.img` and `.chd` done; ECM and PBP not started |
-| [Emulation-Speed-Plan.md](Emulation-Speed-Plan.md) | built | 50/100/150/200% speed, and why the audio path was the whole job |
-| [GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md) | measured | Whether the rasteriser or the SPU is the bottleneck. Neither is: 4-13% and 3-4% of a run |
+| [Emulation-Speed-Plan.md](Emulation-Speed-Plan.md) | built | 50-300% speed (300% since bug 81), and why the audio path was the whole job |
+| [GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md) | superseded | Whether the rasteriser or the SPU is the bottleneck. On the interpreter, 2026-09-16: neither, 4-13% and 3-4% of a run. With the recompiler that no longer holds - see Recompiler-Profile.md |
+| [Recompiler-Profile.md](Recompiler-Profile.md) | measured | Where the machine thread's time goes with the recompiler on, 2026-10-07: compiled code about 7% of it, the rest of the machine around it the bottleneck; what was sped up since, and by how much |
 | [Save-States-Plan.md](Save-States-Plan.md) | built | `StateIO`, a `Serialise` on every component, F1-F8 slots. Bug 44 |
-| [MDEC-Plan.md](MDEC-Plan.md) | built | The motion decoder. Bug 23 - and its step 3 described work the hardware does not do |
-| [Wild-Arms-Press-Start-Plan.md](Wild-Arms-Press-Start-Plan.md) | fixed | Blank after "press start". Bugs 25-26 |
-| [Ace-Combat-3-Input-Plan.md](Ace-Combat-3-Input-Plan.md) | fixed | Input never reaching the game. Bug 46 |
-| [Air-Combat-FMV-Plan.md](Air-Combat-FMV-Plan.md) | fixed | Intro film decoding one cycle and stopping. Bug 55 |
-| [FF7-Prelude-Pitch-Plan.md](FF7-Prelude-Pitch-Plan.md) | fixed | The prelude a twelfth flat. Bug 39 |
+The "built" plans above are kept as they were written, with a status line at the
+top; the investigation in each is still the record of how the answer was found.
 
-The "fixed" and "built" plans are kept as they were written, with a status line
-at the top; the investigation in each is still the record of how the answer was
-found.
+### history/ - solved investigations
+
+Plans for a single problem that has since been fixed, moved out of the way on 2026-10-09. Each
+opens with the bug that fixed it; [Bugs-Found.md](Bugs-Found.md) has the fix itself, and these keep
+what the bug entry does not - the hypotheses ruled out and the measurements that ruled them out,
+which the project's standards ask to keep so nobody tries them again.
+
+| Document | Status | Purpose |
+|---|---|---|
+| [MDEC-Plan.md](history/MDEC-Plan.md) | built | The motion decoder. Bug 23 - and its step 3 described work the hardware does not do |
+| [Wild-Arms-Press-Start-Plan.md](history/Wild-Arms-Press-Start-Plan.md) | fixed | Blank after "press start". Bugs 25-26 |
+| [Ace-Combat-3-Input-Plan.md](history/Ace-Combat-3-Input-Plan.md) | fixed | Input never reaching the game. Bug 46 |
+| [Air-Combat-FMV-Plan.md](history/Air-Combat-FMV-Plan.md) | fixed | Intro film decoding one cycle and stopping. Bug 55 |
+| [FF7-Prelude-Pitch-Plan.md](history/FF7-Prelude-Pitch-Plan.md) | fixed | The prelude a twelfth flat. Bug 39 |
 
 ## Where things stand
 

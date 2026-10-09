@@ -707,7 +707,7 @@ end, so it never did; the text is gone rather than the lie left standing.
 
 ## 23. The MDEC, and what the plan for it got wrong
 
-Implemented per [MDEC-Plan.md](MDEC-Plan.md), in `psx/mdec.h` and
+Implemented per [MDEC-Plan.md](history/MDEC-Plan.md), in `psx/mdec.h` and
 `psx/mdec.cpp`, with DMA channels 0 and 1 and a `mdec_test` harness.
 
 **The plan's step 3 described work that does not exist.** It called for "the
@@ -985,7 +985,7 @@ seven-point filter: a slight softening at the top end, not a wrong pitch.
 
 ## 25. Wild Arms after "press start": found, localised, not yet fixed
 
-Worked through [Wild-Arms-Press-Start-Plan.md](Wild-Arms-Press-Start-Plan.md).
+Worked through [Wild-Arms-Press-Start-Plan.md](history/Wild-Arms-Press-Start-Plan.md).
 Steps 1 and 2 are done and the triage has run; the root cause is localised to
 one BIOS call with a bad argument, and finding how that argument got bad is
 where it stands.
@@ -1709,7 +1709,7 @@ checksum is unchanged, and Legend of Mana, Wild Arms and Ridge Racer's CD
 player all render and behave identically to before.
 
 **What this did not fix.** This was written chasing
-[Air-Combat-FMV-Plan.md](Air-Combat-FMV-Plan.md)'s freeze - a game that
+[Air-Combat-FMV-Plan.md](history/Air-Combat-FMV-Plan.md)'s freeze - a game that
 triggers a DMA and polls to learn when it is done, which is exactly the shape
 of gap this closes. It did not resolve that freeze: the mechanism actually
 stuck there turned out to be a different wait than the one this fix targeted.
@@ -1833,7 +1833,7 @@ set: FF7 routes all 24 voices through a reverb that this core implements as a
 two-tap delay rather than the hardware's comb-and-all-pass network. That is a
 real difference in what the prelude sounds like and it is untouched by this
 fix. See [Gaps.md](Gaps.md) and
-[FF7-Prelude-Pitch-Plan.md](FF7-Prelude-Pitch-Plan.md).
+[FF7-Prelude-Pitch-Plan.md](history/FF7-Prelude-Pitch-Plan.md).
 
 ## 40. GP0(1Fh) Interrupt Request did nothing
 
@@ -2355,7 +2355,7 @@ uses the primitive, which is exactly why it survived every check run so far.
 ## 46. A driver that polled instead of using the interrupt never saw the pad answer, and then didn't believe it once it could
 
 **Symptom.** Reported as "input not working" in Ace Combat 3. Worked through
-in [Ace-Combat-3-Input-Plan.md](Ace-Combat-3-Input-Plan.md): the disc boots
+in [Ace-Combat-3-Input-Plan.md](history/Ace-Combat-3-Input-Plan.md): the disc boots
 and renders correctly, `--press` itself was validated against the BIOS
 shell, but on the title screen every one of 1402 traced pad exchanges
 aborted right after the address byte - never once sending the actual poll
@@ -3022,7 +3022,7 @@ ps logo, no output just black screen". Cold boot, frame ~640: the display
 goes to 256x240 and is disabled, MDEC decodes one burst and stops, and the
 CPU ends in an endless bus-error loop at `81081084`. Air Combat
 `[SLUS-00001]` showed the same thing at the same point - the open question in
-[Air-Combat-FMV-Plan.md](Air-Combat-FMV-Plan.md).
+[Air-Combat-FMV-Plan.md](history/Air-Combat-FMV-Plan.md).
 
 **Cause.** DICR bit 31 was derived as the master enable AND a latched flag
 *whose channel was also enabled*. The per-channel enables decide whether a

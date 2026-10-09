@@ -14,7 +14,7 @@ All of the below is implemented, in the shape it describes:
 - `platform/speed_resampler.h` resamples the SPU's output by the speed factor
   on the way to the device, carrying its fractional position across frames.
   100% is a bit-for-bit copy, so the ordinary case cannot be degraded by this
-  existing. `speed_resampler_test`: 11 checks.
+  existing. `speed_resampler_test`: 11 checks then, 13 now.
 - The audio device no longer blocks the machine
   ([Threading-Plan.md](Threading-Plan.md) stage 1), which this needed.
 
@@ -179,3 +179,12 @@ at 1.71x real time and the discs at 1.69-1.73x, measured one run at a time
 **150% is already reachable and 200% is not** - the readout will say which,
 and closing that last gap is the whole remaining case for
 [Recompiler-Plan.md](Recompiler-Plan.md).
+
+**Since then (2026-09-23, Gaps.md, "The emulation speed ceiling is the scene"):** the
+recompiler closed it. What a host can reach depends on the scene rather than on the front end:
+with the recompiler, a real game has headroom for 4-5x - Wild Arms 4.45x, 5.24x with the
+rasteriser on its own thread - so 200% and 300% are real. The BIOS shell, 640x480 interlaced and
+drawing heavily, is the worst case at about 1.65x. Interpreted, a game sits near 1.3x, so 150% is
+about the honest top of the range on that CPU. Measure a speed by the marginal cost of a frame in a
+steady scene, not by a run that includes the boot: that mistake is what made this paragraph's
+first numbers look like a front-end ceiling.

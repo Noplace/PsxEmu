@@ -1,5 +1,14 @@
 # Profiling and optimising the rasteriser and the SPU
 
+> **Status: superseded, 2026-10-09.** Everything below was measured on the interpreter, on
+> 2026-09-16, and on that CPU the conclusion holds: the rasteriser and the SPU are a small share of
+> a run. With the recompiler on, the CPU stops being most of the cost, and the rest of the machine
+> is what is left. [Recompiler-Profile.md](Recompiler-Profile.md) (2026-10-07) measured that:
+> compiled code about 7% of the machine thread. One of the things it then went after was the
+> software rasteriser, which on its own thread was a real cost: drawing each row's covered run cut
+> that thread's time by 30-45% and gained up to 25% in speed (commit `150e4f4`). Read this document
+> for the interpreter, and Recompiler-Profile.md for where the time goes now.
+
 ## Measured, 2026-09-16: neither of them is the bottleneck
 
 Step 1 has run. Four `boot_runner` builds - baseline, `Gpu::PlotPixel`
