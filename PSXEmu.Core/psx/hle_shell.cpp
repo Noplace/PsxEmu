@@ -275,7 +275,7 @@ void HleShell::Frame() {
   CdPoll();
 
   // A PlayStation disc put in boots, a second after it is seen, as a console's would.
-  if (v_.screen != kIntro && ++v_.disc_timer >= 60) {
+  if (v_.screen != kIntro && v_.screen != kPlayer && ++v_.disc_timer >= 60) {
     v_.disc_timer = 0;
     if (BootableDisc()) {
       b_.Reset();

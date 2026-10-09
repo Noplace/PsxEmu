@@ -457,6 +457,52 @@ void TestConsole() {
   delete system;
 }
 
+void TestPatches() {
+  Group("a game's patch to the pad driver, as Resident Evil 2 writes it");
+  System* system = new System();
+  Program p;
+  const uint32_t table = p.Call(0xB0, 0x57, {});   // GetB0Table
+  // psx-spx "patch_no_pad_card_auto_ack": r2 = B(5Bh), then nine zeroes from B(5Bh)+62Ch.
+  p.main.Lw(kV0, 0x5B * 4, kV0);
+  p.main.Nop();
+  p.main.Addiu(kT2, kR0, 9);
+  p.main.Addi(kV1, kV0, 0x62C);
+  const int loop = p.main.NewLabel();
+  p.main.Bind(loop);
+  p.main.Addiu(kT2, kT2, -1);
+  p.main.Sw(kR0, 0, kV1);
+  p.main.Bne(kT2, kR0, loop);
+  p.main.Addiu(kV1, kV1, 4);
+  Check(Run(*system, p), "the program ran to its end");
+  CheckEqual(Ram32(*system, table), 0x874, "GetB0Table");
+  Check(system->hle().pad_ack_removed(), "the patch is understood: vblank left to the game");
+  Check(system->hle().messages().empty(), "and nothing reported as unknown");
+  delete system;
+}
+
+void TestFont() {
+  Group("the character sets: Krom2RawAdd as the SCPH-1001 answers, and a glyph there");
+  System* system = new System();
+  Program p;
+  const uint32_t a = p.Call(0xB0, 0x51, { 0x8260 });       // full-width A
+  const uint32_t kanji = p.Call(0xB0, 0x51, { 0x889F });   // the first level-1 kanji
+  const uint32_t last = p.Call(0xB0, 0x51, { 0x9872 });    // the last
+  const uint32_t gap = p.Call(0xB0, 0x51, { 0x81AD });     // an unassigned cell
+  const uint32_t offset = p.Call(0xB0, 0x53, { 0x8280 });  // past a gap: 8281h is glyph 183
+  Check(Run(*system, p), "the program ran to its end");
+  CheckEqual(Ram32(*system, a), 0xBFC66000 + 157 * 30, "8260h, where the real BIOS has it");
+  CheckEqual(Ram32(*system, kanji), 0xBFC69D68, "889Fh, charset 3's first");
+  CheckEqual(Ram32(*system, last), 0xBFC69D68 + 2964 * 30, "9872h, its last");
+  CheckEqual(Ram32(*system, gap), 0xFFFFFFFF, "an unassigned code has none");
+  CheckEqual(Ram32(*system, offset), 0xFFFFFFFF, "nor does 8280h");
+  // The glyph itself: the ROM read back through the bus, not empty.
+  int lit = 0;
+  for (int i = 0; i < 30; ++i)
+    lit += system->bios()[0x66000 + 157 * 30 + i] != 0;
+  Check(lit > 10, "and a glyph is drawn there");
+  delete system;
+}
+
 void TestShell() {
   Group("the shell, with nothing to boot");
   System* system = new System();
@@ -487,6 +533,8 @@ int main() {
   TestSearch();
   TestCardFiles();
   TestConsole();
+  TestPatches();
+  TestFont();
   TestShell();
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

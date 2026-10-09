@@ -2486,12 +2486,26 @@ namespace psxemu {
 
         std::string text;
         kernel.TakeConsoleText(&text);
-        if (!new_boot && text.empty())
+        // The HLE BIOS's own word on what it could not do - a function it does not have, a system
+        // error - which on a console would be a game simply hanging. Into the console, and the
+        // first few of a boot as notifications, so a stalled game says why.
+        std::vector<std::string> hle;
+        system.hle().TakeNewMessages(&hle);
+        if (new_boot)
+            hle_messages_shown_ = 0;
+        if (!new_boot && text.empty() && hle.empty())
             return;
-        PostToUi([this, new_boot, text = std::move(text)] {
+        const int toasts = hle_messages_shown_ < 3 ? 3 - hle_messages_shown_ : 0;
+        hle_messages_shown_ += static_cast<int>(hle.size());
+        PostToUi([this, new_boot, text = std::move(text), hle = std::move(hle), toasts] {
             if (new_boot)
                 console_.AppendMarker(L"restart");
             console_.Append(text);
+            for (size_t i = 0; i < hle.size(); ++i) {
+                console_.Append("[HLE BIOS] " + hle[i] + "\n");
+                if (static_cast<int>(i) < toasts)
+                    Notify(OverlayIcon::kInfo, ToastKind::kWarning, L"HLE BIOS", Wide(hle[i]));
+            }
         });
     }
 

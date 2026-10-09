@@ -105,8 +105,23 @@ and keeps all its state in RAM at 2000h, so a save state taken in it resumes in 
   handler, laid out as the 1995 kernel's so they are harmless or work; patches inside B(5Bh)'s pad
   and card driver land in an 8 KB ROM region of their own, where stores are discarded, and the three
   entry points games fetch from it by offset (+7A0h SetPadOutput, +884h/+894h the pad enable flag)
-  are traps at those offsets. A(9Dh)'s first two instruction words encode where the configuration
-  lives, for Spec Ops' set_conf_without_realloc.
+  are traps at those offsets. The bus tells the HLE BIOS of every store to ROM (`HleBios::RomWrite`):
+  zeroes over B(5Bh)+62Ch-64Fh - patch_no_pad_card_auto_ack, Resident Evil 2 and Sporting Clays -
+  stop its pad handler acknowledging vblank, as the patch stops the kernel's, leaving the interrupt
+  to the game's own handler; the other documented targets (+3D8h-4FFh, +594h-5BFh, +9C4h-9E3h,
+  +1988h) are for code this kernel does not have, and anything else is reported as an unknown
+  patch. A(9Dh)'s first two instruction words encode where the configuration lives, for Spec Ops'
+  set_conf_without_realloc.
+- **The character sets** are where the SCPH-1001 keeps them - charset 2 (524 symbols, kana and
+  alphabets, 16x15) at BFC66000h, charset 3 (the 2,965 level-1 kanji) at BFC69D68h, charset 4 (8x15
+  ASCII) at BFC7F8DEh - drawn from the Shinonome fonts (public domain, The Electronic Font Open
+  Laboratory) by `tools/make_hle_font.cpp` into `hle_font_data.cpp`. Krom2RawAdd and Krom2Offset
+  number them as the real kernel does, measured by calling its for every code from 8140h to 9872h:
+  all 3,489 that have a glyph get the same address from both; a code with none gets -1 here, as
+  psx-spx documents, where the real one returns an address of no glyph in particular.
+- **What it could not do** - a function it does not have, a system error, an unknown patch - goes to
+  `boot_runner`'s output, and in the emulator to the BIOS Console window as `[HLE BIOS] ...` and, the
+  first three of a boot, a notification: on a console those would just be a game hanging.
 
 ## Debugging a game
 
@@ -131,7 +146,9 @@ call kernel functions through A0h/B0h/C0h the way a game does, boots them on the
 what they stored: the kernel's RAM layout against SCPH-1001's, strings and memory with psx-spx's
 bugs, the heap and rand, events (ready and callback), a thread switch, qsort/lsearch/bsearch through
 a callback, memory card files (create, write, read back, already-exists, firstfile, delete), and
-printf, and the shell reaching its menu with no disc and no dump. **70 checks, 0 failures** on 2026-10-09.
+printf, Resident Evil 2's pad driver patch run as the game writes it, Krom2RawAdd's addresses and a glyph
+at one, and the shell reaching its menu with no disc and no dump. **81 checks, 0 failures** on
+2026-10-09.
 
 Discs, `boot_runner --hle --frames 2000` on 2026-10-09, all reaching the disc and drawing, no HLE
 message on any: Air Combat (intro), Metal Gear Solid (opening), Breath of Fire III (title), Ridge
@@ -143,8 +160,10 @@ change to the HLE BIOS should not move them without a reason.
 
 ## Not done
 
-- **Krom2RawAdd / Krom2Offset**: the HLE ROM has no Shift-JIS character set, so these return a blank
-  glyph. Games that draw Japanese text from the BIOS font draw nothing. A free 16x15 font would fix it.
+- **The character sets** are Shinonome's glyphs, not Sony's: the same characters at the same
+  addresses, drawn differently. Charset 1 (accented letters, JIS X 0212, which Shinonome lacks) and
+  charsets 5 and 6 are empty; no BIOS function reaches them. No game run so far has called
+  Krom2RawAdd, so it is checked against the real kernel's answers, not yet on a game's screen.
 - **The shell's** CD player has no shuffle or repeat, and its time is the track's, not the disc's.
 - **CdAsyncReadSector** with whole-sector modes reads the 800h data only.
 - **The devices' own entry points** (A(5Fh)-A(6Fh), called directly rather than through a file
@@ -166,5 +185,6 @@ change to the HLE BIOS should not move them without a reason.
 | `psx/hle_bios_io.cpp` | Files (cdrom:, bu, tty), CD-ROM functions, memory card sectors, pads |
 | `psx/hle_bios_timing.cpp` | What each function costs, measured |
 | `psx/hle_shell.cpp` | The shell: intro, menu, memory card manager, CD player, its font |
+| `psx/hle_font_data.cpp`, `tools/make_hle_font.cpp` | The character sets, and the generator that made them from Shinonome |
 | `psx/mips_assembler.h` | The few instructions the kernel's RAM code needs |
 | `Sio::ExchangeDirect`, `Iso9660::List`, `Cpu::SettleLoads` | What the kernel needed from the devices |

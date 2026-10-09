@@ -1100,7 +1100,11 @@ void Cpu::Store(MemorySize size, uint32_t data, uint32_t address) {
       case kM32: system_->io().Write32(physical, data); return;
     }
   } else if (physical >= 0x1FC00000 && physical <= 0x1FC7FFFF) {
-    // The BIOS is read-only; a write there is discarded, not an error.
+    // The BIOS is read-only; a write there is discarded, not an error. Under the HLE BIOS it is
+    // also a game patching what it takes for the kernel's code, which that kernel has to hear
+    // about to do what the patch meant (HleBios::RomWrite).
+    if (system_->hle_active()) [[unlikely]]
+      system_->hle().RomWrite(physical, data);
     return;
   } else if (address >= 0xFFFE0000 && address <= 0xFFFE0FFF) {
     switch (size) {

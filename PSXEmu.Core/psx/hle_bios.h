@@ -104,9 +104,23 @@ class HleBios {
   static const uint32_t kCdSeekCycles = 540000;
   static const uint32_t kCardSectorCycles = 1128960;
 
+  // A store to the ROM, which the bus discards: a game patching the kernel's pad and card driver
+  // by offset from B(5Bh) (psx-spx "BIOS Patches"). The patches whose purpose is a behaviour this
+  // kernel has are turned into that behaviour; the rest are noted in messages().
+  void RomWrite(uint32_t physical, uint32_t value);
+  // Whether a game has applied patch_no_pad_card_auto_ack - for hle_test.
+  bool pad_ack_removed() { return vars().pad_ack_removed != 0; }
+
   // What did not work, for a harness to print: a function nothing implements yet, a jump into
   // the middle of a slot, a system error. Each message once.
   const std::vector<std::string>& messages() const { return messages_; }
+
+  // The messages since the last call, moved into `out` - for a front end to show as they happen
+  // (the BIOS console, a notification) rather than a harness reading them all at the end.
+  void TakeNewMessages(std::vector<std::string>* out) {
+    out->clear();
+    out->swap(new_messages_);
+  }
 
   // Every kernel function entered, with its arguments and caller, one line each - for finding
   // where a game and this kernel part ways. Null turns it off.
@@ -207,7 +221,8 @@ class HleBios {
     uint32_t delay_active;                              // a call held at kDelay
     uint32_t delay_until_low, delay_until_high;         // until this cycle
     uint32_t delay_return;                              // and then on here
-    uint32_t reserved[11];
+    uint32_t pad_ack_removed;                           // patch_no_pad_card_auto_ack applied
+    uint32_t reserved[10];
   };
 
   // Where the parts of the kernel that are not the big tables live, inside the first 64 KB.
@@ -262,6 +277,9 @@ class HleBios {
 
   static uint32_t TrapAddress(uint32_t function);   // KSEG1 entry point for a function number
   void Dispatch(uint32_t function);
+
+  // Krom2Offset: the glyph of a Shift-JIS code in its character set, and the set's base.
+  static uint32_t KromOffset(uint32_t code, uint32_t* base);
 
   // What `function` costs, from its arguments before it runs (hle_bios_timing.cpp).
   uint32_t CostOf(uint32_t function);
@@ -382,6 +400,7 @@ class HleBios {
 
   System* system_ = nullptr;
   std::vector<std::string> messages_;
+  std::vector<std::string> new_messages_;   // not yet taken by TakeNewMessages
   FILE* trace_ = nullptr;
   // Only ever set and consumed inside one trap, so not machine state: a memory card file
   // operation's events, for FinishFile.

@@ -588,6 +588,8 @@ namespace psxemu {
         // machine thread's, compared after each frame to notice a boot or a reset.
         ConsoleWindow console_;
         uint32_t console_session_ = 0;
+        // HLE BIOS messages this boot, the machine thread's: only the first few become toasts.
+        int hle_messages_shown_ = 0;
 
         // Per card - port, then slot A-D - the save failures already reported, whether the card
         // is failing now, and which file it was failing to write. The machine thread's.

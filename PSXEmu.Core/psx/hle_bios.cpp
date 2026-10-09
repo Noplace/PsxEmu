@@ -62,7 +62,50 @@ const uint32_t kExeHeaderBytes = 0x3C;   // what LoadExeHeader copies: file byte
 
 uint32_t Kseg0(uint32_t address) { return 0x80000000u | (address & 0x1FFFFFFF); }
 
+// The character sets' places in the ROM, and charset 2's codes: the runs of assigned Shift-JIS
+// cells in the order the SCPH-1001's Krom2Offset numbers them - measured by calling it for every
+// code from 8140h to 84BEh (Docs/HLE-BIOS.md). Charset 3, the level-1 kanji, is arithmetic.
+const uint32_t kCharset2Rom = 0x66000;
+const uint32_t kCharset3Rom = 0x69D68;
+const uint32_t kCharset4Rom = 0x7F8DE;
+const uint16_t kCharset2Runs[][2] = {
+  {0x8140, 0x817E}, {0x8180, 0x81AC}, {0x81B8, 0x81BF}, {0x81C8, 0x81CE}, {0x81DA, 0x81E8},
+  {0x81F0, 0x81F7}, {0x81FC, 0x81FC}, {0x824F, 0x8258}, {0x8260, 0x8279}, {0x8281, 0x829A},
+  {0x829F, 0x82F1}, {0x8340, 0x837E}, {0x8380, 0x8396}, {0x839F, 0x83B6}, {0x83BF, 0x83D6},
+  {0x8440, 0x8460}, {0x8470, 0x847E}, {0x8480, 0x8491}, {0x849F, 0x84BE},
+};
+
 }  // namespace
+
+extern const uint8_t kHleCharset2[15720];
+extern const uint8_t kHleCharset3[88950];
+extern const uint8_t kHleCharset4[1425];
+
+// Which glyph of its character set `code` is, and that set's base address; FFFFFFFFh for a code
+// with none.
+uint32_t HleBios::KromOffset(uint32_t code, uint32_t* base) {
+  if (code >= 0x8140 && code <= 0x84BE) {
+    uint32_t offset = 0;
+    for (const auto& run : kCharset2Runs) {
+      if (code >= run[0] && code <= run[1]) {
+        if (base != nullptr)
+          *base = 0xBFC00000 | kCharset2Rom;
+        return offset + (code - run[0]);
+      }
+      offset += run[1] - run[0] + 1;
+    }
+    return 0xFFFFFFFF;
+  }
+  if (code >= 0x889F && code <= 0x9872) {
+    const uint32_t low = code & 0xFF;
+    if (low < 0x40 || low == 0x7F || low > 0xFC)
+      return 0xFFFFFFFF;
+    if (base != nullptr)
+      *base = 0xBFC00000 | kCharset3Rom;
+    return ((code >> 8) - 0x88) * 188 + (low - 0x40) - (low >= 0x80 ? 1 : 0) - 94;
+  }
+  return 0xFFFFFFFF;
+}
 
 // ---- The ROM -----------------------------------------------------------------------------------
 
@@ -98,6 +141,13 @@ void HleBios::BuildRom(uint8_t* rom) {
   put32(0x104, 3);
   memcpy(rom + 0x108, kKernelVersion, sizeof(kKernelVersion));
   memcpy(rom + 0x7FF32, kRomVersion, sizeof(kRomVersion));
+
+  // The character sets, where the SCPH-1001 keeps them (psx-spx "BIOS Character Sets"): charset
+  // 2's 16x15 symbols and kana, charset 3's kanji, charset 4's 8x15 ASCII. Shinonome's glyphs, in
+  // the public domain - hle_font_data.cpp, made by tools/make_hle_font.cpp.
+  memcpy(rom + kCharset2Rom, kHleCharset2, sizeof(kHleCharset2));
+  memcpy(rom + kCharset3Rom, kHleCharset3, sizeof(kHleCharset3));
+  memcpy(rom + kCharset4Rom, kHleCharset4, sizeof(kHleCharset4));
 
   // Every slot reads as "jr ra; nop" with its function number after - nothing executes it, but a
   // disassembly of a table entry then says what it is.
@@ -267,8 +317,11 @@ void HleBios::Message(const std::string& text) {
   for (const std::string& seen : messages_)
     if (seen == text)
       return;
-  if (messages_.size() < 256)
+  if (messages_.size() < 256) {
     messages_.push_back(text);
+    if (new_messages_.size() < 32)
+      new_messages_.push_back(text);
+  }
 }
 
 void HleBios::Console(const std::string& text) {
@@ -282,6 +335,41 @@ void HleBios::SystemError(const char* what) {
   Message(text);
   // The kernel's system errors jump to themselves forever. The pc stays on the trap, so every
   // step comes back here; interrupts, if they are on, are still taken.
+}
+
+// ---- Patches -------------------------------------------------------------------------------------
+
+// The offsets into B(5Bh)'s driver games are known to patch (psx-spx "BIOS Patches"), what each
+// patch was for, and whether this kernel has to do anything to honour it.
+void HleBios::RomWrite(uint32_t physical, uint32_t value) {
+  const uint32_t offset = (physical & 0x1FFFFFFF) - kTrapBase;
+  if (offset >= kSlotRegion && offset < kTrapSize && offset >= kB5BOffset) {
+    const uint32_t at = offset - kB5BOffset;
+    if (at >= 0x62C && at < 0x650) {
+      // patch_no_pad_card_auto_ack (Resident Evil 2, Sporting Clays): zeroes over the code that
+      // acknowledges vblank after the pads are read, so the game's own vblank handler gets it.
+      if (value == 0)
+        vars().pad_ack_removed = 1;
+      return;
+    }
+    // patch_pad_error_handling (594h-5BFh: nothing here goes wrong in a way it would handle),
+    // patch_optional_pad_output (3D8h-4FFh: SetPadOutput's bytes are never clipped here),
+    // patch_card_specific_delay (9C4h-9E3h) and patch_card_info_step4 (1988h): timing and a
+    // stray byte of the kernel's own card driver, which this one does not have.
+    if ((at >= 0x594 && at < 0x5C0) || (at >= 0x3D8 && at < 0x500) || (at >= 0x9C4 && at < 0x9E4) ||
+        at == 0x1988)
+      return;
+    char text[96];
+    snprintf(text, sizeof(text), "an unknown patch to the pad and card driver at B(5Bh)+%Xh", at);
+    Message(text);
+    return;
+  }
+  if (offset < kTrapSize) {
+    char text[96];
+    snprintf(text, sizeof(text), "a write into the kernel's functions at %08X, ignored",
+             physical | 0xA0000000);
+    Message(text);
+  }
 }
 
 // ---- The trap ------------------------------------------------------------------------------------
@@ -469,7 +557,7 @@ void HleBios::Dispatch(uint32_t function) {
       return;
     case kPadCardHandler:
       PadVblank();
-      if (vars().pad_autoack != 0)
+      if (vars().pad_autoack != 0 && vars().pad_ack_removed == 0)
         WriteIo32(kIStat, ~1u);
       if (vars().card_started != 0) {
         CardVblank(c.gp.ra);
@@ -1789,10 +1877,14 @@ void HleBios::FunctionB(uint32_t n) {
       v.card_allow_new = 1;
       ReturnVoid();
       return;
-    case 0x51:     // Krom2RawAdd(shiftjis): a glyph - the HLE ROM has no character set; a blank one
-    case 0x53:     // Krom2Offset
-      Message("Krom2RawAdd/Krom2Offset: the HLE ROM has no character set");
-      Return(n == 0x51 ? 0xBFC7F000 : 0);
+    case 0x51: {   // Krom2RawAdd(shiftjis): where its 16x15 glyph is in the ROM, or -1
+      uint32_t base = 0;
+      const uint32_t offset = KromOffset(Arg(0) & 0xFFFF, &base);
+      Return(offset == 0xFFFFFFFF ? 0xFFFFFFFF : base + offset * 30);
+      return;
+    }
+    case 0x53:     // Krom2Offset(shiftjis): which glyph of its character set
+      Return(KromOffset(Arg(0) & 0xFFFF, nullptr));
       return;
     case 0x54:     // GetLastError
       Return(v.last_error);
