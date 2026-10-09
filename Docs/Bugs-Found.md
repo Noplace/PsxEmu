@@ -8925,3 +8925,58 @@ what it is for.
   short presumably would not.
 
 All twenty-four harness runs green after bug 146 (`media_test` 474).
+
+## 147. Gran Turismo 2 stuck on its first notice with the recompiler: GetlocL refused after the drive said "reading"
+
+`psx/cdrom.cpp`, `tools/media_test.cpp`
+
+Reported: `Gran Turismo 2 - [SCUS-94455] {Arcade Mode}.cd1.ISO` stays on the "Cars included in this
+game may be different from the actual cars..." notice for ever with the recompiler on; the interpreter
+carries on into the opening film.
+
+**Found by bisecting** the recompiler's commits with `boot_runner --disc ... --recompiler` and the
+sectors read at frame 2,500 as the verdict: `d9b94c5` 3,166, `23abe7e` 3,166, `9de3305` 319 - the first
+commit of bug 146. A CD-ROM change, not a recompiler one; the interpreter was spared by timing. The
+two CPUs do not keep identical time (their pictures differ from frame 100 with every timing option on),
+and what went wrong depends on which side of a sector's arrival a command falls.
+
+**What the game does**, from a trace of every CD command and interrupt: Setloc, ReadN, then Getstat over
+and over, each one issued the moment the last answer was taken, while the status says 42h - seeking,
+since bug 146 made a read that has to seek say so. When the status turns 22h the game asks for GetlocL
+at once. It got INT5, 80h, and never asked for anything again: one error, then Getstat for ever.
+
+**Why.** `StepRead` changed the status from seeking to reading at the first sector's time, but the
+header GetlocL answers with comes from `sector_`, which the sector only reaches in `LoadSector` - and
+that waits behind every interrupt software has yet to acknowledge. A game polling Getstat has one on its
+way nearly all the time (the answer comes 20,000 cycles after the command, the next command 3,000 after
+the answer), so the sector went on waiting and the drive reported "reading" with no header at all. On the
+console the seek ends on a header - DuckStation decodes the target's at the end of a logical seek, before
+reading begins - so a drive that says 22h has one, and the interrupt in the way holds back the data, not
+the header.
+
+**Fix.** The same step that turns 42h into 22h now decodes the header at the sector about to be read
+(`DecodeHeaderAt`, which SeekL already used on arriving). It writes bytes 12 to 23 of `sector_`, the
+first twelve a whole-sector read hands software, so it is left undone while the last sector's reader has
+not got past them (`data_offset_ == 12 && data_read_ < 12`); the sector's own load puts the header there
+as before. A first version skipped it whenever the last sector was not fully taken, and Gran Turismo 2
+takes 2,060 of a whole-sector buffer's 2,340 bytes and starts the next read, so the second GetlocL failed
+just as the first had.
+
+**Verified.**
+- Gran Turismo 2, 3,000 frames from cold, every timing option on: the recompiler read 319 sectors
+  and now reads 4,275; at frame 9,000 it is 17,556 sectors into the opening film. The interpreter's
+  picture and 3,697 sectors are the same as before.
+- Sixteen discs - Gran Turismo 2, Air Combat, Wild Arms, Wild Arms 2, Vandal Hearts, Legend of Mana, Ridge
+  Racer, Area 51, FF7, Ace Combat 3, Captain Tsubasa J, Thousand Arms, Tekken 3, Tomb Raider, Adidas
+  Power Soccer '98, X-Men vs. Street Fighter and Bomberman Party Edition - on both CPUs with every timing
+  option on, 3,000 frames: 31 of the 32 runs give the same checksum and sector count before and after.
+  The one that moved is Gran Turismo 2 on the recompiler.
+- `media_test` 479 -> 486: a Getstat poll through a seeking ReadN, with the first sector held back, ends
+  with the drive reading and GetlocL answering 00:04:00; a finished seek leaves an unread whole-sector
+  buffer's header bytes alone. Two checks fail against the old controller (GetlocL gets INT5), and the
+  buffer check fails against a decode with no guard.
+
+**Not done.** Only `media_test` and the disc runs were re-run for this fix, not all twenty-four
+harnesses; nothing else reads the controller. A read that seeks while its predecessor's first twelve
+bytes are unread still has no header until its sector loads, and a game that polls then would see the
+old refusal.

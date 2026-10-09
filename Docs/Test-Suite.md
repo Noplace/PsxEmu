@@ -174,7 +174,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 474 checks, 0 failures.**
+**Current: 486 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -232,6 +232,14 @@ Covers, in the order it runs:
   INT5 04h, 04h, after which both Getlocs fail and Getstat says 04h until MotorOn.
   Thirteen of the twenty-eight fail with the old controller, which answered
   GetlocL from whatever the buffer held and let a seek go anywhere
+- **The header of a read that has finished seeking** (bug 147): polling Getstat
+  the way Gran Turismo 2 does - each command the moment the last answer is
+  taken, so the first sector is held back - through a seeking ReadN ends with
+  22h, no sector read, and GetlocL answering with the header at 00:04:00; and a
+  whole-sector read's buffer, its first sector not yet read, still starts with
+  its own header after the next read's seek has finished. Two of the seven fail
+  with the old controller (GetlocL gets INT5), and the buffer check fails
+  against a decode with no guard
 - **Where the head is inside a pregap** (bug 110): GetlocP 54 sectors before a
   track's index 1 answers that track, index 0, with the time counting down -
   00:02:00 on the pregap's first sector, the sector before it still the track

@@ -1794,6 +1794,120 @@ void TestHeaderValidAndSeekLimits(emulation::psx::System* system,
   remove(path.c_str());
 }
 
+// A read that seeks first has decoded the header at its target by the time it
+// says it is reading, whether or not the sector has reached the buffer yet. A
+// game polling Getstat has an interrupt outstanding nearly all the time, which
+// holds the sector back - and Gran Turismo 2, seeing 22h, asks for GetlocL at
+// once. It was answered with an error and waited on it for ever (bug 147).
+void TestHeaderDecodedWhenSeekEnds(emulation::psx::System* system,
+                                   const std::string& directory) {
+  printf("cd-rom controller, the header of a read that has finished seeking\n");
+  BeginTest("the header when a seeking read starts reading");
+
+  const std::string path = directory + "media_test_seekend.iso";
+  if (!WriteImage(path, 2048, 200)) {
+    printf("  FAIL  could not write %s\n", path.c_str());
+    ++g_failures;
+    return;
+  }
+  Check(system->LoadDisc(path.c_str()), "mount the disc");
+
+  Cdrom& cdrom = system->cdrom();
+  ControllerHarness harness(system);
+  uint8_t response[16];
+  int length = 0;
+  auto SetLoc = [&](uint8_t m, uint8_t s, uint8_t f) {
+    const uint8_t location[3] = { m, s, f };
+    harness.Command(0x02, location, 3);
+    harness.WaitForInterrupt(response, &length, 16);
+  };
+  auto Drain = [&]() {          // after a Pause: take its two answers
+    for (int i = 0; i < 8; ++i) {
+      if (harness.WaitForInterrupt(response, &length, 16) == Cdrom::kIntComplete)
+        break;
+    }
+  };
+  auto Acknowledge = [&]() {
+    cdrom.Write(0x1F801800, 1);
+    cdrom.Write(0x1F801803, 0x07);
+    cdrom.Write(0x1F801800, 0);
+  };
+
+  // Poll Getstat the way the game does: the next command goes in the moment the
+  // last answer has been taken, so one is always on its way and the sector
+  // cannot be put in the buffer. Until the status stops saying "seeking".
+  SetLoc(0x00, 0x04, 0x00);
+  harness.Command(0x06, nullptr, 0);                          // ReadN
+  harness.WaitForInterrupt(response, &length, 16);
+  uint8_t status = 0;
+  const uint64_t sectors_before = cdrom.stats().sectors_read;
+  for (int poll = 0; poll < 400; ++poll) {
+    harness.Command(0x01, nullptr, 0);                        // Getstat
+    const uint8_t kind = harness.WaitForInterrupt(response, &length, 16);
+    if (kind != Cdrom::kIntAcknowledge)
+      break;                                                  // a sector got through
+    status = response[0];
+    if (status != 0x42)
+      break;
+  }
+  CheckEqual(status, 0x22, "polling Getstat, the seek ends with the drive reading");
+  Check(cdrom.stats().sectors_read == sectors_before,
+        "with the first sector still held back");
+  harness.Command(0x10, nullptr, 0);                          // GetlocL
+  CheckEqual(harness.WaitForInterrupt(response, &length, 16), Cdrom::kIntAcknowledge,
+             "GetlocL answers at once");
+  Check(response[0] == 0x00 && response[1] == 0x04 && response[2] == 0x00,
+        "with the header of the sector being read, 00:04:00");
+  harness.Command(0x09, nullptr, 0);                          // Pause
+  Drain();
+
+  // The decode writes bytes 12 to 23 of the sector buffer, the first twelve a
+  // whole-sector read hands over. While a reader has yet to get past them, a
+  // finished seek leaves them be.
+  const uint8_t whole_sector = 0x20;
+  harness.Command(0x0E, &whole_sector, 1);                    // Setmode
+  harness.WaitForInterrupt(response, &length, 16);
+  SetLoc(0x00, 0x04, 0x00);
+  harness.Command(0x06, nullptr, 0);                          // ReadN
+  harness.WaitForInterrupt(response, &length, 16);
+  bool arrived = false;
+  for (int step = 0; step < 4000 && !arrived; ++step) {
+    cdrom.Tick(1000);
+    cdrom.Write(0x1F801800, 1);
+    arrived = (cdrom.Read(0x1F801803) & 0x07) == Cdrom::kIntDataReady;
+    cdrom.Write(0x1F801800, 0);
+  }
+  Check(arrived, "the first sector of a whole-sector read arrives");
+  Acknowledge();
+  harness.Command(0x09, nullptr, 0);                          // Pause
+  Drain();
+  harness.Command(0x10, nullptr, 0);                          // GetlocL
+  harness.WaitForInterrupt(response, &length, 16);
+  const uint32_t first_word = response[0] | (response[1] << 8) | (response[2] << 16) |
+                              (static_cast<uint32_t>(response[3]) << 24);
+
+  SetLoc(0x00, 0x04, 0x20);
+  harness.Command(0x06, nullptr, 0);                          // ReadN, somewhere else
+  for (int step = 0; step < 4000; ++step) {                   // its acknowledge, left raised
+    cdrom.Tick(1000);
+    cdrom.Write(0x1F801800, 1);
+    const bool raised = (cdrom.Read(0x1F801803) & 0x07) != 0;
+    cdrom.Write(0x1F801800, 0);
+    if (raised)
+      break;
+  }
+  for (uint32_t run = 0; run < 8 * 451584; run += 1000)       // far past the first sector
+    cdrom.Tick(1000);
+  CheckEqual(cdrom.ReadDataWord(), first_word,
+             "the sector nobody had read yet still starts with its own header");
+  Acknowledge();
+  harness.Command(0x09, nullptr, 0);                          // Pause
+  Drain();
+
+  system->EjectDisc();
+  remove(path.c_str());
+}
+
 // A sector whose data-ready interrupt software has not yet acknowledged stays
 // in the buffer however long the drive runs on, and the next one takes the
 // buffer only after the acknowledge. Software acknowledges and then reads -
@@ -2878,6 +2992,7 @@ int main(int argc, char** argv) {
   TestControllerWithDisc(system, directory);
   TestUnacknowledgedSectorHolds(system, directory);
   TestHeaderValidAndSeekLimits(system, directory);
+  TestHeaderDecodedWhenSeekEnds(system, directory);
   TestCdAudioControl(system, directory);
   TestPregapPosition(system, directory);
   TestAssumedPregaps(system, directory);

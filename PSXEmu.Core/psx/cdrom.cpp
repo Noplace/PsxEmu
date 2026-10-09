@@ -1028,9 +1028,25 @@ void Cdrom::StepRead(uint32_t cycles) {
   }
 
   // The first sector of a read that began with a seek: the head is there, and
-  // the drive is reading now (bug 146).
-  if (status_ & kStatusSeeking)
+  // the drive is reading now (bug 146). A seek ends on a sector header, so the
+  // header is decoded in the same breath as the status changes - not when the
+  // sector reaches the buffer, which can be a long way off: it waits behind
+  // every interrupt software has yet to acknowledge, and a game polling Getstat
+  // has one outstanding nearly all the time. Gran Turismo 2 reads 22h, asks for
+  // GetlocL at once, was answered with an error for want of a header though the
+  // drive had just said it was reading - and waited on it for ever (bug 147).
+  //
+  // The decode writes bytes 12 to 23 of sector_, which a whole-sector read hands
+  // software as its first twelve: while the last sector's reader has yet to get
+  // past them they are left alone, and the sector's own load puts the header
+  // there as it always did. (Most readers have gone by - Gran Turismo 2 takes
+  // 2,060 of the 2,340 bytes and starts the next read.)
+  if (status_ & kStatusSeeking) {
     status_ = (status_ & ~kStatusSeeking) | kStatusReading;
+    const bool header_is_data = data_offset_ == 12 && data_read_ < 12 && data_read_ < data_size_;
+    if (!header_is_data)
+      DecodeHeaderAt(read_lba_);
+  }
 
   // Do not stack sectors up behind an unacknowledged one; queuing without
   // bound is worse. Nor put one in the buffer while software has not yet
