@@ -224,6 +224,13 @@ cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_fsr\ /Fe:Temp\tools\fsr_choice_tes
    PSXEmu.Core\tools\fsr_choice_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
+rem The custom filter chain's passes: graphics\filter_chain.h and shader_pass.h, header-only, and
+rem the settings that hold the chain.
+if not exist Temp\tools\obj_filterchain mkdir Temp\tools\obj_filterchain
+cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_filterchain\ /Fe:Temp\tools\filter_chain_test.exe ^
+   PSXEmu.Core\tools\filter_chain_test.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
 rem What AMD's FidelityFX runtime says about each card - Docs/FSR-Plan.md, phase 0. Needs
 rem PSXEmu.Win32\graphics\fsr\fetch_fidelityfx.ps1 run first to find anything, but builds without;
 rem AMD's loader finds its effects only beside the executable, so they are copied here.

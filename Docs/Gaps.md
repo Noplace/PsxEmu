@@ -612,6 +612,15 @@ saved, the game paused under it (bug 119). Emulation > Cheats keeps each game's
 GameShark codes, runs the ticked ones every frame, and imports DuckStation's and
 RetroArch's cheat files (bug 120).
 
+Settings > Video has a **custom filter chain** - up to four of the filters, each on
+the picture the one before made, Super-xBR then Scanline say - and **Frame Pacing**
+(bug 148): the console's own rate as before, the machine run in step with the
+display's refresh when that is within 2% of the game's, or each frame presented
+the moment it is drawn for a G-Sync or FreeSync display. What is not there: shader
+files of the user's own (every filter is compiled in, for three shader languages),
+and anything for a display that cannot be matched - PAL on a 60 Hz panel, NTSC on
+144 or 165 Hz - but variable refresh.
+
 It *can* be driven from an agent session after all - launched, sent
 `WM_COMMAND`s, and read back through its title bar (Test-Suite.md's host_test
 section) - which is how the threading work was checked end to end. What still

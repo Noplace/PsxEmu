@@ -29,7 +29,7 @@ void VideoOutput::Stop() {
 
 void VideoOutput::PresentAgain() {
   const VideoFrame* frame = frames_.current();
-  if (frame != nullptr)
+  if (frame != nullptr && !current_given_back_)
     Show(*frame);
 }
 
@@ -44,9 +44,9 @@ void VideoOutput::Show(const VideoFrame& frame) {
   const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
   presenter_->Present(frame);
   const std::chrono::steady_clock::duration took = std::chrono::steady_clock::now() - start;
-  present_ns_.fetch_add(
-      static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(took).count()),
-      std::memory_order_relaxed);
+  const int64_t took_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(took).count();
+  present_ns_.fetch_add(static_cast<uint64_t>(took_ns), std::memory_order_relaxed);
+  frames_.NotePresent(took_ns);
   presents_.fetch_add(1, std::memory_order_relaxed);
   last_shown_ = std::chrono::steady_clock::now();
 }
@@ -67,7 +67,9 @@ void VideoOutput::Run() {
         const auto since = std::chrono::steady_clock::now() - last_shown_;
         const auto kGap = std::chrono::milliseconds(33);
         if (since >= kGap) {
-          presenter_->Refresh(frames_.current());
+          // Not over a frame whose picture was given back: the overlay waits for the next.
+          if (!current_given_back_)
+            presenter_->Refresh(frames_.current());
           last_shown_ = std::chrono::steady_clock::now();
           continue;
         }
@@ -79,6 +81,17 @@ void VideoOutput::Run() {
       doorbell_.Wait(std::chrono::milliseconds(100));
       continue;
     }
+    // Not shown: a frame too late for its refresh, or one left out so a full display queue can
+    // empty (host::Machine). Its picture on the card goes back to the rasteriser as a frame never
+    // taken does - so it is not the one to show again either.
+    if (frames_.TakeSkip()) {
+      if (frame->shared) {
+        frame->shared.source->Dropped(frame->shared.serial);
+        current_given_back_ = true;
+      }
+      continue;
+    }
+    current_given_back_ = false;
     Show(*frame);
   }
 

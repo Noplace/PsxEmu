@@ -106,6 +106,7 @@ namespace psxemu {
         struct Chain {
             std::vector<std::string> passes;
             std::vector<int> scales;
+            std::vector<int> originals;   // ShaderPass::original
         };
 
         bool CreateContext();
@@ -124,10 +125,11 @@ namespace psxemu {
         bool EnsureFrameTexture(int width, int height);
         bool EnsureChainTargets(const Chain& chain, int width, int height);
         void ReleaseChainTargets();
-        // One full-screen draw with `program`, reading `input`: into the window's letterbox
-        // (`target` 0) or into chain target `target` - 1.
+        // One full-screen draw with `program`, reading `input`, and `original` as its original -
+        // 0 for the frame: into the window's letterbox (`target` 0) or into chain target
+        // `target` - 1.
         void Draw(const Program& program, GLuint input, int target, float out_width,
-                  float out_height, float in_width, float in_height);
+                  float out_height, float in_width, float in_height, GLuint original = 0);
 
         HWND window_ = nullptr;
         HDC dc_ = nullptr;

@@ -24,7 +24,7 @@
 
 #include <d3d11_1.h>
 #include <d3dcompiler.h>
-#include <dxgi.h>
+#include <dxgi1_5.h>
 #include <algorithm>
 #include <cstring>
 
@@ -70,6 +70,25 @@ namespace psxemu {
             "  return frame.Sample(frame_sampler, input.uv);\n"
             "}\n";
 
+        // Whether DXGI lets a flip-model swap chain present without waiting for a refresh -
+        // Windows 10 1607 and a driver that says so. The same question D3D12GraphicsEngine asks.
+        bool TearingSupported() {
+            IDXGIFactory1* factory = nullptr;
+            if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1),
+                                          reinterpret_cast<void**>(&factory))))
+                return false;
+            IDXGIFactory5* factory5 = nullptr;
+            BOOL allowed = FALSE;
+            if (SUCCEEDED(factory->QueryInterface(__uuidof(IDXGIFactory5),
+                                                  reinterpret_cast<void**>(&factory5))) &&
+                FAILED(factory5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING,
+                                                     &allowed, sizeof(allowed))))
+                allowed = FALSE;
+            Release(&factory5);
+            Release(&factory);
+            return allowed != FALSE;
+        }
+
     }   // namespace
 
     D3D11Presenter::D3D11Presenter()
@@ -109,6 +128,12 @@ namespace psxemu {
         description.SampleDesc.Count = 1;
         description.Windowed = TRUE;
         description.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        // Presents that need not wait for a refresh (SetVsync off - Frame Pacing's variable refresh)
+        // are only allowed to tear, and so to reach a G-Sync or FreeSync display when they arrive,
+        // from a swap chain made saying so.
+        tearing_support_ = TearingSupported();
+        if (tearing_support_)
+            description.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
 
         UINT flags = 0;
 #ifdef _DEBUG
@@ -423,7 +448,8 @@ namespace psxemu {
         back_buffer_height_ = height;
 
         ReleaseRenderTarget();
-        swap_chain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+        swap_chain_->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN,
+                                   tearing_support_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
         CreateRenderTarget();
     }
 
@@ -641,7 +667,8 @@ namespace psxemu {
         if (swap_chain_ == nullptr)
             return;
         DrawOverlay();
-        swap_chain_->Present(vsync_ ? 1 : 0, 0);
+        swap_chain_->Present(vsync_ ? 1 : 0,
+                             (!vsync_ && tearing_support_) ? DXGI_PRESENT_ALLOW_TEARING : 0);
     }
 
 }   // namespace psxemu

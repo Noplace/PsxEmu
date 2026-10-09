@@ -171,6 +171,37 @@ inline bool IsValidChoice(const std::string& value,
   return false;
 }
 
+// filter_chain's stages, split at its commas. None for an empty chain; an empty stage for two
+// commas together, or one at either end - which IsValidFilterChain refuses.
+inline std::vector<std::string> SplitFilterChain(const std::string& chain) {
+  std::vector<std::string> stages;
+  if (chain.empty())
+    return stages;
+  size_t start = 0;
+  for (;;) {
+    const size_t comma = chain.find(',', start);
+    if (comma == std::string::npos) {
+      stages.push_back(chain.substr(start));
+      return stages;
+    }
+    stages.push_back(chain.substr(start, comma - start));
+    start = comma + 1;
+  }
+}
+
+// Whether filter_chain can hold `chain`: up to kMaxFilterChain stages, each a filter.
+inline bool IsValidFilterChain(const std::string& chain) {
+  const std::vector<std::string> stages = SplitFilterChain(chain);
+  if (stages.size() > EmuConfig::kMaxFilterChain)
+    return false;
+  for (const std::string& stage : stages) {
+    if (stage.empty() || stage == "chain" ||
+        !IsValidChoice(stage, EmuConfig::kValidVideoFilters))
+      return false;
+  }
+  return true;
+}
+
 // EmuConfig <-> file. Everything in the struct is a genuine user setting, so
 // all of it round-trips.
 inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
@@ -179,6 +210,8 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetString("graphics_adapter", c.graphics_adapter);
   f.SetString("audio_backend", c.audio_backend);
   f.SetString("video_filter", c.video_filter);
+  f.SetString("filter_chain", c.filter_chain);
+  f.SetString("frame_pacing", c.frame_pacing);
   f.SetString("controller_type_port1", c.controller_type[0]);
   f.SetString("controller_type_port2", c.controller_type[1]);
   f.SetString("input_source_port1", c.input_source[0]);
@@ -259,6 +292,16 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   const std::string filter = f.GetString("video_filter", c.video_filter);
   if (IsValidChoice(filter, EmuConfig::kValidVideoFilters))
     c.video_filter = filter;
+
+  // Every stage a filter, not None and not the chain itself, and no more of them than the
+  // window shows - or the whole of it is refused, like any other value that is not a choice.
+  const std::string chain = f.GetString("filter_chain", c.filter_chain);
+  if (IsValidFilterChain(chain))
+    c.filter_chain = chain;
+
+  const std::string pacing = f.GetString("frame_pacing", c.frame_pacing);
+  if (IsValidChoice(pacing, EmuConfig::kValidFramePacings))
+    c.frame_pacing = pacing;
 
   const std::string type1 =
       f.GetString("controller_type_port1", c.controller_type[0]);

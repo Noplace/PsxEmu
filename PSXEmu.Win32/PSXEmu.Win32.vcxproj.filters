@@ -117,6 +117,9 @@
     <ClCompile Include="graphics\video_presenter.cpp">
       <Filter>graphics</Filter>
     </ClCompile>
+    <ClCompile Include="graphics\display_clock.cpp">
+      <Filter>graphics</Filter>
+    </ClCompile>
     <ClCompile Include="app\menu.cpp">
       <Filter>app</Filter>
     </ClCompile>
@@ -261,6 +264,15 @@
       <Filter>input</Filter>
     </ClInclude>
     <ClInclude Include="graphics\igraphicsengine.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\display_clock.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\filter_chain.h">
+      <Filter>graphics</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\shader_pass.h">
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="input\input_thread.h">

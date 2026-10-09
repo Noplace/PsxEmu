@@ -97,6 +97,23 @@ class FrameMailbox {
 
   // ---- Counters, any thread ----------------------------------------------
 
+  // How long the consumer's last present took, in nanoseconds - which says whether presents are
+  // waiting on a full queue (host::Machine::Pace, matching the display). The consumer's to set.
+  void NotePresent(int64_t ns) { present_ns_.store(ns, std::memory_order_relaxed); }
+  int64_t last_present_ns() const { return present_ns_.load(std::memory_order_relaxed); }
+
+  // The producer asks for the next frame taken not to be presented - one finished too late for
+  // its refresh, or one left out to empty a display queue that has filled (host::Machine) - and
+  // the consumer asks whether it should skip, once. A frame skipped is counted as dropped: it
+  // is never shown.
+  void RequestSkip() { skip_.store(true, std::memory_order_relaxed); }
+  bool TakeSkip() {
+    if (!skip_.exchange(false, std::memory_order_relaxed))
+      return false;
+    dropped_.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+
   uint64_t published() const { return published_.load(std::memory_order_relaxed); }
   uint64_t taken() const { return taken_.load(std::memory_order_relaxed); }
   uint64_t dropped() const { return dropped_.load(std::memory_order_relaxed); }
@@ -115,6 +132,8 @@ class FrameMailbox {
   std::atomic<uint64_t> published_{0};
   std::atomic<uint64_t> taken_{0};
   std::atomic<uint64_t> dropped_{0};
+  std::atomic<int64_t> present_ns_{0};
+  std::atomic<bool> skip_{false};
 };
 
 }  // namespace host

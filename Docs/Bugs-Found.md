@@ -8980,3 +8980,81 @@ just as the first had.
 harnesses; nothing else reads the controller. A read that seeks while its predecessor's first twelve
 bytes are unread still has no header until its sector loads, and a game that polls then would see the
 old refusal.
+
+## 148. Frame pacing against the display, and a custom filter chain
+
+`platform/display_sync.h` (new), `platform/frame_limiter.h`, `host/machine.*`,
+`host/frame_mailbox.h`, `host/video_output.*`, `psx/emuconfig.h`, `psx/settings.h`;
+`graphics/display_clock.*`, `graphics/filter_chain.h`, `graphics/shader_pass.h` (new), the four
+engines, `graphics/video_presenter.*`, `app/app.*`, `app/const.h`, `ui/video_settings_window.*`;
+`tools/frame_limiter_test.cpp`, `tools/filter_chain_test.cpp` (new)
+
+Not a bug: a request - "do frame pacing (as an option), and shader chain", from the list of
+features worth adding to the front end.
+
+**Frame Pacing** (Settings > Video, `frame_pacing`). Three choices:
+
+- **Console's own rate** - what it has always done, and the default. The machine keeps 59.29 Hz
+  on the host's clock; each frame is presented at the next refresh. Against a 60 Hz display the
+  start of each frame sweeps the whole refresh every 1.4 s, and each time it crosses a vblank a
+  frame is shown twice.
+- **Match the display.** When the display's refresh is within 2% of the game's rate, or of a
+  whole multiple of it (120, 240 Hz), the machine runs at the display's rate - 60.00 rather than
+  59.29, the sound pitched up with it, 1.2%, about twenty cents - and each frame's start is held
+  1 ms after the display's vblank. The rate is the display mode's own, exactly
+  (`QueryDisplayConfig`); the vblanks are watched by a thread waiting on the monitor's DXGI output
+  (`DisplayClock`), whichever renderer draws, and the limiter's deadline is moved a tenth of the
+  error a frame, at most 0.25 ms (`PhaseCorrection`). Only at 100% speed with the limiter on; a
+  display that cannot be matched - PAL at 60 Hz, NTSC at 144 or 165 - keeps the console's rate,
+  and the window says which.
+- **Variable refresh (G-Sync, FreeSync)**: the console's rate, each frame presented the moment it
+  is drawn, without waiting for a refresh - `DXGI_PRESENT_ALLOW_TEARING` on both Direct3D engines
+  (the 11 one's swap chain gained the flag), `VK_PRESENT_MODE_IMMEDIATE_KHR` on Vulkan, a swap
+  interval of 0 on OpenGL. Not under Frame Generation, whose swap chain paces itself.
+
+**What matching did wrong first, measured.** Logging every frame's start, publish and present
+showed each present blocking a whole refresh: with the machine making exactly one frame per
+refresh, a display queue that filled once - at start, or after a missed composition - never
+drained, which is a frame of latency and no slack, so the next hitch dropped a frame (13 in 20 s
+on Direct3D 11; the console's rate drains it by itself, being slower than the display). Holding
+the machine back a refresh drained it but put the game's clock a frame behind the sound's each
+time, and on the BIOS shell, slow enough to refill the queue every second or two, ran the sound
+dry. What stayed: the video thread leaves one frame unpresented (`FrameMailbox::RequestSkip`) -
+immediately for a frame the machine finished after the next was due, which has missed its refresh
+anyway, and after a quarter of a second of blocked presents for anything else. A frame left out
+is counted as dropped, and a hardware-rasterised one's picture goes back to the rasteriser.
+
+**The custom filter chain** (`video_filter = chain`, `filter_chain = superxbr,scanline`): up to
+four of the filters, each working on the picture the one before made. The upscalers double it,
+to 4x at most (a third is left out, and the window says so); the rest keep its size; the last
+draws into the window. Super-xBR's second pass reads its original (t1), which in a chain has to
+be its own input rather than the console's frame, so `ShaderPass` gained `original` and the three
+engines with filters bind it - Direct3D 12 by descriptor, OpenGL by texture unit, Vulkan by a
+descriptor set per draw. Nothing new to compile: every stage is a filter already built for all
+three shader languages. Choosing a stage selects the chain; the overlay names it by its stages.
+
+**Checked.**
+- `frame_limiter_test` 8 -> 30: which displays match and at what rate, the phase step (a tenth,
+  never past its limit, the nearer vblank), a simulated lock from half a refresh out with 0.5 ms
+  of wake noise settling within a second and moving under 0.1 ms a frame after, and `Shift`. One
+  run of the old spacing check failed on one 28.6 ms frame and passed three reruns.
+- `filter_chain_test` (new, 27): every plan above, the rule an engine runs by, and the settings.
+- `media_test` 486, unchanged. `host_test` fails its two real-speed checks on this host, the same
+  two, at the same 48-54 fps, as a build of the commit before this one run back to back.
+- On the real display (60 Hz, the Radeon 780M), the limiter and `DisplayClock` alone: a frame's
+  start 0.97-1.12 ms after the vblank (p5-p95), crossing it 0 times in 8 s, against 6-8 at the
+  console's rate.
+- In the front end: Wild Arms on the recompiler, Direct3D 12, 20 s - no present waiting behind a
+  queued frame, one frame left out for each of the game's own 28 ms frames (every 81, the same at
+  the console's rate), the sound whole. Ridge Racer (PAL) stays at 49.7 fps, not in step. Modes
+  switched live on Direct3D 11; variable refresh presenting in 0.3-0.7 ms on all four renderers;
+  the hardware rasteriser in step on Direct3D 12 and Vulkan.
+- The chain xBRZ -> Super-xBR -> Scanline on OpenGL and Vulkan, the same picture to 97 of 307,200
+  sampled pixels, none by more than 8; Direct3D 12 the same picture at another point of the fade.
+
+**Not checked, or open.** Variable refresh on a variable-refresh display - this one runs fixed;
+that it presents without waiting is all that was seen. 120 and 240 Hz, matched at two and four
+refreshes a frame, only in the harness. The sound during a disc's boot from the command line:
+short in both modes, display's three runs somewhat more than the console's (2,679-4,002 samples
+against 0-2,870) - the drop after an un-pause Docs/DLSS-Plan.md already leaves open, and three
+runs each cannot say whether matching adds to it.

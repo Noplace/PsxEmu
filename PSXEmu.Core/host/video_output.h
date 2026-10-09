@@ -102,6 +102,9 @@ class VideoOutput {
   std::atomic<uint64_t> present_ns_{0};
   // When a frame was last put on screen - the video thread's, for Presenter::Refresh.
   std::chrono::steady_clock::time_point last_shown_;
+  // The current frame was skipped and its picture on the card given back (Run) - the video
+  // thread's.
+  bool current_given_back_ = false;
 };
 
 }  // namespace host

@@ -57,6 +57,8 @@ namespace psxemu {
         const int kIdFsrSharpness = 124;
         const int kIdFsrGeneration = 125;
         const int kIdFsrFiles = 126;
+        const int kIdPacing = 127;
+        const int kIdChainFirst = 128;   // four
         const int kIdHintFirst = 300;   // the grey lines, which WM_CTLCOLORSTATIC finds by id
         const int kIdHintLast = 399;
 
@@ -252,6 +254,37 @@ namespace psxemu {
                 L"or Vulkan.",
                 hint_id++);
         display.y += kListRow;
+        // The custom chain: four stages across the window, an arrow between each two.
+        {
+            const int arrow = 24;
+            const int lists = kFullWidth - kInset * 2 - kHalfLabel;
+            const int stage = (lists - arrow * 3) / 4;
+            chain_label_ = make(L"STATIC", L"C&hain:", SS_LEFT, 0, left, display.y + 4,
+                                kHalfLabel - 4, 20, font_);
+            int x = left + kHalfLabel;
+            for (size_t i = 0; i < chain_.size(); ++i) {
+                chain_[i] = make(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                                 kIdChainFirst + static_cast<int>(i), x, display.y, stage, 320,
+                                 font_);
+                x += stage;
+                if (i < chain_arrows_.size()) {
+                    chain_arrows_[i] = make(L"STATIC", L"\x2192", SS_CENTER, 0, x, display.y + 4,
+                                            arrow, 20, font_);
+                    x += arrow;
+                }
+            }
+            display.y += kListRow;
+            text_at(left + kHalfLabel, display.y, lists, 1,
+                    L"Each stage works on the picture the one before made. The upscalers double "
+                    L"it, up to 4x; CRT and Scanline after one draw its lines, not the console's.",
+                    hint_id++);
+            display.y += kHintLine + 2;
+            chain_note_ = text_at(left + kHalfLabel, display.y, lists, 1, L"", 0);
+            display.y += kHintLine + 6;
+        }
+        pacing_ = list_at(left, display.y, kHalfLabel, kLeftHalf, L"Frame &pacing:", kIdPacing);
+        pacing_status_ = text_at(right, display.y + 1, kRightHalf, 2, L"", 0);
+        display.y += kListRow + 4;
         const int display_bottom = end_group(display, 0);
 
         // What draws it, and NVIDIA DLSS and AMD FSR, which work on what it draws: side by side.
@@ -357,6 +390,22 @@ namespace psxemu {
                 items.push_back(choice.label);
             SetItems(filter_, items);
             items.clear();
+            // A stage: "(none)", then each filter but None and the chain itself.
+            items.push_back(L"(none)");
+            for (const FilterChoice& choice : kFilterChoices) {
+                const std::string key = choice.key;
+                if (key.empty() || key == "chain")
+                    continue;
+                stage_keys_.push_back(key);
+                items.push_back(choice.label);
+            }
+            for (HWND stage : chain_)
+                SetItems(stage, items);
+            items.clear();
+            for (const FramePacingChoice& choice : kFramePacingChoices)
+                items.push_back(choice.label);
+            SetItems(pacing_, items);
+            items.clear();
             for (const ResolutionChoice& choice : kResolutionChoices)
                 items.push_back(choice.label);
             SetItems(resolution_, items);
@@ -438,6 +487,25 @@ namespace psxemu {
         const bool filters = RendererHasFilters(state.renderer);
         Select(filter_, filters ? IndexOf(kFilterChoices, state.filter) : 0);
         EnableWindow(filter_, filters);
+        // The chain's stages, each by its place in stage_keys_ after "(none)". Choosing one makes
+        // the chain the filter, so they are live whenever the filters are.
+        for (size_t i = 0; i < chain_.size(); ++i) {
+            int index = 0;
+            if (i < state.filter_chain.size()) {
+                const auto at =
+                    std::find(stage_keys_.begin(), stage_keys_.end(), state.filter_chain[i]);
+                if (at != stage_keys_.end())
+                    index = static_cast<int>(at - stage_keys_.begin()) + 1;
+            }
+            Select(chain_[i], index);
+            EnableWindow(chain_[i], filters);
+        }
+        for (HWND arrow : chain_arrows_)
+            EnableWindow(arrow, filters);
+        EnableWindow(chain_label_, filters);
+        SetWindowTextW(chain_note_, state.chain_note.c_str());
+        Select(pacing_, IndexOf(kFramePacingChoices, state.frame_pacing));
+        SetWindowTextW(pacing_status_, state.pacing_status.c_str());
 
         // Rasteriser: what is drawing, which a hardware one that could not be made leaves as
         // software. Its resolution, true colour and PGXP are the hardware one's alone - greyed
@@ -576,6 +644,26 @@ namespace psxemu {
                 case kIdFilter:
                     if (index < static_cast<int>(std::size(kFilterChoices)) && host_.set_filter)
                         host_.set_filter(kFilterChoices[index].key);
+                    break;
+                case kIdPacing:
+                    if (index < static_cast<int>(std::size(kFramePacingChoices)) &&
+                        host_.set_frame_pacing)
+                        host_.set_frame_pacing(kFramePacingChoices[index].key);
+                    break;
+                case kIdChainFirst:
+                case kIdChainFirst + 1:
+                case kIdChainFirst + 2:
+                case kIdChainFirst + 3:
+                    if (host_.set_filter_chain) {
+                        // Every stage, in order, the "(none)"s left out.
+                        std::vector<std::string> stages;
+                        for (HWND stage : chain_) {
+                            const int chosen = Selected(stage);
+                            if (chosen > 0 && chosen <= static_cast<int>(stage_keys_.size()))
+                                stages.push_back(stage_keys_[chosen - 1]);
+                        }
+                        host_.set_filter_chain(stages);
+                    }
                     break;
                 case kIdResolution:
                     if (index < static_cast<int>(std::size(kResolutionChoices)) &&

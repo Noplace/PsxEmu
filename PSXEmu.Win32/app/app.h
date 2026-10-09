@@ -58,6 +58,7 @@
 #include "host/video_output.h"
 #include "input/input_thread.h"
 #include "graphics/adapters.h"
+#include "graphics/display_clock.h"
 #include "graphics/video_presenter.h"
 
 #include <atomic>
@@ -145,6 +146,12 @@ namespace psxemu {
 
         void SetVolume(float value);
         void SetFilter(const std::string& key);
+        // Settings > Video: the custom chain's stages (graphics/filter_chain.h), which also makes
+        // the chain the filter; and Frame Pacing, a kFramePacingChoices key.
+        void SetFilterChain(const std::vector<std::string>& stages);
+        void SetFramePacing(const std::string& key);
+        // Frame Pacing's line in the Video Settings window: what the machine last said of it.
+        std::wstring FramePacingStatus() const;
         void SetRenderer(const std::string& key);
         void SetRasteriser(const std::string& key);
         void SetResolutionScale(int scale);
@@ -414,6 +421,11 @@ namespace psxemu {
         // The emulated machine. Created here, then driven only by the machine's thread until
         // StopThreads has returned.
         std::unique_ptr<emulation::psx::System> system_;
+
+        // The display the picture is on, for Frame Pacing's "Match the display" - its rate and
+        // vblanks, which the machine's thread asks for once a frame. Declared before the machine,
+        // so it outlives it.
+        DisplayClock display_clock_;
 
         // The threads, and the channels between them. Declared after `system_`, so they are torn
         // down before it; each one stops its thread in its own destructor as a backstop, though

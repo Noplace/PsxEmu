@@ -837,8 +837,12 @@ void D3D12GraphicsEngine::EndFrame() {
         MarkLatency(static_cast<uint32_t>(sl::PCLMarker::ePresentStart));
     }
 
-    const UINT sync_interval = vsync_ ? 1 : 0;
-    const UINT present_flags = (tearing_support_ && !vsync_) ? DXGI_PRESENT_ALLOW_TEARING : 0;
+    // Without vsync (Frame Pacing's variable refresh) a present goes out at once, tearing if the
+    // display cannot wait for it. Not under Frame Generation, whose swap chain - Streamline's or
+    // AMD's - paces the frames it makes against the refresh itself.
+    const bool wait = vsync_ || generation_ready_ || fsr_generation_ready_;
+    const UINT sync_interval = wait ? 1 : 0;
+    const UINT present_flags = (tearing_support_ && !wait) ? DXGI_PRESENT_ALLOW_TEARING : 0;
     swap_chain_->Present(sync_interval, present_flags);
     if (marked)
         MarkLatency(static_cast<uint32_t>(sl::PCLMarker::ePresentEnd));
@@ -1175,20 +1179,19 @@ bool D3D12GraphicsEngine::LoadPixelShaderFromString(const std::string& name, con
 
 bool D3D12GraphicsEngine::LoadShaderChain(const std::string& name,
                                           const std::vector<ShaderPass>& passes) {
-    if (!device_ || !root_signature_ || name.empty() || passes.empty())
+    // Only the last pass may draw straight to the window; every earlier one has to leave a
+    // texture behind for the pass after it to read, or to look back at as its original.
+    if (!device_ || !root_signature_ || name.empty() || !psxemu::IsRunnableChain(passes))
         return false;
 
     ShaderChain chain;
     for (size_t i = 0; i < passes.size(); ++i) {
-        // Only the last pass may draw straight to the window; every earlier one has to leave a
-        // texture behind for the pass after it to read.
-        if (passes[i].scale < 0 || (passes[i].scale == 0 && i + 1 != passes.size()))
-            return false;
         const auto it = custom_shaders_.find(passes[i].shader);
         if (it == custom_shaders_.end())
             return false;
         chain.pass_pipelines.push_back(it->second);
         chain.pass_scales.push_back(passes[i].scale);
+        chain.pass_originals.push_back(passes[i].original);
     }
 
     chains_[name] = std::move(chain);
@@ -1265,12 +1268,16 @@ bool D3D12GraphicsEngine::EnsureChainResources(const ShaderChain& chain, int src
 
         const bool is_blit = d == pass_count;
         draw.pipeline = is_blit ? blit_pipeline_state_.Get() : chain.pass_pipelines[d].Get();
+        draw.original = is_blit ? -1 : chain.pass_originals[d];
 
-        // t0: the previous draw's target (the emulator frame for the first draw); t1: the frame.
+        // t0: the previous draw's target (the emulator frame for the first draw); t1: its
+        // original - an earlier draw's target, made before this one, or the frame.
         ID3D12Resource* input = (d == 0) ? fb_texture_.Get() : chain_targets_[d - 1].Get();
         device_->CreateShaderResourceView(input, &srv_desc, srv_handle);
         srv_handle.ptr += srv_increment;
-        device_->CreateShaderResourceView(fb_texture_.Get(), &srv_desc, srv_handle);
+        ID3D12Resource* original =
+            draw.original < 0 ? fb_texture_.Get() : chain_targets_[draw.original].Get();
+        device_->CreateShaderResourceView(original, &srv_desc, srv_handle);
         srv_handle.ptr += srv_increment;
 
         if (!is_blit && chain.pass_scales[d] > 0) {
@@ -1322,7 +1329,8 @@ void D3D12GraphicsEngine::RenderChain(const LetterboxRect& rect) {
     back_buffer_rtv.ptr += static_cast<SIZE_T>(frame_index_) * rtv_descriptor_size_;
 
     // This frame's set, written now - t0 the draw before's target, or this frame's picture for
-    // the first draw; t1 the picture for every draw. The fence MoveToNextFrame waited on says
+    // the first draw; t1 the draw's original, an earlier target or the picture. The fence
+    // MoveToNextFrame waited on says
     // the card has finished with the set since this slot's frame last came round.
     const UINT srv_increment =
         device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
@@ -1341,7 +1349,9 @@ void D3D12GraphicsEngine::RenderChain(const LetterboxRect& rect) {
             device_->CreateShaderResourceView(d == 0 ? frame : chain_targets_[d - 1].Get(), &view,
                                               cpu);
             cpu.ptr += srv_increment;
-            device_->CreateShaderResourceView(frame, &view, cpu);
+            const int original = chain_draws_[d].original;
+            device_->CreateShaderResourceView(
+                original < 0 ? frame : chain_targets_[original].Get(), &view, cpu);
             cpu.ptr += srv_increment;
         }
     }

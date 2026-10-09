@@ -84,6 +84,18 @@ class FrameLimiter {
   // the machine for a while - a pause, a reset, a state load, a modal dialog.
   void Reset() { have_deadline_ = false; }
 
+  // When the next frame is due, once Wait has set a deadline - for the display sync
+  // (platform/display_sync.h) to see where it falls against the refresh.
+  bool has_deadline() const { return have_deadline_; }
+  Clock::time_point deadline() const { return deadline_; }
+
+  // Moves the next deadline by `by`, and every one after it with it: the display sync holding
+  // frames at one point in the refresh. Nothing to move before the first Wait.
+  void Shift(Clock::duration by) {
+    if (have_deadline_)
+      deadline_ += by;
+  }
+
   // Blocks until the current frame is due at `hz`, then moves the deadline on
   // by one frame. Returns immediately, and starts a fresh deadline, if the
   // caller is already more than `kResyncFrames` late - a host that cannot keep

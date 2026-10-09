@@ -19,6 +19,7 @@
 #include "host/latency_markers.h"
 #include "host/request_queue.h"
 #include "host/sample_ring.h"
+#include "platform/display_sync.h"
 #include "platform/frame_limiter.h"
 #include "platform/speed_resampler.h"
 #include "psx/raster.h"
@@ -68,6 +69,14 @@ struct MachineReport {
   // Whether the last frame's picture was handed over on the graphics card rather than in memory
   // (psx/shared_picture.h).
   bool shared_picture = false;
+  // Settings > Video > Frame Pacing, "Match the display" (platform/display_sync.h): the display's
+  // refresh as the front end last gave it, 0 if it gave none; and the refreshes each frame is
+  // shown for while the machine runs in step with it, 0 while it does not - another mode, a
+  // display too far from the game's rate, another speed. `pace_ratio` is how much faster than
+  // the console that runs: 1.003 at 60 Hz.
+  double display_hz = 0.0;
+  int display_refreshes = 0;
+  double pace_ratio = 1.0;
 };
 
 // One frame's worth of timing, as the machine thread measured it - what the front end's
@@ -102,6 +111,10 @@ class Machine {
     // is paused for kPausedByDebugger and keeps answering requests; the half-run frame is not
     // published. To go on, a request steps or resumes the debugger and clears that reason.
     std::function<void(class Machine&)> halted;
+    // Settings > Video > Frame Pacing, "Match the display": what the front end knows of the
+    // display the picture is on, asked once a frame on the machine's thread. False when it knows
+    // nothing, and the console's own clock paces the machine.
+    std::function<bool(utilities::DisplayTiming*)> display_timing;
   };
 
   // `video` and `audio` are the output threads' inboxes. `system` must outlive
@@ -206,6 +219,19 @@ class Machine {
   // smoothed over about a fifth of a second and never above the setting. Only
   // used for the sound while falling_behind_ is set - see PumpAudio.
   double achieved_speed_ = 1.0;
+  // The display the machine was last in step with (platform/display_sync.h), and the refresh
+  // it saw. Its ratio is the speed the sound is resampled for, beside the setting's.
+  utilities::DisplayMatch display_match_;
+  double display_hz_ = 0.0;
+  // Where in a refresh each frame starts once in step: just after a vblank, so the frame is
+  // drawn and handed over long before the next one, whatever it costs to emulate.
+  static constexpr std::chrono::microseconds kDisplayPhase{1000};
+  // Frames running whose present waited behind a queued one (Pace); negative while the frame
+  // left out to empty the queue takes effect.
+  int queued_presents_ = 0;
+  static const int kQueuedPresentsToDrain = 15;
+  // The speed asked for, times the display's ratio while in step with it.
+  double PacedSpeed() const;
   // Whether the machine has stopped reaching the speed it was asked for: the
   // limiter has had nothing to sleep off for kBehindFrames frames running. Not
   // one slow frame - the first frame after a resume is unpaced by design, and

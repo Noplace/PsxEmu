@@ -106,6 +106,8 @@ namespace psxemu {
         int back_buffer_width_;
         int back_buffer_height_;
         bool vsync_ = true;
+        // The swap chain was made able to present without waiting for a refresh.
+        bool tearing_support_ = false;
 
         ID3D11Device* device_;
         ID3D11DeviceContext* context_;

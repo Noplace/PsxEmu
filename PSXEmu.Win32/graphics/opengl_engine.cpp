@@ -294,17 +294,16 @@ void main() {
 
     bool OpenGLGraphicsEngine::LoadShaderChain(const std::string& name,
                                                const std::vector<ShaderPass>& passes) {
-        if (name.empty() || passes.empty())
+        // Only the last pass may draw straight into the window, as in D3D12.
+        if (name.empty() || !IsRunnableChain(passes))
             return false;
         Chain chain;
         for (size_t i = 0; i < passes.size(); ++i) {
-            // Only the last pass may draw straight into the window, as in D3D12.
-            if (passes[i].scale < 0 || (passes[i].scale == 0 && i + 1 != passes.size()))
-                return false;
             if (shaders_.find(passes[i].shader) == shaders_.end())
                 return false;
             chain.passes.push_back(passes[i].shader);
             chain.scales.push_back(passes[i].scale);
+            chain.originals.push_back(passes[i].original);
         }
         if (active_chain_ == &chains_[name])
             active_chain_ = nullptr;
@@ -412,7 +411,7 @@ void main() {
 
     void OpenGLGraphicsEngine::Draw(const Program& program, GLuint input, int target,
                                     float out_width, float out_height, float in_width,
-                                    float in_height) {
+                                    float in_height, GLuint original) {
         const bool to_window = target == 0;
         gl_.BindFramebuffer(kGlFramebuffer, to_window ? 0 : chain_framebuffers_[target - 1]);
         const float target_w = static_cast<float>(to_window ? width_ : chain_widths_[target - 1]);
@@ -431,7 +430,7 @@ void main() {
             glBindTexture(GL_TEXTURE_2D, input);
         }
         gl_.ActiveTexture(kGlTexture0 + kOriginalUnit);
-        glBindTexture(GL_TEXTURE_2D, frame_texture_);
+        glBindTexture(GL_TEXTURE_2D, original != 0 ? original : frame_texture_);
 
         gl_.Uniform4f(program.params, out_width, out_height, in_width, in_height);
         gl_.Uniform1f(program.flip_y, to_window ? 1.0f : -1.0f);
@@ -679,14 +678,16 @@ void main() {
             const size_t passes = active_chain_->passes.size();
             for (size_t i = 0; i < passes; ++i) {
                 const Program& program = shaders_[active_chain_->passes[i]];
+                const int from = active_chain_->originals[i];
+                const GLuint original = from < 0 ? frame_texture_ : chain_textures_[from];
                 if (active_chain_->scales[i] == 0) {
-                    Draw(program, input, 0, rect.width, rect.height, in_w, in_h);
+                    Draw(program, input, 0, rect.width, rect.height, in_w, in_h, original);
                     return;
                 }
                 const int target = static_cast<int>(i) + 1;
                 const float out_w = static_cast<float>(chain_widths_[i]);
                 const float out_h = static_cast<float>(chain_heights_[i]);
-                Draw(program, input, target, out_w, out_h, in_w, in_h);
+                Draw(program, input, target, out_w, out_h, in_w, in_h, original);
                 input = chain_textures_[i];
                 in_w = out_w;
                 in_h = out_h;

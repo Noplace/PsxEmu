@@ -128,6 +128,7 @@ exit /b 0</Command>
     <ClCompile Include="input\sony_pads.cpp" />
     <ClCompile Include="app\main.cpp" />
     <ClCompile Include="graphics\video_presenter.cpp" />
+    <ClCompile Include="graphics\display_clock.cpp" />
     <ClCompile Include="app\menu.cpp" />
     <ClCompile Include="app\screenshot.cpp" />
     <ClCompile Include="app\win32_dialogs.cpp" />
@@ -178,6 +179,9 @@ exit /b 0</Command>
     <ClInclude Include="app\framework.h" />
     <ClInclude Include="input\gamepad.h" />
     <ClInclude Include="graphics\igraphicsengine.h" />
+    <ClInclude Include="graphics\display_clock.h" />
+    <ClInclude Include="graphics\filter_chain.h" />
+    <ClInclude Include="graphics\shader_pass.h" />
     <ClInclude Include="input\input_thread.h" />
     <ClInclude Include="input\sony_pads.h" />
     <ClInclude Include="input\keyboard.h" />

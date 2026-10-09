@@ -92,7 +92,34 @@ struct EmuConfig {
   // pass-through. Only the D3D12 backend honours this; the D3D11 path has no
   // filter support (see D3D11Presenter's class comment).
   std::string video_filter = "";
-  static const std::array<const char*, 10> kValidVideoFilters;
+  static const std::array<const char*, 11> kValidVideoFilters;
+
+  // The filters video_filter "chain" runs, one after another, as their keys joined by commas:
+  // "superxbr,scanline" is Super-xBR's picture with scanlines over it. Up to kMaxFilterChain of
+  // them, each one of kValidVideoFilters but "" and "chain"; the front end works out each
+  // stage's size (PSXEmu.Win32/graphics/filter_chain.h). Empty draws the picture plain.
+  std::string filter_chain = "";
+  static const size_t kMaxFilterChain = 4;
+
+  // How frames are timed against the display - Settings > Video > Frame Pacing.
+  //
+  // "console", the default and what this has always done: the machine keeps the console's own
+  // rate on the host's clock and each frame is presented at the next refresh. On a 60 Hz
+  // display that is a frame on two refreshes, or on none, every few seconds - the console's
+  // 59.83 against the display's 60.
+  //
+  // "display": the machine runs at the display's rate when that is within two percent of the
+  // console's (or of a whole multiple of it - 120, 240 Hz), every frame starting at the same
+  // point of a refresh, so each one is shown for exactly as long as the last. The game runs
+  // that much fast or slow, the sound pitched with it - 0.3% at 60 Hz, five cents. A display
+  // that cannot be matched (PAL at 60 Hz) is left to the console's clock, and the Video
+  // Settings window says so. Only at 100% speed, with the frame limiter on.
+  //
+  // "vrr": for a G-Sync or FreeSync display. Each frame is presented the moment it is drawn,
+  // without waiting for a refresh, and the display refreshes when it arrives - at the
+  // console's own rate, exactly. A display without variable refresh tears instead.
+  std::string frame_pacing = "console";
+  static const std::array<const char*, 3> kValidFramePacings;
 
   // --- Input --------------------------------------------------------------
   // What is plugged into each SIO0 port - one of the three real PS1
@@ -490,11 +517,17 @@ inline const std::array<const char*, 5> EmuConfig::kValidFsrSharpness = {
     "off", "low", "medium", "high", "max" };
 
 // Empty string ("None") first, then the nine loaded filters in the same
-// order PSXEmu.Win32's Video Settings window offers them.
-inline const std::array<const char*, 10> EmuConfig::kValidVideoFilters = {
+// order PSXEmu.Win32's Video Settings window offers them, then the chain of
+// them that filter_chain describes.
+inline const std::array<const char*, 11> EmuConfig::kValidVideoFilters = {
     "",         "nearest",    "bilinear", "crt",   "eagle",
     "hq2x",     "xbrz_legacy", "scanline", "xbrz",     "superxbr",
+    "chain",
 };
+
+// In the order PSXEmu.Win32's Video Settings window offers them.
+inline const std::array<const char*, 3> EmuConfig::kValidFramePacings = {
+    "console", "display", "vrr" };
 
 // In the same order PSXEmu.Win32's Emulation > Speed menu offers them.
 inline const std::array<float, 6> EmuConfig::kValidSpeeds = {

@@ -154,6 +154,7 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     struct ShaderChain {
         std::vector<ComPtr<ID3D12PipelineState>> pass_pipelines;
         std::vector<int> pass_scales;   // parallel to pass_pipelines; see ShaderPass::scale
+        std::vector<int> pass_originals;   // ShaderPass::original, the same way
     };
     // One draw of the active chain, worked out once per (chain, frame size) by
     // EnsureChainResources: which PSO, what it reads (t0 is always the previous draw's target,
@@ -161,6 +162,7 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     struct ChainDraw {
         ID3D12PipelineState* pipeline = nullptr;
         int target = -1;   // index into chain_targets_, or -1 for the window's back buffer
+        int original = -1;   // what it reads as t1: an index into chain_targets_, or -1 for the frame
         UINT in_width = 0, in_height = 0;
         UINT out_width = 0, out_height = 0;   // unused when target < 0: the letterbox rect is
     };

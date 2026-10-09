@@ -25,6 +25,7 @@
 #include "app/screenshot.h"
 #include "app/win32_dialogs.h"
 #include "app/win32_paths.h"
+#include "graphics/filter_chain.h"
 #include "graphics/dlss/reflex_markers.h"
 #include "graphics/fsr/fsr_download.h"
 #include "graphics/hw_raster/hardware_raster.h"
@@ -34,6 +35,7 @@
 #include <shellapi.h>   // ShellExecuteA, to open the BIOS folder from its menu
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
 
@@ -204,6 +206,10 @@ namespace psxemu {
             host.set_renderer = [this](const std::string& key) { SetRenderer(key); };
             host.set_card = [this](int card) { SetGraphicsCard(card); };
             host.set_filter = [this](const std::string& key) { SetFilter(key); };
+            host.set_filter_chain = [this](const std::vector<std::string>& stages) {
+                SetFilterChain(stages);
+            };
+            host.set_frame_pacing = [this](const std::string& key) { SetFramePacing(key); };
             host.set_rasteriser = [this](const std::string& key) { SetRasteriser(key); };
             host.set_resolution = [this](int scale) { SetResolutionScale(scale); };
             host.set_true_color = [this](bool on) { SetTrueColour(on); };
@@ -544,10 +550,17 @@ namespace psxemu {
         const bool start_generation_allowed = config_.frame_limiter &&
                                               config_.emulation_speed == 1.0f;
         generation_allowed_sent_ = start_generation_allowed;
+        const std::vector<std::string> start_chain =
+            emulation::psx::SplitFilterChain(config_.filter_chain);
+        const bool start_vsync = config_.frame_pacing != "vrr";
+        // Frame Pacing's "Match the display" asks the display's timing from the first frame.
+        display_clock_.SetMonitor(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST));
+        display_clock_.SetRunning(config_.frame_pacing == "display");
         video_ = std::make_unique<VideoOutput>(
             [this, start_renderer, start_filter, start_stats, start_notifications,
              start_controllers, start_theme, start_card, start_card_name,
-             start_dlss, start_fsr, start_generation_allowed]() -> std::unique_ptr<Presenter> {
+             start_dlss, start_fsr, start_generation_allowed, start_chain,
+             start_vsync]() -> std::unique_ptr<Presenter> {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
                 auto presenter = std::make_unique<D3DPresenter>(
@@ -562,6 +575,8 @@ namespace psxemu {
                 presenter->SetDlss(start_dlss);
                 presenter->SetFsr(start_fsr);
                 presenter->SetFrameGenerationAllowed(start_generation_allowed);
+                presenter->SetFilterChain(start_chain);
+                presenter->SetVsync(start_vsync);
                 // DLSS or FSR changing by itself - Frame Generation stopping - comes to the menu.
                 presenter->set_dlss_listener([this](const DlssStatus& status) {
                     PostToUi([this, status] { OnDlssStatus(status); });
@@ -612,6 +627,9 @@ namespace psxemu {
         };
         hooks.halted = [this](Machine& machine) {
             SendDebuggerSnapshot(machine, DebuggerWindow::kAtPc, true);
+        };
+        hooks.display_timing = [this](utilities::DisplayTiming* timing) {
+            return display_clock_.Sample(timing);
         };
         // Still the only thread: the boot already set up is the one the console starts in, and
         // needs no marker above it.
@@ -669,6 +687,8 @@ namespace psxemu {
             }
         }
         stopper.join();
+        // Nothing asks the display's timing now the machine has stopped.
+        display_clock_.SetRunning(false);
 
         // Anything the threads posted on their way out has nobody left to run it.
         if (window_ != nullptr) {
@@ -1262,11 +1282,102 @@ namespace psxemu {
         }
         UpdateVideoSettings();
         SaveSettingsIfChanged();
+        if (key == kCustomChainKey) {
+            Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"Filter: custom chain");
+            return;
+        }
         for (const FilterChoice& choice : kFilterChoices) {
             if (key == choice.key)
                 Notify(OverlayIcon::kScreen, ToastKind::kInfo,
                        L"Filter: " + std::wstring(choice.label));
         }
+    }
+
+    // A stage of the custom chain changed in the Video Settings window. The chain becomes the
+    // filter, since changing it is asking to see it.
+    void App::SetFilterChain(const std::vector<std::string>& stages) {
+        std::string chain;
+        for (const std::string& stage : stages)
+            chain += (chain.empty() ? "" : ",") + stage;
+        if (!emulation::psx::IsValidFilterChain(chain))
+            return;
+        config_.filter_chain = chain;
+        if (video_ != nullptr) {
+            video_->Post([stages](VideoOutput& video) {
+                if (video.presenter() != nullptr)
+                    static_cast<D3DPresenter*>(video.presenter())->SetFilterChain(stages);
+                video.PresentAgain();
+            });
+        }
+        SaveSettingsIfChanged();
+        if (current_filter_ != kCustomChainKey && RendererHasFilters(current_backend_))
+            SetFilter(kCustomChainKey);
+        else
+            UpdateVideoSettings();
+    }
+
+    // Settings > Video > Frame Pacing. The machine paces itself (host::Machine::Pace), from the
+    // display's timing while it matches the display; the renderer waits for the refresh, or not
+    // for variable refresh.
+    void App::SetFramePacing(const std::string& key) {
+        if (key == config_.frame_pacing ||
+            !emulation::psx::IsValidChoice(key, EmuConfig::kValidFramePacings))
+            return;
+        config_.frame_pacing = key;
+        display_clock_.SetMonitor(MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST));
+        display_clock_.SetRunning(key == "display");
+        const bool vsync = key != "vrr";
+        if (video_ != nullptr) {
+            video_->Post([vsync](VideoOutput& video) {
+                if (video.presenter() != nullptr)
+                    static_cast<D3DPresenter*>(video.presenter())->SetVsync(vsync);
+            });
+        }
+        SendConfigToMachine();
+        SaveSettingsIfChanged();
+        UpdateVideoSettings();
+        for (const FramePacingChoice& choice : kFramePacingChoices) {
+            if (key == choice.key)
+                Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+                       L"Frame pacing: " + std::wstring(choice.label));
+        }
+    }
+
+    std::wstring App::FramePacingStatus() const {
+        auto hz = [](double rate) {
+            wchar_t text[32];
+            swprintf_s(text, L"%.2f Hz", rate);
+            return std::wstring(text);
+        };
+        if (config_.frame_pacing == "vrr")
+            return L"Each frame is presented the moment it is drawn, and a G-Sync or FreeSync "
+                   L"display refreshes when it arrives. Other displays tear.";
+        if (config_.frame_pacing != "display")
+            return L"The console's own rate. Against the display's, a frame is shown twice or "
+                   L"not at all every few seconds.";
+        const double display = display_clock_.refresh_hz();
+        if (!config_.frame_limiter || fast_forward_ || config_.emulation_speed != 1.0f)
+            return L"Waiting: only at 100% speed, with the frame limiter on.";
+        if (!have_report_ || report_.paused || report_.refresh_hz <= 0.0)
+            return display > 0.0 ? L"The display runs at " + hz(display) +
+                                       L". Matched once a game runs."
+                                 : std::wstring(L"Matched once a game runs.");
+        if (report_.display_refreshes > 0) {
+            wchar_t text[160];
+            swprintf_s(text, L"In step: %.2f Hz, %s a frame - the game %.2f%% %s than a console.",
+                       report_.refresh_hz * report_.pace_ratio,
+                       report_.display_refreshes == 1
+                           ? L"one refresh"
+                           : (std::to_wstring(report_.display_refreshes) + L" refreshes").c_str(),
+                       std::fabs(report_.pace_ratio - 1.0) * 100.0,
+                       report_.pace_ratio >= 1.0 ? L"faster" : L"slower");
+            return text;
+        }
+        if (report_.display_hz <= 0.0)
+            return L"The display's refresh rate could not be read; the console's rate is used.";
+        return L"Not in step: the display's " + hz(report_.display_hz) +
+               L" is not within 2% of the game's " + hz(report_.refresh_hz) +
+               L" or a whole multiple of it, so the console's rate is used.";
     }
 
     // Live renderer switch, done on the video thread - it owns the device. What actually opened
@@ -1679,6 +1790,20 @@ namespace psxemu {
                 state.card = static_cast<int>(i);
         }
         state.filter = current_filter_;
+        state.filter_chain = emulation::psx::SplitFilterChain(config_.filter_chain);
+        const FilterChainPlan plan = PlanFilterChain(state.filter_chain);
+        if (!plan.dropped.empty()) {
+            state.chain_note = L"Left out - the picture is at 4x already:";
+            for (const std::string& key : plan.dropped) {
+                for (const FilterChoice& choice : kFilterChoices) {
+                    if (key == choice.key)
+                        state.chain_note += L" " + std::wstring(choice.label);
+                }
+            }
+            state.chain_note += L".";
+        }
+        state.frame_pacing = config_.frame_pacing;
+        state.pacing_status = FramePacingStatus();
         state.hardware = drawing_hardware_;
         state.hardware_d3d12 = config_.gpu_rasteriser == "hardware_d3d12";
         state.resolution_scale = upscaler_active_ ? upscaler_scale_ : config_.resolution_scale;
@@ -3072,6 +3197,21 @@ namespace psxemu {
                 if (app != nullptr) {
                     app->sizing_ = false;
                     app->UpdateUpscaler();
+                }
+                break;
+
+            // Frame Pacing follows the display the window is on: moved onto another, or the
+            // display's mode changed - a new refresh rate.
+            case WM_MOVE:
+                if (app != nullptr)
+                    app->display_clock_.SetMonitor(
+                        MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST));
+                break;
+            case WM_DISPLAYCHANGE:
+                if (app != nullptr) {
+                    app->display_clock_.SetMonitor(
+                        MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), true);
+                    app->UpdateVideoSettings();
                 }
                 break;
 

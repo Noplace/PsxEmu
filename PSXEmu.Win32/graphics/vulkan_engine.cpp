@@ -526,14 +526,17 @@ namespace psxemu {
             }
             return false;
         };
-        // FIFO is vsync and always there. Without vsync, mailbox if the driver has it (no tearing,
-        // no waiting), then immediate.
+        // FIFO is vsync and always there. Without vsync - Frame Pacing's variable refresh -
+        // immediate if the driver has it: each image shown the moment it is presented, which is
+        // what lets a G-Sync or FreeSync display refresh when it arrives. Mailbox only if not; it
+        // never tears, but it shows the newest image at the next fixed refresh, which is no
+        // better than FIFO for that.
         VkPresentModeKHR mode = VK_PRESENT_MODE_FIFO_KHR;
         if (!vsync_) {
-            if (offers(VK_PRESENT_MODE_MAILBOX_KHR))
-                mode = VK_PRESENT_MODE_MAILBOX_KHR;
-            else if (offers(VK_PRESENT_MODE_IMMEDIATE_KHR))
+            if (offers(VK_PRESENT_MODE_IMMEDIATE_KHR))
                 mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+            else if (offers(VK_PRESENT_MODE_MAILBOX_KHR))
+                mode = VK_PRESENT_MODE_MAILBOX_KHR;
         }
 
         uint32_t image_count = caps.minImageCount + 1;
@@ -654,17 +657,16 @@ namespace psxemu {
 
     bool VulkanGraphicsEngine::LoadShaderChain(const std::string& name,
                                                const std::vector<ShaderPass>& passes) {
-        if (name.empty() || passes.empty())
+        // Only the last pass may draw straight into the window, as in D3D12.
+        if (name.empty() || !IsRunnableChain(passes))
             return false;
         Chain chain;
         for (size_t i = 0; i < passes.size(); ++i) {
-            // Only the last pass may draw straight into the window, as in D3D12.
-            if (passes[i].scale < 0 || (passes[i].scale == 0 && i + 1 != passes.size()))
-                return false;
             if (shaders_.find(passes[i].shader) == shaders_.end())
                 return false;
             chain.passes.push_back(passes[i].shader);
             chain.scales.push_back(passes[i].scale);
+            chain.originals.push_back(passes[i].original);
         }
         if (device_ != nullptr)
             vk_.DeviceWaitIdle(device_);
@@ -772,8 +774,10 @@ namespace psxemu {
         *image = Image();
     }
 
-    // A descriptor set with `input` behind all four samplers and the frame on binding 4.
-    VkDescriptorSet VulkanGraphicsEngine::AllocateReads(VkDescriptorPool pool, VkImageView input) {
+    // A descriptor set with `input` behind all four samplers and the original - the frame unless
+    // another is given - on binding 4.
+    VkDescriptorSet VulkanGraphicsEngine::AllocateReads(VkDescriptorPool pool, VkImageView input,
+                                                        VkImageView original_view) {
         VkDescriptorSetAllocateInfo allocate = {};
         allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocate.descriptorPool = pool;
@@ -787,7 +791,8 @@ namespace psxemu {
         for (uint32_t i = 0; i < kBindings; ++i) {
             const bool original = i == 4;
             images[i].sampler = samplers_[original ? 2 : i];
-            images[i].imageView = original ? frame_.view : input;
+            images[i].imageView =
+                original ? (original_view != nullptr ? original_view : frame_.view) : input;
             images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[i].dstSet = set;
@@ -876,13 +881,14 @@ namespace psxemu {
         size_t count = 0;
         for (const int scale : chain.scales)
             count += scale > 0 ? 1 : 0;
-        if (count == 0)
-            return false;
+        // A set for every draw - each pass, and the blit after a last pass with a target - so
+        // each reads its own input and its own original.
+        const size_t draws = chain.passes.size() + 1;
         VkDescriptorPoolSize size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                      static_cast<uint32_t>(kBindings * count) };
+                                      static_cast<uint32_t>(kBindings * draws) };
         VkDescriptorPoolCreateInfo pool = {};
         pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        pool.maxSets = static_cast<uint32_t>(count);
+        pool.maxSets = static_cast<uint32_t>(draws);
         pool.poolSizeCount = 1;
         pool.pPoolSizes = &size;
         if (vk_.CreateDescriptorPool(device_, &pool, nullptr, &chain_pool_) != VK_SUCCESS)
@@ -907,14 +913,23 @@ namespace psxemu {
                 made = vk_.CreateFramebuffer(device_, &framebuffer, nullptr,
                                              &target.framebuffer) == VK_SUCCESS;
             }
-            if (made) {
-                target.reads = AllocateReads(chain_pool_, target.view);
-                made = target.reads != nullptr;
-            }
             if (!made) {
                 ReleaseChainTargets();
                 return false;
             }
+        }
+        for (size_t d = 0; d < draws; ++d) {
+            const VkImageView input = d == 0 ? frame_.view : targets_[d - 1].view;
+            const int from = d < chain.passes.size() ? chain.originals[d] : -1;
+            const VkDescriptorSet reads =
+                AllocateReads(chain_pool_, input, from < 0 ? nullptr : targets_[from].view);
+            if (reads == nullptr) {
+                ReleaseChainTargets();
+                return false;
+            }
+            chain_reads_.push_back(reads);
+            if (d < chain.passes.size() && chain.scales[d] == 0)
+                break;   // drew into the window: there is no draw after it
         }
         targets_for_ = &chain;
         targets_width_ = width;
@@ -926,6 +941,7 @@ namespace psxemu {
         for (Image& target : targets_)
             DestroyImage(&target);
         targets_.clear();
+        chain_reads_.clear();   // freed with the pool
         if (device_ != nullptr && chain_pool_ != nullptr)
             vk_.DestroyDescriptorPool(device_, chain_pool_, nullptr);
         chain_pool_ = nullptr;
@@ -1104,6 +1120,7 @@ namespace psxemu {
             last = &blit_;
             for (size_t i = 0; i < active_chain_->passes.size(); ++i) {
                 const Shader& pass = shaders_[active_chain_->passes[i]];
+                last_reads = chain_reads_[i];
                 if (active_chain_->scales[i] == 0) {
                     last = &pass;   // the last pass draws into the window itself
                     break;
@@ -1122,7 +1139,7 @@ namespace psxemu {
                 vk_.CmdSetScissor(commands_, 0, 1, &pass_begin.renderArea);
                 Draw(commands_, pass, last_reads, view.width, view.height, in_width, in_height);
                 vk_.CmdEndRenderPass(commands_);
-                last_reads = target.reads;
+                last_reads = chain_reads_[i + 1];   // the next draw's: this target, its original
                 in_width = view.width;
                 in_height = view.height;
             }

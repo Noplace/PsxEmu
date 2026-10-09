@@ -125,6 +125,7 @@ namespace psxemu {
         struct Chain {
             std::vector<std::string> passes;
             std::vector<int> scales;
+            std::vector<int> originals;   // ShaderPass::original
         };
 
         // An image the engine draws into or reads: a chain pass's target, or the frame itself.
@@ -158,7 +159,10 @@ namespace psxemu {
         void ReleaseFrameTexture();
         bool EnsureChainTargets(const Chain& chain, int width, int height);
         void ReleaseChainTargets();
-        VkDescriptorSet AllocateReads(VkDescriptorPool pool, VkImageView input);
+        // A descriptor set with `input` behind all four samplers and `original` - the frame, if
+        // null - on binding 4.
+        VkDescriptorSet AllocateReads(VkDescriptorPool pool, VkImageView input,
+                                      VkImageView original = nullptr);
         int FindMemory(uint32_t type_bits, VkFlags properties) const;
         void Draw(VkCommandBuffer commands, const Shader& shader, VkDescriptorSet reads,
                   float out_width, float out_height, float in_width, float in_height);
@@ -217,6 +221,9 @@ namespace psxemu {
 
         // The active chain's targets, for one frame size.
         std::vector<Image> targets_;
+        // What each of the chain's draws reads - its input and its original - one set a draw, the
+        // blit that may end it included: index i is pass i's, and one past the last pass the blit's.
+        std::vector<VkDescriptorSet> chain_reads_;
         VkDescriptorPool chain_pool_ = nullptr;
         const Chain* targets_for_ = nullptr;
         int targets_width_ = 0;

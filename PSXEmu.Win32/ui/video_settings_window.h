@@ -46,6 +46,10 @@ namespace psxemu {
             std::vector<std::wstring> cards;     // each graphics card, as the list names it
             int card = -1;                       // the one chosen, or -1 for automatic
             std::string filter;                  // running: a kFilterChoices key
+            std::vector<std::string> filter_chain;   // the custom chain's stages, filter keys
+            std::wstring chain_note;             // stages the chain leaves out, if any
+            std::string frame_pacing;            // a kFramePacingChoices key
+            std::wstring pacing_status;          // what Frame Pacing is doing, or why not
             bool hardware = false;               // the hardware rasteriser is drawing
             bool hardware_d3d12 = false;         // ...the Direct3D 12 one, asked for
             int resolution_scale = 1;            // as drawing: DLSS's own while it runs
@@ -93,6 +97,9 @@ namespace psxemu {
             std::function<void(const std::string& key)> set_renderer;
             std::function<void(int card)> set_card;   // an index into State::cards, or -1
             std::function<void(const std::string& key)> set_filter;
+            // The custom chain's stages, in order: filter keys, None left out.
+            std::function<void(const std::vector<std::string>& stages)> set_filter_chain;
+            std::function<void(const std::string& key)> set_frame_pacing;
             // "software", "hardware" (Direct3D 11) or "hardware_d3d12" (EmuConfig).
             std::function<void(const std::string& key)> set_rasteriser;
             std::function<void(int scale)> set_resolution;
@@ -147,6 +154,16 @@ namespace psxemu {
         HWND renderer_ = nullptr;
         HWND card_ = nullptr;
         HWND filter_ = nullptr;
+        HWND pacing_ = nullptr;
+        HWND pacing_status_ = nullptr;
+        // The custom chain: a list per stage, and the line under them.
+        std::array<HWND, 4> chain_ = {};
+        std::array<HWND, 3> chain_arrows_ = {};
+        HWND chain_label_ = nullptr;
+        HWND chain_note_ = nullptr;
+        // What each stage's list holds after its "(none)": the filter keys, in kFilterChoices'
+        // order, None and the chain itself left out.
+        std::vector<std::string> stage_keys_;
         HWND software_ = nullptr;
         HWND hardware_ = nullptr;
         HWND hardware12_ = nullptr;

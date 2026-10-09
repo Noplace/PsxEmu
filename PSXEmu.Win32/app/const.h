@@ -231,6 +231,16 @@ namespace psxemu {
         { "scanline",    L"Scanline (CRT)" },
         { "xbrz",        L"xBRZ" },
         { "superxbr",    L"Super-xBR (3 pass)" },
+        { "chain",       L"Custom chain (below)" },
+    };
+
+    // Settings > Video > Frame Pacing, in the order EmuConfig::kValidFramePacings holds them.
+    struct FramePacingChoice { const char* key; const wchar_t* label; };
+
+    inline constexpr FramePacingChoice kFramePacingChoices[] = {
+        { "console", L"Console's own rate" },
+        { "display", L"Match the display" },
+        { "vrr",     L"Variable refresh (G-Sync, FreeSync)" },
     };
 
     // The hardware rasteriser's internal resolutions, in the order the Video Settings window lists

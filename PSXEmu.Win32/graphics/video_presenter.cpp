@@ -19,6 +19,7 @@
 #include "graphics/video_presenter.h"
 
 #include "app/const.h"   // RendererHasFilters
+#include "graphics/filter_chain.h"
 #include "psx/gpu_core.h"
 #include "app/win32_dialogs.h"
 
@@ -78,6 +79,7 @@ namespace psxemu {
         }
 
         renderer_ = opened;
+        engine_->SetVsync(vsync_);
         engine_->SetFrameGenerationAllowed(generation_allowed_);
         engine_->SetDlssTiming(dlss_timing_);
         // What the caller hears of from here: not this, which it asks for itself.
@@ -86,18 +88,61 @@ namespace psxemu {
         last_picture_ = 0;
         // Filters run on Direct3D 12 and OpenGL; on D3D11 nothing is loaded and nothing is ticked.
         filter_.clear();
+        chain_loaded_ = false;
         if (RendererHasFilters(renderer_)) {
             LoadAllFilters(*engine_, ParseGraphicsBackend(renderer_));
-            engine_->SetPixelShader(filter);
             filter_ = filter;
+            LoadCustomChain();
+            engine_->SetPixelShader(EngineFilter());
         }
 
         if (!warning.empty() && to_ui_) {
             HWND window = window_;
             to_ui_([window, warning] { ShowWarning(window, warning.c_str()); });
         }
-        overlay_.SetRendererInfo(renderer_, filter_);
+        overlay_.SetRendererInfo(renderer_, FilterInfo());
         return true;
+    }
+
+    void D3DPresenter::LoadCustomChain() {
+        chain_loaded_ = false;
+        if (engine_ == nullptr || !RendererHasFilters(renderer_))
+            return;
+        const FilterChainPlan plan = PlanFilterChain(chain_stages_);
+        // Loaded again under the same key, which replaces the chain an engine had for it.
+        chain_loaded_ = !plan.passes.empty() &&
+                        engine_->LoadShaderChain(kCustomChainKey, plan.passes);
+    }
+
+    std::string D3DPresenter::EngineFilter() const {
+        if (filter_ == kCustomChainKey && !chain_loaded_)
+            return std::string();
+        return filter_;
+    }
+
+    std::string D3DPresenter::FilterInfo() const {
+        if (filter_ != kCustomChainKey)
+            return filter_;
+        std::string info;
+        for (const std::string& stage : chain_stages_)
+            info += (info.empty() ? "" : "+") + stage;
+        return info.empty() ? std::string("chain") : info;
+    }
+
+    void D3DPresenter::SetFilterChain(const std::vector<std::string>& stages) {
+        if (stages == chain_stages_)
+            return;
+        chain_stages_ = stages;
+        LoadCustomChain();
+        if (engine_ != nullptr && RendererHasFilters(renderer_) && filter_ == kCustomChainKey)
+            engine_->SetPixelShader(EngineFilter());
+        overlay_.SetRendererInfo(renderer_, FilterInfo());
+    }
+
+    void D3DPresenter::SetVsync(bool on) {
+        vsync_ = on;
+        if (engine_ != nullptr)
+            engine_->SetVsync(on);
     }
 
     void D3DPresenter::Present(const VideoFrame& frame) { PresentFrame(frame, false); }
@@ -311,9 +356,9 @@ namespace psxemu {
     void D3DPresenter::SetFilter(const std::string& key) {
         if (engine_ == nullptr || !RendererHasFilters(renderer_))
             return;
-        engine_->SetPixelShader(key);
         filter_ = key;
-        overlay_.SetRendererInfo(renderer_, filter_);
+        engine_->SetPixelShader(EngineFilter());
+        overlay_.SetRendererInfo(renderer_, FilterInfo());
     }
 
 }   // namespace psxemu

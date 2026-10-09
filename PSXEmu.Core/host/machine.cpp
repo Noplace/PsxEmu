@@ -61,7 +61,8 @@ void Machine::SetPaused(uint32_t reason, bool on) {
 void Machine::ApplyConfig(const psx::EmuConfig& config) {
   psx::EmuConfig& current = system_->config();
   const bool pacing_changed = current.frame_limiter != config.frame_limiter ||
-                              current.emulation_speed != config.emulation_speed;
+                              current.emulation_speed != config.emulation_speed ||
+                              current.frame_pacing != config.frame_pacing;
   const bool rasteriser_changed = current.gpu_rasteriser != config.gpu_rasteriser ||
                                   current.resolution_scale != config.resolution_scale ||
                                   current.true_color != config.true_color;
@@ -139,6 +140,12 @@ void Machine::Run() {
         hooks_.halted(*this);
       continue;
     }
+    // In step with the display, a frame finished after the next was due has missed its refresh.
+    // Shown late it would sit in the display's queue with the frame that catches up behind it,
+    // and every frame after would be a refresh late; left out, the one before stays up a refresh
+    // longer and the next is on time (Pace).
+    if (display_match_.locked && limiter_.has_deadline() && Clock::now() > limiter_.deadline())
+      video_->RequestSkip();
     PublishFrame();
     PumpAudio();
     // Memory cards go to disk a second after the game stops writing them (psx/mc.h).
@@ -157,8 +164,7 @@ void Machine::Run() {
     // headroom is running at exactly the speed it was told to.
     const double refresh = system_->gpu().refresh_hz();
     const double real_seconds = Ms(paced - start) / 1000.0;
-    const double asked =
-        system_->config().emulation_speed > 0.0 ? system_->config().emulation_speed : 1.0;
+    const double asked = PacedSpeed();
     if (refresh > 0.0 && real_seconds > 0.0) {
       double measured = (1.0 / refresh) / real_seconds;
       // Never above what was asked. A frame only looks faster than that when the
@@ -334,8 +340,7 @@ void Machine::PumpAudio() {
     // way to hand the device as much sound as it plays, and give the trim the
     // authority to refill a ring the shortfall emptied. The pitch is already off
     // nominal by then, by design - it follows the speed the game really runs at.
-    const double asked =
-        system_->config().emulation_speed > 0.0 ? system_->config().emulation_speed : 1.0;
+    const double asked = PacedSpeed();
     const double base = falling_behind_ ? achieved_speed_ : asked;
     const double gain = falling_behind_ ? 0.03 : 0.005;
     double trim = 1.0 + gain * error;
@@ -352,12 +357,74 @@ void Machine::PumpAudio() {
 // Times the speed the machine is run at: 2.0 waits half as long. With the
 // limiter off it is paced by nothing, and the deadline is dropped so turning it
 // back on starts a fresh one rather than owing however long it ran unpaced.
+//
+// Matching the display (EmuConfig::frame_pacing, platform/display_sync.h) changes the rate to
+// the display's, or a whole fraction of it, when that is near enough the console's - and then
+// moves each deadline a little towards a fixed point after the display's vblank, so the frames
+// stay where the refreshes are rather than only as many. Only at 100%: any other speed is not
+// meant to keep step with anything.
 void Machine::Pace() {
   const psx::EmuConfig& config = system_->config();
-  if (config.frame_limiter)
-    limiter_.Wait(system_->gpu().refresh_hz() * config.emulation_speed);
-  else
+  if (!config.frame_limiter) {
+    display_match_ = utilities::DisplayMatch();
     limiter_.Reset();
+    return;
+  }
+  const double console_hz = system_->gpu().refresh_hz();
+  utilities::DisplayTiming display;
+  utilities::DisplayMatch match;
+  if (config.frame_pacing == "display" && hooks_.display_timing &&
+      hooks_.display_timing(&display)) {
+    display_hz_ = display.refresh_hz;
+    if (config.emulation_speed == 1.0f)
+      match = utilities::MatchDisplay(console_hz, display.refresh_hz);
+  } else {
+    display_hz_ = 0.0;
+  }
+  display_match_ = match;
+
+  limiter_.Wait(match.locked ? match.frame_hz : console_hz * config.emulation_speed);
+
+  if (!match.locked) {
+    queued_presents_ = 0;
+    return;
+  }
+  const Clock::duration refresh = std::chrono::duration_cast<Clock::duration>(
+      std::chrono::duration<double>(1.0 / display.refresh_hz));
+  if (display.has_vblank && limiter_.has_deadline()) {
+    limiter_.Shift(utilities::PhaseCorrection(
+        limiter_.deadline(), display.last_vblank, refresh,
+        std::chrono::duration_cast<Clock::duration>(kDisplayPhase), 0.1,
+        std::chrono::duration_cast<Clock::duration>(std::chrono::microseconds(250))));
+  }
+
+  // A present that waits most of a refresh is waiting behind a frame already queued for the
+  // display. In step with the display that frame never goes: one frame is made a refresh as one
+  // is shown, so a queue that filled once - the first frames, a composition the system missed -
+  // stays full for good. A frame of latency, and nothing in hand when the next hitch comes, so
+  // that one drops a frame (bug 148: 13 in 20 s on Direct3D 11 before this). A frame late from
+  // the machine is left out as it is made (Run); for the rest, a quarter of a second of these
+  // presents and the video thread leaves one frame unpresented: the queue empties, and the
+  // presents after it go out as their frames are made. A frame left out rather than the machine
+  // held back a refresh, which was tried first: the game's clock then fell a frame behind the
+  // sound's at each one, and a scene slow enough to refill the queue every second or two ran
+  // the sound dry.
+  const long long present_ns = video_->last_present_ns();
+  if (static_cast<double>(present_ns) >
+      0.6 * std::chrono::duration_cast<std::chrono::nanoseconds>(refresh).count())
+    ++queued_presents_;
+  else
+    queued_presents_ = 0;
+  if (queued_presents_ >= kQueuedPresentsToDrain) {
+    video_->RequestSkip();
+    queued_presents_ = -kQueuedPresentsToDrain;   // the presents take a moment to catch up
+  }
+}
+
+double Machine::PacedSpeed() const {
+  const double asked =
+      system_->config().emulation_speed > 0.0 ? system_->config().emulation_speed : 1.0;
+  return display_match_.locked ? asked * display_match_.ratio : asked;
 }
 
 // Back from a pause - or starting. Nothing to catch up on, and the ring is put
@@ -399,6 +466,9 @@ void Machine::Report(bool paused) {
   report.hardware_raster = system_->gpu().hardware_raster();
   report.raster_error = system_->gpu().raster_error();
   report.shared_picture = published_shared_;
+  report.display_hz = display_hz_;
+  report.display_refreshes = display_match_.locked ? display_match_.refreshes : 0;
+  report.pace_ratio = display_match_.locked ? display_match_.ratio : 1.0;
   if (hooks_.report)
     hooks_.report(report);
 

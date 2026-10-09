@@ -605,7 +605,17 @@ And, since bug 62, that the frames are **evenly spaced** - the 5th and 95th
 percentile intervals within 3 ms of the period, and no single frame half a frame
 late. The six rate checks all passed while frames were arriving 0 to 30 ms
 apart, because the overshoots and the catch-ups averaged out; the audio pump,
-fed once a frame, was the thing that noticed.
+fed once a frame, was the thing that noticed. That spacing check measures real
+time, and a busy host can fail it once with a single late frame; run it again
+before believing it.
+
+Since bug 148, 22 more on Frame Pacing's "Match the display"
+(`platform/display_sync.h`): which displays a game is run in step with and at
+what rate - 60 and 59.94 Hz at one refresh a frame, 119.88 at two, 240 at four,
+PAL at 50 and 100, and not 144, 165, PAL at 60, a display slower than the game,
+or past the 2% line - the phase step that holds each frame's start just after
+the vblank, a simulated lock settling from half a refresh out with half a
+millisecond of wake noise, and `FrameLimiter::Shift`. 30 checks in all.
 
 It exists because **a harness has neither a monitor nor a sound device**, and
 those were what the emulator's speed used to be set by. This checks the one
@@ -804,8 +814,11 @@ turned off when a file has both, and the mode and Frame Generation among a game'
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
-checks, aspect ratio), `frame_limiter_test` (8 checks - the average rate, and since bug 62 the
-spacing between frames too), `speed_resampler_test` (13 checks, the audio
+checks, aspect ratio), `frame_limiter_test` (30 checks - the average rate, since bug 62 the
+spacing between frames too, and since bug 148 matching the display), `filter_chain_test` (27
+checks, bug 148 - the custom filter chain's passes in `graphics/filter_chain.h`: each stage's
+size, Super-xBR's original once it is not first, the stage past 4x left out, the rule an engine
+runs a chain by, and the chain and Frame Pacing in the settings file), `speed_resampler_test` (13 checks, the audio
 arithmetic behind 50-300% speed - the frame counts, that a minute at 150% does
 not drift, and that blocks join continuously), `mouse_scaling_test` (37
 checks, the three ways a host mouse's movement becomes a PSX mouse's counts -

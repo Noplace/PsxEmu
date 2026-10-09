@@ -68,6 +68,12 @@ namespace psxemu {
         // The menu's asks, run as requests on the video thread.
         void SetRenderer(const std::string& key);
         void SetFilter(const std::string& key);
+        // The stages of the custom chain (graphics/filter_chain.h), shown when the filter is
+        // "chain" - and kept, and loaded again into every engine made from here on.
+        void SetFilterChain(const std::vector<std::string>& stages);
+        // Whether presents wait for the display's refresh: off for Frame Pacing's variable
+        // refresh, where each frame goes out as it is drawn. Kept across engines.
+        void SetVsync(bool on);
         // The graphics card to draw on (graphics/adapters.h): before Open, and from Settings >
         // Video > Graphics Card. 0 and empty leave it to the engine.
         void SetGraphicsCard(uint64_t luid, const std::string& name);
@@ -151,6 +157,16 @@ namespace psxemu {
         std::unique_ptr<IGraphicsEngine> engine_;
         std::string renderer_;
         std::string filter_;
+        std::vector<std::string> chain_stages_;
+        bool chain_loaded_ = false;   // the engine holds a chain for them
+        bool vsync_ = true;
+        // Loads chain_stages_ into the engine under kCustomChainKey, if it runs filters.
+        void LoadCustomChain();
+        // What the engine is asked to draw with for filter_: nothing for a chain that is empty
+        // or could not be loaded.
+        std::string EngineFilter() const;
+        // What the overlay says the filter is: a chain by its stages.
+        std::string FilterInfo() const;
         int width_ = 0;
         int height_ = 0;
 
