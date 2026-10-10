@@ -21,6 +21,7 @@
 #include <array>
 #include <cstdio>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -178,6 +179,9 @@ class Disc {
     // several frames each, decompressed whole, and the last one is kept -
     // the CHD's own read-ahead, a hunk being eight sectors in a typical one.
     void* chd = nullptr;
+    // An ECM image, when this is one (psx/ecm.h): the image it holds is read through it, and
+    // `file` is null. Shared because a Source is copied about while the disc is being laid out.
+    std::shared_ptr<class EcmImage> ecm;
     uint32_t chd_hunk_bytes = 0;
     mutable std::vector<uint8_t> chd_hunk;
     mutable uint32_t chd_hunk_number = 0xFFFFFFFFu;
@@ -186,6 +190,8 @@ class Disc {
   // One sector out of an image file, through the read-ahead block above.
   bool ReadFileSector(const Source& source, long long offset, uint32_t wanted,
                       uint8_t* out) const;
+  // Bytes of a source's image at `offset` - the file's own, or what an ECM image decodes to.
+  static size_t ReadImageBytes(const Source& source, long long offset, uint8_t* out, size_t bytes);
 
   struct TrackSource {
     int source;             // index into sources_

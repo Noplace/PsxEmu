@@ -1,6 +1,31 @@
 # Disc formats: raw images, and compressed ones
 
-## Done since this was written: CHD
+## Done since this was written: ECM
+
+`.ecm` mounts (2026-10-10): `psx/ecm.h`, and nothing outside `disc.cpp` knows. An ECM image is the
+raw image with what can be worked out from the rest of each sector left out - sync, header, EDC,
+ECC - as a run of records: literal bytes, or sectors of one kind. `EcmImage` puts them back, the EDC
+and the P and Q parity written from ECMA-130; it shares no code with the original tool.
+
+- **No stride to seek by.** A raw PlayStation image becomes, for every sector, a 16-byte literal (a
+  Mode 2 sector's sync and header) and a Mode 2 record of one sector. `Open` walks the records once,
+  through a 1 MB buffer, and keeps where each begins in the image and in the file; `Read` finds its
+  records by binary search, takes their span of the file in one read and rebuilds only the sectors
+  asked for. It sits under `Disc::ReadImageBytes`, so the read-ahead, the track detection and the
+  descriptors work as on a `.bin`.
+- **Mounting reads the file once**, end to end: the format has no index. 634 MB took 6.7 s and, another
+  time, 61 s from the network share - whatever the medium gives; a local disc is a second or two.
+- **`game.bin.ecm` beside `game.cue`** mounts by either name: a descriptor's image that is not
+  there is looked for with `.ecm` on the end (`Disc::AddFileSource`), and an `.ecm`'s descriptor is
+  looked for under the name of the image it holds.
+- **Checked** on Metal Gear Solid Integral (J) disc 1: every one of its 305,981 sectors decoded and
+  the EDC of the lot equal to the one the file ends with (`EcmImage::Verify`, 4.6 s), and it boots on
+  SCPH1001 and on the HLE BIOS. `media_test`'s "an ECM image" makes one of all four record types and
+  reads it back by the decoder, bare, and through a cue sheet.
+- A file named `.ecm` that does not begin `ECM\0` is refused. The share's "Crash Bandicoot (E) (EDC)
+  [SCES-00344].bin.ecm" is one: 554 MB with no structure at all from its first byte to its last.
+
+## Done before that: CHD
 
 The recommendation below was zip first and CHD later. CHD came first instead,
 as bug 104, because it is what people actually keep collections in. The seam

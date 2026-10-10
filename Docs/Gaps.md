@@ -414,9 +414,11 @@ tens of thousands of commands with none unrecognised. The MVMVA garbage matrix
 
 ### Disc images
 
-- **CHD, but not ECM or PBP** ([Disc-Formats-Plan.md](Disc-Formats-Plan.md)).
+- **CHD and ECM, but not PBP** ([Disc-Formats-Plan.md](Disc-Formats-Plan.md)).
   CHDs mount through libchdr with chdman's default codecs (bug 104); one
   compressed with zstd is refused with a message, since zstd is not built in.
+  An `.ecm` mounts through `psx/ecm.h`, on its own or as the image a cue sheet
+  names; mounting one reads it through once, the format having no index.
   Nothing here has read a CHD that chdman made - there is no chdman on this
   machine, so the ones tested were written by `tools/chd_writer.h` to its
   format.

@@ -41,7 +41,7 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  PSXEmu.Core\psx\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
  PSXEmu.Core\psx\state.cpp PSXEmu.Core\psx\debug_assist.cpp PSXEmu.Core\psx\debugger.cpp ^
  PSXEmu.Core\psx\bios_calls.cpp PSXEmu.Core\psx\hle_bios.cpp PSXEmu.Core\psx\hle_bios_libc.cpp ^
- PSXEmu.Core\psx\hle_bios_io.cpp PSXEmu.Core\psx\hle_bios_timing.cpp PSXEmu.Core\psx\hle_shell.cpp PSXEmu.Core\psx\hle_font_data.cpp
+ PSXEmu.Core\psx\hle_bios_io.cpp PSXEmu.Core\psx\hle_bios_timing.cpp PSXEmu.Core\psx\hle_shell.cpp PSXEmu.Core\psx\hle_font_data.cpp PSXEmu.Core\psx\ecm.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
  /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I PSXEmu.Core\lib\libchdr\include ^

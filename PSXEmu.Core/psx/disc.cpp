@@ -24,6 +24,7 @@
 #include <cctype>
 #include <cstring>
 #include <map>
+#include "psx/ecm.h"
 
 #include <libchdr/cdrom.h>
 #include <libchdr/chd.h>
@@ -517,19 +518,24 @@ bool Disc::Open(const char* path) {
     // data track and no game will ever ask for a note of it. For an .mdf the
     // stakes are higher still - the descriptor also carries the sector
     // stride, without which the file does not read as a disc at all.
-    const std::string cue = FindSibling(text, "cue");
+    //
+    // An ECM image's descriptor is named after the image it holds: "game.bin.ecm" sits beside
+    // "game.cue", which names "game.bin" - and AddFileSource finds the .ecm for it.
+    const std::string named =
+        extension == ".ecm" ? text.substr(0, text.size() - 4) : text;
+    const std::string cue = FindSibling(named, "cue");
     if (!cue.empty())
       ok = OpenCue(cue.c_str());
     if (!ok) {
       Close();
-      const std::string mds = FindSibling(text, "mds");
+      const std::string mds = FindSibling(named, "mds");
       if (!mds.empty())
         ok = OpenMds(mds.c_str());
     }
     bool scrambled = false;
     if (!ok) {
       Close();
-      const std::string ccd = FindSibling(text, "ccd");
+      const std::string ccd = FindSibling(named, "ccd");
       if (!ccd.empty())
         ok = OpenCcd(ccd.c_str(), &scrambled);
     }
@@ -556,16 +562,36 @@ bool Disc::Open(const char* path) {
 // without sync or header by 2336; a cooked ISO by 2048.
 bool Disc::AddFileSource(const std::string& path, Source* out,
                          uint32_t sector_size) const {
-  FILE* fp = fopen(path.c_str(), "rb");
-  if (fp == nullptr)
-    return false;
+  // An ECM image (psx/ecm.h) - named as one, or standing in for the image a descriptor names,
+  // which is how one is usually kept: "game.bin.ecm" beside a cue sheet that says "game.bin".
+  FILE* fp = nullptr;
+  std::string ecm_path;
+  if (Extension(path) == ".ecm")
+    ecm_path = path;
+  else if ((fp = fopen(path.c_str(), "rb")) == nullptr) {
+    FILE* probe = fopen((path + ".ecm").c_str(), "rb");
+    if (probe == nullptr)
+      return false;
+    fclose(probe);
+    ecm_path = path + ".ecm";
+  }
 
-  fseek(fp, 0, SEEK_END);
-  const long long size = _ftelli64(fp);
-  fseek(fp, 0, SEEK_SET);
-  if (size <= 0) {
-    fclose(fp);
-    return false;
+  long long size = 0;
+  if (!ecm_path.empty()) {
+    auto image = std::make_shared<EcmImage>();
+    std::string error;
+    if (!image->Open(ecm_path, &error))
+      return false;
+    size = static_cast<long long>(image->size());
+    out->ecm = std::move(image);
+  } else {
+    fseek(fp, 0, SEEK_END);
+    size = _ftelli64(fp);
+    fseek(fp, 0, SEEK_SET);
+    if (size <= 0) {
+      fclose(fp);
+      return false;
+    }
   }
 
   out->file = fp;
@@ -625,7 +651,7 @@ bool Disc::AddFileSource(const std::string& path, Source* out,
 // Returns the number of sectors in the data track, which is the whole file
 // when there is no audio at all - the ordinary case.
 uint32_t Disc::FindDataTrackLength(const Source& source) const {
-  if (source.file == nullptr || source.sector_size < kRawSectorSize ||
+  if ((source.file == nullptr && !source.ecm) || source.sector_size < kRawSectorSize ||
       source.sector_count == 0)
     return source.sector_count;   // cooked images carry no sync to look for
 
@@ -654,10 +680,8 @@ bool Disc::IsDataSector(const Source& source, uint32_t file_sector) const {
                                      0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00 };
   const long long offset =
       static_cast<long long>(file_sector) * source.sector_size;
-  if (_fseeki64(source.file, offset, SEEK_SET) != 0)
-    return false;
   uint8_t head[12];
-  if (fread(head, 1, sizeof(head), source.file) != sizeof(head))
+  if (ReadImageBytes(source, offset, head, sizeof(head)) != sizeof(head))
     return false;
   return memcmp(head, kSync, sizeof(kSync)) == 0;
 }
@@ -1481,6 +1505,15 @@ void Disc::SynthesiseSectorHeader(uint8_t* sector, uint32_t lba,
 //
 // A short read at the end of the file is not a failure as long as the sector
 // asked for came back whole: the block deliberately reaches past it.
+size_t Disc::ReadImageBytes(const Source& source, long long offset, uint8_t* out,
+                            size_t bytes) {
+  if (source.ecm)
+    return source.ecm->Read(static_cast<uint64_t>(offset), out, bytes);
+  if (source.file == nullptr || _fseeki64(source.file, offset, SEEK_SET) != 0)
+    return 0;
+  return fread(out, 1, bytes, source.file);
+}
+
 bool Disc::ReadFileSector(const Source& source, long long offset, uint32_t wanted,
                           uint8_t* out) const {
   if (source.ahead_offset >= 0 && offset >= source.ahead_offset &&
@@ -1499,9 +1532,7 @@ bool Disc::ReadFileSector(const Source& source, long long offset, uint32_t wante
 
   source.ahead_offset = -1;
   source.ahead_size = 0;
-  if (_fseeki64(source.file, offset, SEEK_SET) != 0)
-    return false;
-  const size_t got = fread(&source.ahead[0], 1, block, source.file);
+  const size_t got = ReadImageBytes(source, offset, &source.ahead[0], block);
   if (got < wanted)
     return false;
   source.ahead_offset = offset;
@@ -1604,7 +1635,7 @@ bool Disc::ReadSector(uint32_t lba, uint8_t* out) const {
                               ? source.sector_size
                               : static_cast<uint32_t>(kRawSectorSize);
 
-  if (source.file != nullptr) {
+  if (source.file != nullptr || source.ecm) {
     if (!ReadFileSector(source, byte_offset, wanted, out))
       return false;
   } else if (source.device != nullptr) {

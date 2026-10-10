@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "psx/ecm.h"
 #include "tools/chd_writer.h"
 
 using emulation::psx::Cdrom;
@@ -3290,6 +3291,165 @@ void TestChd(const std::string& directory) {
   }
 }
 
+// An ECM image (psx/ecm.h), made here from a disc of every kind of sector the format has a record
+// for, and read back three ways: by the decoder itself, by Disc mounting the .ecm, and by Disc
+// mounting a cue sheet that names the image the .ecm stands in for.
+void TestEcm(const std::string& directory) {
+  printf("an ECM image\n");
+  using emulation::psx::EcmImage;
+  const uint32_t kSector = 2352;
+
+  // The disc: thirty Mode 2 Form 1 sectors, five Form 2, five of audio, two of Mode 1.
+  std::vector<uint8_t> image;
+  std::vector<uint8_t> ecm = { 'E', 'C', 'M', 0 };
+  auto record = [&ecm](int type, uint32_t count) {
+    uint32_t n = count - 1;
+    uint8_t byte = static_cast<uint8_t>(type | ((n & 0x1F) << 2));
+    n >>= 5;
+    while (n != 0) {
+      ecm.push_back(byte | 0x80);
+      byte = static_cast<uint8_t>(n & 0x7F);
+      n >>= 7;
+    }
+    ecm.push_back(byte);
+  };
+  uint32_t lba = 0;
+  auto mode2 = [&](int form) {
+    uint8_t s[2352] = {};
+    s[0] = 0x00; memset(s + 1, 0xFF, 10); s[11] = 0x00;
+    Disc::LbaToMsf(lba + Disc::kLeadInSectors, s + 12, s + 13, s + 14);
+    s[15] = 0x02;
+    const uint8_t subheader[4] = { 0x01, 0x02, static_cast<uint8_t>(form == 2 ? 0x20 : 0x08), 0x00 };
+    memcpy(s + 0x14, subheader, 4);
+    const uint32_t data = form == 2 ? 2324 : 2048;
+    for (uint32_t i = 0; i < data; ++i)
+      s[0x18 + i] = static_cast<uint8_t>(lba * 7 + i * 3);
+    EcmImage::Reconstruct(s, form == 2 ? 3 : 2);
+    image.insert(image.end(), s, s + kSector);
+    // As the format stores it: its sync and header a literal, then the sector without them.
+    record(0, 16);
+    ecm.insert(ecm.end(), s, s + 16);
+    record(form == 2 ? 3 : 2, 1);
+    ecm.insert(ecm.end(), s + 0x14, s + 0x14 + 4 + data);
+    ++lba;
+  };
+  for (int i = 0; i < 30; ++i) mode2(1);
+  for (int i = 0; i < 5; ++i) mode2(2);
+  {
+    std::vector<uint8_t> audio(5 * kSector);
+    for (size_t i = 0; i < audio.size(); ++i)
+      audio[i] = static_cast<uint8_t>(i * 13 + (i >> 8));
+    image.insert(image.end(), audio.begin(), audio.end());
+    record(0, static_cast<uint32_t>(audio.size()));   // a count that takes three bytes
+    ecm.insert(ecm.end(), audio.begin(), audio.end());
+    lba += 5;
+  }
+  record(1, 2);   // two Mode 1 sectors in one record
+  for (int i = 0; i < 2; ++i) {
+    uint8_t s[2352] = {};
+    Disc::LbaToMsf(lba + Disc::kLeadInSectors, s + 12, s + 13, s + 14);
+    for (uint32_t k = 0; k < 2048; ++k)
+      s[0x10 + k] = static_cast<uint8_t>(lba + k * 5);
+    EcmImage::Reconstruct(s, 1);
+    image.insert(image.end(), s, s + kSector);
+    ecm.insert(ecm.end(), s + 12, s + 15);
+    ecm.insert(ecm.end(), s + 0x10, s + 0x10 + 2048);
+    ++lba;
+  }
+  const uint8_t kEnd[5] = { 0xFC, 0xFF, 0xFF, 0xFF, 0x3F };   // a count of FFFFFFFFh
+  ecm.insert(ecm.end(), kEnd, kEnd + 5);
+  const uint32_t edc = EcmImage::Edc(0, image.data(), image.size());
+  for (int i = 0; i < 4; ++i)
+    ecm.push_back(static_cast<uint8_t>(edc >> (i * 8)));
+
+  auto write = [](const std::string& path, const std::vector<uint8_t>& bytes) {
+    FILE* fp = fopen(path.c_str(), "wb");
+    if (fp == nullptr)
+      return false;
+    const bool ok = fwrite(bytes.data(), 1, bytes.size(), fp) == bytes.size();
+    fclose(fp);
+    return ok;
+  };
+  const std::string bare = directory + "media_ecm_bare.bin.ecm";
+  const std::string with_cue = directory + "media_ecm.bin.ecm";
+  const std::string cue = directory + "media_ecm.cue";
+  if (!write(bare, ecm) || !write(with_cue, ecm) ||
+      !WriteText(cue, "FILE \"media_ecm.bin\" BINARY\r\n"
+                      "  TRACK 01 MODE2/2352\r\n"
+                      "    INDEX 01 00:00:00\r\n"
+                      "  TRACK 02 AUDIO\r\n"
+                      "    INDEX 01 00:00:35\r\n")) {
+    printf("  FAIL  could not write the ECM images\n");
+    ++g_failures;
+    return;
+  }
+
+  // The decoder on its own.
+  {
+    EcmImage decoded;
+    std::string error;
+    Check(decoded.Open(bare, &error), "the image opens");
+    CheckEqual(static_cast<uint32_t>(decoded.size()), static_cast<uint32_t>(image.size()),
+               "and is the size of the disc it was made from");
+    std::vector<uint8_t> back(image.size());
+    CheckEqual(static_cast<uint32_t>(decoded.Read(0, back.data(), back.size())),
+               static_cast<uint32_t>(back.size()), "all of it reads");
+    Check(back == image, "and is the disc, sync, header, EDC and ECC put back");
+    // A read that starts and ends inside sectors, across every kind of record.
+    bool pieces = true;
+    for (uint64_t at = 5; at + 9000 < image.size(); at += 7001) {
+      uint8_t part[9000];
+      pieces = pieces && decoded.Read(at, part, sizeof(part)) == sizeof(part) &&
+               memcmp(part, &image[static_cast<size_t>(at)], sizeof(part)) == 0;
+    }
+    Check(pieces, "any piece of it reads the same, wherever it starts and ends");
+    uint8_t past[16];
+    CheckEqual(static_cast<uint32_t>(decoded.Read(image.size() - 4, past, 16)), 4,
+               "a read off the end stops at the end");
+    Check(decoded.Verify(), "the EDC the file ends with is the image's");
+
+    std::vector<uint8_t> bad = ecm;
+    bad[0] = 'X';
+    const std::string not_ecm = directory + "media_ecm_bad.bin.ecm";
+    write(not_ecm, bad);
+    EcmImage refused;
+    Check(!refused.Open(not_ecm, &error), "a file that is not an ECM image is refused");
+    RemoveImage(not_ecm);
+  }
+
+  // Mounted bare: one data track found from the sectors, the audio after it.
+  {
+    Disc disc;
+    Check(disc.Open(bare.c_str()), "the .ecm mounts on its own");
+    CheckEqual(disc.total_sectors(), Disc::kLeadInSectors + 42, "42 sectors");
+    uint8_t sector[2352];
+    bool same = true;
+    for (uint32_t i = 0; i < 35; ++i)
+      same = same && disc.ReadSector(Disc::kLeadInSectors + i, sector) &&
+             memcmp(sector, &image[i * kSector], kSector) == 0;
+    Check(same, "its data sectors read as the disc's");
+  }
+  // Mounted through the cue sheet, which names media_ecm.bin - there is only media_ecm.bin.ecm.
+  for (const std::string& path : { cue, with_cue }) {
+    Disc disc;
+    Check(disc.Open(path.c_str()), "the cue sheet beside it mounts, by either name");
+    CheckEqual(disc.track_count(), 2, "with the cue sheet's two tracks");
+    Check(disc.track_count() == 2 && disc.track(1).type == Disc::kTrackAudio &&
+              disc.track(1).start_lba == Disc::kLeadInSectors + 35,
+          "the second audio, from sector 35");
+    uint8_t sector[2352];
+    Check(disc.ReadSector(Disc::kLeadInSectors + 31, sector) &&
+              memcmp(sector, &image[31 * kSector], kSector) == 0,
+          "a Form 2 sector reads as the disc's");
+    Check(disc.ReadSector(Disc::kLeadInSectors + 36, sector) &&
+              memcmp(sector, &image[36 * kSector], kSector) == 0,
+          "and an audio sector");
+  }
+  RemoveImage(bare);
+  RemoveImage(with_cue);
+  RemoveImage(cue);
+}
+
 int main(int argc, char** argv) {
   // A second argument of "keep" leaves the generated images behind, which is
   // how boot_runner --boot-disc gets something to point at without a game.
@@ -3309,6 +3469,7 @@ int main(int argc, char** argv) {
   TestCloneCd(directory);
   TestMdsDescriptor(directory);
   TestChd(directory);
+  TestEcm(directory);
   TestIso9660(directory);
   TestSystemCnf();
   TestSettingsFile(directory);
