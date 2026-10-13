@@ -229,6 +229,7 @@
     <ClInclude Include="host\request_queue.h" />
     <ClInclude Include="host\sample_ring.h" />
     <ClInclude Include="host\video_output.h" />
+    <ClInclude Include="platform\display_sync.h" />
     <ClInclude Include="platform\frame_limiter.h" />
     <ClInclude Include="platform\input_bindings.h" />
     <ClInclude Include="platform\mouse_scaling.h" />
@@ -284,8 +285,6 @@
     <ClInclude Include="rec\recompiler.h" />
     <ClInclude Include="rec\runtime.h" />
     <ClInclude Include="rec\x86_extras.h" />
-    <ClInclude Include="utilities\cdrom\iso9660.h" />
-    <ClInclude Include="utilities\lean\hash_table.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="lib\reccore\README.md" />
