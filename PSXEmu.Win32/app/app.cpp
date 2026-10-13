@@ -560,7 +560,7 @@ namespace psxemu {
 
     void App::RefreshBiosMenu() {
         bios_files_ = ScanBiosFolder(bios_root_);
-        PopulateBiosMenu(window_, bios_files_, FileNameOf(bios_path_));
+        PopulateBiosMenu(window_, bios_root_, bios_files_, FileNameOf(bios_path_));
     }
 
     void App::SelectBios(int index) {

@@ -46,6 +46,9 @@ namespace psxemu {
     //
     // `current` is a filename, not a path: what is ticked is the entry naming the same file, so a
     // BIOS chosen from somewhere else entirely (the command line) ticks nothing, which is right.
+    void PopulateBiosMenu(HWND window, const std::string& bios_root,
+                          const std::vector<std::string>& files,
+                          const std::string& current);
     void PopulateBiosMenu(HWND window, const std::vector<std::string>& files,
                           const std::string& current);
 

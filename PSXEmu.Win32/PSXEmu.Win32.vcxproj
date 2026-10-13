@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -204,6 +204,7 @@ exit /b 0</Command>
     <ClInclude Include="shaders\superxbr_pass2.h" />
     <ClInclude Include="app\win32_dialogs.h" />
     <ClInclude Include="app\win32_paths.h" />
+    <ClInclude Include="app\bios_database.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\PSXEmu.Core\PSXEmu.Core.vcxproj">

@@ -19,6 +19,7 @@
 #include "app/menu.h"
 
 #include "app/const.h"
+#include "app/bios_database.h"
 #include "app/win32_paths.h"   // Widen, for a filename read off disk into a wide menu label
 
 namespace psxemu {
@@ -267,7 +268,8 @@ namespace psxemu {
         return bar;
     }
 
-    void PopulateBiosMenu(HWND window, const std::vector<std::string>& files,
+    void PopulateBiosMenu(HWND window, const std::string& bios_root,
+                          const std::vector<std::string>& files,
                           const std::string& current) {
         HMENU bar = MenuBar(window);
         if (bar == nullptr)
@@ -283,9 +285,10 @@ namespace psxemu {
 
         const int count = std::min(static_cast<int>(files.size()), kMaxBiosEntries);
         for (int i = 0; i < count; ++i) {
-            // Shown as the filename alone - the folder is the same for all of them, and it is the
-            // one thing the person choosing already knows.
-            const std::wstring label = Widen(files[i]);
+            const std::string full_path =
+                bios_root.empty() ? files[i] : (bios_root + "\\" + files[i]);
+            const BiosInfo info = IdentifyBios(full_path, files[i]);
+            const std::wstring label = info.FormatMenuLabel();
             AppendMenuW(bios, MF_STRING, static_cast<UINT_PTR>(kCommandBiosFirst + i),
                         label.c_str());
             if (_stricmp(files[i].c_str(), current.c_str()) == 0) {
@@ -308,6 +311,11 @@ namespace psxemu {
         AppendMenuW(bios, MF_STRING, static_cast<UINT_PTR>(kCommandOpenBiosFolder),
                     L"&Open folder...");
         DrawMenuBar(window);
+    }
+
+    void PopulateBiosMenu(HWND window, const std::vector<std::string>& files,
+                          const std::string& current) {
+        PopulateBiosMenu(window, std::string(), files, current);
     }
 
     void PopulateRecentDiscsMenu(HWND window, const std::vector<std::string>& discs) {
