@@ -41,7 +41,7 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  PSXEmu.Core\psx\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
  PSXEmu.Core\psx\state.cpp PSXEmu.Core\psx\debug_assist.cpp PSXEmu.Core\psx\debugger.cpp ^
  PSXEmu.Core\psx\bios_calls.cpp PSXEmu.Core\psx\hle_bios.cpp PSXEmu.Core\psx\hle_bios_libc.cpp ^
- PSXEmu.Core\psx\hle_bios_io.cpp PSXEmu.Core\psx\hle_bios_timing.cpp PSXEmu.Core\psx\hle_shell.cpp PSXEmu.Core\psx\hle_font_data.cpp PSXEmu.Core\psx\ecm.cpp
+ PSXEmu.Core\psx\hle_bios_io.cpp PSXEmu.Core\psx\hle_bios_timing.cpp PSXEmu.Core\psx\hle_shell.cpp PSXEmu.Core\psx\hle_font_data.cpp PSXEmu.Core\psx\ecm.cpp PSXEmu.Core\psx\movie.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
  /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I PSXEmu.Core\lib\libchdr\include ^
@@ -165,6 +165,12 @@ rem The HLE BIOS, driven by programs the test assembles itself.
 if not exist Temp\tools\obj_hle_test mkdir Temp\tools\obj_hle_test
 cl %FLAGS% /Fo:Temp\tools\obj_hle_test\ /Fe:Temp\tools\hle_test.exe ^
    PSXEmu.Core\tools\hle_test.cpp %CORE% %LIBS%
+if errorlevel 1 exit /b 1
+
+rem Input movies: BizHawk .bk2 files read and played into the ports (psx\movie.h).
+if not exist Temp\tools\obj_movie mkdir Temp\tools\obj_movie
+cl %FLAGS% /Fo:Temp\tools\obj_movie\ /Fe:Temp\tools\movie_test.exe ^
+   PSXEmu.Core\tools\movie_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
 rem GameShark codes: psx\cheats.h is header-only, and runs against a RAM of the test's own.

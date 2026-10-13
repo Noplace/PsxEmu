@@ -66,6 +66,85 @@ namespace psxemu {
                           L".ccd (with its .img), .bin, .img, .iso.";
         }
 
+        // The images of every disc of the game `path` is one disc of, the first first, for a movie
+        // that changes discs: the files beside it of the same kind whose names differ only in
+        // their disc number (app/disc_set.h). A disc not found is an empty path; an image whose
+        // name has no disc number is the only disc there is.
+        std::vector<std::string> DiscsOfSet(const std::string& path) {
+            int own = 0;
+            const std::string title = DiscSetTitle(path, &own);
+            std::vector<std::string> discs;
+            const int kMostDiscs = 16;
+            if (title.empty() || own <= 0 || own > kMostDiscs) {
+                discs.push_back(path);
+                return discs;
+            }
+            auto extension = [](const std::string& name) {
+                const size_t dot = name.find_last_of('.');
+                const size_t slash = name.find_last_of("/\\");
+                if (dot == std::string::npos || (slash != std::string::npos && dot < slash))
+                    return std::string();
+                std::string ext = name.substr(dot);
+                for (char& c : ext)
+                    c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+                return ext;
+            };
+            const size_t slash = path.find_last_of("/\\");
+            const std::string folder = slash == std::string::npos ? std::string()
+                                                                  : path.substr(0, slash + 1);
+            const std::string kind = extension(path);
+            discs.resize(static_cast<size_t>(own));
+            WIN32_FIND_DATAA found = {};
+            const HANDLE search = FindFirstFileA((folder + "*").c_str(), &found);
+            if (search != INVALID_HANDLE_VALUE) {
+                do {
+                    if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+                        continue;
+                    const std::string name = found.cFileName;
+                    int number = 0;
+                    if (extension(name) != kind || DiscSetTitle(name, &number) != title ||
+                        number <= 0 || number > kMostDiscs)
+                        continue;
+                    if (discs.size() < static_cast<size_t>(number))
+                        discs.resize(static_cast<size_t>(number));
+                    if (discs[static_cast<size_t>(number) - 1].empty())
+                        discs[static_cast<size_t>(number) - 1] = folder + name;
+                } while (FindNextFileA(search, &found));
+                FindClose(search);
+            }
+            discs[static_cast<size_t>(own) - 1] = path;
+            return discs;
+        }
+
+        // A file's SHA-1 as a movie's header writes it, or nothing if it cannot be read - for
+        // finding the BIOS image a movie was recorded on.
+        std::string FileSha1(const std::string& path) {
+            std::ifstream file(path, std::ios::binary);
+            if (!file)
+                return std::string();
+            const std::vector<char> bytes((std::istreambuf_iterator<char>(file)),
+                                          std::istreambuf_iterator<char>());
+            return emulation::psx::Sha1Hex(reinterpret_cast<const uint8_t*>(bytes.data()),
+                                           bytes.size());
+        }
+
+        // What a movie has in a port, as the settings name it (EmuConfig::controller_type).
+        std::string MoviePortType(const emulation::psx::Movie& movie, int port) {
+            if (movie.multitap[port])
+                return "multitap";
+            for (const emulation::psx::Movie::Player& player : movie.players) {
+                if (player.port != port || player.socket != 0)
+                    continue;
+                switch (player.device) {
+                    case emulation::psx::MovieDevice::kDigital: return "digital";
+                    case emulation::psx::MovieDevice::kDualAnalog: return "dual_analog";
+                    case emulation::psx::MovieDevice::kDualShock: return "dualshock";
+                    default: break;
+                }
+            }
+            return "none";
+        }
+
         // What the overlay's notifications say about a game - defined with the overlay's other
         // helpers, below.
         std::wstring Wide(const std::string& text);
@@ -273,6 +352,9 @@ namespace psxemu {
         }
 
         StartThreads();
+        // --movie: with the disc in and the machine's thread there to start it.
+        if (!command_line.movie.empty())
+            PlayMovieFromFile(command_line.movie);
         // After the input thread exists, since that is what holds the mouse.
         SendMouseSettingsToInput();
         // What is plugged in, shown for a few seconds at start - the pads already connected
@@ -737,6 +819,10 @@ namespace psxemu {
         // Held Tab runs the machine unpaced, without touching the setting itself.
         if (fast_forward_)
             config.frame_limiter = false;
+        // A movie playing has the timing it was recorded under, as near as this machine gets
+        // (psx/movie.h) - again without touching the settings, which are back when it ends.
+        if (movie_length_.load(std::memory_order_relaxed) != 0)
+            emulation::psx::ApplyMovieTiming(config);
         // DLSS or FSR, while it runs, has the rasteriser's scale and PGXP's precise vertices - its
         // motion comes from them - again without touching the settings.
         if (upscaler_active_) {
@@ -797,6 +883,15 @@ namespace psxemu {
             }
             title += suffix;
 
+            // A movie playing: the frame it is on, of how many.
+            const uint32_t movie_length = movie_length_.load(std::memory_order_relaxed);
+            if (movie_length != 0) {
+                wchar_t movie[64] = {};
+                swprintf(movie, std::size(movie), L"  -  movie %u / %u",
+                         movie_frame_.load(std::memory_order_relaxed), movie_length);
+                title += movie;
+            }
+
             // Where the frame's time went, on each thread that has any - Emulation > Show Timings.
             // "idle" is what the frame limiter slept off: the headroom, and what a faster speed
             // setting has to come out of.
@@ -852,6 +947,13 @@ namespace psxemu {
     void App::ApplyInput(System& system, const HostInput& input) {
         const EmuConfig& config = system.config();
         cheat_buttons_ = 0;   // what the pads hold this frame, for cheats that check buttons
+
+        // A movie playing holds the ports: what is plugged into them and every button is its
+        // own, and the host's devices are not looked at until it ends.
+        if (movie_.playing()) {
+            ApplyMovie(system);
+            return;
+        }
 
         // A different controller is a different physical device, and on a real console the port
         // sits empty while one is unplugged and the next plugged in. Some games need to see that
@@ -2538,6 +2640,7 @@ namespace psxemu {
         const std::string bios = bios_path_;
         PostToMachine([this, bios](Machine& machine) {
             System& system = machine.system();
+            DropMovie();
             system.Deinitialize();
             if (system.Initialize(bios.c_str()) != 0) {
                 PostToUi([this] {
@@ -2560,6 +2663,7 @@ namespace psxemu {
         const std::string settings_dir = game_settings_dir_;
         PostToMachine([this, bios, path, global, settings_dir](Machine& machine) {
             System& system = machine.system();
+            DropMovie();
             system.Deinitialize();
             if (system.Initialize(bios.c_str()) != 0) {
                 PostToUi([this] {
@@ -2632,6 +2736,7 @@ namespace psxemu {
         const std::string bios = bios_path_;
         PostToMachine([this, bios](Machine& machine) {
             System& system = machine.system();
+            DropMovie();
             system.Deinitialize();
             if (system.Initialize(bios.c_str()) != 0) {
                 PostToUi([this] {
@@ -2671,6 +2776,7 @@ namespace psxemu {
         const std::string bios = bios_path_;
         PostToMachine([this, bios, path](Machine& machine) {
             System& system = machine.system();
+            DropMovie();
             system.Deinitialize();
             if (system.Initialize(bios.c_str()) != 0) {
                 PostToUi([this] {
@@ -2693,6 +2799,261 @@ namespace psxemu {
                 Notify(OverlayIcon::kInfo, ToastKind::kSuccess, TitleFromPath(path), L"PS-X EXE");
             });
         });
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Movies
+    // ---------------------------------------------------------------------------------------------
+
+    void App::PlayMovieFromFile(const std::string& path) {
+        const std::string bios = bios_path_;
+        const std::string cards =
+            memcards_root_.empty() ? std::string() : memcards_root_ + "\\_movie";
+        // Every BIOS image there is to choose from, for a movie that names the one it needs.
+        std::vector<std::string> images;
+        for (const std::string& file : bios_files_)
+            images.push_back(bios_root_ + "\\" + file);
+        PostToMachine([this, path, selected = bios, cards, images](Machine& machine) {
+            using emulation::psx::Movie;
+            System& system = machine.system();
+            std::string bios = selected;
+            auto refuse = [this](const std::wstring& why) {
+                PostToUi([this, why] { ShowWarning(window_, why.c_str()); });
+            };
+
+            Movie movie;
+            std::string error;
+            if (!emulation::psx::LoadBk2(path, &movie, &error)) {
+                refuse(L"Could not play that movie.\n\n" + Widen(error) + L".");
+                return;
+            }
+            // A movie is input for one game from the moment it is switched on, and nothing in
+            // the file is the game: the one in the drive is the one it is played on.
+            if (!system.cdrom().disc_loaded()) {
+                refuse(L"Boot the movie's game first, then play the movie: it starts the game "
+                       L"in the drive again from power-on.");
+                return;
+            }
+            // It was recorded through a console's BIOS, intro and all, so the frames it took
+            // are part of it.
+            if (system.hle_active()) {
+                refuse(L"A movie needs a real BIOS image: it was recorded through one, and the "
+                       L"HLE BIOS starts a game on a different frame.\n\nTurn HLE BIOS off in "
+                       L"Settings > Emulation, boot the game, and play the movie again.");
+                return;
+            }
+            const std::vector<std::string> discs = DiscsOfSet(system.cdrom().disc().path());
+            if (cards.empty() || !EnsureDirectory(cards)) {
+                refuse(L"Could not play that movie: there is nowhere to keep its memory cards.");
+                return;
+            }
+            // Whether the disc in the drive is the one it was recorded on, as far as the two can
+            // say: by BizHawk's id for the disc when the movie names one, and by the serial its
+            // own saved cards were written under when it starts from any. A movie on the wrong
+            // disc plays - nothing stops its presses landing - and makes no sense; said, not
+            // refused, since neither check can tell two pressings apart for certain.
+            const emulation::psx::MovieDiscCheck disc_check =
+                emulation::psx::CheckMovieDisc(movie, system.cdrom().disc());
+            const bool wrong_disc =
+                disc_check.by_hash == emulation::psx::MovieDiscCheck::kDifferent ||
+                disc_check.by_serial == emulation::psx::MovieDiscCheck::kDifferent;
+            const bool right_disc =
+                !wrong_disc &&
+                (disc_check.by_hash == emulation::psx::MovieDiscCheck::kSame ||
+                 disc_check.by_serial == emulation::psx::MovieDiscCheck::kSame);
+            std::wstring disc_said = Wide(disc_check.Describe(movie));
+            if (!disc_said.empty())
+                disc_said[0] = static_cast<wchar_t>(towupper(disc_said[0]));
+
+            // The BIOS it was recorded on, if it says and that image is here: another takes a
+            // different number of frames to reach the game, and the movie is out of step from
+            // its first press. For this movie alone - the BIOS chosen in the menu stays chosen.
+            std::wstring bios_note;
+            bool bios_missing = false;
+            if (!movie.bios_sha1.empty() && FileSha1(bios) != movie.bios_sha1) {
+                bios_missing = true;
+                for (const std::string& image : images) {
+                    if (FileSha1(image) != movie.bios_sha1)
+                        continue;
+                    bios = image;
+                    bios_missing = false;
+                    const size_t slash = image.find_last_of("/\\");
+                    bios_note = L" \x00B7 on " +
+                                Wide(slash == std::string::npos ? image : image.substr(slash + 1));
+                    break;
+                }
+            }
+
+            DropMovie();
+            movie_.Start(std::move(movie));
+            // The timing a movie needs, from the first instruction of this boot; while it plays
+            // SendConfigToMachine lays the same over every change of settings.
+            emulation::psx::ApplyMovieTiming(system.config());
+            const int first = movie_.initial_disc();
+            const std::string first_disc =
+                first > 0 && static_cast<size_t>(first) <= discs.size()
+                    ? discs[static_cast<size_t>(first) - 1] : std::string();
+            if (first > 0 && first_disc.empty()) {
+                movie_.Stop();
+                refuse(L"That movie starts on disc " + std::to_wstring(first) +
+                       L" of its game, and no image of it is beside the one in the drive.");
+                return;
+            }
+
+            // Power-on, as BootDiscFromFile does it but for the hand-off: the BIOS runs its
+            // intro whatever Skip BIOS Intro says, because the recording's did.
+            system.Deinitialize();
+            if (system.Initialize(bios.c_str()) != 0) {
+                movie_.Stop();
+                PostToUi([this] {
+                    ShowError(window_, L"Failed to initialise the system (BIOS missing?).");
+                });
+                return;
+            }
+            system.set_auto_boot(false);
+            system.EjectDisc();
+            if (!first_disc.empty() && !system.LoadDisc(first_disc.c_str())) {
+                movie_.Stop();
+                const std::string reason = system.cdrom().disc().open_error();
+                PostToUi([this, reason] {
+                    ShowWarning(window_, DiscFailureText(reason).c_str());
+                });
+                return;
+            }
+            // New cards, of the movie's own: what the recording started with, and nothing a
+            // movie saves lands on the player's.
+            if (!emulation::psx::InsertMovieCards(system, movie_.movie(), cards, &error)) {
+                movie_.Stop();
+                refuse(L"Could not play that movie.\n\n" + Widen(error) + L".");
+                return;
+            }
+            card_dir_ = cards;
+            // Nobody is holding the pads the movie plays, so nothing of it is felt in them -
+            // and a motor the last game left running stops here.
+            for (int pad = 0; pad < HostInput::kPads; ++pad)
+                machine.input().SetRumble(pad, 0, 0);
+            movie_discs_ = discs;
+            movie_bios_ = bios;
+            movie_frame_.store(0, std::memory_order_relaxed);
+            movie_length_.store(movie_.movie().frames(), std::memory_order_relaxed);
+
+            machine.ResetPacing();
+            RefreshDebuggerIfOpen(machine);
+            machine.SetPaused(emulation::host::kPausedByUser, false);
+            const std::wstring summary = Wide(movie_.movie().Summary()) + bios_note +
+                                         (right_disc ? L" \x00B7 right disc" : L"");
+            const size_t ignored = movie_.movie().ignored.size();
+            const std::wstring first_ignored =
+                ignored > 0 ? Wide(movie_.movie().ignored.front()) : std::wstring();
+            PostToUi([this, summary, ignored, first_ignored, bios_missing, wrong_disc,
+                      disc_said] {
+                paused_by_user_ = false;
+                SendMouseSettingsToInput();
+                UpdateMovieMenu(true);
+                Notify(OverlayIcon::kInfo, ToastKind::kSuccess, L"Playing movie", summary);
+                // Too much for a notification's line, and worth stopping to read.
+                if (wrong_disc) {
+                    const std::wstring message =
+                        L"This movie does not look like it was recorded on this disc, so its "
+                        L"input will not line up with the game.\n\n" + disc_said + L".";
+                    ShowWarning(window_, message.c_str());
+                }
+                if (bios_missing) {
+                    Notify(OverlayIcon::kWarning, ToastKind::kError,
+                           L"Movie: recorded on another BIOS",
+                           L"None of the BIOS images here is the one it needs");
+                }
+                if (ignored > 0) {
+                    Notify(OverlayIcon::kWarning, ToastKind::kError,
+                           L"Movie: " + std::to_wstring(ignored) + L" columns not understood",
+                           first_ignored);
+                }
+            });
+        });
+    }
+
+    void App::StopMovie() {
+        PostToMachine([this](Machine&) {
+            const uint32_t frame = movie_.frame();
+            if (!DropMovie())
+                return;
+            PostToUi([this, frame] {
+                Notify(OverlayIcon::kInfo, ToastKind::kInfo, L"Movie stopped",
+                       L"At frame " + std::to_wstring(frame) + L" - the controllers are yours");
+            });
+        });
+    }
+
+    // On the machine's thread, before each frame of a movie.
+    void App::ApplyMovie(System& system) {
+        const emulation::psx::MoviePlayer::Step step = movie_.Next(system.gpu().frame_count());
+        if (step.reset) {
+            if (!emulation::psx::ResetForMovie(system, movie_bios_.c_str())) {
+                DropMovie();
+                PostToUi([this] {
+                    ShowError(window_, L"The movie reset the console, and the system could not "
+                                       L"be initialised again (BIOS missing?).");
+                });
+                return;
+            }
+            machine_->ResetPacing();
+        }
+        if (step.eject)
+            system.EjectDisc();
+        if (step.insert > 0) {
+            const size_t index = static_cast<size_t>(step.insert) - 1;
+            const std::string disc =
+                index < movie_discs_.size() ? movie_discs_[index] : std::string();
+            const int wanted = step.insert;
+            if (disc.empty() || !system.LoadDisc(disc.c_str())) {
+                PostToUi([this, wanted] {
+                    Notify(OverlayIcon::kWarning, ToastKind::kError,
+                           L"Movie: disc " + std::to_wstring(wanted) + L" not found",
+                           L"Its image has to be beside the first disc's");
+                });
+            } else {
+                PostToUi([this, disc] { SetWindowTitleForPath(disc); });
+            }
+        }
+        cheat_buttons_ = emulation::psx::ApplyMoviePads(system, movie_);
+        movie_frame_.store(movie_.frame(), std::memory_order_relaxed);
+        if (step.finished) {
+            const uint32_t frames = movie_.movie().frames();
+            DropMovie();
+            PostToUi([this, frames] {
+                Notify(OverlayIcon::kInfo, ToastKind::kSuccess, L"Movie finished",
+                       std::to_wstring(frames) + L" frames - the controllers are yours");
+            });
+        }
+    }
+
+    // On the machine's thread.
+    bool App::DropMovie() {
+        if (movie_length_.load(std::memory_order_relaxed) == 0)
+            return false;
+        // What the movie had plugged in is what the ports hold now. Where the settings name
+        // something else, ApplyInput sees a change of controller and unplugs it first, as it
+        // does for one made in the menu; where they name the same, the pad stays as the game
+        // has it.
+        for (int port = 0; port < 2; ++port)
+            plugged_type_[port] = MoviePortType(movie_.movie(), port);
+        movie_.Stop();
+        movie_length_.store(0, std::memory_order_relaxed);
+        PostToUi([this] {
+            UpdateMovieMenu(false);
+            UpdateTitle();
+            // The settings' own timing again, now nothing needs the movie's.
+            SendConfigToMachine();
+        });
+        return true;
+    }
+
+    void App::UpdateMovieMenu(bool playing) {
+        HMENU bar = MenuBar(window_);
+        if (bar != nullptr) {
+            EnableMenuItem(bar, static_cast<UINT>(kCommandStopMovie),
+                           MF_BYCOMMAND | (playing ? MF_ENABLED : MF_GRAYED));
+        }
     }
 
     // On the machine's thread, from the boot paths above and from the command line before the
@@ -3066,6 +3427,14 @@ namespace psxemu {
             if (!save) {
                 machine.ResetPacing();
                 RefreshDebuggerIfOpen(machine);
+                // The state is some other frame than the one the movie had reached, and nothing
+                // in it says which of the movie's: the movie stops here.
+                if (error.empty() && DropMovie()) {
+                    PostToUi([this] {
+                        Notify(OverlayIcon::kInfo, ToastKind::kInfo, L"Movie stopped",
+                               L"A state was loaded");
+                    });
+                }
             }
             const std::wstring message(error.begin(), error.end());
             PostToUi([this, slot, save, message, path] {
@@ -4213,6 +4582,19 @@ namespace psxemu {
                     BootPsExeFromFile(path);
                 break;
             }
+
+            case kCommandPlayMovie: {
+                MenuPause held(this);
+                const std::string path =
+                    ChooseFile(window_, FileDialog::kOpen, kMovieFilter, nullptr);
+                if (!path.empty())
+                    PlayMovieFromFile(path);
+                break;
+            }
+
+            case kCommandStopMovie:
+                StopMovie();
+                break;
 
             case kCommandOpenMemoryCardSlot1:
             case kCommandOpenMemoryCardSlot2:

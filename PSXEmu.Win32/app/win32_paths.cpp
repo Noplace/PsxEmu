@@ -35,10 +35,19 @@ namespace psxemu {
         LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
         if (argv == nullptr)
             return result;
-        if (argc > 1)
-            result.bios = Narrow(argv[1]);
-        if (argc > 2)
-            result.disc = Narrow(argv[2]);
+        int positional = 0;
+        for (int i = 1; i < argc; ++i) {
+            if (wcscmp(argv[i], L"--movie") == 0) {
+                if (i + 1 < argc)
+                    result.movie = Narrow(argv[++i]);
+            } else if (positional == 0) {
+                result.bios = Narrow(argv[i]);
+                ++positional;
+            } else if (positional == 1) {
+                result.disc = Narrow(argv[i]);
+                ++positional;
+            }
+        }
         LocalFree(argv);
         return result;
     }

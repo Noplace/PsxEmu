@@ -52,6 +52,7 @@
 #include "ui/video_settings_window.h"
 #include "ui/cheats_window.h"
 #include "psx/cheats.h"
+#include "psx/movie.h"
 #include "app/engine_factory.h"
 #include "host/audio_output.h"
 #include "host/machine.h"
@@ -345,6 +346,24 @@ namespace psxemu {
         void ResetMachine();
         void SetUserPaused(bool paused);
 
+        // File > Play Movie: a BizHawk .bk2 (psx/movie.h) played into the ports. The game in
+        // the drive is started again from power-on - a movie is input from the first frame -
+        // through the BIOS's own intro, with the pads the movie names plugged in and new memory
+        // cards in memcards\_movie, so the player's own are never written. While it plays the
+        // host's pads are not read; when it ends, they are again.
+        void PlayMovieFromFile(const std::string& path);
+        // File > Stop Movie: the ports go back to the player where the movie had got to.
+        void StopMovie();
+        // On the machine's thread, in place of ApplyInput's own mapping while a movie plays:
+        // the frame's pads, and whatever the movie does to the console before it.
+        void ApplyMovie(emulation::psx::System& system);
+        // On the machine's thread: a movie that is playing stops, and the ports are the
+        // settings' again. False if none was. For everything that takes the machine somewhere
+        // the movie's frames no longer describe - a boot, a reset, a state loaded.
+        bool DropMovie();
+        // File > Stop Movie is there to choose only while one plays.
+        void UpdateMovieMenu(bool playing);
+
         // Gives the disc just mounted its own pair of memory cards, in
         // memcards_root\<disc>\card1.mcr and card2.mcr - and, behind a port with a multitap, the
         // three more it adds, card1b.mcr to card1d.mcr. Runs on the machine's thread, from the
@@ -600,6 +619,17 @@ namespace psxemu {
         // The machine thread's: the enabled cheats' codes, and what the pads hold this frame.
         emulation::psx::CheatEngine cheat_engine_;
         uint16_t cheat_buttons_ = 0;
+
+        // The machine thread's: the movie playing, if one is; the images of its game's discs,
+        // the first first, with an empty path for one not found; and the BIOS it started on,
+        // for a reset the movie makes.
+        emulation::psx::MoviePlayer movie_;
+        std::vector<std::string> movie_discs_;
+        std::string movie_bios_;
+        // For the title, written there and read here: how long the movie is - 0 with none
+        // playing - and the frame it is on.
+        std::atomic<uint32_t> movie_length_{ 0 };
+        std::atomic<uint32_t> movie_frame_{ 0 };
 
         // File > Memory Cards > Memory Card Editor. The UI thread's; it sees the cards only as
         // snapshots the machine thread sends it.

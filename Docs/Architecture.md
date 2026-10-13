@@ -605,6 +605,16 @@ executable directly, for tests.
   `.vgs`, `.psx`).
 - **Cheats** (`cheats.h`): GameShark codes per game, run every frame, all code types including
   conditionals, slides and the button-activated kind; DuckStation and RetroArch cheat files import.
+- **Movies** (`movie.h`, bug 151): a BizHawk `.bk2` - what every pad held on every frame from
+  power-on - played into the ports in place of the host's devices.
+  - Read into `Sio`'s own vocabulary whichever of BizHawk's two cores recorded it; the player
+    gives a frame's pads and what the movie does to the console (reset, lid, disc).
+  - File > Play Movie starts the game in the drive again from power-on, through the BIOS's intro,
+    with the movie's pads plugged in and memory cards of its own; `boot_runner --movie` is the
+    same, headless.
+  - It is input by frame number and nothing else: it stays in step only while this machine
+    reaches every pad read on the frame the recording's did. No recording, and a state loaded
+    stops it.
 - **Debugger** (`debugger.cpp`, the debugger window): breakpoints, stepping, watchpoints on
   memory, a BIOS call log, a call stack, labels and device panes. A halt happens between
   instructions, so the recompiler steps aside while the debugger is armed.
@@ -744,7 +754,7 @@ Because the machine is deterministic, most of it is tested without a window
   `sio_test`, `spu_test`, `media_test`, `mc_test`, `debug_test`. They drive each device through its
   own protocol: 1,800+ checks.
 - **Host and front-end logic:** `host_test` (the threads and channels), `frame_limiter_test`,
-  `filter_chain_test`, `bindings_test`, `dlss_choice_test`, `fsr_choice_test`, `rec_test` (2,000
+  `filter_chain_test`, `bindings_test`, `movie_test`, `dlss_choice_test`, `fsr_choice_test`, `rec_test` (2,000
   recompiler checks), `hw_raster_test` (hardware against software rasteriser, pixel for pixel, on
   WARP).
 - **`boot_runner`:** boots a BIOS or a disc headless and reports everything: framebuffer

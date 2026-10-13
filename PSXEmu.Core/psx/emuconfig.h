@@ -199,6 +199,12 @@ struct EmuConfig {
   // every disc-dependent timing baseline in Docs/Test-Suite.md - which is why
   // it is opt-in rather than the default.
   bool cdrom_mechanical_timing = false;
+  // The drive timed as Mednafen times it - the core under both of BizHawk's PlayStation
+  // emulators - in place of either model above: its seek times, its pauses, its command
+  // delays (Cdrom::MednafenTiming). Not a setting, and never stored: a BizHawk movie is input
+  // by frame number, and every load has to take the frames it took when it was recorded, so
+  // whoever plays one turns this on for as long as it plays (psx/movie.h, bug 151).
+  bool cdrom_mednafen_timing = false;
 
   // --- Boot -----------------------------------------------------------
   // Whether booting a disc arms System::set_auto_boot instead of letting the

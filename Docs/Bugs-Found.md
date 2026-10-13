@@ -9154,3 +9154,285 @@ a channel 5 register.
 **Not checked.** Anything against a console: no test ROM here exercises channel 5, and without a
 device on the port there is nothing a program could read back from it but the timing. The 20 cycles
 a word are psx-spx's figure for a channel it notes nothing uses.
+
+## 151. Input movies: BizHawk .bk2 files played into the ports
+
+`psx/movie.h/.cpp`, `tools/movie_test.cpp`, `tools/boot_runner.cpp`, `app/app.cpp`, `app/menu.cpp`
+
+Not a bug: a request - "can we do tas bk2 file support? meaning opening a game, loading the bk2
+file and the auto input etc works".
+
+**What a .bk2 is.** A zip of text files. `Header.txt` is "Key value" lines (Platform, Core,
+GameName, Author, rerecordCount, StartsFromSavestate). `Input Log.txt` is a `LogKey:` line naming
+every column - `#` before each group, `|` after each name - and then one `|...|` line a frame, in
+which a button is one character (`.` up, anything else down) and an axis is a number padded to five
+places with a comma after it. `SyncSettings.json` is what was plugged in where. BizHawk has had two
+PlayStation cores, and they name the same controls differently: Octoshock's `P1 Cross`,
+`P1 LStick X`, `Disc Select` (from 1) against Nymashock's `P1 X`, `P1 Left Stick Left / Right`,
+`Disk Index` (from 0). They number players differently as well - Octoshock across the sockets that
+hold something, so a pad in port 2 alone is P1, Nymashock by Mednafen's virtual port.
+
+**Now:**
+- `LoadBk2` / `ParseBk2` / `ParseBk2Text`: the archive read with the zlib CHD images already bring
+  (sizes from the central directory - .NET's writer streams its entries, and a streamed entry's own
+  header holds zeroes), and a `Movie` out: every frame's pads in `Sio`'s own vocabulary, on the port
+  and multitap socket each plays, and the console's Reset, Power, lid and disc. Columns are told
+  apart by name; a name not known is read past - button or axis, by what the first line holds there
+  - and listed. Refused, each with its reason: another machine's movie, one that starts from a
+  BizHawk save state or from saved cards, a mouse, neGcon or gun, a log with no key, a line that
+  does not match its key.
+- `MoviePlayer`: a frame a call. It gives the pads, a press of ANALOG once however long the button
+  is held, and what the host must do first - reset, open the lid, close it on disc n. Asked again
+  with the GPU's frame count unmoved (the debugger halted mid-frame) it gives the same frame.
+  `set_offset` moves the whole movie later or earlier.
+- `ApplyMoviePads`, `ResetForMovie`, `InsertMovieCards`: onto a `System` - the ports' types set as
+  the movie has them, the machine made afresh with its disc and cards put back, and new formatted
+  cards in the slots the movie has one in.
+- `boot_runner --movie <file.bk2>`, with `--movie-offset <n>` and `--movie-disc <path>` for the
+  discs after the first.
+- File > Play Movie and Stop Movie, and `--movie <file>` on the command line. The game in the
+  drive starts again from power-on through the BIOS's intro, whatever Skip BIOS Intro says; the
+  movie's cards are `memcards\_movie\movie_card1.mcr` and `2`, so the player's own are never
+  written; the title shows `movie 1234 / 56789`; the host's pads are not read until it ends. A
+  boot, a reset or a state loaded stops it. Refused under the HLE BIOS, and with no disc in.
+
+**Checked.** `movie_test`, 187 checks: both cores' logs, every button alone for its exact bit and
+each stick for its byte, unknown columns, who plays where with and without a multitap under both
+cores' numbering, the refusals, an archive built the way .NET builds one, the player's stepping,
+offset, lid and reset, and the pad polled through `Sio` as the BIOS polls it - id 41h, then 73h
+after ANALOG, the buttons and sticks in their bytes, a multitap's sockets each with its own
+player. Air Combat, 3,000 frames, from a `.bk2` zipped by .NET itself (PowerShell's `ZipFile`):
+Start at 1500, 1900 and 2500 and Cross at 2200 from the movie gives the same checksum at every
+250th frame and the same 804,562,107 instructions as the same presses from `--press` with the same
+card, and both differ from a run with nothing pressed, which is still in the intro film at 3,000.
+The front end, launched with `--movie` on a scratch `.cue`: the title counting to 3000 at 59.3 fps,
+Stop Movie enabled while it played and greyed after, a screenshot at movie frame 2848 of the
+difficulty menu the presses lead to, and Stop Movie at frame 540 handing the ports back.
+
+**Not checked - and the first is the one that matters.**
+- **No movie made by BizHawk has been played.** None is here. The logs in the tests are written by
+  hand from BizHawk's source: `Bk2LogEntryGenerator` and `Bk2Controller` for the line format, and
+  `Octoshock.cs` for its names. Nymashock's names come from Mednafen's own for the pad's controls
+  and are the less certain half - which is why a name not known is listed rather than fatal - and
+  the shape of its `SyncSettings.json` (`PortDevices`, `MednafenValues`) is from memory of the
+  source, not from a file.
+- **Whether a real movie stays in step.** A movie is input by frame number and nothing else. It
+  syncs only if this emulator reaches every pad read on the frame BizHawk's core did: the BIOS
+  taking the same number of frames to boot, every load the same number to finish. Nothing here
+  has been measured against Mednafen, and a single frame's difference anywhere desyncs everything
+  after it. `--movie-offset` can absorb a constant difference in the boot and nothing else. The
+  lid is another unknown: Octoshock starts with it open and closes it on the first frame, where
+  this boots with the disc already in.
+- A new card here is formatted as the BIOS formats one; whether that is byte for byte what either
+  core starts with was not compared.
+- A movie that changes discs, in the front end: `DiscsOfSet` finds the others by file name beside
+  the first, and no such movie was played.
+
+**Not built.** Recording. Save states that carry the movie's position, which is what rerecording
+would need - a state loaded while a movie plays stops it instead.
+
+**The first real movie (the same day).** theenglishman's Metal Gear Solid: Integral any% (TASVideos
+submission 5124; Octoshock, BizHawk 1.11.4, 222,411 frames) was refused: "starts from memory cards
+saved inside it". It showed four things the hand-written logs could not:
+
+- **The Octoshock guesses were right.** Its `LogKey` is the one written from the source, axes before
+  buttons, and its `SyncSettings.json` the shape assumed. `Devices8` is `[3,0,0,0,3,0,0,0]`: two
+  Dual Analog pads.
+- **Saved cards.** `StartsFromSaveRam True` and a `MovieSaveRam.bin` of 262,144 bytes: 128 KB for
+  each slot with a card, in the slots' order (Octoshock's `CloneSaveRam`). Card 1 holds a save; card
+  2 is all zeroes - so an Octoshock card that has never been written is unformatted, and a movie
+  with no saved cards now gets zeroed ones under Octoshock (`Movie::new_cards_formatted`; Nymashock's
+  are still taken to be formatted, unseen). `ParseBk2Text` takes the file; a size that is not 128 KB
+  a card is refused, as is the `.zst` newer BizHawks write.
+- **Mednafen's Dual Analog is never digital.** The movie has a stick off centre on 125,763 frames
+  and MODE on none. Octoshock's `dualanalog.cpp` answers 73h from power-on, takes no command but
+  42h, and ignores MODE. Here a Dual Analog starts digital, so `ApplyMoviePads` keeps such a pad in
+  analog mode (`Movie::Player::always_analog`, `Sio::analog_mode`) and does not pass MODE on. It
+  still answers the configuration commands Mednafen's ignores, which is a difference left in.
+- **The BIOS.** `PSX_Firmware_J` is the SHA-1 of SCPH-1000. `Movie::bios_sha1`, `Sha1Hex`;
+  `boot_runner` says whether the BIOS it was given is the one, and File > Play Movie finds the
+  image with that hash among the ones in the BIOS folder and boots the movie on it, the menu's own
+  choice left alone, or warns that none of them is it.
+
+`movie_test` 187 -> 226. `boot_runner` gained `--ppm-every` (a picture every n frames),
+`--idle-range` (when a game's idle loop is entered and left, by frame and scanline), and two
+columns in `--frame-log`: `flips`, GP1(05h), which is a double-buffered game's own frame count, and
+`pads`, each port's pad in analog or digital mode. Its movie cards moved to a folder per process,
+after two runs at once collided on one file.
+
+**How far it stays in step.** On Disc 1 (`.bin.ecm`, SCPH-1000, interpreter, default timing): the
+title, the difficulty menu and the briefing codec's skips all land, and Snake is on the dock at
+frame 3,300, where the author's subtitles put him. One frame's offset either way goes wrong long
+before that (+1 is 1,800 frames behind by the dock, -1 ends back at the title), so the boot agrees
+with Mednafen's to the frame. By frame 11,326 it is out of step: the movie holds Start, which here
+pauses a game still on the dock with the credits at "Written by" - and Snake, left in the water,
+drowns at about 13,500. The front end shows the same up to the dock, started with SCPH-1001 chosen.
+
+**What was ruled out, each by a run from a state at frame 3,300 or 2,900:**
+- a constant offset from the dock on, -3 to +3 frames: the same;
+- the GPU's drawing cost at 75%, 50%, 25% and 12.5% (a scratch build): the same picture, to the
+  checksum, at frame 16,000;
+- a RAM load costing 4 and 3 cycles in place of 5 (a scratch build): the same;
+- the accuracy settings together (mechanical CD, exact events, the instruction cache, the measured
+  bus, CPU-VRAM transfers): later still.
+
+Under the recompiler it never leaves the title menu: its boot is a different number of frames.
+
+**What is known about the dock.** The game flips at 30 a second on the platform and at exactly 20
+once Snake is under water (from about frame 4,300), in every one of those runs. `--idle-range` on
+its scheduler's idle task (8008BA94h) shows why the costs made no difference: a frame's work is
+about 305 scanlines on the platform and 420 under water - 1.2 and 1.6 fields - and under water the
+next frame's work does not start at the second vblank though the last ended 120 lines before it,
+but at the third. What it waits for there was not found. Nor is it known whether BizHawk ran those
+frames at 20 or faster; the credits being behind says faster, and nothing here could show it.
+
+**Not checked.** Where the first frame of difference is. That needs the recording itself - BizHawk
+playing this movie, or its published video - to compare against, frame for frame; with it,
+`--ppm-every` gives this side. Disc 2 of Integral is not on the share, so nothing past the disc
+change at frame 91,740 can be played either way.
+
+**Is it the right disc? (the same day.)** Asked once the Metal Gear movie's input stopped lining
+up: "is there a way to check the checksum to make sure the bk2 is compatible with the loaded disc?"
+
+- **By BizHawk's own id, when the movie has one.** A movie can name its disc in its header (`SHA1`,
+  `SHA256`, `MD5` or `CRC32`, whichever that BizHawk wrote - `Movie::disc_hash`), and for a
+  PlayStation disc what BizHawk writes is its eight-digit id: `DiscHasher`'s
+  `Calculate_PSX_BizIDHash`, a CRC-32 over the table of contents and the first 26 sectors.
+  `BizHawkDiscId` is that. Its game database (`gamedb_psx.txt`, USA discs only) is keyed on the
+  same number, which is what it was checked against: Wild Arms `15102200`, Metal Gear Solid - VR
+  Missions `2E8CE37E`, Air Combat `484EA15F` - the last from its `.ccd` and not from its `.cue`,
+  whose 62 music tracks start elsewhere: the id takes the table of contents as the image gives it.
+  The lead-out's control is 0 and an absent entry's position 0, both settled by those matches.
+- **By serial, when the movie starts from saved cards.** A save's file name carries the serial of
+  the disc that made it, so a movie that starts from one was recorded on that game.
+- `CheckMovieDisc` gives both verdicts and a sentence; `boot_runner --movie` prints it, and File >
+  Play Movie stops to say so when either says the disc is another, and adds "right disc" to its
+  notification when one confirms it.
+
+**For this movie:** its header (BizHawk 1.11.4) names no disc, so there is no checksum to compare;
+the id of the disc played is `1debd385`, and Integral is not in BizHawk's database to look up. The
+save on its card is `BISLPM-86247...` and the disc is SLPM-86247: the same game and disc number.
+Played on VR Missions instead, the same check says "NOT the same game". `movie_test` 226 -> 242.
+
+**Not checked.** A movie that does name its disc: which key a current BizHawk uses for a
+PlayStation disc was not confirmed from a file. And a serial tells one game from another, not two
+pressings of it - the id would, where a movie has one. BizHawk's database also carries `dh=`, taken
+here for a CRC-32 of the whole image; neither Wild Arms nor VR Missions gave it, so either it is
+something else or these dumps differ past sector 26, and nothing was built on it.
+
+**Why the dock runs at 20 a second (the same day, after "the character goes in the wrong direction
+once the level starts").** Found by following the game rather than guessing at costs:
+
+- **The stick is read right.** The real movie up to frame 3,264 and then one direction held: stick
+  left goes left, d-pad left the same, up goes up between the barrels to the next camera, right goes
+  to the platform's edge. Control first shows at frame 3,239 here (the first picture that differs
+  between the movie cut to neutral at 3,150 and at 3,264), under every timing option and with the
+  GPU's drawing cost doubled; the cutscene before it runs at a flat 30.
+- **The game asks for it.** Its main task (task 3 of its own scheduler; `mts_wait_vbl` at
+  800895F4h) waits for the count in 8009D45Ch after each frame - 2 on the platform, 3 under water.
+  That word is written once, at about frame 4,085 as Snake walks down into the water, by the stage's
+  own code at 800DAB20h: on entering the water it sets 3 **unless bit 1 of the word at 800ABA50h is
+  set**, and 2 again on leaving. Here that word is 0 or 10h there, so 3 it is - and nothing about
+  the GPU's, the DMA's or the CPU's costs can change a number the game writes itself, which is why
+  none of those runs moved. (A linked-list node at 1 and 2 cycles in place of 8 and 13 was the last
+  of them: the same.)
+- **No delay changes it.** The movie held back by 0 to 41 frames from the cutscene on: 20 a second
+  around frame 5,000 in every one.
+
+So the recording either ran this stretch at 20 as well - and the dock's end differs for a reason not
+yet found - or had that bit set when Snake went in, which is a difference in the game's state before
+frame 4,085 that no picture here shows. **One reading from BizHawk settles it:** with the movie at
+frame 5,000, the four bytes at main RAM 09D45Ch (2 or 3), and at 0ABA50h.
+
+Also tried and no different: the settings the front end is run with here (recompiler, mechanical CD, DMA stops the CPU, exact
+events, the instruction cache, the measured bus, CPU-VRAM transfers, the rasteriser's thread) reach
+the dock on the same frames as the defaults. Mechanical CD timing alone does not - it is on the dock
+250 frames early and dead by 4,500 - so the options are not each harmless to a movie.
+
+**Correction, from the published video (the same day).** The run's own video
+(youtube.com/watch?v=YYQm-Z1rhDA, the author's encode of this movie) is the recording to compare
+with, and it shows the earlier conclusion above was wrong: the movie is **not** in step to the dock.
+That was read from the author's subtitles, which are commentary and not timed to events, and from
+the menus tolerating it - Start is simply held for 800 frames. Each event's frame, the video's as
+seconds x 59.94 (its Konami logo goes 12 frames after the movie's Start press at 1,568, so the two
+clocks agree), ours from `--frame-log 1`:
+
+| Event | BizHawk | here, default | here, `--cd-mechanical` |
+|---|---|---|---|
+| Sony logo appears | 154 | 121 | 121 |
+| Sony logo ends | 533 | 502 | 566 |
+| PlayStation logo ends | 851 | 718 | 805 |
+| Konami logo appears | 1,506 | 1,186 | 1,317 |
+| briefing codec opens | 2,429 | 2,300 | 2,323 |
+| codec ends | 2,713 | about 3,000 | about 2,675 |
+| dock cutscene starts | 2,769 | 3,063 | 2,734 |
+| Snake can be moved | about 2,945 | 3,239 | about 2,910 |
+
+So the game loads from the disc 320 frames sooner here than in BizHawk (the Konami logo), the
+codec's skips then land on different lines and it runs 290 frames longer, and Snake is given 290
+frames late on a movie that has been steering him since frame 2,952: he is on the platform walking
+on input meant for the far end of the dock. That is "the wrong direction once the level starts", and
+everything found after it - the water, 20 frames a second, the pause - follows from it rather than
+causing it. The stage's frame-rate rule is real and still worth knowing; the open question about
+bit 1 of 800ABA50h is moot, since BizHawk's Snake never walks into the water there.
+
+Every difference in the table before the dock is disc timing: the BIOS's first drive commands, the
+licence check under the PlayStation logo, the executable's load, the stage's load. Mechanical CD
+timing is the nearer of the two models here and still 35 to 190 frames off. A movie will stay in
+step only with the drive timed as Mednafen times it - its seek times, its spin-up and its command
+delays - which is a mode to build and to check against this table, event by event.
+
+**The drive timed as Mednafen's (started the same day).** `EmuConfig::cdrom_mednafen_timing`, in
+`cdrom.cpp`'s own timing helpers: not a setting, never stored, on while a movie plays
+(`ApplyMovieTiming`, which also puts the interpreter and the default CPU timing under it, since
+every optional model moves the frame the BIOS reaches the game on) and with `boot_runner --movie`
+or `--cd-mednafen`. From Mednafen's `cdc.cpp`, as BizHawk's Octoshock has it:
+
+- a command answered after 10,500 + 1,815 a byte + 8,500 cycles (and up to 3,000 at random);
+- `CalcSeekTime`: distance over a 72-minute disc as a fraction of a second, 20,000 at least; 300 ms
+  more for 2,250 sectors or further, else 1,237,952 from a pause (twice that at single speed), else
+  four sector times for a hop of 3 to 11 sectors; up to 25,000 at random; a second first if the
+  motor was off;
+- a read is that seek and a sector time, unless it carries on a read under way; Play is the seek;
+- Pause 1,124,584 + 42,596 for every 4,500 sectors out, doubled at single speed, + up to 100,000;
+- Init 4,100,000 with the head sent back to the start of the disc - and an Init that arrives while
+  that seek runs starts nothing and completes when it does;
+- a new command takes the place of the last: what the last had still to say is never said.
+
+The last two are what let the BIOS through. Its bootstrap's Init waits 19.5 ms for an answer that
+takes 121, and tries again; here the eight completions stacked up in the queue behind each other
+and the boot stopped at the PlayStation logo - the failure the note on `kInitDelay` records. In
+Mednafen the retry finds the head already on its way and is answered when it arrives.
+
+Each random part is its middle value for now. The drive's log (`boot_runner`'s "cdrom seeks and
+sectors") now gives each event's time in milliseconds, which is what found the 19.5 ms.
+
+| Event | BizHawk | default | mechanical | Mednafen's |
+|---|---|---|---|---|
+| Sony logo appears | 154 | 121 | 121 | 121 |
+| Sony logo ends | 533 | 502 | 566 | 515 |
+| PlayStation logo ends | 851 | 718 | 805 | 823 |
+| Konami logo appears | 1,506 | 1,186 | 1,317 | 1,462 |
+| briefing codec opens | 2,429 | 2,300 | 2,323 | 2,395 |
+| dock cutscene starts | 2,769 | 3,063 | 2,734 | 2,734 |
+
+So 30 to 45 frames early throughout, where it was 300 either way. With the movie held back 37
+frames on top, Snake goes up the dock to the containers and the guards as he does in the video -
+and is seen, and dead by frame 5,100: near the recording, not on it.
+
+**What is left, in the order it shows.**
+- **The CPU before the drive is touched.** The Sony logo appears at 121 here and 154 in BizHawk
+  with no disc command yet made: that is BIOS code running from ROM. This machine's own options
+  move it - 145 with the write queue, 233 with the instruction cache - so it is the cost of a
+  fetch and a load, and Mednafen's are its own: 4 cycles more for an instruction fetched uncached,
+  an instruction-cache line filled on a miss, and a load's wait partly absorbed by what follows.
+- **Its random numbers.** Up to 3 ms on a Pause and 96 ms on an Init, drawn from a generator of
+  its own in a fixed order - which this would have to draw in the same order to land every event
+  on its frame.
+- **Its drive's states.** The second of delay after a disc goes in, during which commands are
+  refused; a seek's own states and where the head is left; when an interrupt waits for the last
+  to be acknowledged.
+- Then the GPU's drawing time and the DMA's, which decide which frames a busy scene drops.
+
+Baselines with the option off are as before: the BIOS boot's 92,822,656 instructions and checksum,
+Air Combat's 849,419,002 and checksum at 3,000 frames.

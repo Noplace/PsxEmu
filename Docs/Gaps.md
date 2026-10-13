@@ -542,6 +542,32 @@ unproven:
   nobody published: the console mouse's ~200 CPI, and the constants in
   Windows' undocumented ballistics.
 
+### Input movies - played back; the one real movie tried does not stay in step
+
+BizHawk `.bk2` movies play into the ports (bug 151): File > Play Movie, `boot_runner --movie`,
+`movie_test`. What is unproven, or known not to work:
+
+- **One real movie has been played, and it does not stay in step.** Metal Gear Solid: Integral
+  (Octoshock, 222,411 frames) boots, gets through its menus and codec to the frame, and is on the
+  dock when its author's notes say - then is out of step by frame 11,326, the game here behind
+  the recording. A constant offset, the GPU's drawing cost, the cost of a RAM load and the
+  accuracy settings were each ruled out by a run; what the game waits for under water, where it
+  drops to 20 frames a second, was not found. The next step needs the recording to compare with,
+  frame for frame (bug 151). A movie is input by frame number, so it syncs only while this
+  machine reaches every pad read on the frame Mednafen did.
+- **Under the recompiler a movie is out of step from the boot**: its BIOS boot takes a different
+  number of frames from the interpreter's.
+- **Nymashock's column names, settings and new cards are from its source, not from a file.** A
+  name not known is read past and listed, so a wrong guess shows as a button that does nothing
+  rather than as a failure to load. Octoshock's were checked against the real movie.
+- **A movie's Dual Analog answers configuration commands that Mednafen's ignores.** It is kept in
+  analog mode as Mednafen's always is, but a game that asks it to configure itself gets an answer
+  here.
+- **No recording**, and save states do not carry a movie's position: a state loaded while one
+  plays stops it. Rerecording needs both.
+- **Only pads.** A movie with a mouse, a neGcon or a light gun is refused, as is one that starts
+  from a BizHawk save state, or from saved cards a newer BizHawk compressed with zstd.
+
 ## Barely started
 
 - **Parallel / expansion port** - a readable buffer with nothing behind it. It reads as zeros, where

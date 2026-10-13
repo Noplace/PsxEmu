@@ -17,6 +17,8 @@
 //                        itself and does not want the intro run first.
 //     --frames <n>       run for n frames and stop      (default 300)
 //     --ppm <file>       write the final frame as a PPM
+//     --ppm-every <n>    ...and the native picture every n frames on the way, each as
+//                        <file>_<frame> with the same extension - for watching a long run
 //     --vram <file>      write the whole of VRAM as a PPM
 //     --wav <file>       write everything the SPU produced as a 44100 Hz WAV
 //     --trace-spu <file> log every voice key-on and the registers behind it
@@ -27,15 +29,31 @@
 //                        skipping the first n visits (decimal) if given
 //     --trace-irq [n]    start tracing at the nth hardware interrupt (default 1)
 //     --hot <n>          print the n most-executed addresses at the end
+//     --idle-range <lo>:<hi>[,<lo>:<hi>]  the pc range of a game's idle loop, and of a
+//                        routine it calls: a line each time the pc has stayed there, with the
+//                        scanlines of work before it and the frame and scanline it began at
+//     --frame-log <n>    a line every n frames: checksum, size, and running counts of the
+//                        game's own frames (flips), MDEC blocks, CD sectors and GP0 words
 //     --dis <hex>:<n>    disassemble n instructions of RAM from an address
 //     --watch-vram x,y,w,h   report which GP0 command wrote into a VRAM area
 //     --press b@f[+h]    press a button at frame f, holding h frames
 //                        e.g. --press start@1800 --press down+cross@2000+8
+//     --movie <file.bk2> play a BizHawk input movie into the ports from the first frame
+//                        (psx/movie.h): the pads it names plugged in, a new memory card in
+//                        each slot it has one in unless --card1/--card2 gives one, and its
+//                        resets and disc changes carried out. In place of --press
+//     --movie-offset <n> ...waiting n frames before the movie's first - or, negative,
+//                        leaving that many of its frames out
+//     --movie-disc <path>  ...the game's next disc, for a movie that changes discs;
+//                        repeatable, in order, with --disc the first
 //     --cd-mechanical    charge the CD-ROM for spin-up, seek distance and
 //                        rotational latency instead of moving the head for
 //                        free (EmuConfig::cdrom_mechanical_timing). Every
 //                        disc-dependent baseline moves with this on, so it is
 //                        off by default here exactly as it is in the front end
+//     --cd-mednafen      time the drive as Mednafen's is instead - its seeks, pauses and
+//                        command delays (EmuConfig::cdrom_mednafen_timing) - which is what a
+//                        BizHawk movie's loads were recorded under; --movie turns it on
 //     --exact-timing     devices run to each event rather than in 32-cycle batches
 //     --dma-stops-cpu    the CPU waits while a DMA holds the bus
 //     --measured-bus     8/16-bit bus costs fitted to a console, not psx-spx's formula
@@ -95,6 +113,7 @@
 #include "psx/psx.h"
 #include "psx/recompiler_bridge.h"
 #include "psx/disasm.h"
+#include "psx/movie.h"
 #ifdef PSXEMU_HW_RASTER
 #include "graphics/adapters.h"
 #include "graphics/hw_raster/hardware_raster.h"
@@ -234,9 +253,17 @@ struct Options {
   const char* watch;
   uint32_t watch_ram;
   int hot;
+  // --idle-range <lo>:<hi>: the pc range of a game's idle loop. Each time the pc comes into it
+  // or leaves it is a line - the frame, the scanline, the cycle - which is when the game's work
+  // for a frame ended and when it started again. idle_from skips the frames before it.
+  uint32_t idle_lo;
+  uint32_t idle_hi;
+  uint32_t idle2_lo;   // ...and a second range, after a comma: a routine the loop calls
+  uint32_t idle2_hi;
   bool boot_disc;
   bool auto_boot;
   bool cd_mechanical;
+  bool cd_mednafen;   // --cd-mednafen: the drive timed as Mednafen times it (a BizHawk movie)
   bool quiet;
   bool recompiler;
   bool gpu_thread;
@@ -268,8 +295,14 @@ struct Options {
   bool track_calls;
   int break_print;
   int frame_log;
+  int ppm_every;   // --ppm-every: a picture every this many frames, beside --ppm's
   float volume;
   std::vector<Press> presses;
+  // --movie: a BizHawk .bk2 played into the ports (psx/movie.h), --movie-offset frames late,
+  // with --movie-disc naming the discs after --disc for a movie that changes them.
+  const char* movie;
+  int movie_offset;
+  std::vector<const char*> movie_discs;
   // Applied once, right after the BIOS is loaded and before any other setup
   // (--boot-disc/--auto-boot/--exe are skipped when this is set - the state
   // load overwrites everything they would have done anyway). Lets a run
@@ -630,9 +663,11 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->watch = nullptr;
   options->watch_ram = 0;
   options->hot = 0;
+  options->idle_lo = options->idle_hi = options->idle2_lo = options->idle2_hi = 0;
   options->boot_disc = false;
   options->auto_boot = false;
   options->cd_mechanical = false;
+  options->cd_mednafen = false;
   options->quiet = false;
   // These three had no default, so they held whatever the stack did - false by luck until
   // --watchpoint added a member and moved them, and --recompiler-diff came on by itself.
@@ -650,8 +685,11 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->hle_trace = nullptr;
   options->time_calls = nullptr;
   options->cards[0] = options->cards[1] = nullptr;
+  options->movie = nullptr;
+  options->movie_offset = 0;
   options->track_calls = false;
   options->frame_log = 0;
+  options->ppm_every = 0;
   options->break_print = 20;
   options->volume = -1.0f;
   options->load_state = nullptr;
@@ -721,6 +759,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->volume = static_cast<float>(atof(argv[++i]));
     } else if (strcmp(arg, "--frame-log") == 0 && i + 1 < argc) {
       options->frame_log = atoi(argv[++i]);
+    } else if (strcmp(arg, "--ppm-every") == 0 && i + 1 < argc) {
+      options->ppm_every = atoi(argv[++i]);
     } else if (strcmp(arg, "--press") == 0 && i + 1 < argc) {
       Press press;
       if (!ParsePress(argv[++i], &press)) {
@@ -730,10 +770,26 @@ bool ParseOptions(int argc, char** argv, Options* options) {
         return false;
       }
       options->presses.push_back(press);
+    } else if (strcmp(arg, "--movie") == 0 && i + 1 < argc) {
+      options->movie = argv[++i];
+    } else if (strcmp(arg, "--movie-offset") == 0 && i + 1 < argc) {
+      options->movie_offset = atoi(argv[++i]);
+    } else if (strcmp(arg, "--movie-disc") == 0 && i + 1 < argc) {
+      options->movie_discs.push_back(argv[++i]);
     } else if (strcmp(arg, "--watch-ram") == 0 && i + 1 < argc) {
       options->watch_ram = strtoul(argv[++i], nullptr, 16);
     } else if (strcmp(arg, "--hot") == 0 && i + 1 < argc) {
       options->hot = atoi(argv[++i]);
+    } else if (strcmp(arg, "--idle-range") == 0 && i + 1 < argc) {
+      const char* value = argv[++i];
+      options->idle_lo = strtoul(value, nullptr, 16);
+      const char* colon = strchr(value, ':');
+      options->idle_hi = colon != nullptr ? strtoul(colon + 1, nullptr, 16) : options->idle_lo;
+      if (const char* comma = strchr(value, ',')) {
+        options->idle2_lo = strtoul(comma + 1, nullptr, 16);
+        const char* second = strchr(comma, ':');
+        options->idle2_hi = second != nullptr ? strtoul(second + 1, nullptr, 16) : options->idle2_lo;
+      }
     } else if (strcmp(arg, "--trace-irq") == 0) {
       // Optionally followed by which interrupt to stop at, so a later one can
       // be reached without wading through the first.
@@ -746,6 +802,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->auto_boot = true;
     } else if (strcmp(arg, "--cd-mechanical") == 0) {
       options->cd_mechanical = true;
+    } else if (strcmp(arg, "--cd-mednafen") == 0) {
+      options->cd_mednafen = true;
     } else if ((strcmp(arg, "--card1") == 0 || strcmp(arg, "--card2") == 0) && i + 1 < argc) {
       options->cards[arg[6] - '1'] = argv[++i];
     } else if (strcmp(arg, "--time-calls") == 0 && i + 1 < argc) {
@@ -1261,6 +1319,94 @@ int main(int argc, char** argv) {
   }
   if (system->hle_active())
     printf("bios           HLE (psx/hle_bios.h)\n");
+  // --movie: read before anything is mounted, since it says which disc the machine boots on and
+  // which slots have a card - new ones, in the temporary folder, so a run starts as the
+  // recording did and writes to nothing of anyone's.
+  emulation::psx::MoviePlayer movie;
+  // Where the movie's cards are kept, taken away again when the run ends however it ends.
+  struct MovieCards {
+    std::string path;
+    ~MovieCards() {
+      if (path.empty())
+        return;
+      DeleteFileA((path + "\\movie_card1.mcr").c_str());
+      DeleteFileA((path + "\\movie_card2.mcr").c_str());
+      RemoveDirectoryA(path.c_str());
+    }
+  } movie_cards;
+  if (options.movie != nullptr) {
+    emulation::psx::Movie loaded;
+    std::string error;
+    if (!emulation::psx::LoadBk2(options.movie, &loaded, &error)) {
+      fprintf(stderr, "--movie: %s: %s\n", options.movie, error.c_str());
+      return 2;
+    }
+    if (!options.presses.empty()) {
+      fprintf(stderr, "--movie: the movie holds the pads, so --press has nothing to press\n");
+      return 2;
+    }
+    printf("movie          %s\n", loaded.Summary().c_str());
+    for (const emulation::psx::Movie::Player& player : loaded.players) {
+      printf("movie          P%d: port %d%s%s, %s\n", player.number, player.port + 1,
+             loaded.multitap[player.port] ? " socket " : "",
+             loaded.multitap[player.port]
+                 ? std::string(1, static_cast<char>('A' + player.socket)).c_str() : "",
+             player.device == emulation::psx::MovieDevice::kDualShock    ? "DualShock"
+             : player.device == emulation::psx::MovieDevice::kDualAnalog ? "Dual Analog"
+                                                                        : "digital pad");
+    }
+    for (const std::string& column : loaded.ignored)
+      printf("movie          column not understood, ignored: %s\n", column.c_str());
+    for (int slot = 0; slot < 2; ++slot) {
+      if (loaded.memory_card[slot])
+        printf("movie          card %d: %s\n", slot + 1,
+               !loaded.card[slot].empty()   ? "the one saved in the movie"
+               : loaded.new_cards_formatted ? "new, formatted"
+                                            : "new, never formatted");
+    }
+    // A movie is in step only on the BIOS it was recorded on.
+    if (!loaded.bios_sha1.empty() && !system->hle_active()) {
+      const std::string have = emulation::psx::Sha1Hex(system->bios(), System::kBiosSize);
+      printf("movie          recorded on BIOS %s - %s\n", loaded.bios_sha1.c_str(),
+             have == loaded.bios_sha1 ? "this one" : "NOT this one, so expect it out of step");
+    }
+    // A folder of this run's own: two runs at once writing one card file is one of them
+    // failing to start.
+    char temp[MAX_PATH] = {};
+    GetTempPathA(MAX_PATH, temp);
+    std::string directory = temp;
+    while (!directory.empty() && (directory.back() == '\\' || directory.back() == '/'))
+      directory.pop_back();
+    directory += "\\psxemu_movie_" + std::to_string(GetCurrentProcessId());
+    CreateDirectoryA(directory.c_str(), nullptr);
+    movie_cards.path = directory;
+    if (!emulation::psx::InsertMovieCards(*system, loaded, directory, &error)) {
+      fprintf(stderr, "--movie: %s\n", error.c_str());
+      return 2;
+    }
+    movie.Start(std::move(loaded));
+    // A movie's loads have to take the frames they took in BizHawk: the drive is timed as
+    // Mednafen's whatever else was asked for. The CPU's options stay the command line's.
+    system->config().cdrom_mednafen_timing = true;
+    system->config().cdrom_mechanical_timing = false;
+    printf("movie          the drive is timed as Mednafen's for it\n");
+    movie.set_offset(options.movie_offset);
+    if (options.movie_offset != 0)
+      printf("movie          offset by %d frames\n", options.movie_offset);
+  }
+  // The nth disc of the movie's game: --disc, then each --movie-disc. Null if there is none.
+  const char* const first_disc = options.disc;
+  auto movie_disc = [&options, first_disc](int n) -> const char* {
+    if (n == 1)
+      return first_disc;
+    return n >= 2 && static_cast<size_t>(n - 2) < options.movie_discs.size()
+               ? options.movie_discs[static_cast<size_t>(n - 2)]
+               : nullptr;
+  };
+  // A movie whose first frame has another disc in the tray, or none, boots on that.
+  if (movie.playing() && movie.initial_disc() != 1)
+    options.disc = movie_disc(movie.initial_disc());
+
   // Cards are written back to their files as the machine changes them: pass copies.
   for (int slot = 0; slot < 2; ++slot) {
     if (options.cards[slot] == nullptr)
@@ -1354,6 +1500,10 @@ int main(int argc, char** argv) {
     system->config().cdrom_mechanical_timing = true;
     printf("cd timing      mechanical (spin-up, seek distance, latency)\n");
   }
+  if (options.cd_mednafen) {
+    system->config().cdrom_mednafen_timing = true;
+    printf("cd timing      Mednafen's (EmuConfig::cdrom_mednafen_timing)\n");
+  }
 
   if (options.load_state != nullptr) {
     const std::string error = system->LoadState(options.load_state);
@@ -1376,6 +1526,12 @@ int main(int argc, char** argv) {
     printf("mounted        %s (%d track(s), %u sectors)\n", options.disc,
            system->cdrom().disc().track_count(),  // NOLINT
            system->cdrom().disc().total_sectors());
+    // --movie: whether this is the disc it was recorded on, as far as the two can say.
+    if (movie.playing()) {
+      const emulation::psx::MovieDiscCheck check =
+          emulation::psx::CheckMovieDisc(movie.movie(), system->cdrom().disc());
+      printf("movie          %s\n", check.Describe(movie.movie()).c_str());
+    }
   }
 
   if (options.watch_ram != 0)
@@ -1494,6 +1650,52 @@ int main(int argc, char** argv) {
   const bool debugging =
       !options.breaks.empty() || !options.watches.empty() || options.track_calls;
   uint64_t break_hits = 0;
+  // --idle-range's.
+  bool was_idle = false;
+  uint64_t idle_entered = 0;
+  uint64_t idle_left = 0;
+  uint64_t idle_instruction = 0;
+  int idle_frame = 0;
+  uint32_t idle_line = 0;
+
+  // --movie: the next frame's input, and whatever the movie does to the console before it. Once
+  // before the first instruction, then on every frame boundary - where the front end sets its
+  // pads too.
+  auto movie_frame = [&]() {
+    const bool was_playing = movie.playing();
+    if (!was_playing)
+      return;
+    const emulation::psx::MoviePlayer::Step step = movie.Next(system->gpu().frame_count());
+    if (step.reset) {
+      if (!emulation::psx::ResetForMovie(*system, options.bios)) {
+        fprintf(stderr, "movie          reset at movie frame %u FAILED\n", movie.frame());
+        movie.Stop();
+        return;
+      }
+      // The GPU's count started again with the machine.
+      last_frame = system->gpu().frame_count();
+      printf("movie          reset at movie frame %u\n", movie.frame());
+    }
+    if (step.eject) {
+      system->EjectDisc();
+      printf("movie          lid opened at movie frame %u\n", movie.frame());
+    }
+    if (step.insert > 0) {
+      const char* disc = movie_disc(step.insert);
+      if (disc != nullptr && system->LoadDisc(disc))
+        printf("movie          disc %d in at movie frame %u: %s\n", step.insert, movie.frame(),
+               disc);
+      else
+        printf("movie          disc %d wanted at movie frame %u and not given (--movie-disc)\n",
+               step.insert, movie.frame());
+    }
+    if (step.finished)
+      printf("movie          finished after %d frames of this run\n", frames);
+    // Also on the frame it finishes: that lets go of everything it held.
+    emulation::psx::ApplyMoviePads(*system, movie);
+    fflush(stdout);
+  };
+  movie_frame();
 
   // --time-calls: every kernel call's arguments and how many cycles it took to come back, one CSV
   // line each, for the HLE BIOS's timing model (Docs/HLE-BIOS.md).
@@ -1573,6 +1775,34 @@ int main(int argc, char** argv) {
     }
     ++instructions;
 
+    // --idle-range: the game's work for a frame ends when the pc settles into its idle loop,
+    // and starts again when an interrupt's handler hands the processor to something else. A
+    // visit of a few instructions is the handler passing through, so only a stay is printed -
+    // with where the beam was at each end, and how long the work before it took.
+    if (options.idle_hi != 0) {
+      const uint32_t pc = system->cpu().context()->pc;
+      const bool idle = (pc >= options.idle_lo && pc <= options.idle_hi) ||
+                        (options.idle2_hi != 0 && pc >= options.idle2_lo && pc <= options.idle2_hi);
+      const uint64_t cycle = system->cpu().context()->cycles;
+      if (idle && !was_idle) {
+        idle_entered = cycle;
+        idle_instruction = instructions;
+        idle_frame = frames;
+        idle_line = system->gpu().scanline();
+      } else if (!idle && was_idle) {
+        // 33,868,800 / 59.94 / 263: about 2,148 cycles a scanline.
+        if (cycle - idle_entered > 2000) {
+          printf("idle           work %7.1f lines, then idle from frame %d line %3u for %7.1f "
+                 "lines (flips %u, instruction %llu)\n",
+                 (idle_entered - idle_left) / 2148.0, idle_frame, idle_line,
+                 (cycle - idle_entered) / 2148.0, system->gpu().stats().gp1_commands[5],
+                 static_cast<unsigned long long>(idle_instruction));
+          idle_left = cycle;
+        }
+      }
+      was_idle = idle;
+    }
+
     // --time-calls: a call has returned when the pc is back at its return address with the stack
     // it was made with. One that never comes back that way (a longjmp, an exit from inside an
     // exception) is dropped when one made before it returns.
@@ -1639,18 +1869,40 @@ int main(int argc, char** argv) {
         int w = 0;
         int h = 0;
         const uint32_t* px = system->gpu().framebuffer(w, h);
+        // "flips" is GP1(05h), the display area moved: a double-buffered game's own frames, so
+        // its change over a stretch against the frames run is the rate the game is managing.
+        // "pads" is each port's pad as the game has it, A in analog mode and d in digital: a
+        // game that reads no sticks because it switched the pad looks like one out of step.
         printf("frame %-6d %016llx  %6d non-black  %dx%d  "
-               "mdec %llu  cd %llu  gp0 %llu\n",
+               "flips %u  mdec %llu  cd %llu  gp0 %llu  pads %c%c\n",
                frames,
                static_cast<unsigned long long>(Checksum(px, w * h)),
-               NonBlackPixels(px, w * h), w, h,
+               NonBlackPixels(px, w * h), w, h, system->gpu().stats().gp1_commands[5],
                static_cast<unsigned long long>(
                    system->io().mdec.stats().macroblocks),
                static_cast<unsigned long long>(
                    system->cdrom().stats().sectors_read),
                static_cast<unsigned long long>(
-                   system->gpu().stats().gp0_words));
+                   system->gpu().stats().gp0_words),
+               system->sio().analog_mode(0) ? 'A' : 'd',
+               system->sio().analog_mode(1) ? 'A' : 'd');
         fflush(stdout);
+      }
+      // --ppm-every: the native picture as it stands, named for the frame.
+      if (options.ppm_every > 0 && options.ppm != nullptr &&
+          (frames % options.ppm_every) == 0) {
+        std::string name = options.ppm;
+        const size_t dot = name.find_last_of('.');
+        const size_t slash = name.find_last_of("/\\");
+        const bool has_extension =
+            dot != std::string::npos && (slash == std::string::npos || dot > slash);
+        char number[16];
+        snprintf(number, sizeof(number), "_%06d", frames);
+        name.insert(has_extension ? dot : name.size(), number);
+        int w = 0;
+        int h = 0;
+        const uint32_t* px = system->gpu().framebuffer(w, h);
+        WriteFrame(name.c_str(), px, w, h);
       }
       // Buttons change on the frame boundary, which is where the front end
       // samples them too.
@@ -1661,6 +1913,7 @@ int main(int argc, char** argv) {
           last_buttons = buttons;
         }
       }
+      movie_frame();
       // Drain the SPU once a frame, exactly as the front end does. Without
       // this the mixer's buffer simply fills and drops, and nothing about the
       // audio can be checked at all.
@@ -1691,6 +1944,10 @@ int main(int argc, char** argv) {
   printf("\n");
   printf("instructions   %llu\n", static_cast<unsigned long long>(instructions));
   printf("frames         %d\n", frames);
+  if (options.movie != nullptr) {
+    printf("movie          %s at frame %u of %u\n", movie.playing() ? "playing" : "over",
+           movie.frame(), movie.movie().frames());
+  }
   if (!options.breaks.empty() || !options.watches.empty()) {
     printf("breaks         %llu halts, %llu printed\n",
            static_cast<unsigned long long>(break_hits),
@@ -1838,11 +2095,11 @@ int main(int argc, char** argv) {
         const auto& e = c.events[i % emulation::psx::Cdrom::Stats::kEventCapacity];
         switch (e.kind) {
           case 0:
-            printf("  setloc   lba %6u  (sector %6d)\n", e.lba,
-                   static_cast<int>(e.lba) - 150);
+            printf("  %9.2f ms  setloc   lba %6u  (sector %6d)\n", e.cycle / 33868.8,
+                   e.lba, static_cast<int>(e.lba) - 150);
             break;
           case 2:
-            printf("  setmode  %02X  (%s, %s)\n", e.mode,
+            printf("  %9.2f ms  setmode  %02X  (%s, %s)\n", e.cycle / 33868.8, e.mode,
                    (e.mode & 0x80) ? "2x" : "1x",
                    (e.mode & 0x20) ? "whole sector 0x924" : "data only 0x800");
             break;
@@ -1852,15 +2109,15 @@ int main(int argc, char** argv) {
                 e.mode == 0x15 ? "SeekL" : e.mode == 0x1B ? "ReadS" :
                 e.mode == 0x0A ? "Init"  : e.mode == 0x08 ? "Stop"  :
                 e.mode == 0x03 ? "Play"  : e.mode == 0x16 ? "SeekP" : "?";
-            printf("  %-8s at lba %6u  (previous sector %u/%u taken)\n", name,
-                   e.lba, e.consumed, e.size);
+            printf("  %9.2f ms  %-8s at lba %6u  (previous sector %u/%u taken)\n",
+                   e.cycle / 33868.8, name, e.lba, e.consumed, e.size);
             break;
           }
           default:
             // A sector whose predecessor was not fully taken is a dropped one.
-            printf("  sector   lba %6u  (sector %6d)  mode %02X"
+            printf("  %9.2f ms  sector   lba %6u  (sector %6d)  mode %02X"
                    "  previous %u/%u%s\n",
-                   e.lba, static_cast<int>(e.lba) - 150, e.mode, e.consumed,
+                   e.cycle / 33868.8, e.lba, static_cast<int>(e.lba) - 150, e.mode, e.consumed,
                    e.size,
                    (e.size != 0 && e.consumed < e.size) ? "  DROPPED" : "");
             break;

@@ -205,6 +205,10 @@
     <ClCompile Include="psx\hle_shell.cpp" />
     <ClCompile Include="psx\hle_font_data.cpp" />
     <ClCompile Include="psx\ecm.cpp" />
+    <!-- A .bk2 movie is a zip: read with the zlib that CHD images already bring. -->
+    <ClCompile Include="psx\movie.cpp">
+      <AdditionalIncludeDirectories>$(ProjectDir)lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="psx\root_counter.cpp" />
     <ClCompile Include="psx\sio.cpp" />
     <ClCompile Include="psx\sio1.cpp" />
@@ -241,6 +245,7 @@
     <ClInclude Include="psx\debug_assist.h" />
     <ClInclude Include="psx\disc.h" />
     <ClInclude Include="psx\dma.h" />
+    <ClInclude Include="psx\ecm.h" />
     <ClInclude Include="psx\gpu.h" />
     <ClInclude Include="psx\gpu_core.h" />
     <ClInclude Include="psx\raster.h" />
@@ -258,6 +263,7 @@
     <ClInclude Include="psx\mdec.h" />
     <ClInclude Include="psx\mc.h" />
     <ClInclude Include="psx\mc_directory.h" />
+    <ClInclude Include="psx\movie.h" />
     <ClInclude Include="psx\debugger.h" />
     <ClInclude Include="psx\disasm.h" />
     <ClInclude Include="psx\bios_calls.h" />

@@ -257,7 +257,72 @@ bool Cdrom::MechanicalTiming() {
   // Read from the config rather than cached, per emuconfig.h: the setting can
   // be changed from the menu while a game is running. system_ is null only in
   // a unit test that constructs a drive on its own.
-  return system_ != nullptr && system().config().cdrom_mechanical_timing;
+  //
+  // Not while the drive is timed as Mednafen's: that is a whole model of its
+  // own, and the two do not add up.
+  return system_ != nullptr && system().config().cdrom_mechanical_timing &&
+         !system().config().cdrom_mednafen_timing;
+}
+
+// ---------------------------------------------------------------------------
+// Mednafen's timing
+//
+// For a BizHawk movie (psx/movie.h, bug 151). A movie is input by frame number,
+// so it lands where it was meant to only if every load takes the frames it
+// took on the emulator that recorded it - and both of BizHawk's PlayStation
+// cores are Mednafen's, whose drive is far slower than either model above: a
+// seek from a pause costs it 37 ms where the flat model charges 12, an Init
+// 121 ms against 3.5. The numbers are its cdc.cpp's, in CPU cycles:
+//
+//   a command    10,500 to be taken in, and up to 3,000 more at random; 1,815
+//                for the command byte and for each parameter; 8,500 to act
+//   a seek       its distance over a 72-minute disc, as a fraction of a second
+//                (20,000 at the least); then 300 ms if it is 2,250 sectors or
+//                more, else 1,237,952 from a pause (twice that at single
+//                speed), else four sector times for a hop of 3 to 11 sectors;
+//                and up to 25,000 at random. A second first, and from the
+//                start of the disc, if the motor was off
+//   a read       that seek, and a sector time for the disc to come round
+//   Pause        1,124,584 and 42,596 for every 4,500 sectors out from the
+//                centre (twice that at single speed), and up to 100,000 at
+//                random; 5,000 for a drive that was not moving
+//   Init         4,100,000 with a disc in, 70,000 without
+//
+// Mednafen draws its random parts from a generator of its own. Here each is
+// its middle value: the spread is under three milliseconds on the largest of
+// them, and what it costs is that an event near a frame's edge can land a
+// frame to the other side.
+// ---------------------------------------------------------------------------
+
+bool Cdrom::MednafenTiming() {
+  return system_ != nullptr && system().config().cdrom_mednafen_timing;
+}
+
+int32_t Cdrom::AcknowledgeCycles(size_t parameters) {
+  if (!MednafenTiming())
+    return kAcknowledgeDelay;
+  return 10500 + 1500 + 1815 + 1815 * static_cast<int32_t>(parameters) + 8500;
+}
+
+int32_t Cdrom::MednafenSeekCycles(uint32_t from, uint32_t to, bool paused) {
+  int64_t cycles = 0;
+  if (!spun_up_) {
+    spun_up_ = true;
+    from = Disc::kLeadInSectors;
+    cycles += 33868800;
+    paused = false;
+  }
+  const int64_t distance = from > to ? from - to : to - from;
+  const int64_t travel = distance * 33868800 / (72 * 60 * 75);
+  cycles += travel > 20000 ? travel : 20000;
+  if (distance >= 2250)
+    cycles += 33868800LL * 300 / 1000;
+  else if (paused)
+    cycles += 1237952 * ((mode_ & kModeDoubleSpeed) ? 1 : 2);
+  else if (distance >= 3 && distance < 12)
+    cycles += 4 * SectorCycles();
+  cycles += 12500;
+  return static_cast<int32_t>(cycles);
 }
 
 int32_t Cdrom::SpinUpCycles() {
@@ -271,6 +336,8 @@ int32_t Cdrom::SpinUpCycles() {
 }
 
 int32_t Cdrom::SeekCycles(uint32_t from, uint32_t to) {
+  if (MednafenTiming())
+    return MednafenSeekCycles(from, to, command_found_paused_);
   const int32_t spin_up = SpinUpCycles();
   if (!MechanicalTiming())
     return kSeekDelay + spin_up;
@@ -302,12 +369,36 @@ int32_t Cdrom::FirstSectorCycles(uint32_t from, uint32_t to) {
 }
 
 int32_t Cdrom::PauseCycles(bool was_moving) {
+  if (MednafenTiming()) {
+    if (!was_moving)
+      return 5000;
+    const int64_t sector =
+        read_lba_ > Disc::kLeadInSectors ? read_lba_ - Disc::kLeadInSectors : 0;
+    const int64_t cycles = (1124584 + sector * 42596 / 4500) *
+                           ((mode_ & kModeDoubleSpeed) ? 1 : 2);
+    return static_cast<int32_t>(cycles + 50000);
+  }
   if (!MechanicalTiming() || !was_moving)
     return kSecondResponseDelay;
   return SectorCycles() * kPauseSectorTimes;
 }
 
 int32_t Cdrom::InitCycles() {
+  if (MednafenTiming()) {
+    if (!disc_.loaded())
+      return 70000;
+    // Already on its way back from an Init just before: this one is done when that seek is,
+    // and starts nothing of its own.
+    if (init_seek_cycles_ > 0)
+      return init_seek_cycles_ > 256 ? init_seek_cycles_ : 256;
+    // The head goes back to the start, for as long as that seek takes or a random time up to
+    // 3,250,000 cycles, whichever is longer - here, the middle of the random part.
+    const int32_t seek =
+        MednafenSeekCycles(read_lba_, Disc::kLeadInSectors, command_found_paused_);
+    init_seek_cycles_ = seek > 1625000 ? seek : 1625000;
+    spun_up_ = true;
+    return 4100000;
+  }
   // The flat delay always - see kInitDelay's note above for why stretching it
   // is both wrong for this setting and fatal to the boot. Only the spin-up,
   // which is genuinely mechanical, is added.
@@ -530,6 +621,8 @@ void Cdrom::Tick(uint32_t cycles) {
   // Furthermore, only count down if the controller is not waiting for an acknowledge.
   if (!pending_.empty() && interrupt_flag_ == 0 && pending_.front().delay > 0)
     pending_.front().delay -= static_cast<int32_t>(cycles);
+  if (init_seek_cycles_ > 0)
+    init_seek_cycles_ -= static_cast<int32_t>(cycles);
 
   StepRead(cycles);
   DeliverPending();
@@ -947,6 +1040,7 @@ void Cdrom::LoadSector() {
   ++stats_.sectors_read;
   {
     Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
+    e.cycle = system_ != nullptr ? system().cpu().context()->cycles : 0;
     e.kind = 1; e.mode = mode_; e.lba = read_lba_;
     e.consumed = consumed_previous; e.size = previous_size;
   }
@@ -1096,6 +1190,21 @@ void Cdrom::ExecuteCommand(uint8_t command) {
   ++stats_.commands;
   stats_.last_command = command;
   ++stats_.issued[command];
+  // How long before the drive answers at all, and how the command found it: both are asked
+  // for further down, after the command has taken its parameters and changed the drive.
+  const int32_t acknowledge = AcknowledgeCycles(parameter_fifo_.size());
+  command_found_paused_ = spun_up_ && !reading_ && !playing_ &&
+                          (status_ & kStatusSeeking) == 0 && init_seek_cycles_ <= 0;
+  // Mednafen's controller has one command in hand at a time: a new one takes the place of the
+  // last, and whatever that one had still to say is never said. Sectors are not a command's.
+  if (MednafenTiming()) {
+    for (auto it = pending_.begin(); it != pending_.end();) {
+      if (it->interrupt != kIntDataReady)
+        it = pending_.erase(it);
+      else
+        ++it;
+    }
+  }
   // The commands that move the head or start and stop a read, in sequence with
   // the sectors, so a stream can be read as a story rather than a total.
   if (command == 0x06 || command == 0x09 || command == 0x15 || command == 0x03 ||
@@ -1104,6 +1213,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       command == 0x1B || command == 0x0A || command == 0x08) {
     {
       Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
+      e.cycle = system_ != nullptr ? system().cpu().context()->cycles : 0;
       e.kind = 3; e.mode = command; e.lba = read_lba_;
       e.consumed = data_read_; e.size = data_size_;
     }
@@ -1112,7 +1222,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
 
   switch (command) {
     case 0x01:  // Getstat
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       break;
 
     case 0x02: {  // Setloc - remembers a position, does not move the head
@@ -1123,15 +1233,16 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       seek_pending_ = true;
       {
         Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
+        e.cycle = system_ != nullptr ? system().cpu().context()->cycles : 0;
         e.kind = 0; e.mode = mode_; e.lba = seek_lba_;
       }
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       break;
     }
 
     case 0x03: {  // Play
       if (!disc_.loaded()) {
-        QueueError(0x80, kAcknowledgeDelay);
+        QueueError(0x80, acknowledge);
         break;
       }
       // The parameter, when there is one, is a track number in BCD - but
@@ -1145,7 +1256,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         const uint8_t track = Disc::FromBcd(TakeParameter());
         if (track != 0) {
           if (track > disc_.track_count()) {
-            QueueError(0x10, kAcknowledgeDelay);
+            QueueError(0x10, acknowledge);
             break;
           }
           seek_lba_ = disc_.track(track - 1).start_lba;
@@ -1158,13 +1269,19 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         ForgetHeader();   // a seek, and audio has no headers to decode (bug 146)
       seek_pending_ = false;
       const uint32_t from = read_lba_;
+      const bool carrying_on = playing_ && from == seek_lba_;
       read_lba_ = seek_lba_;
       reading_ = false;
       playing_ = true;
       scan_rate_ = 0;   // a Play ends any fast-forward or rewind in progress
       status_ = (status_ & ~kStatusReading) | kStatusPlaying | kStatusMotorOn;
-      read_timer_ = FirstSectorCycles(from, read_lba_);
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      // Mednafen's: the seek and nothing after it, and none at all for a Play that changes
+      // nothing about one already under way - the sectors keep the time they had.
+      if (!MednafenTiming())
+        read_timer_ = FirstSectorCycles(from, read_lba_);
+      else if (!carrying_on)
+        read_timer_ = MednafenSeekCycles(from, read_lba_, command_found_paused_);
+      QueueStatus(kIntAcknowledge, acknowledge);
       break;
     }
 
@@ -1185,20 +1302,21 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       }
       // The drive answers with its status whether or not it was playing;
       // sending Forward to a stopped drive is simply a no-op that still acks.
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       break;
     }
 
     case 0x06:    // ReadN
     case 0x1B: {  // ReadS
       if (!disc_.loaded()) {
-        QueueError(0x80, kAcknowledgeDelay);
+        QueueError(0x80, acknowledge);
         break;
       }
       // Where the head is now, before the Setloc target replaces it: this is
       // the implicit seek, the one the boot makes most of and the one that has
       // always been free.
       const uint32_t from = read_lba_;
+      const bool was_reading = reading_;
       bool seeking = false;
       if (seek_pending_) {
         read_lba_ = seek_lba_;
@@ -1218,8 +1336,14 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       } else {
         status_ = kStatusMotorOn | kStatusReading;
       }
-      read_timer_ = FirstSectorCycles(from, read_lba_);
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      // Mednafen's: any read but one that carries on a read already under way is a seek -
+      // from a pause, most of the time, which is the dear kind - and then a sector time.
+      if (!MednafenTiming())
+        read_timer_ = FirstSectorCycles(from, read_lba_);
+      else if (seeking || !was_reading)
+        read_timer_ = SectorCycles() +
+                      MednafenSeekCycles(from, read_lba_, command_found_paused_);
+      QueueStatus(kIntAcknowledge, acknowledge);
       break;
     }
 
@@ -1227,12 +1351,16 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       // Spinning up again clears the seek error a failed seek stopped it with.
       status_ = (status_ & ~kStatusSeekError) | kStatusMotorOn;
       const int32_t spin_up = SpinUpCycles();
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      QueueStatus(kIntComplete, kSecondResponseDelay + spin_up);
+      QueueStatus(kIntAcknowledge, acknowledge);
+      // Mednafen's: a tenth of a second, whatever the motor was doing.
+      QueueStatus(kIntComplete,
+                  MednafenTiming() ? 3386880 : kSecondResponseDelay + spin_up);
       break;
     }
 
-    case 0x08:    // Stop
+    case 0x08: {  // Stop
+      // Mednafen's: a millisecond, or next to nothing for a drive already stopped.
+      const int32_t stopped = !MednafenTiming() ? kInitDelay : spun_up_ ? 33868 : 5000;
       reading_ = false;
       playing_ = false;
       scan_rate_ = 0;
@@ -1241,9 +1369,10 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       ForgetHeader();   // a stopped disc decodes nothing (bug 146)
       // The motor is off now, so whatever starts it again pays to spin it up.
       spun_up_ = false;
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      QueueStatus(kIntComplete, kInitDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
+      QueueStatus(kIntComplete, stopped);
       break;
+    }
 
     case 0x09: {  // Pause
       const bool was_moving = reading_ || playing_;
@@ -1252,7 +1381,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       scan_rate_ = 0;
       audio_peak_ = 0;
       status_ &= ~(kStatusReading | kStatusPlaying | kStatusSeeking);
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       QueueStatus(kIntComplete, PauseCycles(was_moving));
       break;
     }
@@ -1264,13 +1393,20 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       scan_rate_ = 0;
       status_ = disc_.loaded() ? kStatusMotorOn : 0;
       parameter_fifo_.clear();
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      QueueStatus(kIntComplete, InitCycles());
+      {
+        // Mednafen's Init sends the head back to the start of the disc as well - which is
+        // part of what it costs, so the cost is worked out from where the head was.
+        const int32_t complete = InitCycles();
+        if (MednafenTiming())
+          read_lba_ = Disc::kLeadInSectors;
+        QueueStatus(kIntAcknowledge, acknowledge);
+        QueueStatus(kIntComplete, complete);
+      }
       break;
 
     case 0x0B:    // Mute
     case 0x0C:    // Demute
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       break;
 
     case 0x0D:    // Setfilter
@@ -1279,17 +1415,18 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       // in Setmode, every audio sector is taken regardless.
       filter_file_ = TakeParameter();
       filter_channel_ = TakeParameter();
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       break;
 
     case 0x0E:    // Setmode
       mode_ = TakeParameter();
       {
         Stats::Event& e = stats_.events[stats_.event_count++ % Stats::kEventCapacity];
+        e.cycle = system_ != nullptr ? system().cpu().context()->cycles : 0;
         e.kind = 2; e.mode = mode_; e.lba = 0;
         e.consumed = 0; e.size = 0;
       }
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       break;
 
     case 0x0F: {  // Getparam - what Setmode and Setfilter last set
@@ -1300,7 +1437,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       const uint8_t data[5] = {
         StatusByte(), mode_, 0x00, filter_file_, filter_channel_
       };
-      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 5);
+      QueueResponse(kIntAcknowledge, acknowledge, data, 5);
       break;
     }
 
@@ -1315,10 +1452,10 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       //
       // With no header decoded it fails, as the console's does (bug 146).
       if (!HeaderValid() || (status_ & kStatusSeekError) != 0) {
-        QueueError(0x80, kAcknowledgeDelay);
+        QueueError(0x80, acknowledge);
         break;
       }
-      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, sector_ + 12, 8);
+      QueueResponse(kIntAcknowledge, acknowledge, sector_ + 12, 8);
       break;
     }
 
@@ -1326,18 +1463,18 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       // Nothing to read the subchannel off: no disc, or a drive stopped by a
       // seek it could not complete (bug 146).
       if (!disc_.loaded() || (status_ & kStatusSeekError) != 0) {
-        QueueError(0x80, kAcknowledgeDelay);
+        QueueError(0x80, acknowledge);
         break;
       }
       uint8_t data[8];
       GetPosition(data);
-      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 8);
+      QueueResponse(kIntAcknowledge, acknowledge, data, 8);
       break;
     }
 
     case 0x13: {  // GetTN - first and last track numbers
       if (!disc_.loaded()) {
-        QueueError(0x80, kAcknowledgeDelay);
+        QueueError(0x80, acknowledge);
         break;
       }
       const uint8_t data[3] = {
@@ -1345,13 +1482,13 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         Disc::ToBcd(1),
         Disc::ToBcd(static_cast<uint8_t>(disc_.track_count()))
       };
-      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 3);
+      QueueResponse(kIntAcknowledge, acknowledge, data, 3);
       break;
     }
 
     case 0x14: {  // GetTD - where a track starts
       if (!disc_.loaded()) {
-        QueueError(0x80, kAcknowledgeDelay);
+        QueueError(0x80, acknowledge);
         break;
       }
       const uint8_t requested = Disc::FromBcd(TakeParameter());
@@ -1361,14 +1498,14 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       uint8_t minute, second, frame;
       Disc::LbaToMsf(lba, &minute, &second, &frame);
       const uint8_t data[4] = { StatusByte(), minute, second, frame };
-      QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 4);
+      QueueResponse(kIntAcknowledge, acknowledge, data, 4);
       break;
     }
 
     case 0x15:    // SeekL - seek using the data header
     case 0x16: {  // SeekP - seek using the subchannel
       if (!disc_.loaded()) {
-        QueueError(0x80, kAcknowledgeDelay);
+        QueueError(0x80, acknowledge);
         break;
       }
       // A seek stops whatever was being read. Leaving the read running let it
@@ -1390,7 +1527,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       data_fifo_loaded_ = false;
       ForgetHeader();
       status_ = kStatusMotorOn | kStatusSeeking;
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       if (target >= ReachableEnd()) {
         // Past the end of what was pressed: nothing to find, and the drive
         // stops. The console answers 04h, 04h - the seek-error bit and no
@@ -1411,7 +1548,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
 
     case 0x12: {  // SetSession - move to a session on a multi-session disc
       if (!disc_.loaded()) {
-        QueueError(0x80, kAcknowledgeDelay);
+        QueueError(0x80, acknowledge);
         break;
       }
       const uint8_t session = TakeParameter();
@@ -1426,14 +1563,14 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         read_lba_ = seek_lba_;
         ForgetHeader();   // a seek like any other (bug 146)
         status_ = kStatusMotorOn | kStatusSeeking;
-        QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+        QueueStatus(kIntAcknowledge, acknowledge);
         status_ = kStatusMotorOn;
         QueueStatus(kIntComplete, SeekCycles(from, read_lba_));
       } else {
         // These images are single-session, so any other session number is a
         // seek to somewhere that is not there. Acknowledge, then fail.
         status_ = kStatusMotorOn;
-        QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+        QueueStatus(kIntAcknowledge, acknowledge);
         const uint8_t data[2] = {
           static_cast<uint8_t>(StatusByte() | kStatusError | kStatusSeekError),
           0x40   // seek failed
@@ -1455,14 +1592,14 @@ void Cdrom::ExecuteCommand(uint8_t command) {
           audio_peak_ = 0;
           status_ &= ~kStatusMotorOn;
           spun_up_ = false;
-          QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+          QueueStatus(kIntAcknowledge, acknowledge);
           break;
 
         case 0x04:
           // Force motor on (clockwise, standard speed). Accepted even if the
           // shell is open. Mirrors what MotorOn does without the second reply.
           status_ |= kStatusMotorOn;
-          QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+          QueueStatus(kIntAcknowledge, acknowledge);
           break;
 
         case 0x20:
@@ -1470,7 +1607,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
           // a retail SCPH-1001 reports, and some software checks it.
           {
             const uint8_t data[4] = { 0x94, 0x09, 0x19, 0xC0 };
-            QueueResponse(kIntAcknowledge, kAcknowledgeDelay, data, 4);
+            QueueResponse(kIntAcknowledge, acknowledge, data, 4);
           }
           break;
 
@@ -1479,14 +1616,14 @@ void Cdrom::ExecuteCommand(uint8_t command) {
           //   Bit 0: HeadIsAtPos0 - we never park the head, so 0.
           //   Bit 1: DoorIsOpen   - reflect the live shell state.
           const uint8_t flags = shell_open_ ? 0x02 : 0x00;
-          QueueResponse(kIntAcknowledge, kAcknowledgeDelay, &flags, 1);
+          QueueResponse(kIntAcknowledge, acknowledge, &flags, 1);
           break;
         }
 
         case 0x22: {
           // Region/country string. We model a North American SCPH-1001.
           static const char kRegion[] = "for U/C";
-          QueueResponse(kIntAcknowledge, kAcknowledgeDelay,
+          QueueResponse(kIntAcknowledge, acknowledge,
                         reinterpret_cast<const uint8_t*>(kRegion),
                         static_cast<uint8_t>(sizeof(kRegion) - 1));
           break;
@@ -1495,7 +1632,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         case 0x23: {
           // Servo amplifier chip name.
           static const char kServo[] = "CXD2940Q/CXD1817Q/CXD2545Q/CXA1782BR";
-          QueueResponse(kIntAcknowledge, kAcknowledgeDelay,
+          QueueResponse(kIntAcknowledge, acknowledge,
                         reinterpret_cast<const uint8_t*>(kServo),
                         static_cast<uint8_t>(sizeof(kServo) - 1));
           break;
@@ -1504,7 +1641,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         case 0x24: {
           // Signal processor chip name.
           static const char kSignal[] = "CXD2940Q/CXD1817Q/CXD2545Q/CXD2510Q";
-          QueueResponse(kIntAcknowledge, kAcknowledgeDelay,
+          QueueResponse(kIntAcknowledge, acknowledge,
                         reinterpret_cast<const uint8_t*>(kSignal),
                         static_cast<uint8_t>(sizeof(kSignal) - 1));
           break;
@@ -1513,7 +1650,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
         case 0x25: {
           // Decoder / FIFO chip name.
           static const char kDecoder[] = "CXD2940Q/CXD1817Q/CXD1815Q/CXD1199BQ";
-          QueueResponse(kIntAcknowledge, kAcknowledgeDelay,
+          QueueResponse(kIntAcknowledge, acknowledge,
                         reinterpret_cast<const uint8_t*>(kDecoder),
                         static_cast<uint8_t>(sizeof(kDecoder) - 1));
           break;
@@ -1521,14 +1658,14 @@ void Cdrom::ExecuteCommand(uint8_t command) {
 
         default:
           // Unknown sub-commands still need a reply or software stalls.
-          QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+          QueueStatus(kIntAcknowledge, acknowledge);
           break;
       }
       break;
     }
 
     case 0x1A: {  // GetID - what is in the drive
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       // Answering this means having read the lead-in, so a disc that is not
       // turning yet has to be brought up to speed first. This is normally the
       // first command in a boot that touches the disc at all, and so where
@@ -1567,7 +1704,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       // before is remembered (bug 146).
       spun_up_ = false;
       ForgetHeader();
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
       QueueStatus(kIntComplete, InitCycles());
       break;
 
@@ -1576,12 +1713,12 @@ void Cdrom::ExecuteCommand(uint8_t command) {
                   // cheaper than a plausible-looking wrong one: the TOC is the
                   // track table, and that is exactly what this returns.
       if (!disc_.loaded()) {
-        QueueError(0x80, kAcknowledgeDelay);
+        QueueError(0x80, acknowledge);
         break;
       }
       const uint8_t adr = TakeParameter();     // subchannel adr, normally 1
       const uint8_t point = TakeParameter();   // which track, in BCD
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
+      QueueStatus(kIntAcknowledge, acknowledge);
 
       // Ten bytes of subchannel Q: the control/adr byte, the track and index,
       // a zeroed track-relative time this synthesises no better than zero, and
@@ -1615,8 +1752,13 @@ void Cdrom::ExecuteCommand(uint8_t command) {
       // it. We model that as a seek from the current read position to sector 0,
       // which is the worst-case of a full-disc stroke on a loaded disc. On an
       // empty drive the command still succeeds; there is simply nothing to read.
-      QueueStatus(kIntAcknowledge, kAcknowledgeDelay);
-      const int32_t seek_cost = SeekCycles(read_lba_, 0);
+      QueueStatus(kIntAcknowledge, acknowledge);
+      // Mednafen's: most of a second to read it, on top of getting there.
+      const int32_t seek_cost =
+          MednafenTiming()
+              ? 30000000 + MednafenSeekCycles(read_lba_, Disc::kLeadInSectors,
+                                              command_found_paused_)
+              : SeekCycles(read_lba_, 0);
       QueueStatus(kIntComplete, seek_cost);
       break;
     }
@@ -1624,7 +1766,7 @@ void Cdrom::ExecuteCommand(uint8_t command) {
     default:
       // An unknown command still has to answer, or software waits forever.
       ++stats_.unknown_commands;
-      QueueError(0x40, kAcknowledgeDelay);
+      QueueError(0x40, acknowledge);
       break;
   }
 

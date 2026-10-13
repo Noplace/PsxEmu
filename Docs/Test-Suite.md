@@ -346,6 +346,33 @@ BIOS, no window.
 | the GunCon | its eight-byte reply, each button bit, X and Y at the middle and corner of a 320x240 picture and the middle of an interlaced one, the off-screen reply, refusing 43h, an unplugged gun silent, and a save state keeping the port a GunCon (bug 100) |
 | `sio1` | the serial port with nothing plugged into it: the reset state, an empty receive FIFO reading as the idle line, the registers keeping what is written, the status being read-only, the two strobes not sticking, byte/halfword/word access reaching the right halves, transmitting only when enabled and raising IRQ8 when armed, acknowledging clearing the latch, the baud-rate timer counting down and reloading, the console redirect on and off, and a save-state round trip |
 
+## movie_test
+
+    movie_test
+
+Input movies (`psx/movie.h`, bug 151): BizHawk `.bk2` files read, stepped through a frame at a
+time, and played into the ports. No BIOS, no window, and no movie made by BizHawk - none is kept
+here, so the logs are written out by hand in the two layouts its PlayStation cores use, and the
+archive is built by the test the way .NET builds one.
+
+**Current: 242 checks, 0 failures.**
+
+| Group | Covers |
+|---|---|
+| an Octoshock log | the header's fields, the one player and its DualShock from `SyncSettings.json`, the sticks, ANALOG, and the console's Open, Close, Reset and Disc Select |
+| every button | each of the sixteen alone, under Octoshock's names and under Nymashock's, for the exact `Sio` bit it becomes - Mednafen's names among them, where "○ (right)" is not Right and "L1 (front left shoulder)" is not Left; each stick axis for the byte it lands in; Disk Index from nought against Disc Select from one |
+| unknown columns | a button and an axis with names not known, among a player's and among the console's: read past, listed, and the known columns either side still landing |
+| who plays where | Octoshock numbering players across the sockets that hold something (a pad in port 2 alone is P1; a multitap's A and C are P1 and P2); Nymashock by Mednafen's virtual port (a multitap on port 2 makes virtual port 3 its socket B); the memory card slots each says it has; and with no settings, P1 and P2 in the two ports |
+| refusals | a movie that starts from a save state, one for another machine, one with a neGcon, a log with no key, a line shorter than its key (named by frame), a log with no frames |
+| saved cards and the BIOS | what a real movie had (Metal Gear Solid: Integral, bug 151): `StartsFromSaveRam` with 256 KB for two cards split in the slots' order, 128 KB for a card in slot 2 alone, the wrong size and no file at all refused, a card handed to a movie that does not start from one ignored; the BIOS's SHA-1 from `PSX_Firmware_J`; and `Sha1Hex` against the standard's own vectors - nothing, "abc", the 56-byte message, a million a's |
+| the right disc | `CheckMovieDisc`: a header with no hash says nothing; an eight-digit one under `SHA1`, or under `CRC32` with its kind in front, is compared with `BizHawkDiscId` and is the same disc or not; a forty-digit one is not a disc's id and says nothing; and a movie starting from a card with a save on it gives the serial the save was made under. `BizHawkDiscId` itself is checked against BizHawk's database on real discs, not here (bug 151) |
+| the cards in the machine | `InsertMovieCards`: Octoshock's new card all zeroes and none in slot 2, Nymashock's formatted, and saved cards in their slots byte for byte, in memory and in the file |
+| the Dual Analog | Mednafen's: two of them answering 73h with the sticks on the first poll of all, MODE pressed and let go changing nothing, and P2's buttons reaching port 2 |
+| the archive | a stored entry and deflated ones, 5,000 frames, with zeroes for the sizes in each entry's own header as a streamed zip has; half an archive, a zip with no input log, and a file that is no zip all refused |
+| the player | a frame a call and finished the call after the last; the same frame given again when asked before the GPU's count has moved; an offset waiting or leaving frames out; ANALOG pressed once however long it is held, and not twice for a frame asked for twice |
+| the lid and reset | open, a disc chosen with the lid up, closed on it; the disc column not read with the lid down; open and closed in one frame; a reset, and the next call being the next frame whatever the count; a movie booting on disc 2, and one booting on an empty tray |
+| on the wire | `ApplyMoviePads` onto a real `Sio`, then the pad polled as the BIOS polls it: port 1 the movie's DualShock and port 2 empty whatever was there before, id 41h, Up and Cross in their bits, 73h and nine bytes after ANALOG, the four stick bytes in the reply's order, and the same pad plugged in every frame not reset by it; a multitap's sockets each answering with its own player |
+
 ## debug_test
 
     debug_test
@@ -492,7 +519,10 @@ What it does not measure:
 | `--trace-skip <n>` | Start tracing only after n instructions |
 | `--trace-at <hex>` | Start tracing when the pc first reaches an address |
 |  `--trace-irq` | Start tracing when the first hardware interrupt is taken |
+| `--frame-log <n>` | A line every n frames: the picture's checksum, its non-black pixels and size, then running counts - `flips` (GP1(05h), the display area moved: a double-buffered game's own frames, so its rise over a stretch is the rate the game is managing), `mdec` macroblocks, `cd` sectors, `gp0` words - and `pads`, each port's pad as the game has it, `A` in analog mode and `d` in digital |
+| `--ppm-every <n>` | With `--ppm`: the native picture every n frames as well, each named `<file>_<frame>` - for watching a long run, a movie's above all |
 | `--hot <n>` | Print the n most-executed addresses |
+| `--idle-range <lo>:<hi>[,<lo>:<hi>]` | The pc range of a game's idle loop (hex), and optionally of a routine it calls. A line each time the pc has stayed there: how many scanlines of work came before, the frame and scanline it went idle at, and for how long - which is how long a game's frame takes it, and which vblank it starts the next one at (bug 151) |
 | `--dis <hex>:<n>` | Disassemble n instructions from an address (RAM or BIOS) |
 | `--break <hex>[,<hex>]` | Execute breakpoints (repeatable). At each hit, before the instruction runs: hit counts, the 32 registers, hi/lo/SR/Cause/EPC and a disassembly around the pc - then it carries on. The run's numbers are those of a run without them (Docs/Debugger-Plan.md) |
 | `--watchpoint <hex>[:<len>][:r\|w\|rw]` | A watchpoint (repeatable): stop after a read or write of the range - by the CPU, or a DMA channel's write - print it as a break does, with who made the access and the value, then carry on. Four bytes and writes unless said otherwise. The summary gives each watchpoint's access count |
@@ -501,7 +531,11 @@ What it does not measure:
 | `--watch-vram x,y,w,h` | Report which GP0 command wrote each pixel into a VRAM area |
 | `--wav <file>` | Write everything the SPU produced as a 44100 Hz stereo WAV |
 | `--press b@f[+h]` | Press a button at frame f, holding h frames |
+| `--movie <file.bk2>` | Play a BizHawk input movie into the ports from the first frame (`psx/movie.h`, bug 151): the pads it names plugged in, a new formatted memory card in each slot it has one in (in the temporary folder, unless `--card1`/`--card2` gives one), and its resets and disc changes carried out. In place of `--press`. The run reports the movie, its players, any column it did not understand, and where it had got to. Frame n of the movie is held while the run's frame n+1 is emulated, which is `--press b@n` |
+| `--movie-offset <n>` | ...waiting n frames before the movie's first; negative, leaving that many of its frames out |
+| `--movie-disc <path>` | ...the game's next disc, for a movie that changes discs; repeatable, in order, with `--disc` the first |
 | `--cd-mechanical` | Charge the CD-ROM for spin-up, seek distance and rotational latency (`EmuConfig::cdrom_mechanical_timing`). Off by default, exactly as in the front end - every baseline in this document is a flag-off number, and none of them hold with it on |
+| `--cd-mednafen` | Time the drive as Mednafen's is (`EmuConfig::cdrom_mednafen_timing`, bug 151): its seeks, pauses and command delays, in place of either model above. What a BizHawk movie's loads were recorded under, so `--movie` turns it on by itself |
 | `--load-state <file>` | Resume from a save state instead of booting - skips `--disc`/`--boot-disc`/`--auto-boot`/`--exe` entirely |
 | `--save-state <file>` | Write a save state after the run finishes |
 | `--hw-raster` | Draw with the Direct3D 11 hardware rasteriser rather than the software one (Docs/Hardware-Renderer-Plan.md). Everything the machine does is unchanged; the GPU's pixel, clip and texel counters read zero, since that rasteriser does not keep them, and the report says so. `--watch-vram` is refused with it: which command wrote each pixel is the software rasteriser's own accounting |
@@ -853,7 +887,9 @@ code type run against a RAM of the test's own, a value already right not
 written again, conditions guarding one line or the rest of a code up to its
 separator, the buttons as the cartridge's own word, C1's delay, slides and
 copies; and DuckStation's and RetroArch's cheat files, the manual-activation and
-non-GameShark cheats left out, written and read back), `timing_test` (19 checks,
+non-GameShark cheats left out, written and read back), `movie_test` (242 checks, bug 151 -
+BizHawk `.bk2` input movies read and played into the ports; its own section above),
+`timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is), `host_test` (34 checks, the
 threads and the channels between them - its own section above), and `hw_raster_test` (78

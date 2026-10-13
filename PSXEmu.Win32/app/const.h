@@ -129,6 +129,10 @@ namespace psxemu {
         kCommandVideoSettings,
         // Help > About PSXEmu.
         kCommandAbout,
+        // File > Play Movie and Stop Movie: a BizHawk .bk2 played into the ports from power-on
+        // (psx/movie.h). Stop is greyed out unless one is playing.
+        kCommandPlayMovie,
+        kCommandStopMovie,
     };
 
     // ---------------------------------------------------------------------------------------------
@@ -389,6 +393,12 @@ namespace psxemu {
         "All files (*.*)\0*.*\0";
     inline constexpr const char* kExeFilter =
         "PSX Executables (*.exe;*.psx;*.psexe)\0*.exe;*.psx;*.psexe\0"
+        "All files (*.*)\0*.*\0";
+
+    // File > Play Movie: BizHawk's movies, which are what PlayStation tool-assisted runs are
+    // published as.
+    inline constexpr const char* kMovieFilter =
+        "BizHawk Movies (*.bk2)\0*.bk2\0"
         "All files (*.*)\0*.*\0";
 
     // Cheats > Import: DuckStation's and RetroArch's files are both .cht; a list pasted from a

@@ -60,6 +60,7 @@ PsxEmu/
       mc.h/.cpp                a memory card slot: the card in memory, written to its file whole
       mc_directory.h/.cpp      what is on a card: list, delete, undelete, export, import, format
       cheats.h                 GameShark codes: read, run once a frame, and filed per game
+      movie.h/.cpp             input movies: a BizHawk .bk2 read, and played into the ports
       kernel.h/.cpp            BIOS call logging
       debugger.h/.cpp          breakpoints and stepping: halts the machine before an instruction
       disasm.h                 MIPS disassembler - boot_runner and the debugger window
@@ -99,6 +100,7 @@ PsxEmu/
       frame_limiter_test.cpp  speed_resampler_test.cpp  letterbox_test.cpp
       bindings_test.cpp        keys and pad controls onto PSX buttons, and the settings they live in
       cheats_test.cpp          GameShark codes read, every code type run, and the cheat files
+      movie_test.cpp           BizHawk .bk2 movies: both cores' logs, the archive, the player, the pad
       dlss_choice_test.cpp     the sizes around DLSS: the rasteriser's scale, the jitter, the output
       sl_probe.cpp             what NVIDIA Streamline says of each card; DLSS's input sizes, the
                                signs of its jitter and motion, and its cost (Docs/DLSS-Plan.md)

@@ -136,6 +136,9 @@ class Cdrom : public Component {
       // a sector was dropped, which is how a stream loses its place.
       uint32_t consumed;
       uint32_t size;
+      // When, in CPU cycles since power-on: what a drive does is mostly a matter of how long
+      // it takes, and a list without times cannot say where a load's went.
+      uint64_t cycle;
     };
     static const int kEventCapacity = 4000;
     Event events[kEventCapacity];
@@ -288,6 +291,23 @@ class Cdrom : public Component {
   int32_t PauseCycles(bool was_moving);
   // How long Init and the commands answered like it take.
   int32_t InitCycles();
+
+  // EmuConfig::cdrom_mednafen_timing: the drive timed as Mednafen's is, for a BizHawk movie
+  // (psx/movie.h). It takes the place of both models above, in the same helpers; see cdrom.cpp.
+  bool MednafenTiming();
+  // How long a command takes to be answered at all, by how many parameters it came with.
+  int32_t AcknowledgeCycles(size_t parameters);
+  // Mednafen's CalcSeekTime. `paused` is the drive standing over the disc with its motor on.
+  int32_t MednafenSeekCycles(uint32_t from, uint32_t to, bool paused);
+  // Whether the drive was paused - turning, and neither reading, playing nor seeking - when
+  // the command being executed arrived: what a seek costs depends on it, and every command that
+  // seeks has changed the drive's state by the time it asks.
+  bool command_found_paused_ = false;
+  // Cycles left of the seek back to the start of the disc that Mednafen's Init makes. An Init
+  // that arrives while it runs is answered at once - which is what lets the BIOS's bootstrap,
+  // whose own Init waits a fiftieth of a second for an answer that takes an eighth, get through
+  // on its second try. Not saved in a state: it is over within a tenth of a second.
+  int32_t init_seek_cycles_ = 0;
 };
 
 }
