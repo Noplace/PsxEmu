@@ -511,7 +511,7 @@ void TestShell() {
   // Its intro runs three seconds; past it is the menu, drawn every frame.
   for (int i = 0; i < 80000000 && system->gpu().frame_count() < 260; ++i)
     system->StepInstruction();
-  CheckEqual(Ram32(*system, emulation::psx::HleBios::kShellVars), 1, "on the menu after the intro");
+  CheckEqual(Ram32(*system, emulation::psx::hle::HleBios::kShellVars), 1, "on the menu after the intro");
   int width = 0, height = 0;
   const uint32_t* pixels = system->gpu().framebuffer(width, height);
   int lit = 0;
