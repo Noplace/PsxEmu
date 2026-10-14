@@ -941,7 +941,7 @@ other pair hands pictures over by handle as before.
   themselves; the source holds them.
 - **The renderer waits on the card**: its queue waits for the rasteriser's fence to reach the
   picture's serial before the frame that reads it, so the video thread never waits for the
-  rasteriser (`D3DPresenter` skips `WaitReady` for such pictures).
+  rasteriser (`VideoPresenter` skips `WaitReady` for such pictures).
 - **Nothing is copied**: the picture is drawn, filtered, glassed under the overlay and given to DLSS
   where it is (`frame_texture_`), with a pair of descriptors per frame in flight, and a filter
   chain's descriptors written afresh each frame. The plane beside it goes to DLSS as it is.

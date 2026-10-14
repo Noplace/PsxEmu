@@ -136,18 +136,30 @@ PsxEmu/
       win32_paths.h/.cpp       command line, BIOS, settings file, data root, disc-derived names
       win32_dialogs.h/.cpp     the file pickers and the message boxes
       app_icon.h               the application icon, for every window class
-    graphics/                  the renderers, all behind one interface
-      igraphicsengine.h        what a presenter has to be able to do
+    graphics/                  everything that draws, sorted by job, then by graphics API
       adapters.h               the graphics cards by name and LUID, and picking one
+                               (Settings > Video > Graphics Card); header-only, the tools use it too
       shared_device.h          the Direct3D 12 renderer's device, for the Direct3D 12 rasteriser
                                to draw on too
-                               (Settings > Video > Graphics Card); header-only, the tools use it too
-      video_presenter.h/.cpp   what the video thread draws with, and the menus' asks of it
-      d3d11_presenter.h/.cpp   uploads the core framebuffer and draws it; no filters
-      d3d12_graphics_engine.h/.cpp   the same, plus the ported pixel-shader filters
-      d3d12_dlss.cpp           ...and its NVIDIA DLSS: Streamline started with it, the plane
+      present/                 putting the picture on the window: the video thread's engines, each
+                               an <Api>GraphicsEngine in <api>_engine.h/.cpp
+        igraphicsengine.h      what an engine has to be able to do
+        video_presenter.h/.cpp VideoPresenter: what the video thread draws with, and the menus'
+                               asks of it
+        display_clock.h/.cpp   the display's refresh rate and vblanks, for Frame Pacing
+        d3d11/d3d11_engine.h/.cpp  uploads the core framebuffer and draws it; no filters
+        d3d12/d3d12_engine.h/.cpp  the same, plus the ported pixel-shader filters
+        d3d12/d3d12_dlss.cpp   ...and its NVIDIA DLSS: Streamline started with it, the plane
                                turned into DLSS's inputs, DLSS's picture drawn in the picture's place
-      dlss/                    NVIDIA DLSS (Docs/DLSS-Plan.md)
+        d3d12/d3d12_fsr.cpp    ...and its AMD FSR: AMD's upscaler made on its device from the same
+                               inputs as DLSS, and FSR Frame Generation through AMD's swap chain
+        opengl/opengl_engine.h/.cpp  the same again in OpenGL 3.3, on a child window of its own
+        opengl/gl_functions.h  the OpenGL past 1.1 the engine asks the driver for
+        vulkan/vulkan_engine.h/.cpp  the same again in Vulkan 1.0, on a child window of its own
+        vulkan/vk_functions.h  the Vulkan the engine uses, declared here; vulkan-1.dll is loaded
+                               at run time, nothing is linked
+      upscale/                 DLSS and FSR, apart from any one engine
+      upscale/dlss/            NVIDIA DLSS (Docs/DLSS-Plan.md)
         streamline.h/.cpp      Streamline's DLL loaded, its signature checked, started and stopped
         reflex_markers.h/.cpp  the machine's Reflex markers passed to whichever renderer runs
                                Frame Generation (host/latency_markers.h)
@@ -157,10 +169,7 @@ PsxEmu/
         fetch_streamline.ps1   downloads the Streamline SDK into Temp\streamline\ - its DLLs are
                                NVIDIA's, never committed; the build copies them beside the exe,
                                with NVIDIA's licences and Streamline's
-        streamline/            Streamline's headers, MIT, as they come in the SDK
-      d3d12_fsr.cpp            ...and its AMD FSR: AMD's upscaler made on its device from the same
-                               inputs as DLSS, and FSR Frame Generation through AMD's swap chain
-      fsr/                     AMD FSR (Docs/FSR-Plan.md)
+      upscale/fsr/             AMD FSR (Docs/FSR-Plan.md)
         fidelityfx.h/.cpp      AMD's loader DLL loaded once, every DLL's AMD signature checked;
                                the versions a card runs; fsr.log
         fsr_choice.h           the modes, and the arithmetic of sizes; header-only, the tools use it
@@ -169,13 +178,18 @@ PsxEmu/
         fetch_fidelityfx.ps1   downloads AMD's three signed DLLs into Temp\fidelityfx\ - MIT, but
                                69 MB, so never committed; the build copies them beside the exe,
                                with the licence
-        fidelityfx/            AMD's API headers, MIT, as they come in the SDK
-      d3dx12.h                 Microsoft's D3D12 helpers, vendored as they come
-      opengl_engine.h/.cpp     the same again in OpenGL 3.3, on a child window of its own
-      gl_functions.h           the OpenGL past 1.1 the engine asks the driver for
-      vulkan_engine.h/.cpp     the same again in Vulkan 1.0, on a child window of its own
-      vk_functions.h           the Vulkan the engine uses, declared here; vulkan-1.dll is loaded
-                               at run time, nothing is linked
+      filters/                 the picture filters (Settings > Video > Filter)
+        filter_chain.h         the custom chain's arithmetic: up to four filters, one after another
+        shader_pass.h          one stage of a chain, apart from any engine so it can be tested
+        shaders/               the filters' HLSL (and superxbr/), compiled into headers beside them
+                               by the build; glsl_filters.h, the same filters in GLSL for OpenGL
+                               and Vulkan; spirv_filters.h, that GLSL compiled for Vulkan
+                               (generated by make_spirv.cpp through build_spirv.bat, which also
+                               builds the overlay's SPIR-V - see Bugs-Found 109)
+      third_party/             other people's code, as it came; never reformatted
+        d3dx12.h               Microsoft's D3D12 helpers
+        streamline/            NVIDIA Streamline's headers, MIT, as they come in the SDK
+        fidelityfx/            AMD FidelityFX's API headers, MIT, as they come in the SDK
       hw_raster/               the hardware rasteriser (Docs/Hardware-Renderer-Plan.md)
         hardware_raster.h/.cpp HardwareRaster: what both APIs' rasterisers offer beyond
                                RasterBackend, and the one place either is made
@@ -212,12 +226,11 @@ PsxEmu/
         overlay.h/.cpp         builds the triangles every renderer draws, on the video thread
         memory_usage.h/.cpp    the process's RAM and its video memory on each card, for the F9 panel;
                                the Windows headers stay in the .cpp, as `small` is a macro in them
-    Resource/                  the filters' HLSL, the icon, and psxemu.rc + resource.h, which
-                               compile the icon into the exe
-    shaders/                   filter shaders, compiled into headers by the build, and
-                               glsl_filters.h, the same filters in GLSL for OpenGL and Vulkan,
-                               spirv_filters.h, that GLSL compiled for Vulkan (generated by
-                               make_spirv.cpp through build_spirv.bat - see Bugs-Found 109)
+        shaders/               the overlay's shaders: HLSL for Direct3D and GLSL for OpenGL
+                               (overlay_shaders.h), and overlay.vert/.frag compiled to SPIR-V for
+                               Vulkan (spirv_overlay*.h, by graphics/filters/shaders/build_spirv.bat)
+    Resource/                  the icon, and psxemu.rc + resource.h, which compile the icon into
+                               the exe
   bios/                        the user's BIOS dump
   Docs/                        working notes, indexed by Docs/README.md; solved investigations in Docs/history/
   Build/                       MSBuild output
@@ -326,7 +339,7 @@ the MSBuild build and the `cl`-driven harness build agreeing with each other.
 
 **Direct3D presents, and does nothing else.** Every PlayStation pixel is
 rasterised on the CPU inside `PSXEmu.Core`, which owns VRAM;
-`d3d11_presenter.cpp` uploads the finished frame into a dynamic texture and
+`d3d11_engine.cpp` uploads the finished frame into a dynamic texture and
 stretches it over the window with a full-screen triangle. Nothing about the
 PlayStation's drawing is expressed in shaders.
 

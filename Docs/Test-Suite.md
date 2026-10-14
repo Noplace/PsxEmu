@@ -867,7 +867,7 @@ Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
 checks, aspect ratio), `frame_limiter_test` (30 checks - the average rate, since bug 62 the
 spacing between frames too, and since bug 148 matching the display), `filter_chain_test` (27
-checks, bug 148 - the custom filter chain's passes in `graphics/filter_chain.h`: each stage's
+checks, bug 148 - the custom filter chain's passes in `graphics/filters/filter_chain.h`: each stage's
 size, Super-xBR's original once it is not first, the stage past 4x left out, the rule an engine
 runs a chain by, and the chain and Frame Pacing in the settings file), `speed_resampler_test` (13 checks, the audio
 arithmetic behind 50-300% speed - the frame counts, that a minute at 150% does
@@ -902,14 +902,14 @@ threads and the channels between them - its own section above), and `hw_raster_t
 checks, 81 with `--d3d12`, bugs 122-123, 127, 137 and 138 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
 which runs gpu_test's 98 through it), and `dlss_choice_test` (42 checks, the
-arithmetic of sizes around DLSS in `graphics/dlss/dlss_choice.h` - the rasteriser's
+arithmetic of sizes around DLSS in `graphics/upscale/dlss/dlss_choice.h` - the rasteriser's
 scale for each mode and window, never 1x, always inside the range DLSS 310.9.1 gave
 on the RTX 4060; the jitter's length; and the output asked for, the screen's or the
 mode's own ratio's).
 
 `sl_probe` is not a test but NVIDIA's side of DLSS, checked (Docs/DLSS-Plan.md,
 phases 0 and 4). It needs the Streamline SDK fetched
-(`PSXEmu.Win32\graphics\dlss\fetch_streamline.ps1`); with no options it makes no
+(`PSXEmu.Win32\graphics\upscale\dlss\fetch_streamline.ps1`); with no options it makes no
 device, and prints each card's LUID, GPU scheduling, and whether DLSS, Frame
 Generation and Reflex run there. `--optimal` asks DLSS, on the first card it runs
 on, which input sizes each mode takes for three screen sizes; `--jitter-test` puts
@@ -920,7 +920,7 @@ times DLSS at the sizes the emulator gives it. Each makes one device, once: on t
 4060, never in a loop.
 
 `fsr_choice_test` (36 checks) is AMD FSR's arithmetic of sizes in
-`graphics/fsr/fsr_choice.h`: the settings' names, the rasteriser's scale for each mode and
+`graphics/upscale/fsr/fsr_choice.h`: the settings' names, the rasteriser's scale for each mode and
 window (never 1x or 7x), the jitter's length against AMD's own table (18, 32 and 72 at 1.5,
 2 and 3), and the output - the screen's rectangle unless the input is larger. `ffx_probe` is
 AMD's side, as `sl_probe` is NVIDIA's (Docs/FSR-Plan.md, phase 0): the versions AMD offers on

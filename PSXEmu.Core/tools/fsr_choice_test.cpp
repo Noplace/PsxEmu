@@ -17,11 +17,11 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 
-// fsr_choice_test: the arithmetic of sizes around AMD FSR (graphics/fsr/fsr_choice.h) - the
+// fsr_choice_test: the arithmetic of sizes around AMD FSR (graphics/upscale/fsr/fsr_choice.h) - the
 // settings' names, the rasteriser's scale for each mode and window, the jitter's length against
 // AMD's own table, and the output asked for.
 
-#include "graphics/fsr/fsr_choice.h"
+#include "graphics/upscale/fsr/fsr_choice.h"
 
 #include <cstdio>
 

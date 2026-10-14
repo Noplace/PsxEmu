@@ -18,21 +18,21 @@
 *****************************************************************************************************************/
 #include "app/engine_factory.h"
 
-#include "graphics/d3d11_presenter.h"
-#include "graphics/d3d12_graphics_engine.h"
-#include "graphics/opengl_engine.h"
-#include "graphics/vulkan_engine.h"
+#include "graphics/present/d3d11/d3d11_engine.h"
+#include "graphics/present/d3d12/d3d12_engine.h"
+#include "graphics/present/opengl/opengl_engine.h"
+#include "graphics/present/vulkan/vulkan_engine.h"
 #include "app/win32_dialogs.h"
 #include "audio/wasapiaudioengine.h"
 #include "audio/dsoundaudioengine.h"
-#include "shaders/glsl_filters.h"
-#include "shaders/spirv_filters.h"
-#include "shaders/legacy_shaders.h"
-#include "shaders/ps_scanline_filter.h"
-#include "shaders/ps_xbrz_filter.h"
-#include "shaders/superxbr_pass0.h"
-#include "shaders/superxbr_pass1.h"
-#include "shaders/superxbr_pass2.h"
+#include "graphics/filters/shaders/glsl_filters.h"
+#include "graphics/filters/shaders/spirv_filters.h"
+#include "graphics/filters/shaders/legacy_shaders.h"
+#include "graphics/filters/shaders/ps_scanline_filter.h"
+#include "graphics/filters/shaders/ps_xbrz_filter.h"
+#include "graphics/filters/shaders/superxbr_pass0.h"
+#include "graphics/filters/shaders/superxbr_pass1.h"
+#include "graphics/filters/shaders/superxbr_pass2.h"
 
 namespace psxemu {
 
@@ -56,7 +56,7 @@ namespace psxemu {
             else if (backend == GraphicsBackend::kVulkan)
                 engine = std::make_unique<VulkanGraphicsEngine>();
             else
-                engine = std::make_unique<psxemu::D3D11Presenter>();
+                engine = std::make_unique<psxemu::D3D11GraphicsEngine>();
             const HWND target = backend == GraphicsBackend::kOpenGL   ? windows.opengl
                                 : backend == GraphicsBackend::kVulkan ? windows.vulkan
                                                                       : windows.main;

@@ -11,7 +11,7 @@
 // ready for the same vblank.
 //
 // Only the arithmetic is here, so it can be tested without a monitor; the front end measures the
-// display (PSXEmu.Win32/graphics/display_clock.h) and host::Machine applies the result.
+// display (PSXEmu.Win32/graphics/present/display_clock.h) and host::Machine applies the result.
 #pragma once
 
 #include <chrono>

@@ -7,20 +7,59 @@
     <Filter Include="graphics">
       <UniqueIdentifier>{93fc28e0-ee49-4b1c-93d2-db5de7a17c10}</UniqueIdentifier>
     </Filter>
+    <Filter Include="graphics\filters">
+      <UniqueIdentifier>{3d10743c-8751-4e03-be8f-8a1f8f285a83}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\filters\shaders">
+      <UniqueIdentifier>{458566db-8543-4fcb-bef3-087b4deb30a4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\filters\shaders\superxbr">
+      <UniqueIdentifier>{aab1bfc7-6f96-485e-8831-d5deecc38e0a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\hw_raster">
+      <UniqueIdentifier>{9d2d197f-98b3-479d-910f-d88020e3f39b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\present">
+      <UniqueIdentifier>{f87a22c5-279d-4da2-8ddd-b03fd5e8e870}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\present\d3d11">
+      <UniqueIdentifier>{a905a892-dd09-43bc-ba9c-052e48af3a88}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\present\d3d12">
+      <UniqueIdentifier>{6d12179c-7dfe-4bdb-979e-d5d1612507ab}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\present\opengl">
+      <UniqueIdentifier>{3f96dc4d-1305-4b17-a554-9b9d965ecbfd}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\present\vulkan">
+      <UniqueIdentifier>{d9cf4bc8-9289-4a77-aaad-031e47e0caa2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\third_party">
+      <UniqueIdentifier>{86a74ba9-0481-4322-9bf8-d064621cbb93}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\upscale">
+      <UniqueIdentifier>{06e1711d-35b4-47d5-8a80-f4b4f46850fb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\upscale\dlss">
+      <UniqueIdentifier>{3b16b54d-28f8-4c71-9151-baae91144f87}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="graphics\upscale\fsr">
+      <UniqueIdentifier>{7e50c92e-35cc-4d23-874c-067f50ef4cd8}</UniqueIdentifier>
+    </Filter>
     <Filter Include="input">
       <UniqueIdentifier>{c112c9e8-f7ff-4bc7-9911-ce9ccb2dc704}</UniqueIdentifier>
     </Filter>
     <Filter Include="Resource">
       <UniqueIdentifier>{aacdc87e-e3b7-4ff7-87cc-570eecedd60d}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Resource\superxbr">
-      <UniqueIdentifier>{76f07072-fc32-437c-b2ca-34963b36ceb2}</UniqueIdentifier>
-    </Filter>
-    <Filter Include="shaders">
-      <UniqueIdentifier>{dd71069c-b6ed-4cee-b159-748fd2c84109}</UniqueIdentifier>
-    </Filter>
     <Filter Include="ui">
       <UniqueIdentifier>{884d381c-9b4b-4a77-83c2-1592f493b38e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ui\overlay">
+      <UniqueIdentifier>{3c75d43e-f6eb-4358-86dd-0ad3a4124e4b}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="ui\overlay\shaders">
+      <UniqueIdentifier>{7af6c69b-d30f-40dc-ada3-165cbe1ab656}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
@@ -52,55 +91,55 @@
       <Filter>ui</Filter>
     </ClCompile>
     <ClCompile Include="ui\overlay\memory_usage.cpp">
-      <Filter>ui</Filter>
+      <Filter>ui\overlay</Filter>
     </ClCompile>
     <ClCompile Include="ui\overlay\overlay.cpp">
-      <Filter>ui</Filter>
+      <Filter>ui\overlay</Filter>
     </ClCompile>
     <ClCompile Include="ui\overlay\overlay_atlas.cpp">
-      <Filter>ui</Filter>
+      <Filter>ui\overlay</Filter>
     </ClCompile>
     <ClCompile Include="ui\debugger_window.cpp">
       <Filter>ui</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\d3d11_presenter.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\present\d3d11\d3d11_engine.cpp">
+      <Filter>graphics\present\d3d11</Filter>
     </ClCompile>
     <ClCompile Include="graphics\hw_raster\d3d11_raster.cpp">
-      <Filter>graphics</Filter>
+      <Filter>graphics\hw_raster</Filter>
     </ClCompile>
     <ClCompile Include="graphics\hw_raster\d3d12_raster.cpp">
-      <Filter>graphics</Filter>
+      <Filter>graphics\hw_raster</Filter>
     </ClCompile>
     <ClCompile Include="graphics\hw_raster\hardware_raster.cpp">
-      <Filter>graphics</Filter>
+      <Filter>graphics\hw_raster</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\d3d12_graphics_engine.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\present\d3d12\d3d12_engine.cpp">
+      <Filter>graphics\present\d3d12</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\d3d12_dlss.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\present\d3d12\d3d12_dlss.cpp">
+      <Filter>graphics\present\d3d12</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\dlss\streamline.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\upscale\dlss\streamline.cpp">
+      <Filter>graphics\upscale\dlss</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\dlss\reflex_markers.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\upscale\dlss\reflex_markers.cpp">
+      <Filter>graphics\upscale\dlss</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\d3d12_fsr.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\present\d3d12\d3d12_fsr.cpp">
+      <Filter>graphics\present\d3d12</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\fsr\fidelityfx.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\upscale\fsr\fidelityfx.cpp">
+      <Filter>graphics\upscale\fsr</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\fsr\fsr_download.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\upscale\fsr\fsr_download.cpp">
+      <Filter>graphics\upscale\fsr</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\opengl_engine.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\present\opengl\opengl_engine.cpp">
+      <Filter>graphics\present\opengl</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\vulkan_engine.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\present\vulkan\vulkan_engine.cpp">
+      <Filter>graphics\present\vulkan</Filter>
     </ClCompile>
     <ClCompile Include="app\engine_factory.cpp">
       <Filter>app</Filter>
@@ -114,11 +153,11 @@
     <ClCompile Include="app\main.cpp">
       <Filter>app</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\video_presenter.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\present\video_presenter.cpp">
+      <Filter>graphics\present</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\display_clock.cpp">
-      <Filter>graphics</Filter>
+    <ClCompile Include="graphics\present\display_clock.cpp">
+      <Filter>graphics\present</Filter>
     </ClCompile>
     <ClCompile Include="app\menu.cpp">
       <Filter>app</Filter>
@@ -174,19 +213,19 @@
       <Filter>ui</Filter>
     </ClInclude>
     <ClInclude Include="ui\overlay\memory_usage.h">
-      <Filter>ui</Filter>
+      <Filter>ui\overlay</Filter>
     </ClInclude>
     <ClInclude Include="ui\overlay\overlay.h">
-      <Filter>ui</Filter>
+      <Filter>ui\overlay</Filter>
     </ClInclude>
     <ClInclude Include="ui\overlay\overlay_atlas.h">
-      <Filter>ui</Filter>
+      <Filter>ui\overlay</Filter>
     </ClInclude>
     <ClInclude Include="ui\overlay\overlay_draw.h">
-      <Filter>ui</Filter>
+      <Filter>ui\overlay</Filter>
     </ClInclude>
     <ClInclude Include="ui\overlay\frame_stats_ring.h">
-      <Filter>ui</Filter>
+      <Filter>ui\overlay</Filter>
     </ClInclude>
     <ClInclude Include="ui\debugger_window.h">
       <Filter>ui</Filter>
@@ -194,8 +233,8 @@
     <ClInclude Include="app\const.h">
       <Filter>app</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\d3d11_presenter.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\present\d3d11\d3d11_engine.h">
+      <Filter>graphics\present\d3d11</Filter>
     </ClInclude>
     <ClInclude Include="graphics\adapters.h">
       <Filter>graphics</Filter>
@@ -204,55 +243,55 @@
       <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\hw_raster\d3d11_raster.h">
-      <Filter>graphics</Filter>
+      <Filter>graphics\hw_raster</Filter>
     </ClInclude>
     <ClInclude Include="graphics\hw_raster\d3d12_raster.h">
-      <Filter>graphics</Filter>
+      <Filter>graphics\hw_raster</Filter>
     </ClInclude>
     <ClInclude Include="graphics\hw_raster\hardware_raster.h">
-      <Filter>graphics</Filter>
+      <Filter>graphics\hw_raster</Filter>
     </ClInclude>
     <ClInclude Include="graphics\hw_raster\raster_common.h">
-      <Filter>graphics</Filter>
+      <Filter>graphics\hw_raster</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\d3d12_graphics_engine.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\present\d3d12\d3d12_engine.h">
+      <Filter>graphics\present\d3d12</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\dlss\dlss_choice.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\upscale\dlss\dlss_choice.h">
+      <Filter>graphics\upscale\dlss</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\dlss\dlss_timing.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\upscale\dlss\dlss_timing.h">
+      <Filter>graphics\upscale\dlss</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\dlss\streamline.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\upscale\dlss\streamline.h">
+      <Filter>graphics\upscale\dlss</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\dlss\reflex_markers.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\upscale\dlss\reflex_markers.h">
+      <Filter>graphics\upscale\dlss</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\fsr\fsr_choice.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\upscale\fsr\fsr_choice.h">
+      <Filter>graphics\upscale\fsr</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\fsr\fidelityfx.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\upscale\fsr\fidelityfx.h">
+      <Filter>graphics\upscale\fsr</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\fsr\fsr_download.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\upscale\fsr\fsr_download.h">
+      <Filter>graphics\upscale\fsr</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\opengl_engine.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\present\opengl\opengl_engine.h">
+      <Filter>graphics\present\opengl</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\gl_functions.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\present\opengl\gl_functions.h">
+      <Filter>graphics\present\opengl</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\vulkan_engine.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\present\vulkan\vulkan_engine.h">
+      <Filter>graphics\present\vulkan</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\vk_functions.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\present\vulkan\vk_functions.h">
+      <Filter>graphics\present\vulkan</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\d3dx12.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\third_party\d3dx12.h">
+      <Filter>graphics\third_party</Filter>
     </ClInclude>
     <ClInclude Include="app\engine_factory.h">
       <Filter>app</Filter>
@@ -263,17 +302,17 @@
     <ClInclude Include="input\gamepad.h">
       <Filter>input</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\igraphicsengine.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\present\igraphicsengine.h">
+      <Filter>graphics\present</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\display_clock.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\present\display_clock.h">
+      <Filter>graphics\present</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\filter_chain.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\filters\filter_chain.h">
+      <Filter>graphics\filters</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\shader_pass.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\filters\shader_pass.h">
+      <Filter>graphics\filters</Filter>
     </ClInclude>
     <ClInclude Include="input\input_thread.h">
       <Filter>input</Filter>
@@ -284,8 +323,8 @@
     <ClInclude Include="input\keyboard.h">
       <Filter>input</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\video_presenter.h">
-      <Filter>graphics</Filter>
+    <ClInclude Include="graphics\present\video_presenter.h">
+      <Filter>graphics\present</Filter>
     </ClInclude>
     <ClInclude Include="app\menu.h">
       <Filter>app</Filter>
@@ -302,41 +341,41 @@
     <ClInclude Include="input\mouse.h">
       <Filter>input</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\glsl_filters.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="graphics\filters\shaders\glsl_filters.h">
+      <Filter>graphics\filters\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\spirv_filters.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="graphics\filters\shaders\spirv_filters.h">
+      <Filter>graphics\filters\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\overlay_shaders.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="ui\overlay\shaders\overlay_shaders.h">
+      <Filter>ui\overlay\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\spirv_overlay.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="ui\overlay\shaders\spirv_overlay.h">
+      <Filter>ui\overlay\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\spirv_overlay_vert.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="ui\overlay\shaders\spirv_overlay_vert.h">
+      <Filter>ui\overlay\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\spirv_overlay_frag.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="ui\overlay\shaders\spirv_overlay_frag.h">
+      <Filter>ui\overlay\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\legacy_shaders.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="graphics\filters\shaders\legacy_shaders.h">
+      <Filter>graphics\filters\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\ps_scanline_filter.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="graphics\filters\shaders\ps_scanline_filter.h">
+      <Filter>graphics\filters\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\ps_xbrz_filter.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="graphics\filters\shaders\ps_xbrz_filter.h">
+      <Filter>graphics\filters\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\superxbr_pass0.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="graphics\filters\shaders\superxbr_pass0.h">
+      <Filter>graphics\filters\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\superxbr_pass1.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="graphics\filters\shaders\superxbr_pass1.h">
+      <Filter>graphics\filters\shaders</Filter>
     </ClInclude>
-    <ClInclude Include="shaders\superxbr_pass2.h">
-      <Filter>shaders</Filter>
+    <ClInclude Include="graphics\filters\shaders\superxbr_pass2.h">
+      <Filter>graphics\filters\shaders</Filter>
     </ClInclude>
     <ClInclude Include="app\win32_dialogs.h">
       <Filter>app</Filter>
@@ -346,25 +385,25 @@
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="Resource\ps_scanline_filter.hlsl">
-      <Filter>Resource</Filter>
+    <FxCompile Include="graphics\filters\shaders\ps_scanline_filter.hlsl">
+      <Filter>graphics\filters\shaders</Filter>
     </FxCompile>
-    <FxCompile Include="Resource\ps_xbrz_filter.hlsl">
-      <Filter>Resource</Filter>
+    <FxCompile Include="graphics\filters\shaders\ps_xbrz_filter.hlsl">
+      <Filter>graphics\filters\shaders</Filter>
     </FxCompile>
-    <FxCompile Include="Resource\superxbr\superxbr_pass0.hlsl">
-      <Filter>Resource\superxbr</Filter>
+    <FxCompile Include="graphics\filters\shaders\superxbr\superxbr_pass0.hlsl">
+      <Filter>graphics\filters\shaders\superxbr</Filter>
     </FxCompile>
-    <FxCompile Include="Resource\superxbr\superxbr_pass1.hlsl">
-      <Filter>Resource\superxbr</Filter>
+    <FxCompile Include="graphics\filters\shaders\superxbr\superxbr_pass1.hlsl">
+      <Filter>graphics\filters\shaders\superxbr</Filter>
     </FxCompile>
-    <FxCompile Include="Resource\superxbr\superxbr_pass2.hlsl">
-      <Filter>Resource\superxbr</Filter>
+    <FxCompile Include="graphics\filters\shaders\superxbr\superxbr_pass2.hlsl">
+      <Filter>graphics\filters\shaders\superxbr</Filter>
     </FxCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="Resource\superxbr\superxbr_common.hlsli">
-      <Filter>Resource\superxbr</Filter>
+    <None Include="graphics\filters\shaders\superxbr\superxbr_common.hlsli">
+      <Filter>graphics\filters\shaders\superxbr</Filter>
     </None>
   </ItemGroup>
   <ItemGroup>

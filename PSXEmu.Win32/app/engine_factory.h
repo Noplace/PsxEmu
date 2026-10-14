@@ -27,7 +27,7 @@
 
 #include "app/framework.h"
 
-#include "graphics/igraphicsengine.h"
+#include "graphics/present/igraphicsengine.h"
 #include "audio/iaudioengine.h"
 
 namespace psxemu {
@@ -83,8 +83,8 @@ namespace psxemu {
 
     // Compiles every ported filter into the engine at once - cheap (startup-cost shader compiles,
     // not per-frame work), so there is no reason to defer any of them until first selected. HLSL
-    // for Direct3D 12, the GLSL ports for OpenGL (shaders/glsl_filters.h), and the same GLSL as
-    // SPIR-V for Vulkan (shaders/spirv_filters.h), all under the same keys.
+    // for Direct3D 12, the GLSL ports for OpenGL (graphics/filters/shaders/glsl_filters.h), and the same GLSL as
+    // SPIR-V for Vulkan (graphics/filters/shaders/spirv_filters.h), all under the same keys.
     // Only worth calling on an engine that supports filters at all; see RendererHasFilters.
     void LoadAllFilters(IGraphicsEngine& engine, GraphicsBackend backend);
 

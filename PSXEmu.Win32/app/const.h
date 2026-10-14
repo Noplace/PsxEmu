@@ -221,7 +221,7 @@ namespace psxemu {
 
     // The filter choices - None plus the ones ported from GBAEmu (see shaders/) and the multi-pass
     // Super-xBR, in the order the Video Settings window and EmuConfig::kValidVideoFilters both
-    // list them. Direct3D 11 has none; see D3D11Presenter's class comment for why.
+    // list them. Direct3D 11 has none; see D3D11GraphicsEngine's class comment for why.
     struct FilterChoice { const char* key; const wchar_t* label; };
 
     inline constexpr FilterChoice kFilterChoices[] = {

@@ -1,9 +1,9 @@
-// filter_chain_test - the custom filter chain's arithmetic: PSXEmu.Win32/graphics/filter_chain.h,
+// filter_chain_test - the custom filter chain's arithmetic: PSXEmu.Win32/graphics/filters/filter_chain.h,
 // which turns the stages chosen in Settings > Video into the passes an engine runs, and
 // shader_pass.h's rule for what an engine will run. Header-only, like dlss_choice_test; nothing
 // of the front end is linked. Whether the picture each makes looks right is a person's to judge.
 
-#include "graphics/filter_chain.h"
+#include "graphics/filters/filter_chain.h"
 #include "emu/settings.h"
 
 #include <cstdio>

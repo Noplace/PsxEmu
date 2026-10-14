@@ -240,7 +240,7 @@
           <mxGeometry x="560" y="370" width="400" height="140" as="geometry" />
         </mxCell>
 
-        <mxCell id="video" value="&lt;b&gt;Video thread - VideoOutput&lt;/b&gt;&lt;br&gt;D3DPresenter → IGraphicsEngine&lt;br&gt;D3D11 · D3D12 · OpenGL · Vulkan&lt;br&gt;filters · custom chain · DLSS · FSR · overlay&lt;br&gt;vsync, or immediate (VRR)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
+        <mxCell id="video" value="&lt;b&gt;Video thread - VideoOutput&lt;/b&gt;&lt;br&gt;VideoPresenter → IGraphicsEngine&lt;br&gt;D3D11 · D3D12 · OpenGL · Vulkan&lt;br&gt;filters · custom chain · DLSS · FSR · overlay&lt;br&gt;vsync, or immediate (VRR)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=12;" vertex="1" parent="1">
           <mxGeometry x="1260" y="160" width="300" height="120" as="geometry" />
         </mxCell>
 

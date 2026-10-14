@@ -40,9 +40,9 @@
 // Exits 0 when AMD's DLLs loaded, 1 when they did not.
 
 #include "graphics/adapters.h"
-#include "graphics/d3dx12.h"
-#include "graphics/fsr/fidelityfx.h"
-#include "graphics/dlss/streamline.h"   // ExecutableFolder
+#include "graphics/third_party/d3dx12.h"
+#include "graphics/upscale/fsr/fidelityfx.h"
+#include "graphics/upscale/dlss/streamline.h"   // ExecutableFolder
 
 #include <d3d12.h>
 #include <DirectXPackedVector.h>
@@ -161,7 +161,7 @@ namespace {
         }
     };
 
-    // The emulator's context flags (graphics/d3d12_fsr.cpp): depth is 1/z, nearer larger, with
+    // The emulator's context flags (graphics/present/d3d12/d3d12_fsr.cpp): depth is 1/z, nearer larger, with
     // no far plane, and the picture is the console's own colours, gamma and all.
     const uint32_t kContextFlags = FFX_UPSCALE_ENABLE_DEPTH_INVERTED |
                                    FFX_UPSCALE_ENABLE_DEPTH_INFINITE |

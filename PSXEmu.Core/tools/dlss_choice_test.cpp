@@ -1,9 +1,9 @@
-// dlss_choice_test - the arithmetic of sizes around DLSS (graphics/dlss/dlss_choice.h), checked
+// dlss_choice_test - the arithmetic of sizes around DLSS (graphics/upscale/dlss/dlss_choice.h), checked
 // without a graphics card: the rasteriser's scale the front end picks for each mode, the length of
 // the jitter, and the output DLSS is asked for. The ranges are the ones DLSS 310.9.1 reported on
 // the RTX 4060 (sl_probe --optimal), so a scale chosen here is one DLSS takes there.
 
-#include "graphics/dlss/dlss_choice.h"
+#include "graphics/upscale/dlss/dlss_choice.h"
 
 #include <cstdio>
 

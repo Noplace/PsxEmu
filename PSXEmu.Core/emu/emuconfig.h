@@ -88,16 +88,16 @@ struct EmuConfig {
   static const size_t kMaxGraphicsAdapterLength = 128;
 
   // A pixel-shader filter, by the key it was loaded under - see
-  // PSXEmu.Win32/shaders/. Empty means the engine's own built-in
+  // PSXEmu.Win32/graphics/filters/shaders/. Empty means the engine's own built-in
   // pass-through. Only the D3D12 backend honours this; the D3D11 path has no
-  // filter support (see D3D11Presenter's class comment).
+  // filter support (see D3D11GraphicsEngine's class comment).
   std::string video_filter = "";
   static const std::array<const char*, 11> kValidVideoFilters;
 
   // The filters video_filter "chain" runs, one after another, as their keys joined by commas:
   // "superxbr,scanline" is Super-xBR's picture with scanlines over it. Up to kMaxFilterChain of
   // them, each one of kValidVideoFilters but "" and "chain"; the front end works out each
-  // stage's size (PSXEmu.Win32/graphics/filter_chain.h). Empty draws the picture plain.
+  // stage's size (PSXEmu.Win32/graphics/filters/filter_chain.h). Empty draws the picture plain.
   std::string filter_chain = "";
   static const size_t kMaxFilterChain = 4;
 
@@ -293,7 +293,7 @@ struct EmuConfig {
   // screen's picture of it from the motion and depth the hardware rasteriser keeps beside VRAM.
   // An enhancement, like PGXP, and off by default: only what is shown changes. It runs in the
   // Direct3D 12 renderer on an NVIDIA RTX card, with the hardware rasteriser; while it does, it
-  // picks the rasteriser's resolution for the mode (graphics/dlss/dlss_choice.h) and turns on
+  // picks the rasteriser's resolution for the mode (graphics/upscale/dlss/dlss_choice.h) and turns on
   // PGXP's precise vertices, which the motion comes from. "off", "dlaa", "quality", "balanced",
   // "performance" or "ultra_performance".
   std::string dlss_mode = "off";

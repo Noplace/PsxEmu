@@ -639,11 +639,11 @@ PGXP to follow - halfword stores, most likely - are depth gained as well.
 
 ### Phase 4, as built
 
-**Streamline** (`graphics/dlss/`):
+**Streamline** (`graphics/upscale/dlss/`):
 
 - **`fetch_streamline.ps1`** downloads Streamline 2.14.1 (276 MB) into `Temp\streamline\`, checks
   its size and unpacks it; running it again does nothing. The repository holds only Streamline's
-  headers, MIT, in `graphics/dlss/streamline/`. The x64 build copies `sl.interposer.dll`,
+  headers, MIT, in `graphics/third_party/streamline/`. The x64 build copies `sl.interposer.dll`,
   `sl.common.dll`, `sl.dlss.dll`, `nvngx_dlss.dll` and DLSS's licence beside the executable when they
   are there; without them it builds and runs, and the menu says the files are missing.
 - **`Streamline`** (`streamline.h/.cpp`) loads `sl.interposer.dll` once per process, after
@@ -663,7 +663,7 @@ PGXP to follow - halfword stores, most likely - are depth gained as well.
 - **`PSXEMU_DLSS_LOG=<folder>`** writes Streamline's verbose `sl.log` there, and the renderer's own
   `dlss.log`: started, why not run, the ranges DLSS gave, what it ran at, any step that failed.
 
-**The renderer** (`d3d12_graphics_engine.cpp`, and `d3d12_dlss.cpp` for DLSS's half):
+**The renderer** (`d3d12_engine.cpp`, and `d3d12_dlss.cpp` for DLSS's half):
 
 - **Made with Streamline when DLSS is asked for** on an NVIDIA card: the device first, then
   Streamline, then the queue and swap chain made through its proxies of the device and factory, so
@@ -685,7 +685,7 @@ PGXP to follow - halfword stores, most likely - are depth gained as well.
   shake (`Gpu::NextPicture`). *Since 2026-10-01 only 480-line pictures that still mix two fields -
   none while DLSS runs - see below.*
 
-**The sizes** (`graphics/dlss/dlss_choice.h`, `tools/dlss_choice_test.cpp`, 35 checks). What DLSS
+**The sizes** (`graphics/upscale/dlss/dlss_choice.h`, `tools/dlss_choice_test.cpp`, 35 checks). What DLSS
 310.9.1 takes on the 4060 (`sl_probe --optimal`): Quality, Balanced and Performance anything from
 half the output to all of it, each way; DLAA the output to within 1%; Ultra Performance exactly a
 third.
@@ -783,7 +783,7 @@ pictures' own numbers:
 - **The machine's thread marks the simulation** (`host/latency_markers.h`, `Machine::Run`): picture
   n's starts at the first vblank after picture n - 1 was drawn - Reflex's sleep, then the marker -
   and ends at the vblank that resolved it; the input marker where the pads are read. The front end
-  hands the machine `ReflexMarkers` (`graphics/dlss/reflex_markers.h`) while Frame Generation runs,
+  hands the machine `ReflexMarkers` (`graphics/upscale/dlss/reflex_markers.h`) while Frame Generation runs,
   which passes them to whichever renderer's Streamline is attached, under a lock the renderer takes
   to detach before Streamline stops.
 - **The video thread marks rendering and the present** for the picture's first present, and DLSS's
@@ -794,7 +794,7 @@ pictures' own numbers:
 
 **Presents.**
 
-- **Each new picture is presented once**, and its repeats not at all (`D3DPresenter`): a 30 fps game
+- **Each new picture is presented once**, and its repeats not at all (`VideoPresenter`): a 30 fps game
   gives 30 presents a second, Frame Generation makes the 30 between. While pictures come, the
   overlay moves with them rather than presenting between two; a paused picture gets the overlay's
   presents, with Frame Generation off for them.
@@ -967,7 +967,7 @@ mixes.
      may opt-out via the SDK API" (5) - which Streamline's release builds do regardless (phase 4)
 
    This project is MIT, which is not copyleft, so shipping NVIDIA's DLLs beside it under NVIDIA's own
-   terms is allowed. **Fetched, never committed** (decided 2026-09-30): `graphics\dlss\
+   terms is allowed. **Fetched, never committed** (decided 2026-09-30): `graphics\upscale\dlss\
    fetch_streamline.ps1` downloads the SDK into `Temp\streamline\`, and the build copies the DLLs
    and DLSS's licence beside the executable. **A user's copy is the executable alone**
    (2026-10-01, Bugs-Found 135): with an NVIDIA card in the machine and the files missing, the

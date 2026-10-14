@@ -218,26 +218,26 @@ cl %FLAGS% /Fo:Temp\tools\obj_ppm\ /Fe:Temp\tools\ppm_diff.exe ^
    PSXEmu.Core\tools\ppm_diff.cpp
 if errorlevel 1 exit /b 1
 
-rem The arithmetic of sizes around DLSS: graphics\dlss\dlss_choice.h, header-only.
+rem The arithmetic of sizes around DLSS: graphics\upscale\dlss\dlss_choice.h, header-only.
 if not exist Temp\tools\obj_dlss mkdir Temp\tools\obj_dlss
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_dlss\ /Fe:Temp\tools\dlss_choice_test.exe ^
    PSXEmu.Core\tools\dlss_choice_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem What NVIDIA Streamline says about each card - Docs/DLSS-Plan.md, phase 0. Needs
-rem PSXEmu.Win32\graphics\dlss\fetch_streamline.ps1 run first to find anything, but builds without.
+rem PSXEmu.Win32\graphics\upscale\dlss\fetch_streamline.ps1 run first to find anything, but builds without.
 if not exist Temp\tools\obj_slprobe mkdir Temp\tools\obj_slprobe
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_slprobe\ /Fe:Temp\tools\sl_probe.exe ^
-   PSXEmu.Core\tools\sl_probe.cpp PSXEmu.Win32\graphics\dlss\streamline.cpp %LIBS%
+   PSXEmu.Core\tools\sl_probe.cpp PSXEmu.Win32\graphics\upscale\dlss\streamline.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
-rem The arithmetic of sizes around AMD FSR: graphics\fsr\fsr_choice.h, header-only.
+rem The arithmetic of sizes around AMD FSR: graphics\upscale\fsr\fsr_choice.h, header-only.
 if not exist Temp\tools\obj_fsr mkdir Temp\tools\obj_fsr
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_fsr\ /Fe:Temp\tools\fsr_choice_test.exe ^
    PSXEmu.Core\tools\fsr_choice_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
-rem The custom filter chain's passes: graphics\filter_chain.h and shader_pass.h, header-only, and
+rem The custom filter chain's passes: graphics\filters\filter_chain.h and shader_pass.h, header-only, and
 rem the settings that hold the chain.
 if not exist Temp\tools\obj_filterchain mkdir Temp\tools\obj_filterchain
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_filterchain\ /Fe:Temp\tools\filter_chain_test.exe ^
@@ -245,12 +245,12 @@ cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_filterchain\ /Fe:Temp\tools\filter
 if errorlevel 1 exit /b 1
 
 rem What AMD's FidelityFX runtime says about each card - Docs/FSR-Plan.md, phase 0. Needs
-rem PSXEmu.Win32\graphics\fsr\fetch_fidelityfx.ps1 run first to find anything, but builds without;
+rem PSXEmu.Win32\graphics\upscale\fsr\fetch_fidelityfx.ps1 run first to find anything, but builds without;
 rem AMD's loader finds its effects only beside the executable, so they are copied here.
 if not exist Temp\tools\obj_ffxprobe mkdir Temp\tools\obj_ffxprobe
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_ffxprobe\ /Fe:Temp\tools\ffx_probe.exe ^
-   PSXEmu.Core\tools\ffx_probe.cpp PSXEmu.Win32\graphics\fsr\fidelityfx.cpp ^
-   PSXEmu.Win32\graphics\dlss\streamline.cpp %LIBS%
+   PSXEmu.Core\tools\ffx_probe.cpp PSXEmu.Win32\graphics\upscale\fsr\fidelityfx.cpp ^
+   PSXEmu.Win32\graphics\upscale\dlss\streamline.cpp %LIBS%
 if errorlevel 1 exit /b 1
 if exist Temp\fidelityfx\v2.3.0\amd_fidelityfx_loader_dx12.dll ^
    xcopy /y /d /q Temp\fidelityfx\v2.3.0\*.dll Temp\tools\ >nul

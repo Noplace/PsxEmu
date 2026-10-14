@@ -59,8 +59,8 @@
 #include "host/video_output.h"
 #include "input/input_thread.h"
 #include "graphics/adapters.h"
-#include "graphics/display_clock.h"
-#include "graphics/video_presenter.h"
+#include "graphics/present/display_clock.h"
+#include "graphics/present/video_presenter.h"
 
 #include <atomic>
 #include <functional>
@@ -147,7 +147,7 @@ namespace psxemu {
 
         void SetVolume(float value);
         void SetFilter(const std::string& key);
-        // Settings > Video: the custom chain's stages (graphics/filter_chain.h), which also makes
+        // Settings > Video: the custom chain's stages (graphics/filters/filter_chain.h), which also makes
         // the chain the filter; and Frame Pacing, a kFramePacingChoices key.
         void SetFilterChain(const std::vector<std::string>& stages);
         void SetFramePacing(const std::string& key);

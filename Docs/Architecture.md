@@ -58,7 +58,7 @@ The source is split in two, and the split is enforced:
 flowchart LR
   subgraph Win32["PSXEmu.Win32 - the front end"]
     App["App<br/>(UI thread: window, menus,<br/>settings, notifications)"]
-    Presenter["D3DPresenter + engines<br/>D3D11 · D3D12 · OpenGL · Vulkan"]
+    Presenter["VideoPresenter + engines<br/>D3D11 · D3D12 · OpenGL · Vulkan"]
     HWR["Hardware rasteriser<br/>D3D11 / D3D12"]
     Input["Input thread<br/>keyboard · XInput · DS4/DualSense · mouse"]
     Upscale["DLSS (Streamline) · FSR (FidelityFX)"]
@@ -114,7 +114,7 @@ its objects outright; nothing is shared under a lock except where a channel says
 flowchart TB
   UI["UI thread<br/>App"]
   M["Machine thread<br/>host::Machine → psx::System"]
-  V["Video thread<br/>VideoOutput → D3DPresenter → engine"]
+  V["Video thread<br/>VideoOutput → VideoPresenter → engine"]
   A["Audio thread<br/>AudioOutput → WASAPI/DirectSound"]
   I["Input thread<br/>InputThread"]
   R["Rasteriser thread<br/>SoftwareRaster / hardware"]
@@ -633,7 +633,7 @@ flowchart TB
     App --> DCk["DisplayClock (control)"]
   end
   subgraph Videothread["Video thread"]
-    VO["VideoOutput"] --> DP["D3DPresenter"]
+    VO["VideoOutput"] --> DP["VideoPresenter"]
     DP --> E{"IGraphicsEngine"}
     E --> D11["D3D11"]
     E --> D12["D3D12<br/>filters · chain · DLSS · FSR"]

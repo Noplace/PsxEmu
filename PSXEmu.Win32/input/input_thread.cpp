@@ -40,8 +40,8 @@ namespace psxemu {
         const int kPollIntervalMs = 1;
 
         // Where the cursor is over the picture, as fractions of it. The presenters both draw the
-        // frame into a 4:3 letterbox of the client area (d3d11_presenter.cpp,
-        // d3d12_graphics_engine.cpp), so this works it out the same way rather than asking the
+        // frame into a 4:3 letterbox of the client area (d3d11_engine.cpp,
+        // d3d12_engine.cpp), so this works it out the same way rather than asking the
         // video thread. Nothing here sends a message, so it is safe from this thread.
         void PointerOverPicture(HWND window, float* x, float* y) {
             *x = -1.0f;

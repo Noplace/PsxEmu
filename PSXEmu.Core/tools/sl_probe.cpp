@@ -40,8 +40,8 @@
 // Exits 0 when Streamline started, 1 when it did not.
 
 #include "graphics/adapters.h"
-#include "graphics/d3dx12.h"
-#include "graphics/dlss/streamline.h"
+#include "graphics/third_party/d3dx12.h"
+#include "graphics/upscale/dlss/streamline.h"
 
 #include <d3d12.h>
 #include <DirectXPackedVector.h>
@@ -574,7 +574,7 @@ namespace {
             }
             printf("\nThe signs DLSS means, on %s: the last of 48 frames against the pattern\n"
                    "(mean difference, 0-1; lower is better)\n", adapter.name.c_str());
-            // The renderer gives DLSS the picture's jitter negated (graphics/d3d12_dlss.cpp), which
+            // The renderer gives DLSS the picture's jitter negated (graphics/present/d3d12/d3d12_dlss.cpp), which
             // is what this settled on 2026-09-30.
             const struct { float x, y; const char* name; } signs[] = {
                 { 1, 1, "jitter as the picture's (+x, +y)" },

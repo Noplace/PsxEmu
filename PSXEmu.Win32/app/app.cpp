@@ -25,9 +25,9 @@
 #include "app/screenshot.h"
 #include "app/win32_dialogs.h"
 #include "app/win32_paths.h"
-#include "graphics/filter_chain.h"
-#include "graphics/dlss/reflex_markers.h"
-#include "graphics/fsr/fsr_download.h"
+#include "graphics/filters/filter_chain.h"
+#include "graphics/upscale/dlss/reflex_markers.h"
+#include "graphics/upscale/fsr/fsr_download.h"
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/shared_device.h"
 #include "ui/dpi.h"
@@ -638,7 +638,7 @@ namespace psxemu {
              start_vsync]() -> std::unique_ptr<Presenter> {
                 // On the video thread: a Direct3D device is created by the thread that will use
                 // it, and used by no other.
-                auto presenter = std::make_unique<D3DPresenter>(
+                auto presenter = std::make_unique<VideoPresenter>(
                     RenderWindows{ window_, gl_surface_, vk_surface_ },
                     [this](std::function<void()> work) { PostToUi(std::move(work)); },
                     &frame_stats_, &dlss_timing_);
@@ -1371,7 +1371,7 @@ namespace psxemu {
         if (video_ != nullptr) {
             video_->Post([key](VideoOutput& video) {
                 if (video.presenter() != nullptr)
-                    static_cast<D3DPresenter*>(video.presenter())->SetFilter(key);
+                    static_cast<VideoPresenter*>(video.presenter())->SetFilter(key);
                 video.PresentAgain();
             });
         }
@@ -1400,7 +1400,7 @@ namespace psxemu {
         if (video_ != nullptr) {
             video_->Post([stages](VideoOutput& video) {
                 if (video.presenter() != nullptr)
-                    static_cast<D3DPresenter*>(video.presenter())->SetFilterChain(stages);
+                    static_cast<VideoPresenter*>(video.presenter())->SetFilterChain(stages);
                 video.PresentAgain();
             });
         }
@@ -1425,7 +1425,7 @@ namespace psxemu {
         if (video_ != nullptr) {
             video_->Post([vsync](VideoOutput& video) {
                 if (video.presenter() != nullptr)
-                    static_cast<D3DPresenter*>(video.presenter())->SetVsync(vsync);
+                    static_cast<VideoPresenter*>(video.presenter())->SetVsync(vsync);
             });
         }
         SendConfigToMachine();
@@ -1481,7 +1481,7 @@ namespace psxemu {
         if (key == current_backend_ || video_ == nullptr)
             return;
         video_->Post([this, key](VideoOutput& video) {
-            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            VideoPresenter* presenter = static_cast<VideoPresenter*>(video.presenter());
             if (presenter == nullptr)
                 return;
             presenter->SetRenderer(key);
@@ -1619,7 +1619,7 @@ namespace psxemu {
             return;
         generation_allowed_sent_ = allowed;
         video_->Post([allowed](VideoOutput& video) {
-            if (D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter()))
+            if (VideoPresenter* presenter = static_cast<VideoPresenter*>(video.presenter()))
                 presenter->SetFrameGenerationAllowed(allowed);
         });
         UpdateVideoSettings();
@@ -1636,7 +1636,7 @@ namespace psxemu {
             return;
         dlss_sent_ = choice;
         video_->Post([this, choice](VideoOutput& video) {
-            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            VideoPresenter* presenter = static_cast<VideoPresenter*>(video.presenter());
             if (presenter == nullptr)
                 return;
             presenter->SetDlss(choice);
@@ -1663,7 +1663,7 @@ namespace psxemu {
             video_ == nullptr)
             return;
         video_->Post([this](VideoOutput& video) {
-            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            VideoPresenter* presenter = static_cast<VideoPresenter*>(video.presenter());
             if (presenter == nullptr)
                 return;
             presenter->Reopen();
@@ -1748,7 +1748,7 @@ namespace psxemu {
             return;
         fsr_sent_ = choice;
         video_->Post([this, choice](VideoOutput& video) {
-            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            VideoPresenter* presenter = static_cast<VideoPresenter*>(video.presenter());
             if (presenter == nullptr)
                 return;
             presenter->SetFsr(choice);
@@ -1774,7 +1774,7 @@ namespace psxemu {
             video_ == nullptr)
             return;
         video_->Post([this](VideoOutput& video) {
-            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            VideoPresenter* presenter = static_cast<VideoPresenter*>(video.presenter());
             if (presenter == nullptr)
                 return;
             presenter->Reopen();
@@ -2125,7 +2125,7 @@ namespace psxemu {
         if (video_ == nullptr)
             return;
         video_->Post([this, luid, name](VideoOutput& video) {
-            D3DPresenter* presenter = static_cast<D3DPresenter*>(video.presenter());
+            VideoPresenter* presenter = static_cast<VideoPresenter*>(video.presenter());
             if (presenter == nullptr)
                 return;
             presenter->SetGraphicsCard(luid, name);
@@ -3321,7 +3321,7 @@ namespace psxemu {
             return;
         video_->Post([work = std::move(work)](VideoOutput& video) {
             if (video.presenter() != nullptr)
-                work(static_cast<D3DPresenter*>(video.presenter())->overlay());
+                work(static_cast<VideoPresenter*>(video.presenter())->overlay());
         });
     }
 
@@ -3891,7 +3891,7 @@ namespace psxemu {
 
     // The way to AMD's files, as ShowDlssFiles does NVIDIA's - and, since AMD's are MIT and
     // published one by one, the emulator fetching them itself (FetchFsrFiles). A build that ran
-    // graphics\fsr\fetch_fidelityfx.ps1 has them beside it already.
+    // graphics\upscale\fsr\fetch_fidelityfx.ps1 has them beside it already.
     void App::ShowFsrFiles() {
         const std::vector<std::wstring> missing = MissingFsrFiles();
         std::wstring needed;
@@ -3972,7 +3972,7 @@ namespace psxemu {
             RetryFsr();
     }
 
-    // AMD's three files downloaded beside the emulator (graphics/fsr/fsr_download.h) on a thread
+    // AMD's three files downloaded beside the emulator (graphics/upscale/fsr/fsr_download.h) on a thread
     // of their own, a task dialog showing how far it has got and offering to cancel; then FSR
     // started with them, or what went wrong said.
     void App::FetchFsrFiles() {
@@ -4189,7 +4189,7 @@ namespace psxemu {
                 // own device, read once the renderer has finished with it.
                 if (frame->shared) {
                     if (frame->shared.source->device() != nullptr && video.presenter() != nullptr)
-                        static_cast<D3DPresenter*>(video.presenter())->Idle();
+                        static_cast<VideoPresenter*>(video.presenter())->Idle();
                     HardwareRaster::ReadSharedPicture(frame->shared, &pixels);
                 } else {
                     pixels = frame->pixels;
@@ -4372,7 +4372,7 @@ namespace psxemu {
                 if (frame->shared) {
                     // As for a screenshot (TakeScreenshot).
                     if (frame->shared.source->device() != nullptr && video.presenter() != nullptr)
-                        static_cast<D3DPresenter*>(video.presenter())->Idle();
+                        static_cast<VideoPresenter*>(video.presenter())->Idle();
                     HardwareRaster::ReadSharedPicture(frame->shared, &pixels);
                 } else {
                     pixels = frame->pixels;

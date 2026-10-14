@@ -60,8 +60,8 @@ AMD FSR SDK 2.3.0 (24 June 2026), `GPUOpen-LibrariesAndSDKs/FidelityFX-SDK`, MIT
 
 ### Where FSR runs
 
-- **In `D3D12GraphicsEngine`** (`graphics/d3d12_fsr.cpp`), beside DLSS (`d3d12_dlss.cpp`).
-  `graphics/fsr/fidelityfx.h/.cpp` loads the loader once per process after Windows' Authenticode
+- **In `D3D12GraphicsEngine`** (`graphics/present/d3d12/d3d12_fsr.cpp`), beside DLSS (`d3d12_dlss.cpp`).
+  `graphics/upscale/fsr/fidelityfx.h/.cpp` loads the loader once per process after Windows' Authenticode
   check, with the signer's certificate read and required to be Advanced Micro Devices - on the
   loader, the upscaler and Frame Generation's DLL - and takes the five functions by name. Nothing
   links against AMD's code.
@@ -98,7 +98,7 @@ values from its caller:
 
 ### Sizes
 
-`graphics/fsr/fsr_choice.h`, header-only, `tools/fsr_choice_test.cpp`:
+`graphics/upscale/fsr/fsr_choice.h`, header-only, `tools/fsr_choice_test.cpp`:
 
 - **FSR takes any input for any output.** Its quality modes are names for ratios (Native AA 1,
   Quality 1.5, Balanced 1.7, Performance 2, Ultra Performance 3); the dispatch is told the two
@@ -145,7 +145,7 @@ values from its caller:
   saying what runs and at what internal resolution, or why not, and one for Frame Generation. The
   group needs Direct3D 12 and the hardware rasteriser, on any card; greyed otherwise, with the
   reason. "Get AMD's FSR files..." while they are not all beside the emulator.
-- **The emulator downloads AMD's files itself** (`graphics/fsr/fsr_download.h/.cpp`, added
+- **The emulator downloads AMD's files itself** (`graphics/upscale/fsr/fsr_download.h/.cpp`, added
   2026-10-07): that link's dialog leads with "Download them now". DLSS's can only send people to
   NVIDIA's 280 MB archive; AMD's DLLs are MIT and published one by one, so the same three files
   `fetch_fidelityfx.ps1` fetches come straight from AMD's v2.3.0 release over WinHTTP, each into a
@@ -175,7 +175,7 @@ values from its caller:
 
 ## Phase 0, as built: the SDK and `ffx_probe`
 
-- **`graphics/fsr/fetch_fidelityfx.ps1`** downloads the three DLLs of v2.3.0 from AMD's repository
+- **`graphics/upscale/fsr/fetch_fidelityfx.ps1`** downloads the three DLLs of v2.3.0 from AMD's repository
   into `Temp\fidelityfx\v2.3.0`, checking each one's size and git blob id against the release's
   tree; running it again does nothing. Windows' check: all three validly signed by Advanced Micro
   Devices.
@@ -277,6 +277,6 @@ the output and the evaluation by which upscaler runs; DLSS's input pass and its 
 - [FidelityFX SDK](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK) v2.3.0 (MIT):
   `Kits/FidelityFX/docs` - `getting-started/ffx-api.md`, `techniques/super-resolution-ml.md`,
   `super-resolution-upscaler.md`, `frame-interpolation-api.md`, `frame-interpolation-swap-chain.md`,
-  `license.md` - and the headers, copied into `PSXEmu.Win32/graphics/fsr/fidelityfx/`;
+  `license.md` - and the headers, copied into `PSXEmu.Win32/graphics/third_party/fidelityfx/`;
   `upscalers/fsr3/include/gpu/fsr3upscaler/` for how FSR 3.1 uses depth in metres.
 - [AMD: FSR 4 on GPUOpen](https://gpuopen.com/learn/amd-fsr4-gpuopen-release/)

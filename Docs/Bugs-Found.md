@@ -2448,7 +2448,7 @@ loading." bar through the main menu found while chasing bug 46 render
 visibly narrower than normal gameplay - "the width is shrinked" - while
 everything else in the game fills the window the way it should.
 
-**Cause.** `D3D11Presenter::Present` computed the letterbox rectangle from
+**Cause.** `D3D11GraphicsEngine::Present` computed the letterbox rectangle from
 `width` and `height` - the framebuffer's own pixel dimensions - straight
 off: `target_aspect = width / height`. Those two numbers are not one
 setting, though - horizontal resolution (`GP1(08h)`, 256/320/368/512/640)
@@ -2470,7 +2470,7 @@ boot, even though a real TV shows every one of them at the same width.
 not from the frame's own pixel counts - `ComputeLetterboxRect`, extracted
 into `PSXEmu.Core/tools/letterbox.h` specifically so it takes no window
 handle and no graphics device, the same reason `boot_runner`'s own helpers
-live there. `D3D11Presenter::Present` calls it with `4.0f / 3.0f`;
+live there. `D3D11GraphicsEngine::Present` calls it with `4.0f / 3.0f`;
 `width`/`height` are still used for the texture upload, just no longer for
 the aspect.
 
@@ -6629,7 +6629,7 @@ Settings > Video > Renderer offers OpenGL beside Direct3D 11 and 12
   - every filter is a fragment shader
   - Super-xBR's three passes each render into a texture before a linear blit
     puts the last one on screen
-- **Every filter has a GLSL copy.** `shaders/glsl_filters.h` ports each HLSL
+- **Every filter has a GLSL copy.** `graphics/filters/shaders/glsl_filters.h` ports each HLSL
   filter line for line, under the same keys, so the Filter menu means the same
   on both renderers.
 - **The samplers match D3D12's.** Its four static samplers (point and linear,
@@ -6751,14 +6751,14 @@ It keeps the extra weight small:
   OpenGL engine uses:
   - `glsl_filters.h` gained a Vulkan header (explicit bindings and a
     push-constant block).
-  - `shaders/make_spirv.cpp` runs Khronos's glslang over every shader and
-    writes `shaders/spirv_filters.h`: 14 shaders, about 110 KB in the exe.
-  - `shaders/build_spirv.bat <glslang.exe>` rebuilds it. That is needed only
+  - `graphics/filters/shaders/make_spirv.cpp` runs Khronos's glslang over every shader and
+    writes `graphics/filters/shaders/spirv_filters.h`: 14 shaders, about 110 KB in the exe.
+  - `graphics/filters/shaders/build_spirv.bat <glslang.exe>` rebuilds it. That is needed only
     after changing a filter, and glslang is needed only then.
   - `spirv_filters.h` records a hash of every piece of GLSL each shader came
     from and `static_assert`s them against `glsl_filters.h`. A filter changed
     without rebuilding its SPIR-V stops the build with "spirv_filters.h is
-    older than glsl_filters.h: run shaders\build_spirv.bat". Changing one
+    older than glsl_filters.h: run graphics\filters\shaders\build_spirv.bat". Changing one
     number in the CRT filter did exactly that.
 - **It draws into a child window of its own,** like OpenGL
   (`App::CreateRenderSurfaces`). How Vulkan presents depends on each GPU's
@@ -7116,7 +7116,7 @@ across the restart.
 
 ## 114. An on-screen overlay: notifications, controllers, performance graphs, two themes
 
-`PSXEmu.Win32/ui/overlay/`, the four engines, `graphics/video_presenter.cpp`,
+`PSXEmu.Win32/ui/overlay/`, the four engines, `graphics/present/video_presenter.cpp`,
 `host/machine.cpp`, `host/video_output.cpp`, `app/app.cpp`
 
 Not a bug: a feature the user asked for, after GBAEmu's notifications, and
@@ -7153,7 +7153,7 @@ recorded here because it touches every renderer and two threads.
 - **One small pass per engine** (`IGraphicsEngine::SetOverlay`), after the
   picture and any filter, alpha-blended. Each copies the vertices up converted
   to clip space, so no engine needs constants. Vulkan's shaders are SPIR-V from
-  `shaders/overlay.vert` and `overlay.frag` (`build_spirv.bat`).
+  `ui/overlay/shaders/overlay.vert` and `overlay.frag` (`build_spirv.bat`).
 - **Per-frame stats.** The machine thread's per-frame timings reach the video
   thread through a lock-free ring (`Machine::Hooks::frame_done`), which drops
   rather than waits.
@@ -7938,7 +7938,7 @@ against its own address, with the allocator on and off.
 `render/shared_picture.h` (new), `render/raster.h`, `psx/gpu.*`, `host/frame_mailbox.h`,
 `host/machine.*`, `emu/recompiler_bridge.h`, `psx/system.cpp`, `rec/runtime.h`,
 `rec/recompiler.h`, `rec/block_compiler.h`, `PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`,
-the four engines (`d3d11_presenter.*`, `d3d12_graphics_engine.*`, `vulkan_engine.*`,
+the four engines (`d3d11_engine.*`, `d3d12_engine.*`, `vulkan_engine.*`,
 `opengl_engine.*`), `vk_functions.h`, `gl_functions.h`, `igraphicsengine.h`,
 `video_presenter.*`, `app/app.*`, `tools/boot_runner.cpp`, `tools/hw_raster_test.cpp`,
 `tools/host_test.cpp`, `tools/rec_test.cpp`
@@ -7991,8 +7991,8 @@ on. PGXP no longer turns the recompiler off.
 
 ## 128. Choosing the graphics card
 
-`graphics/adapters.h` (new), `graphics/igraphicsengine.h`, `graphics/d3d11_presenter.*`,
-`graphics/d3d12_graphics_engine.*`, `graphics/vulkan_engine.*`, `graphics/video_presenter.*`,
+`graphics/adapters.h` (new), `graphics/present/igraphicsengine.h`, `graphics/present/d3d11/d3d11_engine.*`,
+`graphics/present/d3d12/d3d12_engine.*`, `graphics/present/vulkan/vulkan_engine.*`, `graphics/present/video_presenter.*`,
 `graphics/hw_raster/d3d11_raster.cpp`, `app/engine_factory.*`, `app/app.*`, `app/menu.*`,
 `app/const.h`, `emu/emuconfig.h`, `emu/settings.h`, `tools/boot_runner.cpp`,
 `tools/media_test.cpp`
@@ -8024,8 +8024,8 @@ on each card by name. Those runs were made before the RTX 4060 dropped out of th
 
 ## 129. Shared pictures, found by testing 128: a livelock, an undersized pool, and a real leak in AMD's OpenGL interop
 
-`graphics/d3d11_presenter.*`, `graphics/d3d12_graphics_engine.*`, `graphics/vulkan_engine.*`,
-`graphics/opengl_engine.*`, `graphics/gl_functions.h`, `graphics/hw_raster/d3d11_raster.*`,
+`graphics/present/d3d11/d3d11_engine.*`, `graphics/present/d3d12/d3d12_engine.*`, `graphics/present/vulkan/vulkan_engine.*`,
+`graphics/present/opengl/opengl_engine.*`, `graphics/present/opengl/gl_functions.h`, `graphics/hw_raster/d3d11_raster.*`,
 `render/shared_picture.h`
 
 **A livelock (phase 6).** The rasteriser rotates its pictures through a fixed set of textures
@@ -8273,9 +8273,9 @@ tall. `RescaleForDpi` takes the height from `CB_GETDROPPEDCONTROLRECT` instead.
 
 ## 134. NVIDIA's attribution in an About box, and DLSS in Show Timings
 
-`app/app.*`, `app/menu.cpp`, `app/const.h`, `graphics/dlss/dlss_timing.h` (new),
-`graphics/igraphicsengine.h`, `graphics/d3d12_graphics_engine.*`, `graphics/d3d12_dlss.cpp`,
-`graphics/video_presenter.*`, `ui/video_settings_window.cpp`, `PSXEmu.Win32.vcxproj` and `.filters`
+`app/app.*`, `app/menu.cpp`, `app/const.h`, `graphics/upscale/dlss/dlss_timing.h` (new),
+`graphics/present/igraphicsengine.h`, `graphics/present/d3d12/d3d12_engine.*`, `graphics/present/d3d12/d3d12_dlss.cpp`,
+`graphics/present/video_presenter.*`, `ui/video_settings_window.cpp`, `PSXEmu.Win32.vcxproj` and `.filters`
 
 Not a bug: two of DLSS's leftovers (DLSS-Plan.md, "Settings and the menus").
 
@@ -8304,7 +8304,7 @@ The About box captured with and without NVIDIA's files beside the program.
 
 ## 135. The emulator alone, NVIDIA's files fetched by the user, and DLSS greyed where it cannot run
 
-`app/app.*`, `graphics/dlss/dlss_choice.h`, `graphics/video_presenter.h`,
+`app/app.*`, `graphics/upscale/dlss/dlss_choice.h`, `graphics/present/video_presenter.h`,
 `ui/video_settings_window.*`
 
 Not a bug: two requests - "I want users to just need the exe itself... an option to direct them
@@ -8338,7 +8338,7 @@ Check Again: "Running: NVIDIA DLSS 310.9.1, at 3x" and Frame Generation 2x, with
 ## 136. A Direct3D 12 rasteriser, and the hand-off that cost a third of its frame
 
 `graphics/hw_raster/` (`d3d12_raster.*`, `hardware_raster.*`, `raster_common.h`),
-`render/shared_picture.h`, `graphics/opengl_engine.cpp`, `graphics/vulkan_engine.cpp`,
+`render/shared_picture.h`, `graphics/present/opengl/opengl_engine.cpp`, `graphics/present/vulkan/vulkan_engine.cpp`,
 `ui/video_settings_window.*`, `tools/boot_runner.cpp`
 
 Built on request - "make the d3d12 one but keep the current one also in case i want to switch" -
@@ -8396,8 +8396,8 @@ matched only a shader-model-5 build.
 
 ## 137. One device for the Direct3D 12 renderer and rasteriser
 
-`graphics/shared_device.h`, `graphics/d3d12_graphics_engine.*`, `graphics/d3d12_dlss.cpp`,
-`graphics/video_presenter.*`, `graphics/igraphicsengine.h`, `graphics/hw_raster/`,
+`graphics/shared_device.h`, `graphics/present/d3d12/d3d12_engine.*`, `graphics/present/d3d12/d3d12_dlss.cpp`,
+`graphics/present/video_presenter.*`, `graphics/present/igraphicsengine.h`, `graphics/hw_raster/`,
 `render/shared_picture.h`, `app/app.*`, `tools/boot_runner.cpp`, `tools/hw_raster_test.cpp`
 
 Not a bug: a request - "let them share one device, want best performance without any
@@ -8420,7 +8420,7 @@ Frame Generation, which run as before (1.44-1.49 ms, 2.0x).
 - *The renderer made again under a rasteriser drawing on its device* - a switch of renderer or
   card, or DLSS's remaking: the rasteriser holds the device, so nothing goes away under it; the
   count `SharedD3D12Device` keeps moves, and the App makes the rasteriser again on the new one. A
-  picture from the old device in the meantime is not shown (`D3DPresenter`), rather than shown
+  picture from the old device in the meantime is not shown (`VideoPresenter`), rather than shown
   through a device that cannot read it.
 - *A picture's texture let go of while a frame still reads it*: the source keeps every slot's
   texture, a slot is only drawn into again once the renderer has released it after its own fence,
@@ -8444,7 +8444,7 @@ right, at full speed.
 ## 138. DLSS on 480 lines interlaced, and what DLSS is given, checked
 
 `psx/gpu.*`, `render/raster.h`, `render/shared_picture.h`, `graphics/hw_raster/` (`raster_common.h`,
-`d3d11_raster.*`, `d3d12_raster.*`), `graphics/d3d12_dlss.cpp`, `tools/boot_runner.cpp`,
+`d3d11_raster.*`, `d3d12_raster.*`), `graphics/present/d3d12/d3d12_dlss.cpp`, `tools/boot_runner.cpp`,
 `tools/hw_raster_test.cpp`
 
 Asked for: "do Interlaced pictures, then the small tunings" - after "how sure are you of your
@@ -8985,8 +8985,8 @@ old refusal.
 
 `platform/display_sync.h` (new), `platform/frame_limiter.h`, `host/machine.*`,
 `host/frame_mailbox.h`, `host/video_output.*`, `emu/emuconfig.h`, `emu/settings.h`;
-`graphics/display_clock.*`, `graphics/filter_chain.h`, `graphics/shader_pass.h` (new), the four
-engines, `graphics/video_presenter.*`, `app/app.*`, `app/const.h`, `ui/video_settings_window.*`;
+`graphics/present/display_clock.*`, `graphics/filters/filter_chain.h`, `graphics/filters/shader_pass.h` (new), the four
+engines, `graphics/present/video_presenter.*`, `app/app.*`, `app/const.h`, `ui/video_settings_window.*`;
 `tools/frame_limiter_test.cpp`, `tools/filter_chain_test.cpp` (new)
 
 Not a bug: a request - "do frame pacing (as an option), and shader chain", from the list of
