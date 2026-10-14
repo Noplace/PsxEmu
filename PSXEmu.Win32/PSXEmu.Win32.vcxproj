@@ -133,6 +133,8 @@ exit /b 0</Command>
     <ClCompile Include="app\screenshot.cpp" />
     <ClCompile Include="app\win32_dialogs.cpp" />
     <ClCompile Include="app\win32_paths.cpp" />
+    <ClCompile Include="audio\dsoundaudioengine.cpp" />
+    <ClCompile Include="audio\wasapiaudioengine.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="app\app.h" />
@@ -205,6 +207,8 @@ exit /b 0</Command>
     <ClInclude Include="app\win32_dialogs.h" />
     <ClInclude Include="app\win32_paths.h" />
     <ClInclude Include="app\bios_database.h" />
+    <ClInclude Include="audio\dsoundaudioengine.h" />
+    <ClInclude Include="audio\wasapiaudioengine.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\PSXEmu.Core\PSXEmu.Core.vcxproj">

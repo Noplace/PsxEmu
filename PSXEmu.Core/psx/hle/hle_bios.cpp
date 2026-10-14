@@ -10,13 +10,14 @@
 // and the pad driver's order of work are taken from it.
 
 #include "psx/psx.h"
-#include "psx/hle_bios.h"
+#include "psx/hle/hle_bios.h"
 #include "psx/mips_assembler.h"
 
 #include <cstddef>
 
 namespace emulation {
 namespace psx {
+namespace hle {
 
 namespace {
 
@@ -2122,5 +2123,6 @@ void HleBios::StartExecutable(uint32_t header, uint32_t a0, uint32_t a1, uint32_
   c.pc = Read32(header + 0x00);
 }
 
+}  // namespace hle
 }  // namespace psx
 }  // namespace emulation

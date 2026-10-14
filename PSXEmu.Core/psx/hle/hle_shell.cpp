@@ -11,13 +11,14 @@
 // frame when it is set. A PlayStation disc put in while it runs boots, as on a console.
 
 #include "psx/psx.h"
-#include "psx/hle_bios.h"
+#include "psx/hle/hle_bios.h"
 #include "psx/mc_directory.h"
 
 namespace emulation {
 namespace psx {
+namespace hle {
 
-namespace {
+namespace  {
 
 // ---- The font ------------------------------------------------------------------------------------
 // 5x7 glyphs, a row a byte, bit 4 the leftmost pixel, for 20h-7Eh and then the shell's own symbols
@@ -940,5 +941,6 @@ bool HleShell::BootableDisc() {
   return b_.system_->iso().Find("SYSTEM.CNF", &file) || b_.system_->iso().Find("PSX.EXE", &file);
 }
 
+}  // namespace hle
 }  // namespace psx
 }  // namespace emulation

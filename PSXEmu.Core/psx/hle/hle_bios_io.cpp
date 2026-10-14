@@ -11,12 +11,12 @@
 // the libraries built on it (libcard) clear and wait for its events around the call.
 
 #include "psx/psx.h"
-#include "psx/hle_bios.h"
+#include "psx/hle/hle_bios.h"
 #include "psx/mc_directory.h"
 
 namespace emulation {
 namespace psx {
-
+namespace hle {
 namespace {
 
 const uint32_t kIStat = 0x1F801070;
@@ -1057,5 +1057,6 @@ bool HleBios::IoFunction(uint32_t n) {
   }
 }
 
+}  // namespace hle
 }  // namespace psx
 }  // namespace emulation

@@ -8,6 +8,7 @@
 
 namespace emulation {
 namespace psx {
+	namespace hle {
 
 extern const uint8_t kHleCharset2[15720] = {
   0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
@@ -6651,5 +6652,6 @@ extern const uint8_t kHleCharset4[1425] = {
   0x00,
 };
 
+}  // namespace hle
 }  // namespace psx
 }  // namespace emulation

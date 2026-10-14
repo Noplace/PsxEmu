@@ -6,13 +6,13 @@
 // because software written against the console's kernel has only ever seen them that way.
 
 #include "psx/psx.h"
-#include "psx/hle_bios.h"
+#include "psx/hle/hle_bios.h"
 #include "psx/mips_assembler.h"
 
 namespace emulation {
 namespace psx {
-
-namespace {
+namespace hle {
+namespace  {
 
 bool IsBlank(uint8_t c) { return (c >= 0x09 && c <= 0x0D) || c == 0x20; }
 
@@ -736,5 +736,6 @@ bool HleBios::LibcFunction(uint32_t n) {
   }
 }
 
+}  // namespace hle
 }  // namespace psx
 }  // namespace emulation

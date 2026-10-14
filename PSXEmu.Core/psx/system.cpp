@@ -68,7 +68,7 @@ int System::Initialize(const char* bios_path) {
 void System::SelectBios() {
   const bool hle = config_.hle_bios || bios_file_.empty();
   if (hle)
-    HleBios::BuildRom(io_.bios_buffer.u8);
+      hle::HleBios::BuildRom(io_.bios_buffer.u8);
   else
     memcpy(io_.bios_buffer.u8, &bios_file_[0], kBiosSize);
   hle_active_ = hle;
@@ -280,7 +280,7 @@ bool System::StepImpl() {
     // function in place of the instruction there, and that is the whole step. The recompiler
     // never compiles the trap region, so compiled code always comes back here first, as it does
     // for the vectors above.
-    if (hle_active_ && HleBios::IsTrap(pc)) [[unlikely]] {
+    if (hle_active_ && hle::HleBios::IsTrap(pc)) [[unlikely]] {
       cpu_.SettleLoads();
       cpu_.TickCycles(hle_.Trap(pc));
       return true;

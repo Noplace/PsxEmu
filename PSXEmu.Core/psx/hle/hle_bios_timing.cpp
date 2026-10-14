@@ -14,11 +14,11 @@
 // kernel's small functions take.
 
 #include "psx/psx.h"
-#include "psx/hle_bios.h"
+#include "psx/hle/hle_bios.h"
 
 namespace emulation {
 namespace psx {
-
+namespace hle {
 namespace {
 
 const uint32_t kDefault = 100;
@@ -244,5 +244,6 @@ uint32_t HleBios::MeasuredCost(uint32_t function) {
   return Lookup(kCostsC, sizeof(kCostsC) / sizeof(kCostsC[0]), function - kTableC, args);
 }
 
+}  // namespace hle
 }  // namespace psx
 }  // namespace emulation

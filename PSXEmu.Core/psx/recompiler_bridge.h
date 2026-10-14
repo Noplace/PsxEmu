@@ -214,7 +214,7 @@ class RecompilerBridge {
       return false;
     // The HLE BIOS's kernel functions likewise: a step that reaches one has to be handed to it
     // by System::StepImpl, not run as the word that happens to be there.
-    if (system_->hle_active() && HleBios::IsTrap(pc))
+    if (system_->hle_active() && hle::HleBios::IsTrap(pc))
       return false;
     IOInterface& io = system_->io();
     if (physical < kRamBytes) {

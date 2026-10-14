@@ -71,7 +71,7 @@ class System {
   bool LoadBiosFromFile(const char* filename);
 
   // The HLE BIOS, and whether the machine is running it rather than a dump.
-  HleBios& hle() { return hle_; }
+  hle::HleBios& hle() { return hle_; }
   bool hle_active() const { return hle_active_; }
   // Puts the chosen BIOS in the ROM: the HLE one when EmuConfig::hle_bios says so or there is no
   // dump. Done by Initialize, and again at the first instruction if the setting changed since.
@@ -231,7 +231,7 @@ class System {
   void SettleBios();
 
   std::unique_ptr<RecompilerBridge> recompiler_;
-  HleBios hle_;
+  hle::HleBios hle_;
   bool hle_active_ = false;
   // Until the first instruction runs, the BIOS can still be swapped for the other one.
   bool bios_pending_ = false;

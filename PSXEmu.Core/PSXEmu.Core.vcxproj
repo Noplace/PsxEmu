@@ -175,8 +175,6 @@
       <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <WarningLevel>TurnOffAllWarnings</WarningLevel>
     </ClCompile>
-    <ClCompile Include="audio\dsoundaudioengine.cpp" />
-    <ClCompile Include="audio\wasapiaudioengine.cpp" />
     <ClCompile Include="host\audio_output.cpp" />
     <ClCompile Include="host\machine.cpp" />
     <ClCompile Include="host\video_output.cpp" />
@@ -198,12 +196,12 @@
     <ClCompile Include="psx\mc_directory.cpp" />
     <ClCompile Include="psx\debugger.cpp" />
     <ClCompile Include="psx\bios_calls.cpp" />
-    <ClCompile Include="psx\hle_bios.cpp" />
-    <ClCompile Include="psx\hle_bios_libc.cpp" />
-    <ClCompile Include="psx\hle_bios_io.cpp" />
-    <ClCompile Include="psx\hle_bios_timing.cpp" />
-    <ClCompile Include="psx\hle_shell.cpp" />
-    <ClCompile Include="psx\hle_font_data.cpp" />
+    <ClCompile Include="psx\hle\hle_bios.cpp" />
+    <ClCompile Include="psx\hle\hle_bios_libc.cpp" />
+    <ClCompile Include="psx\hle\hle_bios_io.cpp" />
+    <ClCompile Include="psx\hle\hle_bios_timing.cpp" />
+    <ClCompile Include="psx\hle\hle_shell.cpp" />
+    <ClCompile Include="psx\hle\hle_font_data.cpp" />
     <ClCompile Include="psx\ecm.cpp" />
     <!-- A .bk2 movie is a zip: read with the zlib that CHD images already bring. -->
     <ClCompile Include="psx\movie.cpp">
@@ -217,9 +215,7 @@
     <ClCompile Include="psx\system.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="audio\dsoundaudioengine.h" />
     <ClInclude Include="audio\iaudioengine.h" />
-    <ClInclude Include="audio\wasapiaudioengine.h" />
     <ClInclude Include="host\audio_output.h" />
     <ClInclude Include="host\doorbell.h" />
     <ClInclude Include="host\frame_mailbox.h" />
@@ -268,7 +264,7 @@
     <ClInclude Include="psx\debugger.h" />
     <ClInclude Include="psx\disasm.h" />
     <ClInclude Include="psx\bios_calls.h" />
-    <ClInclude Include="psx\hle_bios.h" />
+    <ClInclude Include="psx\hle\hle_bios.h" />
     <ClInclude Include="psx\mips_assembler.h" />
     <ClInclude Include="psx\psx.h" />
     <ClInclude Include="psx\root_counter.h" />
