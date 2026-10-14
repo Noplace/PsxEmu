@@ -9436,3 +9436,50 @@ and is seen, and dead by frame 5,100: near the recording, not on it.
 
 Baselines with the option off are as before: the BIOS boot's 92,822,656 instructions and checksum,
 Air Combat's 849,419,002 and checksum at 3,000 frames.
+
+## 152. A tint just under 80h never took a step off a bright texel - Silent Hill's trail stayed
+
+`psx/software_raster.cpp`, `PSXEmu.Win32/graphics/hw_raster/raster_common.h`, `tools/gpu_test.cpp`
+
+Reported in Silent Hill (SLUS-00707), from a save state in the dark: running, Harry leaves marks
+behind him that should fade away like motion blur, and they stayed - smeared copies of his arms and
+legs, cyan specks off his jeans, a yellow halo round his hands.
+
+**How the game draws it.** A GP0 log of two frames (a scratch build): each frame clears its buffer,
+then draws the other buffer - the last frame - back into it as three 256-wide textured rectangles,
+modulated, before drawing Harry on top. The tint alternates 7F7F7Fh and 808080h, frame by frame. So
+every other frame the whole picture is multiplied by 127/128, which in five bits is one step off
+any lit component: the trail fades by a step every two frames and is gone in a second or so.
+
+**What was wrong.** A texel was widened to eight bits by replicating its top bits (`From5Bit`, so
+that 1Fh is FFh) and *then* multiplied by the tint. The replicated bits are a fraction the multiply
+carries: 31 becomes 255, times 127/128 is 253, which cuts back to 31. Anything from 4 up kept its
+value under a 7Fh tint for ever, so the trail never faded - it was only overwritten. The console
+widens by a plain shift: 31 is 248, times 127/128 is 246, which is 30 (DuckStation's software
+renderer has it as `(texel * colour) >> 4`, the same sum).
+
+**Fixed** (`Modulate`/`Tint`): a tinted texel is the component shifted up times the colour over
+128; a raw one is still widened by replication, as it goes back to five bits unchanged. And, in the
+same few lines, the triangle loop dithered the *tint* before multiplying, where the console dithers
+the tinted texel - before it is cut to eight bits - and never a raw one; that is moved too. The
+hardware rasterisers' shader did both the same way in its native-colour path and is changed to
+match (its true-colour path, at eight bits a channel, is left as it is: there the fade is the
+enhancement's own, and slower).
+
+**Checked.**
+- **Against the console:** the `rectangles` program of the ps1-tests suite, whose `vram.png` is a
+  console's VRAM, now differs from it in 1,188 pixels where it differed in 4,693; the ten other GPU
+  programs with a capture are unchanged, none worse.
+- **The trail:** from the save, frames 150-170 running - pixels whose value steps down and does not
+  rise again 394 -> 941; pixels lit and unchanged for all 21 frames 2,174 -> 358 (Harry's own).
+- `gpu_test` 98 -> 106: the tints and the dither order above - against the old rasteriser 7Fh over
+  31 and over 16 and the dither order fail (the other five agree either way); its per-pixel reference
+  now tints in DuckStation's form, written apart from the rasteriser's, and agrees with it on all 40
+  random rounds, where the old rasteriser differs from it within three. Through the Direct3D 11 and 12
+  rasterisers (WARP) all 106 pass; `hw_raster_test` 78 and 81, hardware against software, pass.
+- The twelve-disc table on the interpreter: eight of the 36 pictures move - fades and tinted
+  sprites, the same screens by eye - and every other report line, instructions and sectors
+  included, is unchanged. Re-recorded in Test-Suite.md.
+
+**Not changed, and noticed on the way:** a flat, untextured polygon is dithered here when the draw
+mode says so; on the console (DuckStation's rule) only a shaded or texture-tinted one is.

@@ -681,6 +681,69 @@ void TestTextureBit15BecomesTheMaskBit(System* system) {
   system->gpu().WriteData(0xE6000000);              // leave the mask as found
 }
 
+// A texel tinted by a colour is the 5-bit component shifted up, times the colour, over 128 - not
+// the component widened by replication first, which carries a fraction through the multiply. With
+// replication a tint of 7Fh never took a step off a bright texel (31 -> 255 -> 253 -> 31), and
+// Silent Hill's trail behind Harry, faded by copying the last frame back at 7Fh every other frame,
+// never faded. And a dithered textured polygon dithers the tinted texel, not the tint before it is
+// multiplied.
+void TestATintJustUnderOneTakesAStepOff(System* system) {
+  printf("a tint just under 80h takes a step off every texel, and dithering comes after the tint\n");
+  Gpu& gpu = system->gpu();
+  gpu.WriteStatus(0x00000000);
+  gpu.WriteData(0xE3000000);
+  gpu.WriteData(0xE4000000 | (300u << 10) | 300u);
+  gpu.WriteData(0xE6000000);
+
+  // A 4x8 15-bit texture at (0,256): rows 0-3 all 16 (4210h), row 4 31, 16, 1, 31.
+  gpu.WriteData(0xA0000000);
+  gpu.WriteData((256u << 16) | 0u);
+  gpu.WriteData((5u << 16) | 4u);
+  for (int i = 0; i < 8; ++i)
+    gpu.WriteData(0x42104210u);
+  gpu.WriteData((0x4210u << 16) | 0x7FFFu);
+  gpu.WriteData((0x7FFFu << 16) | 0x0421u);
+
+  // Page 0 x, 256 y, 15-bit: 110h. Rectangles at 7Fh, 80h and 40h over row 4.
+  gpu.WriteData(0xE1000110);
+  const uint32_t tints[] = { 0x7F7F7F, 0x808080, 0x404040 };
+  for (int i = 0; i < 3; ++i) {
+    gpu.WriteData(0x64000000 | tints[i]);                         // textured rect, modulated
+    gpu.WriteData(((40u + 2u * i) << 16) | 40u);                  // at (40, 40+2i)
+    gpu.WriteData(4u << 8);                                       // u=0, v=4
+    gpu.WriteData((1u << 16) | 4u);                               // 4x1
+  }
+
+  // A flat textured quad at 80h over rows 0-3, dithered (E1 bit 9), at (32,32): x and y both a
+  // multiple of four, so the dither matrix starts at its corner.
+  gpu.WriteData(0xE1000310);
+  gpu.WriteData(0x2C808080);
+  gpu.WriteData((32u << 16) | 32u); gpu.WriteData(0u);
+  gpu.WriteData((32u << 16) | 36u); gpu.WriteData((0x110u << 16) | 4u);
+  gpu.WriteData((36u << 16) | 32u); gpu.WriteData(4u << 8);
+  gpu.WriteData((36u << 16) | 36u); gpu.WriteData((4u << 8) | 4u);
+  RunGpu(system);
+  gpu.WriteData(0xE1000000);
+
+  const VramView vram{system};
+  auto red = [&](uint32_t x, uint32_t y) { return static_cast<uint32_t>(vram[y * 1024 + x] & 0x1F); };
+  CheckEqual(red(40, 40), 30, "7Fh over 31 is 30, not 31");
+  CheckEqual(red(41, 40), 15, "7Fh over 16 is 15");
+  CheckEqual(red(42, 40), 0, "7Fh over 1 is 0");
+  CheckEqual(red(40, 42), 31, "80h over 31 is 31");
+  CheckEqual(red(42, 42), 1, "80h over 1 is 1");
+  CheckEqual(red(40, 44), 15, "40h over 31 is 15");
+  CheckEqual(red(41, 44), 8, "40h over 16 is 8");
+  // 16 at 80h is 128 before the dither; the matrix's first two rows are -4 0 -3 1 and 2 -2 3 -1,
+  // so the cut to 5 bits takes a step off exactly where the offset is negative.
+  const uint32_t row0[4] = { 15, 16, 15, 16 };
+  const uint32_t row1[4] = { 16, 15, 16, 15 };
+  int dither_wrong = 0;
+  for (uint32_t x = 0; x < 4; ++x)
+    dither_wrong += (red(32 + x, 32) != row0[x]) + (red(32 + x, 33) != row1[x]);
+  CheckEqual(static_cast<uint32_t>(dither_wrong), 0u, "a dithered textured quad dithers the tinted texel");
+}
+
 // A polyline's terminator word (GP0, X and Y fields both 0x5000..0x5FFF)
 // used to be pushed into the vertex fifo like one more point instead of
 // being discarded, and CmdLine decoded it as a bogus final vertex - X=Y=0
@@ -1223,12 +1286,9 @@ struct Reference {
         else {
           r = a.r; g = a.g; bl = a.b;
         }
-        if (s.dither) {
-          const int8_t d = kDither[y & 3][x & 3];
-          r = Clamp8(r + d); g = Clamp8(g + d); bl = Clamp8(bl + d);
-        }
+        const int8_t d = s.dither ? kDither[y & 3][x & 3] : 0;
         if (!s.textured) {
-          Write(x, y, r, g, bl, s, false, false);
+          Write(x, y, Clamp8(r + d), Clamp8(g + d), Clamp8(bl + d), s, false, false);
           continue;
         }
         const int32_t u = (w1 * a.u + w2 * b.u + w0 * c.u) / D;
@@ -1240,7 +1300,11 @@ struct Reference {
         }
         uint8_t tr = From5(texel & 0x1F), tg = From5((texel >> 5) & 0x1F), tb = From5((texel >> 10) & 0x1F);
         if (!s.raw_texture) {
-          tr = Clamp8((tr * r) >> 7); tg = Clamp8((tg * g) >> 7); tb = Clamp8((tb * bl) >> 7);
+          // The hardware's tint, in DuckStation's form: the 5-bit component times the colour,
+          // >> 4 - then dithered. A raw texel is neither.
+          tr = Clamp8((((texel & 0x1F) * r) >> 4) + d);
+          tg = Clamp8(((((texel >> 5) & 0x1F) * g) >> 4) + d);
+          tb = Clamp8(((((texel >> 10) & 0x1F) * bl) >> 4) + d);
         }
         Write(x, y, tr, tg, tb, s, true, (texel & 0x8000) != 0);
       }
@@ -1264,7 +1328,9 @@ struct Reference {
         }
         uint8_t tr = From5(texel & 0x1F), tg = From5((texel >> 5) & 0x1F), tb = From5((texel >> 10) & 0x1F);
         if (!s.raw_texture) {
-          tr = Clamp8((tr * j.r) >> 7); tg = Clamp8((tg * j.g) >> 7); tb = Clamp8((tb * j.b) >> 7);
+          tr = Clamp8(((texel & 0x1F) * j.r) >> 4);
+          tg = Clamp8((((texel >> 5) & 0x1F) * j.g) >> 4);
+          tb = Clamp8((((texel >> 10) & 0x1F) * j.b) >> 4);
         }
         Plot(j.x + col, j.y + row, tr, tg, tb, s, true, (texel & 0x8000) != 0);
       }
@@ -1443,6 +1509,7 @@ int main(int argc, char** argv) {
   TestReadBackWaitsForQueuedDrawing(system);
   TestGp0QueueFillsAndDrains(system);
   TestTextureBit15BecomesTheMaskBit(system);
+  TestATintJustUnderOneTakesAStepOff(system);
   TestPolylineTerminatorIsNotAVertex(system);
   TestOpaqueAdjacentQuadsShareNoColumn(system);
   TestOpaqueSharedDiagonalIgnoresDrawOrder(system);

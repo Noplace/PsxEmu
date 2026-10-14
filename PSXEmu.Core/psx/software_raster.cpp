@@ -53,6 +53,20 @@ namespace emulation {
                 return static_cast<uint8_t>((c << 3) | (c >> 2));
             }
 
+            // A texel's 5-bit component tinted by an 8-bit colour, as the hardware does it: the
+            // component widened by a plain shift - not From5Bit's replication - times the colour,
+            // over 128 (DuckStation's (texel * colour) >> 4 is the same sum). The replicated low
+            // bits are a fraction the multiply carries through, enough that a tint just under
+            // 80h never takes a step off a bright texel: 31 * 7Fh / 80h is 30, but through 255 it
+            // is 253, still 31. Silent Hill fades the trail behind Harry by copying the last frame
+            // back at 7Fh every other frame, so the trail stayed on the screen for good.
+            // Before it is cut to 8 bits - up to 494 - for a dither to be added to first, as the
+            // hardware dithers the whole product.
+            inline int32_t Tint(uint32_t c5, uint32_t tint) {
+                return static_cast<int32_t>(((c5 << 3) * tint) >> 7);
+            }
+            inline uint8_t Modulate(uint32_t c5, uint32_t tint) { return Clamp8(Tint(c5, tint)); }
+
             // Top-left fill rule for a triangle edge, given as (dx, dy) of that edge in
             // the same a->b->c winding RasterTriangle normalises every triangle to
             // (positive signed area). Without this, a plain w >= 0 test accepts a pixel
@@ -206,13 +220,14 @@ namespace emulation {
                             ++transparent;
                             continue;
                         }
-                        pr = From5Bit(texel & 0x1F);
-                        pg = From5Bit((texel >> 5) & 0x1F);
-                        pb = From5Bit((texel >> 10) & 0x1F);
-                        if (!raw) {
-                            pr = Clamp8((pr * r) >> 7);
-                            pg = Clamp8((pg * g) >> 7);
-                            pb = Clamp8((pb * b) >> 7);
+                        if (raw) {
+                            pr = From5Bit(texel & 0x1F);
+                            pg = From5Bit((texel >> 5) & 0x1F);
+                            pb = From5Bit((texel >> 10) & 0x1F);
+                        } else {
+                            pr = Modulate(texel & 0x1F, r);
+                            pg = Modulate((texel >> 5) & 0x1F, g);
+                            pb = Modulate((texel >> 10) & 0x1F, b);
                         }
                         from_texture = true;
                         texture_mask = (texel & 0x8000) != 0;
@@ -271,13 +286,15 @@ namespace emulation {
                         ++counters_.transparent_texels;
                         continue;
                     }
-                    uint8_t tr = From5Bit(texel & 0x1F);
-                    uint8_t tg = From5Bit((texel >> 5) & 0x1F);
-                    uint8_t tb = From5Bit((texel >> 10) & 0x1F);
-                    if (!state.raw_texture) {
-                        tr = Clamp8((tr * r) >> 7);
-                        tg = Clamp8((tg * g) >> 7);
-                        tb = Clamp8((tb * b) >> 7);
+                    uint8_t tr, tg, tb;
+                    if (state.raw_texture) {
+                        tr = From5Bit(texel & 0x1F);
+                        tg = From5Bit((texel >> 5) & 0x1F);
+                        tb = From5Bit((texel >> 10) & 0x1F);
+                    } else {
+                        tr = Modulate(texel & 0x1F, r);
+                        tg = Modulate((texel >> 5) & 0x1F, g);
+                        tb = Modulate((texel >> 10) & 0x1F, b);
                     }
                     PlotPixel(x + col, y + row, tr, tg, tb, state, true,
                         (texel & 0x8000) != 0);
@@ -649,14 +666,9 @@ namespace emulation {
                             else {
                                 r = t.flat_r; g = t.flat_g; bl = t.flat_b;
                             }
-                            if (kDither) {
-                                const int8_t dither = kDitherTable[y & 3][x & 3];
-                                r = Clamp8(r + dither);
-                                g = Clamp8(g + dither);
-                                bl = Clamp8(bl + dither);
-                            }
 
                             bool from_texture = false, texture_mask = false;
+                            int32_t full_r = r, full_g = g, full_b = bl;   // before the cut to 8 bits
                             if (kTextured) {
                                 uint32_t u = static_cast<uint32_t>(static_cast<int32_t>(sum_u) / area);
                                 uint32_t v = static_cast<uint32_t>(static_cast<int32_t>(sum_v) / area);
@@ -685,17 +697,31 @@ namespace emulation {
                                     ++transparent;
                                     continue;
                                 }
-                                uint8_t tr = From5Bit(texel & 0x1F);
-                                uint8_t tg = From5Bit((texel >> 5) & 0x1F);
-                                uint8_t tb = From5Bit((texel >> 10) & 0x1F);
-                                if (!raw) {
-                                    tr = Clamp8((tr * r) >> 7);
-                                    tg = Clamp8((tg * g) >> 7);
-                                    tb = Clamp8((tb * bl) >> 7);
+                                if (raw) {
+                                    r = From5Bit(texel & 0x1F);
+                                    g = From5Bit((texel >> 5) & 0x1F);
+                                    bl = From5Bit((texel >> 10) & 0x1F);
+                                } else {
+                                    full_r = Tint(texel & 0x1F, r);
+                                    full_g = Tint((texel >> 5) & 0x1F, g);
+                                    full_b = Tint((texel >> 10) & 0x1F, bl);
+                                    r = Clamp8(full_r);
+                                    g = Clamp8(full_g);
+                                    bl = Clamp8(full_b);
                                 }
-                                r = tr; g = tg; bl = tb;
                                 from_texture = true;
                                 texture_mask = (texel & 0x8000) != 0;
+                            }
+                            // Dithered last: the colour as it is about to be cut to 5 bits - for a
+                            // textured polygon the texel already tinted, not the tint before it is
+                            // multiplied, and before the tinted value is cut to 8 bits
+                            // (DuckStation dithers (texel * colour) >> 4, up to 494). A raw texel
+                            // is not dithered at all.
+                            if (kDither && !(from_texture && raw)) {
+                                const int8_t dither = kDitherTable[y & 3][x & 3];
+                                r = Clamp8(full_r + dither);
+                                g = Clamp8(full_g + dither);
+                                bl = Clamp8(full_b + dither);
                             }
 
                             // WritePixel: the mask check, the blend, and the mask bit written.
