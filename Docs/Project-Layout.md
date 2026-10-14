@@ -29,27 +29,18 @@ PsxEmu/
       iaudioengine.h           what one has to do: wait, say how much room, take it
       wasapiaudioengine.h/.cpp WASAPI, shared and event-driven
       dsoundaudioengine.h/.cpp DirectSound, a looping buffer topped up every 5 ms
-    psx/                       the machine
+    psx/                       the console's hardware, and nothing else (namespace emulation::psx,
+                               as is everything below that was moved out of it on 2026-10-14)
       psx.h                    aggregate header - order is load-bearing
       system.h/.cpp            owns every component, and runs them an instruction at a time
       component.h              the base every device derives from
-      emuconfig.h              EmuConfig - every runtime setting, held by value
-      settings.h               psxemu.ini: load and store EmuConfig
-      state.h/.cpp             StateIO - save states, read and written through one path
+      types.h                  forward declarations
       cpu.h/.cpp               MIPS R3000A interpreter
       cpu_context.h            register file
-      recompiler_bridge.h      the one file that knows both cpu.h and rec/
       gte.h/.cpp               geometry coprocessor: all 22 commands
-      pgxp.h                   PGXP's shadows: each register's and RAM word's unrounded vertex
-      vertex_motion.h          where things were in the last picture, by key - motion for DLSS
       gpu_core.h               the interface the core talks to the GPU through
       gpu.h/.cpp               the GPU: VRAM, GP0/GP1, GPUSTAT, the queue, display timing, draw costs
-      raster.h                 DrawJob and RasterBackend - what puts a draw's pixels down
-      shared_picture.h         a picture left on the graphics card, for a renderer to open there
-      software_raster.h/.cpp   the software rasteriser: every DrawJob into native VRAM
       cdrom.h/.cpp             CD-ROM controller: FIFOs, all 28 commands, CD-DA and XA-ADPCM
-      disc.h/.cpp              disc images: cue, chd, mds/mdf, ccd/img, bin, iso, physical drive
-      iso9660.h/.cpp           the filesystem: volume descriptor, directories, file lookup
       mdec.h/.cpp              motion decoder
       sio.h/.cpp               controller / memory card port: pad, DualShock, mouse, multitap
       sio1.h/.cpp              serial port: the registers of a port with nothing plugged in
@@ -58,16 +49,35 @@ PsxEmu/
       io_interface.h/.cpp      memory map and hardware registers
       root_counter.h/.cpp      timers
       mc.h/.cpp                a memory card slot: the card in memory, written to its file whole
+    render/                    how the GPU's draws become pixels
+      raster.h                 DrawJob and RasterBackend - what puts a draw's pixels down
+      software_raster.h/.cpp   the software rasteriser: every DrawJob into native VRAM
+      shared_picture.h         a picture left on the graphics card, for a renderer to open there
+    enhance/                   opt-in enhancements on top of the machine
+      pgxp.h                   PGXP's shadows: each register's and RAM word's unrounded vertex
+      vertex_motion.h          where things were in the last picture, by key - motion for DLSS
+    media/                     the files the machine reads
+      disc.h/.cpp              disc images: cue, chd, mds/mdf, ccd/img, bin, iso, physical drive
+      ecm.h/.cpp               .ecm-packed images
+      iso9660.h/.cpp           the filesystem: volume descriptor, directories, file lookup
       mc_directory.h/.cpp      what is on a card: list, delete, undelete, export, import, format
-      cheats.h                 GameShark codes: read, run once a frame, and filed per game
-      movie.h/.cpp             input movies: a BizHawk .bk2 read, and played into the ports
+    bios/                      what is known of the BIOS
+      bios_calls.h/.cpp        the A0h/B0h/C0h functions by name, for the debugger's call log
       kernel.h/.cpp            BIOS call logging
+      mips_assembler.h         MIPS assembler, which the HLE BIOS writes its ROM code with
+      hle/                     the HLE BIOS (Docs/HLE-BIOS.md)
+    debug/                     looking inside the machine
       debugger.h/.cpp          breakpoints and stepping: halts the machine before an instruction
       disasm.h                 MIPS disassembler - boot_runner and the debugger window
-      bios_calls.h/.cpp        the A0h/B0h/C0h functions by name, for the debugger's call log
       debug.h                  BREAKPOINT, and the trap counter behind it
       debug_assist.h/.cpp      _DEBUG-only CSV instruction logger
-      emu.h/.cpp               superseded by system.*; kept, not built
+    emu/                       the emulator's features around the machine
+      emuconfig.h              EmuConfig - every runtime setting, held by value
+      settings.h               psxemu.ini: load and store EmuConfig
+      state.h/.cpp             StateIO - save states, read and written through one path
+      movie.h/.cpp             input movies: a BizHawk .bk2 read, and played into the ports
+      cheats.h                 GameShark codes: read, run once a frame, and filed per game
+      recompiler_bridge.h      the one file that knows both psx/ and rec/
     rec/                       the recompiler - includes nothing from psx/ (Docs/Recompiler-Plan.md)
       recompiler.h             the engine: HostInterface, dispatch, invalidation
       block_decoder.h          guest code to a block
@@ -233,7 +243,7 @@ paths relative to it:
 ```cpp
 #include "psx/psx.h"
 #include "platform/frame_limiter.h"
-#include "psx/disasm.h"
+#include "debug/disasm.h"
 ```
 
 `psx/psx.h` is the one aggregate header, and it includes the rest **in

@@ -2,7 +2,7 @@
 
 ## Done since this was written: ECM
 
-`.ecm` mounts (2026-10-10): `psx/ecm.h`, and nothing outside `disc.cpp` knows. An ECM image is the
+`.ecm` mounts (2026-10-10): `media/ecm.h`, and nothing outside `disc.cpp` knows. An ECM image is the
 raw image with what can be worked out from the rest of each sector left out - sync, header, EDC,
 ECC - as a run of records: literal bytes, or sectors of one kind. `EcmImage` puts them back, the EDC
 and the P and Q parity written from ECMA-130; it shares no code with the original tool.

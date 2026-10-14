@@ -66,7 +66,7 @@ namespace psxemu {
         AppendMenuW(file, MF_STRING, kCommandBootBios, L"Boot &BIOS");
         AppendMenuW(file, MF_STRING, kCommandBootExe, L"Boot PSX-&EXE...");
         AppendMenuW(file, MF_SEPARATOR, 0, nullptr);
-        // A BizHawk movie, played into the running game's ports from power-on (psx/movie.h).
+        // A BizHawk movie, played into the running game's ports from power-on (emu/movie.h).
         AppendMenuW(file, MF_STRING, static_cast<UINT_PTR>(kCommandPlayMovie),
                     L"&Play Movie...");
         AppendMenuW(file, MF_STRING | MF_GRAYED, static_cast<UINT_PTR>(kCommandStopMovie),

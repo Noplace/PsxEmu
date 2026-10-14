@@ -27,7 +27,7 @@
 #include "graphics/dlss/dlss_timing.h"
 #include "graphics/fsr/fsr_choice.h"
 #include "graphics/shader_pass.h"
-#include "psx/shared_picture.h"
+#include "render/shared_picture.h"
 #include "ui/overlay/overlay_draw.h"
 
 // The widest picture a multi-pass filter chain is run on. The console's own are at most 640 wide;
@@ -71,7 +71,7 @@ class IGraphicsEngine {
     virtual void RenderFramebuffer(const void* data, int width, int height) = 0;
     virtual void EndFrame() = 0;
 
-    // The hardware rasteriser's picture, left on the graphics card (psx/shared_picture.h), drawn
+    // The hardware rasteriser's picture, left on the graphics card (render/shared_picture.h), drawn
     // in RenderFramebuffer's place - filters, overlay and all - once its source says it is ready.
     // False if this engine cannot open it, and nothing was drawn. An engine that can hands the
     // picture back to its source (Release) once its own card has finished with it.

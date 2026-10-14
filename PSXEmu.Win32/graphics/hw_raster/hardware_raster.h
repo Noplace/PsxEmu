@@ -24,8 +24,8 @@
 // tools' (`--d3d12`). What they share beyond RasterBackend is what the front end and the test
 // tools ask of them.
 
-#include "psx/raster.h"
-#include "psx/shared_picture.h"
+#include "render/raster.h"
+#include "render/shared_picture.h"
 
 #include <cstdint>
 #include <memory>
@@ -62,7 +62,7 @@ namespace psxemu {
         static bool ReadSharedPicture(const emulation::psx::SharedPicture& picture,
                                       std::vector<uint32_t>* pixels);
 
-        // How many textures a shared picture can be in at once (psx/shared_picture.h). With none
+        // How many textures a shared picture can be in at once (render/shared_picture.h). With none
         // free the picture is read back.
         static constexpr int kSharedPictures = emulation::psx::kSharedTextureCount;
 
@@ -74,7 +74,7 @@ namespace psxemu {
         // The jitter being drawn with now, in the target's pixels (RasterBackend::SetJitter).
         virtual float jitter_x() const = 0;
         virtual float jitter_y() const = 0;
-        // Whether the plane beside VRAM is being drawn (psx/shared_picture.h).
+        // Whether the plane beside VRAM is being drawn (render/shared_picture.h).
         virtual bool planes() const = 0;
         // The plane over a rectangle of VRAM, every sub-pixel of it as four floats - R, G, B, A,
         // rows of w x scale - read back, for hw_raster_test. False if it is not being drawn.

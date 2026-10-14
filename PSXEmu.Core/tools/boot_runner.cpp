@@ -39,7 +39,7 @@
 //     --press b@f[+h]    press a button at frame f, holding h frames
 //                        e.g. --press start@1800 --press down+cross@2000+8
 //     --movie <file.bk2> play a BizHawk input movie into the ports from the first frame
-//                        (psx/movie.h): the pads it names plugged in, a new memory card in
+//                        (emu/movie.h): the pads it names plugged in, a new memory card in
 //                        each slot it has one in unless --card1/--card2 gives one, and its
 //                        resets and disc changes carried out. In place of --press
 //     --movie-offset <n> ...waiting n frames before the movie's first - or, negative,
@@ -76,7 +76,7 @@
 //                        checksums are the software rasteriser's too
 //     --shown-only       ...keeping only the sharper picture, as the front end does - for
 //                        timing that path; the checksums are then of a stale native picture
-//     --shared-picture   ...handing that picture over on the card (psx/shared_picture.h), as
+//     --shared-picture   ...handing that picture over on the card (render/shared_picture.h), as
 //                        to a presenter that can take it there, rather than reading it back
 //     --planes           ...keeping the plane beside VRAM that DLSS will use - depth and
 //                        motion - and handing it over with a shared picture (Docs/DLSS-Plan.md)
@@ -97,7 +97,7 @@
 //                        as Settings > Video > Graphics Card does; the report names the card
 //     --list-gpus        list the graphics cards and their LUIDs, and exit
 //     --quiet            suppress the per-100-frame progress lines
-//     --break <hex>[,<hex>...]  stop before these addresses run (psx/debugger.h), print the
+//     --break <hex>[,<hex>...]  stop before these addresses run (debug/debugger.h), print the
 //                        registers and the code around the pc, and carry on; repeatable
 //     --watchpoint <hex>[:<len>][:r|w|rw]  stop after a read or write of a range - by the CPU,
 //                        or a DMA channel's write - print it as a break does, and carry on;
@@ -111,9 +111,9 @@
 // for a fixed frame number needs explaining.
 
 #include "psx/psx.h"
-#include "psx/recompiler_bridge.h"
-#include "psx/disasm.h"
-#include "psx/movie.h"
+#include "emu/recompiler_bridge.h"
+#include "debug/disasm.h"
+#include "emu/movie.h"
 #ifdef PSXEMU_HW_RASTER
 #include "graphics/adapters.h"
 #include "graphics/hw_raster/hardware_raster.h"
@@ -282,7 +282,7 @@ struct Options {
   const char* hle_trace;    // --call-trace <file>: every kernel call, HLE or a dump
   const char* time_calls;   // --time-calls <csv>: every kernel call and the cycles it took
   const char* cards[2];     // --card1/--card2 <file>: a memory card in each slot
-  // --break: execute breakpoints (psx/debugger.h). Each hit prints the registers and the code
+  // --break: execute breakpoints (debug/debugger.h). Each hit prints the registers and the code
   // around the pc, up to break_print of them, then carries on.
   std::vector<uint32_t> breaks;
   // --watchpoint: stop after a read or write of a range, by the CPU or a DMA channel. Printed
@@ -301,7 +301,7 @@ struct Options {
   int ppm_every;   // --ppm-every: a picture every this many frames, beside --ppm's
   float volume;
   std::vector<Press> presses;
-  // --movie: a BizHawk .bk2 played into the ports (psx/movie.h), --movie-offset frames late,
+  // --movie: a BizHawk .bk2 played into the ports (emu/movie.h), --movie-offset frames late,
   // with --movie-disc naming the discs after --disc for a movie that changes them.
   const char* movie;
   int movie_offset;
@@ -330,7 +330,7 @@ struct Options {
   bool shared_picture;   // --shared-picture: the picture left on the card
   const char* gpu;       // --gpu <part of a card's name>: which card the rasteriser draws on
   // --pgxp [--pgxp-culling] [--no-pgxp-textures]: PGXP's precise vertices for the hardware
-  // rasteriser (psx/pgxp.h).
+  // rasteriser (enhance/pgxp.h).
   bool pgxp, pgxp_culling, pgxp_textures;
   bool true_color;
   // --planes: the plane beside VRAM kept; --view: shown in place of the picture.

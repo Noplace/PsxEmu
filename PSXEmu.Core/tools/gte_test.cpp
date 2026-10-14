@@ -17,7 +17,7 @@
 // not that it changed.
 
 #include "psx/psx.h"
-#include "psx/recompiler_bridge.h"
+#include "emu/recompiler_bridge.h"
 #include "rec/gte_compiler.h"
 
 #include <cstdio>
@@ -1082,7 +1082,7 @@ struct Group {
 };
 
 // ---------------------------------------------------------------------------
-// Motion for DLSS (psx/vertex_motion.h, Docs/DLSS-Plan.md, phase 2)
+// Motion for DLSS (enhance/vertex_motion.h, Docs/DLSS-Plan.md, phase 2)
 // ---------------------------------------------------------------------------
 
 // Projects the vertex at model (x, y, z), 1000 from the eye with H 1000, moved by TRX `tx`, and

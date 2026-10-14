@@ -23,7 +23,7 @@
 namespace emulation {
 namespace psx {
 
-// Defined in psx/recompiler_bridge.h, which System only ever holds a pointer
+// Defined in emu/recompiler_bridge.h, which System only ever holds a pointer
 // to: including it here would pull the whole recompiler into everything that
 // includes system.h.
 class RecompilerBridge;
@@ -56,7 +56,7 @@ class System {
   // and free of any wall-clock throttling, so a headless harness can drive it
   // directly and get the same answer every run.
   //
-  // False when the debugger halted the machine instead (psx/debugger.h): nothing ran, and the
+  // False when the debugger halted the machine instead (debug/debugger.h): nothing ran, and the
   // caller should stop and not count it.
   bool StepInstruction() { return StepImpl<true>(); }
 
@@ -121,12 +121,12 @@ class System {
   static const int kCardSlotsPerPort = 4;
   MC& mc(int port, int slot) { return slot == 0 ? mc_[port] : multitap_mc_[port][slot - 1]; }
   Kernel& kernel() { return kernel_; };
-  // Breakpoints and stepping (psx/debugger.h). After StepInstruction, debugger().halted() says
+  // Breakpoints and stepping (debug/debugger.h). After StepInstruction, debugger().halted() says
   // the step was a halt - nothing ran - and whoever is running the machine stops and does not
   // count it.
   Debugger& debugger() { return debugger_; }
   GTE& gte() { return gte_; };
-  // PGXP's shadows (psx/pgxp.h): on while EmuConfig::pgxp_vertices is and the hardware
+  // PGXP's shadows (enhance/pgxp.h): on while EmuConfig::pgxp_vertices is and the hardware
   // rasteriser draws.
   Pgxp& pgxp() { return pgxp_; }
   // The user-facing settings. Read rather than cached, so a change takes
@@ -138,7 +138,7 @@ class System {
   // With it off, StepInstruction is the code it always was. With it on, the
   // machine runs blocks of compiled guest code instead of one interpreted
   // instruction at a time, which changes when interrupts land and charges
-  // cycles in bursts - see psx/recompiler_bridge.h. Opt-in for that reason,
+  // cycles in bursts - see emu/recompiler_bridge.h. Opt-in for that reason,
   // and checked against the regression baselines rather than assumed
   // equivalent.
   void EnableRecompiler(bool on);

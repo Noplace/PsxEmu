@@ -17,7 +17,7 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "psx/psx.h"
-#include "psx/software_raster.h"
+#include "render/software_raster.h"
 
 #include <algorithm>
 #include <cstdlib>

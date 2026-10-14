@@ -61,7 +61,7 @@ class Gte : public Component {
   void WriteData(uint32_t index, uint32_t value, const PreciseVertex* precise = nullptr,
                  uint32_t source = 0);
 
-  // PGXP (psx/pgxp.h): keep each projected vertex's unrounded position beside the SXY FIFO,
+  // PGXP (enhance/pgxp.h): keep each projected vertex's unrounded position beside the SXY FIFO,
   // and - `culling` - work NCLIP out from them. Set by System from the settings.
   void set_pgxp(bool on, bool culling) {
     pgxp_ = on;
@@ -83,7 +83,7 @@ class Gte : public Component {
   // A frame has been shown: what the cache holds gets a frame older.
   void NewFrame() { ++frame_; }
 
-  // Motion for DLSS (psx/vertex_motion.h, Docs/DLSS-Plan.md, phase 2): with PGXP on, each vertex
+  // Motion for DLSS (enhance/vertex_motion.h, Docs/DLSS-Plan.md, phase 2): with PGXP on, each vertex
   // projected is looked for among the last picture's by a key, and its unrounded position carries
   // where it was. Set by Gpu while the hardware rasteriser keeps the plane motion goes into.
   // Changes nothing the machine sees.
@@ -122,7 +122,7 @@ class Gte : public Component {
   // Kept for the aggregate header's older call site.
   void ExecuteCommand(uint32_t command) { Execute(command); }
 
-  // ---- For compiled code (psx/recompiler_bridge.h, rec::GteLayout) ---------
+  // ---- For compiled code (emu/recompiler_bridge.h, rec::GteLayout) ---------
   // Execute, one command at a time: the function that does only the command `opcode` names (the
   // word's low six bits), with no dispatch on it, and how long it keeps the unit busy - the two
   // halves of what Execute does and returns, which Execute itself is built from.

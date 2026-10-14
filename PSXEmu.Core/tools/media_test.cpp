@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-#include "psx/ecm.h"
+#include "media/ecm.h"
 #include "tools/chd_writer.h"
 
 using emulation::psx::Cdrom;
@@ -3307,7 +3307,7 @@ void TestChd(const std::string& directory) {
   }
 }
 
-// An ECM image (psx/ecm.h), made here from a disc of every kind of sector the format has a record
+// An ECM image (media/ecm.h), made here from a disc of every kind of sector the format has a record
 // for, and read back three ways: by the decoder itself, by Disc mounting the .ecm, and by Disc
 // mounting a cue sheet that names the image the .ecm stands in for.
 void TestEcm(const std::string& directory) {

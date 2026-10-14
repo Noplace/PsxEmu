@@ -11,8 +11,8 @@
 // the libraries built on it (libcard) clear and wait for its events around the call.
 
 #include "psx/psx.h"
-#include "psx/hle/hle_bios.h"
-#include "psx/mc_directory.h"
+#include "bios/hle/hle_bios.h"
+#include "media/mc_directory.h"
 
 namespace emulation {
 namespace psx {

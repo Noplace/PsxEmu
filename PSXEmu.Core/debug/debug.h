@@ -103,7 +103,7 @@ struct ExceptionLog {
 #include <stdio.h>
 #include <sys/types.h>
 #include <time.h>
-#include "psx/debug_assist.h"
+#include "debug/debug_assist.h"
 #else
 #define BREAKPOINT { ::emulation::psx::TrapCounter::Hit(__FILE__, __LINE__); }
 #define BREAKPOINT_DETAIL(x) { ::emulation::psx::TrapCounter::Hit(__FILE__, __LINE__, (x)); }

@@ -1295,7 +1295,7 @@ void Cpu::ADDI() {
 
 void Cpu::ADDIU() {
   WriteReg(rt_, context_->gp.reg[rs_] + immediate_32bit_sign_extended_);
-  // PGXP: a register moved to another carries its shadow (psx/pgxp.h).
+  // PGXP: a register moved to another carries its shadow (enhance/pgxp.h).
   if (immediate_32bit_sign_extended_ == 0 && system_->pgxp().enabled())
     system_->pgxp().Move(rt_, rs_);
   Tick();
@@ -1554,7 +1554,7 @@ void Cpu::LW() {
   // is what the hardware does - see AdvanceLoadDelay.
   ArmLoad(rt_, static_cast<uint32_t>(mem));
   // PGXP: the word's shadow comes with it. Taken now, though the value lands later: until it
-  // does, the register's old value does not match it (psx/pgxp.h).
+  // does, the register's old value does not match it (enhance/pgxp.h).
   if (system_->pgxp().enabled() && rt_ != 0) {
     const PreciseVertex* shadow = system_->pgxp().word(physical_address);
     system_->pgxp().reg(rt_) = shadow != nullptr ? *shadow : PreciseVertex();
@@ -1671,7 +1671,7 @@ void Cpu::SW() {
 }
 
 // PGXP: a word stored takes its shadow into RAM or the scratchpad beside it, and a word stored to
-// GP0 hands it to the GPU with the word (psx/pgxp.h).
+// GP0 hands it to the GPU with the word (enhance/pgxp.h).
 void Cpu::StoreWithShadow(uint32_t value, uint32_t virtual_address, uint32_t physical_address,
                           const PreciseVertex& shadow) {
   Pgxp& pgxp = system_->pgxp();

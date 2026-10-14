@@ -1,7 +1,7 @@
 # HLE BIOS
 
 **Status: working, 2026-10-09.** **Settings > Emulation > HLE BIOS** boots the machine with no BIOS
-dump: the kernel is emulated in `PSXEmu.Core/psx/hle_bios*.cpp`, a disc starts straight away with
+dump: the kernel is emulated in `PSXEmu.Core/bios/hle/hle_bios*.cpp`, a disc starts straight away with
 no intro, and with nothing to boot it runs a shell of its own (`hle_shell.cpp`: a memory card manager
 and a CD player). Every kernel function takes the time the SCPH-1001 kernel's takes, measured. With
 no dump in the folder the machine boots it whatever the switch says.
@@ -82,7 +82,7 @@ and keeps all its state in RAM at 2000h, so a save state taken in it resumes in 
 
 ## How it works
 
-`psx/hle_bios.h` has the design in full. In short:
+`bios/hle/hle_bios.h` has the design in full. In short:
 
 - **Kernel functions are traps.** Each has an entry point in ROM at `BFC10000h + n*10h`
   (`HleBios::TrapAddress`), and `System::StepImpl` hands a step whose pc lands on one to
@@ -90,7 +90,7 @@ and keeps all its state in RAM at 2000h, so a save state taken in it resumes in 
   elements and the DCBs all hold those addresses, so a game that reads, calls or replaces an entry
   gets what it would on a console. The recompiler never compiles the trap region.
 - **What has to be code is code**: the vectors, the dispatchers and the exception handler are MIPS
-  written out by `psx/mips_assembler.h`, because games read, verify and patch them.
+  written out by `bios/mips_assembler.h`, because games read, verify and patch them.
 - **All kernel state is in guest RAM** - the control blocks where the kernel keeps them, the rest in
   `KernelVars` at 1000h. A save state holds it with no format change.
 - **Calling guest code from the kernel** (an event's callback, a handler in a chain) does not nest a
@@ -141,7 +141,7 @@ end of a run.
 
 ## Tests
 
-`hle_test` (built by `build_tools.bat`) assembles small PS-EXEs with `psx/mips_assembler.h` that
+`hle_test` (built by `build_tools.bat`) assembles small PS-EXEs with `bios/mips_assembler.h` that
 call kernel functions through A0h/B0h/C0h the way a game does, boots them on the HLE BIOS and checks
 what they stored: the kernel's RAM layout against SCPH-1001's, strings and memory with psx-spx's
 bugs, the heap and rand, events (ready and callback), a thread switch, qsort/lsearch/bsearch through
@@ -179,12 +179,12 @@ change to the HLE BIOS should not move them without a reason.
 
 | File | What |
 |---|---|
-| `psx/hle_bios.h` | The class, the RAM layout, the design |
-| `psx/hle_bios.cpp` | ROM, boot, vectors and exception handler, chains, events, threads, the A/B/C tables |
-| `psx/hle_bios_libc.cpp` | Strings, memory, numbers, heap, printf |
-| `psx/hle_bios_io.cpp` | Files (cdrom:, bu, tty), CD-ROM functions, memory card sectors, pads |
-| `psx/hle_bios_timing.cpp` | What each function costs, measured |
-| `psx/hle_shell.cpp` | The shell: intro, menu, memory card manager, CD player, its font |
-| `psx/hle_font_data.cpp`, `tools/make_hle_font.cpp` | The character sets, and the generator that made them from Shinonome |
-| `psx/mips_assembler.h` | The few instructions the kernel's RAM code needs |
+| `bios/hle/hle_bios.h` | The class, the RAM layout, the design |
+| `bios/hle/hle_bios.cpp` | ROM, boot, vectors and exception handler, chains, events, threads, the A/B/C tables |
+| `bios/hle/hle_bios_libc.cpp` | Strings, memory, numbers, heap, printf |
+| `bios/hle/hle_bios_io.cpp` | Files (cdrom:, bu, tty), CD-ROM functions, memory card sectors, pads |
+| `bios/hle/hle_bios_timing.cpp` | What each function costs, measured |
+| `bios/hle/hle_shell.cpp` | The shell: intro, menu, memory card manager, CD player, its font |
+| `bios/hle/hle_font_data.cpp`, `tools/make_hle_font.cpp` | The character sets, and the generator that made them from Shinonome |
+| `bios/mips_assembler.h` | The few instructions the kernel's RAM code needs |
 | `Sio::ExchangeDirect`, `Iso9660::List`, `Cpu::SettleLoads` | What the kernel needed from the devices |

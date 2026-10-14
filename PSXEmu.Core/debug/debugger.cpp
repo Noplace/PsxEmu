@@ -17,7 +17,7 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "psx/psx.h"
-#include "psx/disasm.h"
+#include "debug/disasm.h"
 
 #include <algorithm>
 #include <cstdarg>

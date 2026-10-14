@@ -23,8 +23,8 @@
 #include "app/win32_dialogs.h"
 #include "ui/dpi.h"
 
-#include "psx/bios_calls.h"
-#include "psx/disasm.h"
+#include "bios/bios_calls.h"
+#include "debug/disasm.h"
 
 #include <cstdio>
 #include <cwchar>

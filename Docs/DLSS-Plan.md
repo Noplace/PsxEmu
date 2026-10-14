@@ -306,7 +306,7 @@ warp check are the first tools here that can tell whether a game's picture moves
 
 **The plane.**
 
-- **`psx/shared_picture.h`** says what it holds: RGBA16F, VRAM's layout, one texel per sub-pixel:
+- **`render/shared_picture.h`** says what it holds: RGBA16F, VRAM's layout, one texel per sub-pixel:
   - R, G: motion in sub-pixels, `kUnknownMotion` (32768) where it is not known
   - B: `kPlaneDepthScale` (256) over PGXP's depth, 0 where there is none, which reads as
     infinitely far
@@ -421,7 +421,7 @@ PGXP to follow - halfword stores, most likely - are depth gained as well.
 
 **Where things were.**
 
-- **`psx/vertex_motion.h`**: two tables, this picture's and the last's. Things are remembered under
+- **`enhance/vertex_motion.h`**: two tables, this picture's and the last's. Things are remembered under
   a key with where they were. The last picture's nearest under the same key wins, within a reach -
   128 screen pixels by default.
 - **The GTE**, with PGXP on, looks each vertex it projects up in the last picture:

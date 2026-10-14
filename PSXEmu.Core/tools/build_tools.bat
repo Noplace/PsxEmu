@@ -34,14 +34,14 @@ lib /nologo /OUT:Temp\tools\thirdparty.lib Temp\tools\obj_thirdparty\*.obj
 if errorlevel 1 exit /b 1
 
 set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp ^
- PSXEmu.Core\psx\software_raster.cpp ^
- PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\psx\kernel.cpp ^
- PSXEmu.Core\psx\mc.cpp PSXEmu.Core\psx\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
- PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\psx\disc.cpp PSXEmu.Core\psx\sio.cpp PSXEmu.Core\psx\sio1.cpp ^
- PSXEmu.Core\psx\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
- PSXEmu.Core\psx\state.cpp PSXEmu.Core\psx\debug_assist.cpp PSXEmu.Core\psx\debugger.cpp ^
- PSXEmu.Core\psx\bios_calls.cpp PSXEmu.Core\psx\hle_bios.cpp PSXEmu.Core\psx\hle_bios_libc.cpp ^
- PSXEmu.Core\psx\hle_bios_io.cpp PSXEmu.Core\psx\hle_bios_timing.cpp PSXEmu.Core\psx\hle_shell.cpp PSXEmu.Core\psx\hle_font_data.cpp PSXEmu.Core\psx\ecm.cpp PSXEmu.Core\psx\movie.cpp
+ PSXEmu.Core\render\software_raster.cpp ^
+ PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\bios\kernel.cpp ^
+ PSXEmu.Core\psx\mc.cpp PSXEmu.Core\media\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
+ PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\media\disc.cpp PSXEmu.Core\psx\sio.cpp PSXEmu.Core\psx\sio1.cpp ^
+ PSXEmu.Core\media\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
+ PSXEmu.Core\emu\state.cpp PSXEmu.Core\debug\debug_assist.cpp PSXEmu.Core\debug\debugger.cpp ^
+ PSXEmu.Core\bios\bios_calls.cpp PSXEmu.Core\bios\hle\hle_bios.cpp PSXEmu.Core\bios\hle\hle_bios_libc.cpp ^
+ PSXEmu.Core\bios\hle\hle_bios_io.cpp PSXEmu.Core\bios\hle\hle_bios_timing.cpp PSXEmu.Core\bios\hle\hle_shell.cpp PSXEmu.Core\bios\hle\hle_font_data.cpp PSXEmu.Core\media\ecm.cpp PSXEmu.Core\emu\movie.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
  /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I PSXEmu.Core\lib\libchdr\include ^
@@ -167,13 +167,13 @@ cl %FLAGS% /Fo:Temp\tools\obj_hle_test\ /Fe:Temp\tools\hle_test.exe ^
    PSXEmu.Core\tools\hle_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
-rem Input movies: BizHawk .bk2 files read and played into the ports (psx\movie.h).
+rem Input movies: BizHawk .bk2 files read and played into the ports (emu\movie.h).
 if not exist Temp\tools\obj_movie mkdir Temp\tools\obj_movie
 cl %FLAGS% /Fo:Temp\tools\obj_movie\ /Fe:Temp\tools\movie_test.exe ^
    PSXEmu.Core\tools\movie_test.cpp %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
-rem GameShark codes: psx\cheats.h is header-only, and runs against a RAM of the test's own.
+rem GameShark codes: emu\cheats.h is header-only, and runs against a RAM of the test's own.
 if not exist Temp\tools\obj_cheats mkdir Temp\tools\obj_cheats
 cl %FLAGS% /Fo:Temp\tools\obj_cheats\ /Fe:Temp\tools\cheats_test.exe ^
    PSXEmu.Core\tools\cheats_test.cpp %LIBS%

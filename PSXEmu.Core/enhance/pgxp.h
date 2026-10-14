@@ -50,7 +50,7 @@ namespace psx {
     float x = 0.0f, y = 0.0f;   // screen position, unrounded
     float w = 0.0f;       // the depth it was projected from (SZ3); 0 when unknown
     // Where it was in the last picture minus where it is, in screen pixels, when the GTE found
-    // it there (psx/vertex_motion.h, Docs/DLSS-Plan.md) - it goes wherever the position goes.
+    // it there (enhance/vertex_motion.h, Docs/DLSS-Plan.md) - it goes wherever the position goes.
     float mx = 0.0f, my = 0.0f;
     bool moved = false;
     bool valid = false;
@@ -100,7 +100,7 @@ namespace psx {
       }
     }
 
-    // Where a register's word was loaded from, for motion's address key (psx/vertex_motion.h,
+    // Where a register's word was loaded from, for motion's address key (enhance/vertex_motion.h,
     // Gte::MotionKey::kAddress): a vertex's place in its model's list stays put while its
     // coordinates are worked out afresh each frame. Kept by LW and register moves, and good
     // only while the register still holds the word loaded - checked by value, as shadows are.

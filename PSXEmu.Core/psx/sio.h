@@ -251,7 +251,7 @@ class Sio : public Component {
   // `player` - see set_buttons.
   void PressAnalogButton(int port, int player = 0);
   // Whether a pad is in analog mode now - by the button or by the game. For a movie recorded
-  // with a pad that is never anything else (psx/movie.h). `player` - see set_buttons.
+  // with a pad that is never anything else (emu/movie.h). `player` - see set_buttons.
   bool analog_mode(int port, int player = 0) const {
     const Pad* pad = ResolvePad(port, player);
     return pad != nullptr && pad->analog_mode;

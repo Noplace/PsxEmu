@@ -13,7 +13,7 @@
 //    the DCBs at 6EE0h and FCBs at 8648h, and the control blocks allocated from E000h in the
 //    same order and sizes. Games walk these tables, read the control blocks, chain handlers into
 //    the exception chains and patch the exception handler by offset from C(06h) - psx-spx "BIOS
-//    Patches" - so all of that is real data and real MIPS code, built by psx/mips_assembler.h.
+//    Patches" - so all of that is real data and real MIPS code, built by bios/mips_assembler.h.
 //  - Every kernel *function* - what the A0h/B0h/C0h tables point at - is a host function. Each
 //    has an address of its own in ROM, in the trap region below, and System::StepImpl hands a
 //    step whose pc lands there to Trap() instead of executing the word that is there. The table

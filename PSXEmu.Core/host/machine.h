@@ -22,7 +22,7 @@
 #include "platform/display_sync.h"
 #include "platform/frame_limiter.h"
 #include "platform/speed_resampler.h"
-#include "psx/raster.h"
+#include "render/raster.h"
 
 #include <atomic>
 #include <chrono>
@@ -45,7 +45,7 @@ namespace host {
 enum PauseReason : uint32_t {
   kPausedByUser = 1u << 0,    // Space, Emulation > Pause - and nothing booted yet
   kPausedForMenu = 1u << 1,   // a menu is open and EmuConfig::pause_in_menus asks for it
-  kPausedByDebugger = 1u << 2,   // halted at a breakpoint or a step - psx/debugger.h
+  kPausedByDebugger = 1u << 2,   // halted at a breakpoint or a step - debug/debugger.h
   kPausedForPicker = 1u << 3,    // the save-state picker is open over the picture
 };
 
@@ -67,7 +67,7 @@ struct MachineReport {
   bool hardware_raster = false;
   std::string raster_error;
   // Whether the last frame's picture was handed over on the graphics card rather than in memory
-  // (psx/shared_picture.h).
+  // (render/shared_picture.h).
   bool shared_picture = false;
   // Settings > Video > Frame Pacing, "Match the display" (platform/display_sync.h): the display's
   // refresh as the front end last gave it, 0 if it gave none; and the refreshes each frame is

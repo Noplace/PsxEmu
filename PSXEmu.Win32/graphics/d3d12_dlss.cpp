@@ -35,7 +35,7 @@ namespace {
     using psxemu::DlssMode;
     using psxemu::DlssPreset;
 
-    // The plane (psx/shared_picture.h) into DLSS's three inputs, a thread a pixel:
+    // The plane (render/shared_picture.h) into DLSS's three inputs, a thread a pixel:
     //   motion  where the pixel was in the last picture minus where it is, in the picture's own
     //           pixels - DLSS's convention and scale (mvecScale 1/size) - and 0 where unknown
     //   depth   1/w as it is: nearer is larger (depthInverted), unknown 0 is infinitely far

@@ -1,9 +1,9 @@
-// cheats_test - GameShark codes (psx/cheats.h): reading them as people write them, running every
+// cheats_test - GameShark codes (emu/cheats.h): reading them as people write them, running every
 // code type the engine takes against a RAM of its own, and the two cheat-file layouts it reads -
 // DuckStation's, which is also its own, and RetroArch's. No machine: the engine only ever sees
 // memory, and that is all this gives it.
 
-#include "psx/cheats.h"
+#include "emu/cheats.h"
 
 #include <cstdio>
 #include <string>

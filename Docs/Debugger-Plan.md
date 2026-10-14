@@ -1,12 +1,12 @@
 # A debugger
 
 **Status: done, 2026-09-19** (bugs 71-75).
-- **Phase 0, the core:** `psx/debugger.h` - execute breakpoints, step
+- **Phase 0, the core:** `debug/debugger.h` - execute breakpoints, step
   into/over/out, run to, break, the machine halting mid-frame, `debug_test` and
   `boot_runner --break`. It passed the determinism test below.
 - **Phase 1, the window:** Emulation > Debugger - disassembly, registers with
   the load delay shown, the breakpoint list, and the controls. The
-  disassembler moved to `psx/disasm.h`.
+  disassembler moved to `debug/disasm.h`.
 - **Phase 2, memory:** a memory pane reading through a side-effect-free
   peek (`Debugger::PeekData`), writing RAM and the scratchpad, and editing
   registers while halted (bug 73).
@@ -65,7 +65,7 @@ over this function and show me what it returned".
 
 - **Disassembly** around the pc - a scrolling list, the current instruction
   marked, breakpoints marked, branch targets clickable. From `tools/disasm.h`,
-  which moves into Core (`psx/disasm.h`) since two users now need it.
+  which moves into Core (`debug/disasm.h`) since two users now need it.
 - **Registers** - the 32 general registers by name, HI/LO, the pc, and the
   Cop0 registers that matter (SR, Cause, EPC, BadVaddr). A load still in flight
   is shown as such, since the register it will write does not have its value
@@ -102,7 +102,7 @@ is the question bug 24 and bug 55 both had to answer by hand.
 
 ## How it works
 
-### The core: `psx/debugger.h`
+### The core: `debug/debugger.h`
 
 Lives in `System`, owned by the machine thread like every other component.
 
@@ -188,7 +188,7 @@ second would be noise.
 
 | # | What | Size |
 |---|---|---|
-| 0 | Core: `psx/debugger.h`, execute breakpoints, halt mid-frame, step into/over/out, interpreter-while-armed; `debug_test`; `boot_runner --break` | **done** (bug 71) |
+| 0 | Core: `debug/debugger.h`, execute breakpoints, halt mid-frame, step into/over/out, interpreter-while-armed; `debug_test`; `boot_runner --break` | **done** (bug 71) |
 | 1 | Window: disassembly, registers, controls, breakpoint list | **done** (bug 72) |
 | 2 | Memory view and editing, with side-effect-free peeks | **done** (bug 73) |
 | 3 | Read/write watchpoints, CPU and DMA | **done** (bug 74) |

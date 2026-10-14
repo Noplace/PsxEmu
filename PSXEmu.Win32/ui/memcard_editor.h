@@ -27,11 +27,11 @@
 // and asks for every change through Host::edit, which runs it against the live card there. That
 // is also what makes an edit safe under a running game: the change lands between frames, and the
 // card is flagged as swapped so the game reads its directory again. The parsing is the core's,
-// psx/mc_directory.h.
+// media/mc_directory.h.
 
 #include "app/framework.h"
 
-#include "psx/mc_directory.h"
+#include "media/mc_directory.h"
 
 #include <commctrl.h>
 

@@ -250,7 +250,7 @@ The recompiler now runs the machine, behind `System::EnableRecompiler` and
 `boot_runner --recompiler`. **Off by default**: with it off, `StepInstruction`
 is the code it always was, and the BIOS baseline below proves it.
 
-`PSXEmu.Core/psx/recompiler_bridge.h` is the only file that knows about both
+`PSXEmu.Core/emu/recompiler_bridge.h` is the only file that knows about both
 sides. It fills in the `HostInterface` the engine asks for out of `Cpu` -
 memory access, an instruction fetch, the interpreter itself - and everything in
 `rec/` still includes nothing from `psx/`.

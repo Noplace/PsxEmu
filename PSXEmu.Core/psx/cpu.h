@@ -418,7 +418,7 @@ class Cpu : public Component {
   // What a load from main RAM stalls for beyond the one cycle every instruction
   // costs - charged in Load, measured against a console by JaCzekanski's
   // cpu/access-time. Named because the recompiler charges it too, for the loads
-  // it compiles to read RAM itself (psx/recompiler_bridge.h).
+  // it compiles to read RAM itself (emu/recompiler_bridge.h).
   static const uint32_t kRamLoadStall = 4;
 
   // Whether a load from main RAM is, right now, nothing but the read and
@@ -462,7 +462,7 @@ class Cpu : public Component {
   }
 
   // Whether the debugger has a watchpoint to match data accesses against
-  // (psx/debugger.h). While it does, every load and store - and every word a
+  // (debug/debugger.h). While it does, every load and store - and every word a
   // DMA channel writes - is reported to it; while it does not, this flag is
   // the whole cost.
   void set_debug_watch(bool on) { debug_watch_ = on; }
@@ -778,7 +778,7 @@ class Cpu : public Component {
   void COP2();
   void LWC2();
   void SWC2();
-  // A store that takes PGXP's shadow along (psx/pgxp.h).
+  // A store that takes PGXP's shadow along (enhance/pgxp.h).
   void StoreWithShadow(uint32_t value, uint32_t virtual_address, uint32_t physical_address,
                        const PreciseVertex& shadow);
 

@@ -293,7 +293,7 @@ class Cdrom : public Component {
   int32_t InitCycles();
 
   // EmuConfig::cdrom_mednafen_timing: the drive timed as Mednafen's is, for a BizHawk movie
-  // (psx/movie.h). It takes the place of both models above, in the same helpers; see cdrom.cpp.
+  // (emu/movie.h). It takes the place of both models above, in the same helpers; see cdrom.cpp.
   bool MednafenTiming();
   // How long a command takes to be answered at all, by how many parameters it came with.
   int32_t AcknowledgeCycles(size_t parameters);

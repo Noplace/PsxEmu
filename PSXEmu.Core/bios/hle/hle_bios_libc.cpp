@@ -6,8 +6,8 @@
 // because software written against the console's kernel has only ever seen them that way.
 
 #include "psx/psx.h"
-#include "psx/hle/hle_bios.h"
-#include "psx/mips_assembler.h"
+#include "bios/hle/hle_bios.h"
+#include "bios/mips_assembler.h"
 
 namespace emulation {
 namespace psx {

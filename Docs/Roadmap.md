@@ -152,7 +152,7 @@ actually is rather than from memory:
       the plan step 3 described work the hardware does not do - software does
       the variable-length decoding, not the MDEC. Covered by mdec_test.
 - [x] **[Save-States-Plan.md](Save-States-Plan.md)** - DONE. `StateIO`
-      (`psx/state.h`), a `Serialise` on every component, and the versioned
+      (`emu/state.h`), a `Serialise` on every component, and the versioned
       header, plus `boot_runner --save-state`/`--load-state` and the front
       end's F1-F8/Shift+F1-F8 slots. The checksum test passes exactly as
       specified: 900 straight frames and 600-then-save-then-load-then-300
@@ -188,7 +188,7 @@ actually is rather than from memory:
 - [x] **[Threading-Plan.md](Threading-Plan.md)** - window, machine, video,
       audio and input threads. Phase 7, a rasteriser thread, not done.
 - [x] **[Emulation-Speed-Plan.md](Emulation-Speed-Plan.md)** - 50-300%.
-- [~] `psx/emuconfig.h` and `psx/settings.h`, following GBAEmu's design.
+- [~] `emu/emuconfig.h` and `emu/settings.h`, following GBAEmu's design.
       `psxemu.ini` holds audio, video, input, speed, recompiler and BIOS
       choices - the list is in Gaps.md. The last disc and the key bindings are
       still not settings.

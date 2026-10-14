@@ -3,7 +3,7 @@
 // A MIPS R3000A disassembler: one instruction word to one line of text.
 //
 // Header-only and free of the rest of the core, so a harness can use it without a System. Two
-// users: boot_runner's traces and --dis, and the debugger's window (psx/debugger.h, which
+// users: boot_runner's traces and --dis, and the debugger's window (debug/debugger.h, which
 // disassembles on the machine's thread and hands the text over in a snapshot).
 //
 // Every encoding the CPU executes has a name here, including the ones assemblers never write -

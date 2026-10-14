@@ -1,4 +1,4 @@
-// movie_test - checks psx/movie.h: reading a BizHawk .bk2 and playing it into the ports.
+// movie_test - checks emu/movie.h: reading a BizHawk .bk2 and playing it into the ports.
 //
 // No movie made by BizHawk is kept here, so the logs are written out by hand in the two layouts
 // its PlayStation cores use - Octoshock's and Nymashock's names for the same controls - and the
@@ -11,8 +11,8 @@
 // through Sio the way the BIOS does.
 
 #include "psx/psx.h"
-#include "psx/mc_directory.h"
-#include "psx/movie.h"
+#include "media/mc_directory.h"
+#include "emu/movie.h"
 
 #include <zlib.h>
 

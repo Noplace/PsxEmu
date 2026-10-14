@@ -474,7 +474,7 @@ class Recompiler {
   // for every load to go through the callbacks. Read by the loads themselves as
   // they run, so the host can change it before any Step and nothing has to be
   // compiled again - the emulator does, whenever something makes a RAM load
-  // more than a read and a stall (psx/recompiler_bridge.h).
+  // more than a read and a stall (emu/recompiler_bridge.h).
   void set_ram(uint8_t* ram) { state_.ram = ram; }
 
   // The same for stores: the RAM compiled stores write directly (to a page without compiled

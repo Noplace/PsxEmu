@@ -26,7 +26,7 @@
 // them, and hands the enabled ones to the machine; this shows them and says what changed.
 
 #include "app/framework.h"
-#include "psx/cheats.h"
+#include "emu/cheats.h"
 #include "ui/game_scope.h"
 
 #include <functional>

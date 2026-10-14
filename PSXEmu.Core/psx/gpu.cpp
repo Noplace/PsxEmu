@@ -54,7 +54,7 @@ namespace emulation {
                 return static_cast<uint8_t>((c << 3) | (c >> 2));
             }
 
-            // Motion's keys (psx/vertex_motion.h): `value` folded into `key`.
+            // Motion's keys (enhance/vertex_motion.h): `value` folded into `key`.
             inline uint64_t MixKey(uint64_t key, uint64_t value) {
                 key ^= value + 0x9E3779B97F4A7C15ull + (key << 6) + (key >> 2);
                 key ^= key >> 31;
@@ -1126,7 +1126,7 @@ namespace emulation {
                 const uint32_t position = fifo_[word++];
                 v[i].x = SignExtend11(position & 0x7FF) + draw_offset_x_;
                 v[i].y = SignExtend11((position >> 16) & 0x7FF) + draw_offset_y_;
-                // PGXP (psx/pgxp.h): a vertex word that arrived with its shadow is drawn where
+                // PGXP (enhance/pgxp.h): a vertex word that arrived with its shadow is drawn where
                 // the GTE put it, offset the same way; the depth goes too if textures are to be
                 // mapped in perspective. Only the hardware rasteriser reads these. A word that
                 // arrived without one - moved about by a way the shadows cannot follow, which is

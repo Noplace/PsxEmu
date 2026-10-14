@@ -417,7 +417,7 @@ tens of thousands of commands with none unrecognised. The MVMVA garbage matrix
 - **CHD and ECM, but not PBP** ([Disc-Formats-Plan.md](Disc-Formats-Plan.md)).
   CHDs mount through libchdr with chdman's default codecs (bug 104); one
   compressed with zstd is refused with a message, since zstd is not built in.
-  An `.ecm` mounts through `psx/ecm.h`, on its own or as the image a cue sheet
+  An `.ecm` mounts through `media/ecm.h`, on its own or as the image a cue sheet
   names; mounting one reads it through once, the format having no index.
   Nothing here has read a CHD that chdman made - there is no chdman on this
   machine, so the ones tested were written by `tools/chd_writer.h` to its
@@ -806,4 +806,4 @@ Things that look missing and are not, so they are not re-investigated:
   `.mds`. The gap left is the track layout a bare image with no descriptor at
   all cannot know, above.
 - **`psx/emu.h`/`emu.cpp`** are superseded by `system.*` and built by nothing;
-  **`utilities/cdrom/cdrom.cpp`** is superseded by `psx/disc.cpp`.
+  **`utilities/cdrom/cdrom.cpp`** is superseded by `media/disc.cpp`.

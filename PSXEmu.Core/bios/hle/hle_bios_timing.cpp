@@ -14,7 +14,7 @@
 // kernel's small functions take.
 
 #include "psx/psx.h"
-#include "psx/hle/hle_bios.h"
+#include "bios/hle/hle_bios.h"
 
 namespace emulation {
 namespace psx {

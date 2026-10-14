@@ -56,7 +56,7 @@ right first.
 
 ### 1. A serialiser
 
-One small class in `psx/state.h` with a single template method used for both
+One small class in `emu/state.h` with a single template method used for both
 directions, so a field can never be saved and not loaded:
 
 ```cpp

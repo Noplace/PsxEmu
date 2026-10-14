@@ -1,6 +1,6 @@
 // hle_test - the HLE BIOS (psx/hle_bios.h), driven by a program of its own.
 //
-// Each group assembles a small PS-EXE with psx/mips_assembler.h that calls kernel functions the
+// Each group assembles a small PS-EXE with bios/mips_assembler.h that calls kernel functions the
 // way a game does - through A0h, B0h and C0h with the number in t1 - and stores what they return
 // in RAM. The machine boots it on the HLE BIOS, runs until the program writes its done marker,
 // and the checks read the results back. Expected values come from psx-spx's "Kernel (BIOS)"
@@ -9,8 +9,8 @@
 //   hle_test
 
 #include "psx/psx.h"
-#include "psx/mips_assembler.h"
-#include "psx/mc_directory.h"
+#include "bios/mips_assembler.h"
+#include "media/mc_directory.h"
 
 #include <cstdio>
 #include <cstring>

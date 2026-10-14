@@ -13,7 +13,7 @@
 #pragma once
 
 #include "host/doorbell.h"
-#include "psx/shared_picture.h"
+#include "render/shared_picture.h"
 
 #include <atomic>
 #include <cstdint>
@@ -27,7 +27,7 @@ struct VideoFrame {
   // Gpu::framebuffer's own format.
   std::vector<uint32_t> pixels;
 
-  // Or the hardware rasteriser's picture, left on the graphics card (psx/shared_picture.h):
+  // Or the hardware rasteriser's picture, left on the graphics card (render/shared_picture.h):
   // width x height, and `pixels` empty. Only for a presenter that said it can take one.
   psx::SharedPicture shared;
 

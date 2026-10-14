@@ -4,7 +4,7 @@
 // of the front end is linked. Whether the picture each makes looks right is a person's to judge.
 
 #include "graphics/filter_chain.h"
-#include "psx/settings.h"
+#include "emu/settings.h"
 
 #include <cstdio>
 #include <string>

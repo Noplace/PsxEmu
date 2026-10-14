@@ -267,7 +267,7 @@ bool Cdrom::MechanicalTiming() {
 // ---------------------------------------------------------------------------
 // Mednafen's timing
 //
-// For a BizHawk movie (psx/movie.h, bug 151). A movie is input by frame number,
+// For a BizHawk movie (emu/movie.h, bug 151). A movie is input by frame number,
 // so it lands where it was meant to only if every load takes the frames it
 // took on the emulator that recorded it - and both of BizHawk's PlayStation
 // cores are Mednafen's, whose drive is far slower than either model above: a

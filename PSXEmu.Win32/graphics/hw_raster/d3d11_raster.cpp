@@ -45,7 +45,7 @@ namespace psxemu {
     // them, and the arithmetic around both (raster_common.h).
     using namespace raster;
 
-    // Shared pictures, the part any thread may touch (psx/shared_picture.h): each texture's NT
+    // Shared pictures, the part any thread may touch (render/shared_picture.h): each texture's NT
     // handle and bookkeeping, and the fence the rasteriser signals once it has drawn a picture.
     // Frames carry a reference to this, so it outlives the rasteriser while any are in flight -
     // and with it the handles, which keep the textures themselves alive after the rasteriser has
@@ -469,7 +469,7 @@ namespace psxemu {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The plane beside VRAM (psx/shared_picture.h, Docs/DLSS-Plan.md)
+    // The plane beside VRAM (render/shared_picture.h, Docs/DLSS-Plan.md)
     // ------------------------------------------------------------------------------------------
 
     void D3D11Raster::SetPlanes(bool keep, emulation::psx::PlaneView view) {
@@ -1495,7 +1495,7 @@ namespace psxemu {
         context_->RSSetViewports(1, &viewport);
     }
 
-    // The picture left on the card for the presenter's device (psx/shared_picture.h). Nothing
+    // The picture left on the card for the presenter's device (render/shared_picture.h). Nothing
     // here waits: the fence is signalled behind the drawing and the work sent to the card, and
     // the presenter waits for the fence - on its own thread - before it draws from the texture.
     bool D3D11Raster::ShareDisplay(uint32_t x, uint32_t y, UINT width, UINT height,

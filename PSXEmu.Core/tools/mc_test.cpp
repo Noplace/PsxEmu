@@ -11,7 +11,7 @@
 // header is 'M' ^ 'C' = 0Eh, a free directory frame A0h ^ FFh ^ FFh = A0h.
 
 #include "psx/psx.h"
-#include "psx/mc_directory.h"
+#include "media/mc_directory.h"
 
 #include <cstdio>
 #include <cstring>

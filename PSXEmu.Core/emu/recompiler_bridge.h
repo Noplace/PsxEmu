@@ -151,7 +151,7 @@ class RecompilerBridge {
     const uint32_t pc = context->pc;
 
     // PGXP's shadows travel with register copies in compiled code only while it is on - the
-    // interpreter's moves carry them the same way (psx/pgxp.h).
+    // interpreter's moves carry them the same way (enhance/pgxp.h).
     const bool pgxp = system_->pgxp().enabled();
     recompiler_->set_track_moves(pgxp);
     // Which of the two ways a GTE command runs: the C++ for it, or its arithmetic emitted as x64.
@@ -355,7 +355,7 @@ class RecompilerBridge {
 
     const uint64_t before = processor->exceptions_raised();
 
-    // PGXP (psx/pgxp.h): a word loaded or stored carries its shadow, as the interpreter's LW and
+    // PGXP (enhance/pgxp.h): a word loaded or stored carries its shadow, as the interpreter's LW and
     // SW do. Compiled code passes no register numbers, so they are read from the instruction
     // itself - the only words compiled to these calls are LW's and SW's.
     Pgxp& pgxp = system_->pgxp();

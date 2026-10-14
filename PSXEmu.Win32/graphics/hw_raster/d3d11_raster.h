@@ -46,7 +46,7 @@
 // rasteriser's thread or the machine's, one at a time - Gpu makes sure of that - which is all
 // an immediate context needs. Above 1x the picture it shows is handed over either as pixels read
 // back, or - for a presenter that can open it, on the same card - left on the card in a texture
-// the two devices share (psx/shared_picture.h), which costs nothing to hand over.
+// the two devices share (render/shared_picture.h), which costs nothing to hand over.
 
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/hw_raster/raster_common.h"
@@ -265,7 +265,7 @@ namespace psxemu {
         // stored, saying so. Blending each target its own way needs feature level 10.1.
         Microsoft::WRL::ComPtr<ID3D11BlendState> plane_blend_state_;
 
-        // The plane beside VRAM (psx/shared_picture.h, Docs/DLSS-Plan.md): VRAM's layout at
+        // The plane beside VRAM (render/shared_picture.h, Docs/DLSS-Plan.md): VRAM's layout at
         // scale_, RGBA16F. Made the first time it is asked for, and kept after. Its read copy is
         // what copies and 15-bit texels carry along, made current tile by tile with VRAM's.
         bool keep_planes_ = false;

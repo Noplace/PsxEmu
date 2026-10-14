@@ -232,7 +232,7 @@ namespace psxemu {
         // The overlay's atlas (see the overlay's members above).
         Image overlay_atlas_;
 
-        // Shared pictures (psx/shared_picture.h). The adapter this device is on, when it can
+        // Shared pictures (render/shared_picture.h). The adapter this device is on, when it can
         // import them; the rasteriser's textures imported so far - one source's, a handful at
         // most; which picture frame_ holds; and the picture the frame in flight read, handed
         // back once the fence says that frame is done.

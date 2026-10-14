@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #pragma once
 
-#include "psx/emuconfig.h"
+#include "emu/emuconfig.h"
 
 #include <array>
 #include <cmath>

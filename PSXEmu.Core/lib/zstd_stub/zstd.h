@@ -5,7 +5,7 @@
    its default for CDs is LZMA, zlib and FLAC, which are all built here. Rather
    than vendor zstd for the rare disc that needs it, this declares the part of
    its API libchdr calls and makes every call fail, so opening a zstd CHD fails
-   at chd_open - and psx/disc.cpp then reads the header to say why.
+   at chd_open - and media/disc.cpp then reads the header to say why.
 
    Replacing this directory with the real zstd's lib/ (and building its
    decompress sources) is all zstd support would take. */

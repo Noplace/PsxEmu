@@ -17,8 +17,8 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "psx/psx.h"
-#include "psx/mc_directory.h"
-#include "psx/movie.h"
+#include "media/mc_directory.h"
+#include "emu/movie.h"
 
 #include <zlib.h>
 

@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #pragma once
 
-#include "psx/raster.h"
+#include "render/raster.h"
 
 #include <condition_variable>
 #include <memory>
@@ -34,7 +34,7 @@ namespace psx {
   Owns the 1 MB of VRAM, executes the GP0 (drawing) and GP1 (display control)
   command streams, keeps the display timing, charges every draw its time, and
   resolves the visible part of VRAM into a 32-bit framebuffer a front end can
-  present. What puts a draw's pixels down is a RasterBackend (psx/raster.h) -
+  present. What puts a draw's pixels down is a RasterBackend (render/raster.h) -
   SoftwareRaster, which has no graphics API dependency, which is what lets the
   headless harnesses render and checksum frames.
 */
@@ -49,7 +49,7 @@ class Gpu : public GpuCore {
   uint32_t ReadData();
   uint32_t ReadStatus();
   void WriteData(uint32_t data);
-  // ...with PGXP's shadow of it (psx/pgxp.h), when it matches the word: a polygon's vertex
+  // ...with PGXP's shadow of it (enhance/pgxp.h), when it matches the word: a polygon's vertex
   // that arrives with one is drawn where the GTE put it by the hardware rasteriser.
   void WriteData(uint32_t data, const PreciseVertex* precise);
   void WriteStatus(uint32_t data);
@@ -107,7 +107,7 @@ class Gpu : public GpuCore {
   // Carries on with the software rasteriser when the hardware one says it is lost.
   void FallBackToSoftware(const char* reason);
   // Keeps the plane beside VRAM that DLSS needs, and shows it in place of the picture or not
-  // (psx/shared_picture.h, Docs/DLSS-Plan.md). The hardware rasteriser's alone, and kept across a
+  // (render/shared_picture.h, Docs/DLSS-Plan.md). The hardware rasteriser's alone, and kept across a
   // change of rasteriser; nothing the machine sees changes. Machine thread, between frames.
   // Keeping it works out motion too (phase 2): the GTE's, with PGXP on, and 2D primitives'.
   void SetPlanes(bool keep, PlaneView view);
@@ -525,7 +525,7 @@ class Gpu : public GpuCore {
   void CmdVramToCpu();
 
   // ---- rasterisation -----------------------------------------------------
-  // What puts the pixels down: psx/raster.h. The names below are the ones this
+  // What puts the pixels down: render/raster.h. The names below are the ones this
   // file has always used for the shared types.
   typedef RasterVertex Vertex;
   typedef RasterState DrawState;

@@ -1,4 +1,4 @@
-// debug_test - the debugger's core (psx/debugger.h): breakpoints and stepping, checked the way
+// debug_test - the debugger's core (debug/debugger.h): breakpoints and stepping, checked the way
 // cpu_test checks the CPU - small programs assembled into RAM, run through System, no BIOS.
 //
 // Two properties matter more than any single feature, and most checks here are about one or the
@@ -8,7 +8,7 @@
 // only looks at $ra goes wrong.
 
 #include "psx/psx.h"
-#include "psx/disasm.h"
+#include "debug/disasm.h"
 
 #include <cstdio>
 #include <cstring>
@@ -819,7 +819,7 @@ void TestDisassembler() {
 }  // namespace
 
 int main() {
-  printf("debug_test - breakpoints and stepping (psx/debugger.h)\n\n");
+  printf("debug_test - breakpoints and stepping (debug/debugger.h)\n\n");
   Machine m;
   TestBreakpoints(m);
   TestStepInto(m);

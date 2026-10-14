@@ -130,7 +130,7 @@ namespace psxemu {
         // Help > About PSXEmu.
         kCommandAbout,
         // File > Play Movie and Stop Movie: a BizHawk .bk2 played into the ports from power-on
-        // (psx/movie.h). Stop is greyed out unless one is playing.
+        // (emu/movie.h). Stop is greyed out unless one is playing.
         kCommandPlayMovie,
         kCommandStopMovie,
     };

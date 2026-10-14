@@ -11,8 +11,8 @@
 // frame when it is set. A PlayStation disc put in while it runs boots, as on a console.
 
 #include "psx/psx.h"
-#include "psx/hle/hle_bios.h"
-#include "psx/mc_directory.h"
+#include "bios/hle/hle_bios.h"
+#include "media/mc_directory.h"
 
 namespace emulation {
 namespace psx {

@@ -842,7 +842,7 @@ void IOInterface::Write32(uint32_t address,uint32_t data) {
     case 0x1F801128: RunPending(); rootcounter_[2].WriteTarget(data); return;
     case 0x1F801820: case 0x1F801824: mdec.Write(address, data); return;
     case 0x1F801810:
-      // A word stored from a register brings PGXP's shadow of it along (psx/pgxp.h).
+      // A word stored from a register brings PGXP's shadow of it along (enhance/pgxp.h).
       if (system_->pgxp().enabled())
         system_->gpu().WriteData(data, system_->pgxp().store());
       else

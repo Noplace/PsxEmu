@@ -766,7 +766,7 @@ void Dma::Dma2() {
       ChargeWords(count);
       for (uint32_t i = 0; i < count; ++i) {
         const uint32_t word_address = (address + 4 + i * 4) & 0x1FFFFC;
-        // With PGXP on, each word goes with its shadow (psx/pgxp.h): a vertex word still
+        // With PGXP on, each word goes with its shadow (enhance/pgxp.h): a vertex word still
         // holding what the GTE projected brings the unrounded position to the GPU.
         if (pgxp.enabled())
           system_->gpu().WriteData(ram.u32[word_address >> 2], pgxp.word(word_address));

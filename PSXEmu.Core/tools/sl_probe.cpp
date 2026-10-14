@@ -31,7 +31,7 @@
 //
 // --jitter-test settles the two signs the emulator gives DLSS, on that same device: frames of a
 // sharp-edged pattern are made here, each pixel showing what is at itself plus the jitter - the
-// rasteriser's own rule (psx/shared_picture.h) - and put through DLSS Quality for 48 frames with
+// rasteriser's own rule (render/shared_picture.h) - and put through DLSS Quality for 48 frames with
 // each sign of the jitter each way, then with the pattern moving and each sign of its motion.
 // Each output is scored against the pattern drawn at the output's size, 64 samples a pixel: the
 // signs DLSS means score far better than the others. --cost does that too, and then times DLSS on

@@ -141,7 +141,7 @@ namespace psxemu {
         VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR = 1000001000,
         VK_STRUCTURE_TYPE_PRESENT_INFO_KHR = 1000001001,
         VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR = 1000009000,
-        // Opening the hardware rasteriser's shared picture (psx/shared_picture.h).
+        // Opening the hardware rasteriser's shared picture (render/shared_picture.h).
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 = 1000059001,
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES = 1000071004,
         VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO = 1000072001,
@@ -842,7 +842,7 @@ namespace psxemu {
     };
 
     // -------------------------------------------------------------------------------------------
-    // Opening the hardware rasteriser's shared picture (psx/shared_picture.h): a Direct3D 11
+    // Opening the hardware rasteriser's shared picture (render/shared_picture.h): a Direct3D 11
     // texture imported as an image, through VK_KHR_external_memory_win32. Vulkan 1.0 plus the
     // extensions that became 1.1, so the instance and device stay 1.0 for every other purpose.
     // -------------------------------------------------------------------------------------------

@@ -17,7 +17,7 @@
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
 #include "psx/psx.h"
-#include "psx/recompiler_bridge.h"
+#include "emu/recompiler_bridge.h"
 //#include <stdio.h>
 //#include <stdlib.h>
 //#pragma warning( disable : 4996 )
@@ -154,7 +154,7 @@ bool System::StepImpl() {
   // compiled code, and the menu that asks for it runs on the message thread -
   // doing it there could free the block the machine is executing.
   //
-  // PGXP (psx/pgxp.h) keeps its shadows in the interpreter's loads, stores and moves - and under
+  // PGXP (enhance/pgxp.h) keeps its shadows in the interpreter's loads, stores and moves - and under
   // the recompiler in the word loads and stores compiled code calls out for (RecompilerBridge),
   // with every GTE instruction interpreted anyway. It is on only while the hardware rasteriser
   // draws: nothing else uses what it keeps.
@@ -253,7 +253,7 @@ bool System::StepImpl() {
     }
   }
 
-  // The debugger (psx/debugger.h) may stop the machine here, before the instruction at the pc
+  // The debugger (debug/debugger.h) may stop the machine here, before the instruction at the pc
   // runs - after any interrupt has moved the pc, so a breakpoint on an exception vector fires
   // however the vector was reached, and before the BIOS-call hook, so a halted step records
   // nothing. A halted step does nothing at all: no instruction, no time.
@@ -273,7 +273,7 @@ bool System::StepImpl() {
     const uint32_t pc = cpu_.context()->pc;
     if (pc == 0xA0 || pc == 0xB0 || pc == 0xC0) {
       kernel_.Call();
-      debugger_.OnBiosCall();   // the call log (psx/debugger.h) - every call, armed or not
+      debugger_.OnBiosCall();   // the call log (debug/debugger.h) - every call, armed or not
     }
 
     // The HLE BIOS's kernel functions (psx/hle_bios.h): a pc on one's entry point runs the host

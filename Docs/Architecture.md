@@ -452,8 +452,8 @@ complete, INT1 data ready, INT4 end of data, INT5 error. It reads 2,352-byte sec
 a second. It also plays CD-DA audio, and decodes XA-ADPCM interleaved audio straight into the SPU.
 The drive reports its position from each sector's **subchannel Q**.
 
-**Here** ([cdrom.cpp](../PSXEmu.Core/psx/cdrom.cpp), [disc.cpp](../PSXEmu.Core/psx/disc.cpp),
-[iso9660.cpp](../PSXEmu.Core/psx/iso9660.cpp)):
+**Here** ([cdrom.cpp](../PSXEmu.Core/psx/cdrom.cpp), [disc.cpp](../PSXEmu.Core/media/disc.cpp),
+[iso9660.cpp](../PSXEmu.Core/media/iso9660.cpp)):
 
 - **All 28 commands**, with a response queue timed in CPU cycles: Getstat, Setloc, ReadN/ReadS,
   SeekL/SeekP, Play, GetlocL/P, GetTN/TD, GetQ, Setfilter, Setmode, Pause/Stop/Init and more.

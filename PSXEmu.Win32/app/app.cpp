@@ -820,7 +820,7 @@ namespace psxemu {
         if (fast_forward_)
             config.frame_limiter = false;
         // A movie playing has the timing it was recorded under, as near as this machine gets
-        // (psx/movie.h) - again without touching the settings, which are back when it ends.
+        // (emu/movie.h) - again without touching the settings, which are back when it ends.
         if (movie_length_.load(std::memory_order_relaxed) != 0)
             emulation::psx::ApplyMovieTiming(config);
         // DLSS or FSR, while it runs, has the rasteriser's scale and PGXP's precise vertices - its
@@ -897,7 +897,7 @@ namespace psxemu {
             // setting has to come out of.
             if (config_.show_timings && !report_.paused) {
                 // "on card": the hardware rasteriser's picture handed to the renderer where it
-                // was drawn, with nothing copied (psx/shared_picture.h).
+                // was drawn, with nothing copied (render/shared_picture.h).
                 wchar_t timings[208] = {};
                 swprintf(timings, std::size(timings),
                          L"  |  emulate %.1f  hand-off %.2f%s  idle %.1f  present %.2f ms"

@@ -20,7 +20,7 @@
 
 // Settings > Emulation: how the machine is emulated - the CPU, the timing models, the GPU and
 // the CD-ROM - each a switch with a line saying what it costs, and the Accuracy and Performance
-// presets over them (EmulationPreset, psx/emuconfig.h).
+// presets over them (EmulationPreset, emu/emuconfig.h).
 //
 // Like the Controllers window there is no OK or Cancel: every switch reaches the App the moment
 // it is clicked, and the App applies it to the running game. The window keeps no settings of

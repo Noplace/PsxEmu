@@ -10,8 +10,8 @@
 // and the pad driver's order of work are taken from it.
 
 #include "psx/psx.h"
-#include "psx/hle/hle_bios.h"
-#include "psx/mips_assembler.h"
+#include "bios/hle/hle_bios.h"
+#include "bios/mips_assembler.h"
 
 #include <cstddef>
 

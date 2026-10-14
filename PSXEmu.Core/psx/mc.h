@@ -116,7 +116,7 @@ class MC : public Component {
   bool dirty() const { return dirty_; }
   uint64_t flush_failures() const { return flush_failures_; }
 
-  // The raw 128 KB image, for psx/mc_directory.h. Null with no card in. After changing it,
+  // The raw 128 KB image, for media/mc_directory.h. Null with no card in. After changing it,
   // call Modified: the card is saved, and flagged as swapped so a running game re-reads the
   // directory instead of trusting its copy.
   uint8_t* data();

@@ -179,7 +179,7 @@ class Disc {
     // several frames each, decompressed whole, and the last one is kept -
     // the CHD's own read-ahead, a hunk being eight sectors in a typical one.
     void* chd = nullptr;
-    // An ECM image, when this is one (psx/ecm.h): the image it holds is read through it, and
+    // An ECM image, when this is one (media/ecm.h): the image it holds is read through it, and
     // `file` is null. Shared because a Source is copied about while the disc is being laid out.
     std::shared_ptr<class EcmImage> ecm;
     uint32_t chd_hunk_bytes = 0;

@@ -121,10 +121,10 @@ The core never knows which front end runs it
 ([Emulator-Project-Standards.md](Emulator-Project-Standards.md)), so the core
 cannot hold a Direct3D device:
 
-- **`PSXEmu.Core/psx/raster_backend.h`** - the interface: apply a batch of
+- **`PSXEmu.Core/render/raster.h`** (planned as `psx/raster_backend.h`) - the interface: apply a batch of
   `DrawJob`s, write a rectangle of VRAM, read one back, resolve the display area,
   sync, and save or load native VRAM.
-- **`PSXEmu.Core/psx/software_raster.*`** - today's rasteriser, moved behind it.
+- **`PSXEmu.Core/render/software_raster.*`** - today's rasteriser, moved behind it.
 - **`PSXEmu.Win32/graphics/hw_raster/`** - the Direct3D 11 implementation and its
   shaders.
 - **The front end hands the machine a factory** for the hardware one, as it
@@ -293,7 +293,7 @@ A usable upscaler is the end of phase 4; everything after makes it better.
 
 ### Phase 0, as built
 
-- **`psx/raster.h`**: the shared types - `RasterVertex`, `RasterState`, `RasterEnv`,
+- **`render/raster.h`**: the shared types - `RasterVertex`, `RasterState`, `RasterEnv`,
   `DrawJob`, `RasterCounters` - and `RasterBackend`:
   - `Apply` draws one job
   - `PrepareRead` comes before the machine reads native VRAM (a VRAM-to-CPU
@@ -301,7 +301,7 @@ A usable upscaler is the end of phase 4; everything after makes it better.
   - `Written` comes after a CPU-to-VRAM transfer completes
   - `Reloaded` comes after a state loads
   - and the counters and the watch rectangle
-- **`psx/software_raster.*`**: the triangle, line, rectangle, fill and copy code,
+- **`render/software_raster.*`**: the triangle, line, rectangle, fill and copy code,
   `PlotPixel`, `SampleTexture` and the blending, moved out of `gpu.cpp` a line at a
   time with only its members renamed. For it, the three VRAM calls are empty: it
   draws into `Gpu`'s own VRAM.
@@ -575,7 +575,7 @@ closed what was left and checked it.
 
 ### Phase 5, as built
 
-- **`psx/pgxp.h`**: a `PreciseVertex` - the unrounded x and y, the depth, and the
+- **`enhance/pgxp.h`**: a `PreciseVertex` - the unrounded x and y, the depth, and the
   32-bit SXY word it was made for - beside every CPU register, every word of RAM
   (8 MB, allocated only while PGXP is on) and of the scratchpad.
 - **A shadow is only used while its word still holds the value it was made for.**
@@ -657,7 +657,7 @@ closed what was left and checked it.
 
 **The picture handed over on the card.**
 
-- **`psx/shared_picture.h`**: a `SharedPicture` - an NT handle to a Direct3D 11
+- **`render/shared_picture.h`**: a `SharedPicture` - an NT handle to a Direct3D 11
   texture, exactly the picture's size, B8G8R8A8 - and the `SharedPictureSource`
   behind it, which a presenter waits on (`WaitReady`) and gives back (`Release`,
   and `Dropped` for a frame never shown). To the core these are handles and

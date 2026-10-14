@@ -24,7 +24,7 @@
 #include <cctype>
 #include <cstring>
 #include <map>
-#include "psx/ecm.h"
+#include "media/ecm.h"
 
 #include <libchdr/cdrom.h>
 #include <libchdr/chd.h>
@@ -562,7 +562,7 @@ bool Disc::Open(const char* path) {
 // without sync or header by 2336; a cooked ISO by 2048.
 bool Disc::AddFileSource(const std::string& path, Source* out,
                          uint32_t sector_size) const {
-  // An ECM image (psx/ecm.h) - named as one, or standing in for the image a descriptor names,
+  // An ECM image (media/ecm.h) - named as one, or standing in for the image a descriptor names,
   // which is how one is usually kept: "game.bin.ecm" beside a cue sheet that says "game.bin".
   FILE* fp = nullptr;
   std::string ecm_path;

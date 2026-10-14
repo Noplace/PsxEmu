@@ -36,7 +36,7 @@
 // Nothing here may change what a game observes. Every cost is charged by `Gpu` when the command
 // is parsed; a backend only makes pixels.
 
-#include "psx/shared_picture.h"
+#include "render/shared_picture.h"
 
 #include <cstdint>
 #include <functional>
@@ -129,7 +129,7 @@ namespace psx {
     double warp_error_moved, warp_error_still;
   };
 
-  // What is shown of the plane beside VRAM (psx/shared_picture.h), in place of the picture:
+  // What is shown of the plane beside VRAM (render/shared_picture.h), in place of the picture:
   // nothing, its depth, or its motion. View > Depth and Motion.
   enum class PlaneView { kPicture, kDepth, kMotion };
 
@@ -179,7 +179,7 @@ namespace psx {
       return false;
     }
 
-    // Keeps the plane beside VRAM or not (psx/shared_picture.h, Docs/DLSS-Plan.md), and shows it
+    // Keeps the plane beside VRAM or not (render/shared_picture.h, Docs/DLSS-Plan.md), and shows it
     // in place of the picture or not - which keeps it too. Nothing to the software rasteriser.
     // What the machine sees is the same either way: the plane is never read back.
     virtual void SetPlanes(bool keep, PlaneView view) { (void)keep; (void)view; }

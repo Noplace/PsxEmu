@@ -31,7 +31,7 @@ namespace psxemu {
 
     // What the two optional arguments named, if anything: PSXEmu.Win32.exe [bios.bin] [disc].
     // Either or both may be empty, which is the ordinary case. "--movie <file.bk2>", anywhere
-    // among them, is a movie to play once the disc is in (psx/movie.h).
+    // among them, is a movie to play once the disc is in (emu/movie.h).
     struct CommandLine {
         std::string bios;
         std::string disc;

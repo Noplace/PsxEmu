@@ -35,7 +35,7 @@
 // twice a second - watching a value change is what a memory view is for - but the registers do
 // not.
 //
-// The debugger is the machine thread's (psx/debugger.h), so this window never touches it. It is
+// The debugger is the machine thread's (debug/debugger.h), so this window never touches it. It is
 // shown snapshots - Debugger::Snapshot, taken on the machine thread when it halts and whenever
 // this window asks - and every action is a request run there through Host::request. The memory
 // card editor works the same way.
@@ -46,7 +46,7 @@
 
 #include "app/framework.h"
 
-#include "psx/debugger.h"
+#include "debug/debugger.h"
 
 #include <commctrl.h>
 

@@ -135,7 +135,7 @@ namespace psxemu {
         // picture's view. Not owned.
         ID3D11ShaderResourceView* shown_view_ = nullptr;
 
-        // Shared pictures (psx/shared_picture.h): the adapter this device is on; the
+        // Shared pictures (render/shared_picture.h): the adapter this device is on; the
         // rasteriser's textures opened here, by their ids - one source's at a time, a handful at
         // most; and for each frame drawn from one, a query that says when the card is done with
         // it, and the picture to hand back then.

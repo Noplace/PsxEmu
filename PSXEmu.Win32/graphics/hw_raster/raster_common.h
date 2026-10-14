@@ -22,8 +22,8 @@
 // (d3d12_raster) - draw with in common: the shaders, the words each vertex carries for them, and
 // the arithmetic around both. One copy, so the two cannot come to draw differently.
 
-#include "psx/raster.h"
-#include "psx/shared_picture.h"
+#include "render/raster.h"
+#include "render/shared_picture.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -114,7 +114,7 @@ namespace raster {
 
     // Everything the rasteriser draws with, compiled when it is made - for its scale, which
     // the shaders take as the constant SCALE, so at 1x they are the native code and nothing
-    // more. The arithmetic is the software rasteriser's (psx/software_raster.cpp) line for
+    // more. The arithmetic is the software rasteriser's (render/software_raster.cpp) line for
     // line, in integers.
     //
     // The viewport is VRAM at SCALE times its size, and every primitive is drawn as
@@ -133,7 +133,7 @@ namespace raster {
     // TRUE_COLOR (above 1x only): no dithering, and eight bits a channel kept rather than
     // five, the pixel underneath included. It gives up the sub-pixel exactness above.
     //
-    // PLANES: PsDraw and PsCopy write the plane beside VRAM too (psx/shared_picture.h), as a
+    // PLANES: PsDraw and PsCopy write the plane beside VRAM too (render/shared_picture.h), as a
     // second target - which is what DLSS will need to know of each sub-pixel. Compiled both
     // ways, so with the plane not kept the shaders are exactly what they were.
     inline constexpr char kShaderSource[] =

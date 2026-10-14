@@ -442,7 +442,7 @@ void Gte::Rtps(int vector_index, bool compute_ir0) {
     precise.w = static_cast<float>(sz_[3]);
     precise.valid = true;
     if (motion_) {
-      // Where it was in the last picture (psx/vertex_motion.h). Its position is taken from the
+      // Where it was in the last picture (enhance/vertex_motion.h). Its position is taken from the
       // projection's centre, OFX and OFY, which some games move with the buffer they draw into.
       const uint64_t model = static_cast<uint64_t>(static_cast<uint16_t>(v[0])) |
                              (static_cast<uint64_t>(static_cast<uint16_t>(v[1])) << 16) |

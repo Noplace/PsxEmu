@@ -28,7 +28,7 @@
 // to do: there is only one copy.
 
 #include "psx/gpu_core.h"
-#include "psx/raster.h"
+#include "render/raster.h"
 
 namespace emulation {
 namespace psx {

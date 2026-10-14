@@ -51,8 +51,8 @@
 #include "ui/emulation_settings_window.h"
 #include "ui/video_settings_window.h"
 #include "ui/cheats_window.h"
-#include "psx/cheats.h"
-#include "psx/movie.h"
+#include "emu/cheats.h"
+#include "emu/movie.h"
 #include "app/engine_factory.h"
 #include "host/audio_output.h"
 #include "host/machine.h"
@@ -237,7 +237,7 @@ namespace psxemu {
 
         // Emulation > Cheats. Each game's cheats are cheats\<serial>.cht beside psxemu.ini, read
         // when it boots and written on every change; the enabled ones run once a frame on the
-        // machine's thread (ApplyCheats). psx/cheats.h has the codes and the file layout.
+        // machine's thread (ApplyCheats). emu/cheats.h has the codes and the file layout.
         void LoadCheats();
         void SaveCheats();
         void SendCheatsToMachine(bool new_game);
@@ -346,7 +346,7 @@ namespace psxemu {
         void ResetMachine();
         void SetUserPaused(bool paused);
 
-        // File > Play Movie: a BizHawk .bk2 (psx/movie.h) played into the ports. The game in
+        // File > Play Movie: a BizHawk .bk2 (emu/movie.h) played into the ports. The game in
         // the drive is started again from power-on - a movie is input from the first frame -
         // through the BIOS's own intro, with the pads the movie names plugged in and new memory
         // cards in memcards\_movie, so the player's own are never written. While it plays the
@@ -577,7 +577,7 @@ namespace psxemu {
         std::string presenter_renderer_;   // which renderer that is, for saying so
         // What the hardware rasteriser's factory reads, on the machine's thread, when it makes
         // one: the card to draw on (0: Windows' default) and whether to hand pictures over on it
-        // (psx/shared_picture.h). Written here, then the machine is told to make it again.
+        // (render/shared_picture.h). Written here, then the machine is told to make it again.
         std::atomic<uint64_t> raster_adapter_{ 0 };
         std::atomic<bool> raster_shared_{ false };
         // ...and written back by it: the count of renderer devices published when it made the

@@ -3,7 +3,7 @@
 > **Status: built - bug 69** (`Docs/Bugs-Found.md`), covered by `mc_test`. Done
 > as planned: the three fixes (in-memory card flushed whole, formatted new
 > cards, the load error split), eject and insert while running from File >
-> Memory Cards, the parsing in `psx/mc_directory.h`, and the editor with list,
+> Memory Cards, the parsing in `media/mc_directory.h`, and the editor with list,
 > delete, undelete, `.mcs` export and import, copy between slots and format.
 > Two differences from the plan: edits go to the live card on the machine
 > thread and flag it as swapped, rather than ejecting it while the editor is
@@ -130,7 +130,7 @@ uint8_t FrameChecksum(const uint8_t* frame);   // XOR of bytes 0..126
 
 ### Where it lives
 
-The parsing belongs in the core - `psx/mc_directory.h/.cpp`, operating on a
+The parsing belongs in the core - `media/mc_directory.h/.cpp`, operating on a
 `MCFile` - so it can be tested headlessly and so a future front end on another
 platform gets it for free. The dialog belongs in `PSXEmu.Win32`.
 

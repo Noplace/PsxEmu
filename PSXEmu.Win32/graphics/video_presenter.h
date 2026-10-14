@@ -115,7 +115,7 @@ namespace psxemu {
         const std::string& renderer() const { return renderer_; }
         const std::string& filter() const { return filter_; }
         // The graphics adapter (LUID) whose shared pictures the running engine can draw, or 0 if
-        // it takes none (psx/shared_picture.h) - for the hardware rasteriser to draw there.
+        // it takes none (render/shared_picture.h) - for the hardware rasteriser to draw there.
         uint64_t shared_adapter() const {
             return engine_ != nullptr ? engine_->SharedPictureAdapter() : 0;
         }

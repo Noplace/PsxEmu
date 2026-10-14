@@ -246,7 +246,7 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     UINT fb_num_rows_ = 0;
     UINT64 fb_row_size_in_bytes_ = 0;
 
-    // Shared pictures (psx/shared_picture.h). The adapter this device is on; the rasteriser's
+    // Shared pictures (render/shared_picture.h). The adapter this device is on; the rasteriser's
     // textures opened here, by their ids - one source's at a time, and a handful at most; which
     // picture fb_texture_ holds, so one shown again is not copied again; and the pictures each
     // frame drew from, handed back once the fence passes that frame.

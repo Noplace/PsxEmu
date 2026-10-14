@@ -309,7 +309,7 @@ much sample as it should makes a noise perfectly happily. "Still audible" and
     mc_test
     mc_test <card.mcr>
 
-The memory card: the on-card format (`psx/mc_directory.h`), the editor's
+The memory card: the on-card format (`media/mc_directory.h`), the editor's
 operations, and the card file underneath (`psx/mc.h`). No BIOS, no window. With
 a card's path it lists that card instead - saves, blocks, titles, icons - and
 never writes it.
@@ -356,7 +356,7 @@ BIOS, no window.
 
     movie_test
 
-Input movies (`psx/movie.h`, bug 151): BizHawk `.bk2` files read, stepped through a frame at a
+Input movies (`emu/movie.h`, bug 151): BizHawk `.bk2` files read, stepped through a frame at a
 time, and played into the ports. No BIOS, no window, and no movie made by BizHawk - none is kept
 here, so the logs are written out by hand in the two layouts its PlayStation cores use, and the
 archive is built by the test the way .NET builds one.
@@ -383,7 +383,7 @@ archive is built by the test the way .NET builds one.
 
     debug_test
 
-The debugger's core (`psx/debugger.h`, Docs/Debugger-Plan.md phases 0 and 1),
+The debugger's core (`debug/debugger.h`, Docs/Debugger-Plan.md phases 0 and 1),
 on small hand-assembled programs in RAM - no BIOS, no disc, no window. The window
 itself is checked the way the other front-end windows are: driven from outside
 the process (bug 72).
@@ -407,7 +407,7 @@ the process (bug 72).
 | `the call stack` | main calls A, A calls B (keeping `ra` in `s0`): two frames inside B with the right call sites and targets, both gone back in main; tracking arming the debugger and turning it off disarming. Mutation-tested: returns that never pop fail the second check |
 | `labels` | a label on its line and against a `jal` to it; found through KSEG1; an empty name removing it |
 | `the device panes` | every section described (DPCR and seven DMA channels, three timers, 24 SPU voices, the GPU, the CD-ROM, the interrupts), a register just written showing in its row, and describing the timers not clearing the flag a mode read would |
-| `the disassembler` | `psx/disasm.h`: a `jal` target, REGIMM aliases named by what they do (only rt 10h/11h link), a GTE command and a Cop0 register by name, a GTE control register numbered 32-63 |
+| `the disassembler` | `debug/disasm.h`: a `jal` target, REGIMM aliases named by what they do (only rt 10h/11h link), a GTE command and a Cop0 register by name, a GTE control register numbered 32-63 |
 
 Mutation-tested: without the guard that keeps a halted machine halted, a
 second `StepInstruction` counted the same breakpoint twice, and the
@@ -537,7 +537,7 @@ What it does not measure:
 | `--watch-vram x,y,w,h` | Report which GP0 command wrote each pixel into a VRAM area |
 | `--wav <file>` | Write everything the SPU produced as a 44100 Hz stereo WAV |
 | `--press b@f[+h]` | Press a button at frame f, holding h frames |
-| `--movie <file.bk2>` | Play a BizHawk input movie into the ports from the first frame (`psx/movie.h`, bug 151): the pads it names plugged in, a new formatted memory card in each slot it has one in (in the temporary folder, unless `--card1`/`--card2` gives one), and its resets and disc changes carried out. In place of `--press`. The run reports the movie, its players, any column it did not understand, and where it had got to. Frame n of the movie is held while the run's frame n+1 is emulated, which is `--press b@n` |
+| `--movie <file.bk2>` | Play a BizHawk input movie into the ports from the first frame (`emu/movie.h`, bug 151): the pads it names plugged in, a new formatted memory card in each slot it has one in (in the temporary folder, unless `--card1`/`--card2` gives one), and its resets and disc changes carried out. In place of `--press`. The run reports the movie, its players, any column it did not understand, and where it had got to. Frame n of the movie is held while the run's frame n+1 is emulated, which is `--press b@n` |
 | `--movie-offset <n>` | ...waiting n frames before the movie's first; negative, leaving that many of its frames out |
 | `--movie-disc <path>` | ...the game's next disc, for a movie that changes discs; repeatable, in order, with `--disc` the first |
 | `--cd-mechanical` | Charge the CD-ROM for spin-up, seek distance and rotational latency (`EmuConfig::cdrom_mechanical_timing`). Off by default, exactly as in the front end - every baseline in this document is a flag-off number, and none of them hold with it on |
@@ -554,7 +554,7 @@ What it does not measure:
 | `--pgxp` | With `--hw-raster`: PGXP's precise vertices (phase 5, bug 125) - polygons drawn from the GTE's unrounded positions, with perspective-correct textures. The machine runs exactly as without it, on the interpreter or with `--recompiler` (phase 6); the report adds how many polygon vertices were drawn precisely, and how many of those were found by value in the GTE's cache rather than arriving with a shadow |
 | `--gpu <name>` | With `--hw-raster`: draw on the graphics card with `<name>` anywhere in its name, any case - what Settings > Video > Graphics Card does (bug 128). The report's `gpu` line names the card. An unknown name is refused with a hint to `--list-gpus` |
 | `--list-gpus` | Print the graphics cards and their LUIDs, and exit. The LUID is spelt as Windows' `\GPU Engine` and `\GPU Process Memory` performance counters spell it, for finding which card a process is really using |
-| `--shared-picture` | With `--scale`: hand the sharper picture over on the graphics card (psx/shared_picture.h, phase 6, bug 127), as to a renderer that can take it there, rather than reading it back - for timing that path. `--ppm` reads the last picture back the way a screenshot does; the report adds how many frames' pictures were shared |
+| `--shared-picture` | With `--scale`: hand the sharper picture over on the graphics card (render/shared_picture.h, phase 6, bug 127), as to a renderer that can take it there, rather than reading it back - for timing that path. `--ppm` reads the last picture back the way a screenshot does; the report adds how many frames' pictures were shared |
 | `--planes` | With `--hw-raster`: keep the plane beside VRAM that DLSS will use - depth and motion per sub-pixel (Docs/DLSS-Plan.md, phase 1) - and with `--shared-picture` hand it over beside each picture; the report adds how many were. The machine runs exactly as without it, and not a pixel of native VRAM changes. Above 1x a 480-line picture drawn a field at a time is filled into a whole frame (bug 138); the report's `interlaced` line counts the 480-line pictures, those drawn a field at a time, and those still half the last field's |
 | `--view depth\|motion` | With `--hw-raster` above 1x: the plane shown in place of the picture, as View > Depth and Motion do, so `--ppm` writes it. Depth is brighter nearer, dark blue where there is none; motion's hue is its direction, dim purple where it is not known |
 | `--motion` | With `--hw-raster` above 1x, and `--pgxp` for 3D: keep the plane, and run the warp check (Docs/DLSS-Plan.md, phase 2) - each new picture compared with the last one moved by its motion and left still. The report's `warp` line gives both, per pixel and channel in 8-bit steps, and their ratio: below 1 the motion helps. Slow, since it reads every new picture back. The `motion` line says how many new pictures there were and how many started afresh, and how many vertices and 2D primitives were found in the picture before |
@@ -932,7 +932,7 @@ time. AMD's loader finds its effect DLLs only beside the running executable, so
 `rec_test` (2059 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
-`psx/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,
+`emu/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,
 executed, and every register, every byte of memory and the address it says to
 continue at are compared against a reference interpreter written from the
 instruction set rather than from the compiler. Its engine checks do the same

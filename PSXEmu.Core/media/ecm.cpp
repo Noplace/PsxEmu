@@ -1,7 +1,7 @@
-// ECM images - see psx/ecm.h. The sector layout, the EDC and the P and Q parity are ECMA-130's
+// ECM images - see media/ecm.h. The sector layout, the EDC and the P and Q parity are ECMA-130's
 // (CD-ROM, 2nd edition, Annex A and section 14).
 
-#include "psx/ecm.h"
+#include "media/ecm.h"
 
 #include <algorithm>
 #include <cstring>

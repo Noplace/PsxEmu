@@ -2219,7 +2219,7 @@ rather than folding into this one.
 ## 44. Save states, and what the plan's own inventory missed
 
 Implemented per [Save-States-Plan.md](Save-States-Plan.md): `StateIO` in
-`psx/state.h`/`state.cpp`, a `Serialise(StateIO&)` on every component that
+`emu/state.h`/`state.cpp`, a `Serialise(StateIO&)` on every component that
 holds real machine state, `System::SaveState`/`LoadState`, and
 `boot_runner --save-state`/`--load-state` plus F1-F8 (load) /
 Shift+F1-F8 (save) slots in the Win32 front end.
@@ -3829,7 +3829,7 @@ it names were bugs in what was already there:
   ejects the old card first, which saves it.
 
 **What was added.**
-- **Core parsing (`psx/mc_directory.h`):** pure functions over the 128 KB
+- **Core parsing (`media/mc_directory.h`):** pure functions over the 128 KB
   image, with no file or UI. They list saves, with the Shift-JIS title decoded
   and the icon converted to ARGB, count free blocks, delete, undelete, export
   and import `.mcs`, and format.
@@ -3933,7 +3933,7 @@ Phase 0 of [Debugger-Plan.md](Debugger-Plan.md). This is a feature, not a fix,
 recorded here for what it changed in the core and the two bugs its test found
 before they shipped.
 
-**What is in.** `psx/debugger.h`, owned by `System` and so by the machine thread.
+**What is in.** `debug/debugger.h`, owned by `System` and so by the machine thread.
 - **Execute breakpoints** match on the physical address, so KSEG0, KSEG1 and
   KUSEG aliases are one breakpoint. They can be disabled, and each counts its hits.
 - **Stepping:** into, over and out, plus run-to and a break request.
@@ -4009,7 +4009,7 @@ Phase 1 of [Debugger-Plan.md](Debugger-Plan.md): **Emulation > Debugger**.
   disassembly (disassembled there). A halt sends one unasked, through
   `Machine::Hooks::halted`, which also brings the window forward.
 - **Refreshes:** a boot, a reset or a state load refreshes an open window.
-- **The disassembler** moved from `tools/` into Core as `psx/disasm.h`, and now
+- **The disassembler** moved from `tools/` into Core as `debug/disasm.h`, and now
   names every encoding the CPU runs:
   - REGIMM aliases, named by what they do (bug 68);
   - GTE commands;
@@ -4322,7 +4322,7 @@ Devices) and labels.
     vector, before the function runs, and the status line names it.
   - Double-click a call to go to its caller.
   - The names come from the table that used to exist only in debug builds
-    (`debug_assist.cpp`, under `_DEBUG`). It now lives in `psx/bios_calls.cpp`,
+    (`debug_assist.cpp`, under `_DEBUG`). It now lives in `bios/bios_calls.cpp`,
     built everywhere, and the debug build's CSV log uses it from there.
 - **The call stack, approximate.** Every call taken and not yet returned from,
   innermost first. Double-click a frame to go to the function it entered.
@@ -6470,7 +6470,7 @@ DexDrive or another emulator could not be used at all unless it was already a
 raw 128 KB image.
 
 **What Import takes now** (`mcdir::CardFromFile`, `SaveFromFile` and
-`ImportCard` in `psx/mc_directory.h`). The layouts are the ones DuckStation's
+`ImportCard` in `media/mc_directory.h`). The layouts are the ones DuckStation's
 card importer reads.
 
 - **Whole cards.** Import copies every save on the card across, not the card
@@ -6814,7 +6814,7 @@ also presses Start for a moment while the game has focus.
 
 ## 110. Tomb Raider went black after its menu: the drive did not know about pregaps
 
-`psx/disc.cpp`, `psx/cdrom.cpp`
+`media/disc.cpp`, `psx/cdrom.cpp`
 
 **Symptom.** Tomb Raider (SLUS-00152, a CloneCD `.ccd`/`.img`/`.sub` set)
 went to a black screen right after a game was chosen on its menu, and stayed
@@ -6893,7 +6893,7 @@ disc is opened.
 ## 111. Four timing approximations, each now switchable to a finer model
 
 `psx/io_interface.cpp`, `psx/cpu.cpp`, `psx/dma.cpp`, `psx/gpu.cpp`, `psx/system.cpp`,
-`psx/emuconfig.h`, the Win32 menu
+`emu/emuconfig.h`, the Win32 menu
 
 Not a bug a game showed. Gaps.md listed four places where the timing is
 knowingly approximate, and the user asked for each to be done properly while
@@ -7185,7 +7185,7 @@ Display, and `overlay_theme` in `psxemu.ini`.
 ## 115. Settings moved off the menus: an Emulation Settings window with presets, and port types in Controllers
 
 `PSXEmu.Win32/ui/emulation_settings_window.*`, `ui/controller_bindings_window.*`,
-`app/menu.cpp`, `app/app.cpp`, `PSXEmu.Core/psx/emuconfig.h`
+`app/menu.cpp`, `app/app.cpp`, `PSXEmu.Core/emu/emuconfig.h`
 
 Not a bug: a change the user asked for. The Emulation and Input menus had grown
 to hold every setting as a tick, and the two windows now hold them instead.
@@ -7241,7 +7241,7 @@ commands:
 
 `PSXEmu.Win32/app/app.cpp` (`LookUpGame`, `EnterGame`, `LeaveGame`,
 `SetGameSettingsSeparate`, `SaveSettingsIfChanged`), `ui/emulation_settings_window.*`,
-`ui/controller_bindings_window.*`, `ui/game_scope.h`, `PSXEmu.Core/psx/settings.h`
+`ui/controller_bindings_window.*`, `ui/game_scope.h`, `PSXEmu.Core/emu/settings.h`
 
 Not a bug: a feature the user asked for, so the Accuracy preset (bug 115) can
 be kept for the game that needs it.
@@ -7512,13 +7512,13 @@ Every state and card file the test made was deleted afterwards.
 
 ## 120. Cheats: GameShark codes, per game
 
-`PSXEmu.Core/psx/cheats.h`, `tools/cheats_test.cpp`, `PSXEmu.Win32/ui/cheats_window.*`,
+`PSXEmu.Core/emu/cheats.h`, `tools/cheats_test.cpp`, `PSXEmu.Win32/ui/cheats_window.*`,
 `app/app.cpp` (`ApplyCheats`, `LoadCheats`, `SetCheat`, `ImportCheats`)
 
 Not a bug: a feature the user asked for.
 
 **The codes.** GameShark, which is how PlayStation cheats are written down
-everywhere: lines of `TTAAAAAA VVVV`. `psx/cheats.h` runs the original
+everywhere: lines of `TTAAAAAA VVVV`. `emu/cheats.h` runs the original
 cartridge's types:
 - **Writes:** 30 and 80 write 8 or 16 bits; 1F writes the scratchpad.
 - **Arithmetic:** 10/11 and 20/21 add and subtract, every frame, as the
@@ -7713,7 +7713,7 @@ there for upscaling (phase 4); the read-back goes in phase 6.
 
 ## 123. The hardware rasteriser, phase 3: VRAM kept in step, and a lost card
 
-`PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `psx/raster.h` (`lost`), `psx/gpu.cpp`
+`PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `render/raster.h` (`lost`), `psx/gpu.cpp`
 (`FallBackToSoftware`), `host/machine.*` (the report), `app/app.cpp`, `tools/boot_runner.cpp`,
 `tools/hw_raster_test.cpp`
 
@@ -7775,9 +7775,9 @@ hardware rasteriser keeps no pixel counts, rather than printing zeroes.
 
 ## 124. The hardware rasteriser, phase 4: 1x to 8x, and true colour
 
-`PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `psx/raster.h` (`RasterOptions`,
-`ResolveDisplay`), `psx/gpu.*` (`picture`, `set_native_picture`), `psx/emuconfig.h`,
-`psx/settings.h`, `host/machine.cpp`, `app/app.cpp`, `app/menu.cpp`, `app/const.h`, the three
+`PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `render/raster.h` (`RasterOptions`,
+`ResolveDisplay`), `psx/gpu.*` (`picture`, `set_native_picture`), `emu/emuconfig.h`,
+`emu/settings.h`, `host/machine.cpp`, `app/app.cpp`, `app/menu.cpp`, `app/const.h`, the three
 presenters' filter chains, `tools/boot_runner.cpp`, `tools/hw_raster_test.cpp`,
 `tools/media_test.cpp`
 
@@ -7834,9 +7834,9 @@ chain's passes multiply the size.
 
 ## 125. The hardware rasteriser, phase 5: PGXP
 
-`psx/pgxp.h` (new), `psx/gte.*` (`Precise`, `Recall`), `psx/cpu.*`
+`enhance/pgxp.h` (new), `psx/gte.*` (`Precise`, `Recall`), `psx/cpu.*`
 (`StoreWithShadow`), `psx/dma.cpp`, `psx/io_interface.cpp`, `psx/gpu.*`,
-`psx/raster.h`, `psx/system.*`, `psx/emuconfig.h`, `psx/settings.h`,
+`render/raster.h`, `psx/system.*`, `emu/emuconfig.h`, `emu/settings.h`,
 `PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`, `app/app.*`, `app/menu.*`,
 `app/const.h`, `tools/boot_runner.cpp`, `tools/media_test.cpp`
 
@@ -7935,8 +7935,8 @@ against its own address, with the allocator on and off.
 
 ## 127. The hardware rasteriser, phase 6: the picture on the card, and PGXP under the recompiler
 
-`psx/shared_picture.h` (new), `psx/raster.h`, `psx/gpu.*`, `host/frame_mailbox.h`,
-`host/machine.*`, `psx/recompiler_bridge.h`, `psx/system.cpp`, `rec/runtime.h`,
+`render/shared_picture.h` (new), `render/raster.h`, `psx/gpu.*`, `host/frame_mailbox.h`,
+`host/machine.*`, `emu/recompiler_bridge.h`, `psx/system.cpp`, `rec/runtime.h`,
 `rec/recompiler.h`, `rec/block_compiler.h`, `PSXEmu.Win32/graphics/hw_raster/d3d11_raster.*`,
 the four engines (`d3d11_presenter.*`, `d3d12_graphics_engine.*`, `vulkan_engine.*`,
 `opengl_engine.*`), `vk_functions.h`, `gl_functions.h`, `igraphicsengine.h`,
@@ -7994,7 +7994,7 @@ on. PGXP no longer turns the recompiler off.
 `graphics/adapters.h` (new), `graphics/igraphicsengine.h`, `graphics/d3d11_presenter.*`,
 `graphics/d3d12_graphics_engine.*`, `graphics/vulkan_engine.*`, `graphics/video_presenter.*`,
 `graphics/hw_raster/d3d11_raster.cpp`, `app/engine_factory.*`, `app/app.*`, `app/menu.*`,
-`app/const.h`, `psx/emuconfig.h`, `psx/settings.h`, `tools/boot_runner.cpp`,
+`app/const.h`, `emu/emuconfig.h`, `emu/settings.h`, `tools/boot_runner.cpp`,
 `tools/media_test.cpp`
 
 Not a bug: a request - "let the user choose which GPU to use, for any of the engines and the
@@ -8026,7 +8026,7 @@ on each card by name. Those runs were made before the RTX 4060 dropped out of th
 
 `graphics/d3d11_presenter.*`, `graphics/d3d12_graphics_engine.*`, `graphics/vulkan_engine.*`,
 `graphics/opengl_engine.*`, `graphics/gl_functions.h`, `graphics/hw_raster/d3d11_raster.*`,
-`psx/shared_picture.h`
+`render/shared_picture.h`
 
 **A livelock (phase 6).** The rasteriser rotates its pictures through a fixed set of textures
 and a presenter hands one back only while it is drawing shared pictures. When the set was
@@ -8136,7 +8136,7 @@ state's rows are consistent and the logo is drawn whole.
 
 ## 131. Tomb Raider froze on Start or Select: a CloneCD dump with no pregaps between its music tracks
 
-`psx/disc.cpp`, `psx/disc.h`, `psx/cdrom.cpp`, `tools/media_test.cpp`
+`media/disc.cpp`, `media/disc.h`, `psx/cdrom.cpp`, `tools/media_test.cpp`
 
 Reported: loading the first save slot of Tomb Raider (`SLUS-00152.Tomb Raider.ccd`) and pressing Start
 or Select froze the game. The same game as a `.cue` (the v1.1 Redump set) did not, nor did Tomb Raider
@@ -8338,7 +8338,7 @@ Check Again: "Running: NVIDIA DLSS 310.9.1, at 3x" and Frame Generation 2x, with
 ## 136. A Direct3D 12 rasteriser, and the hand-off that cost a third of its frame
 
 `graphics/hw_raster/` (`d3d12_raster.*`, `hardware_raster.*`, `raster_common.h`),
-`psx/shared_picture.h`, `graphics/opengl_engine.cpp`, `graphics/vulkan_engine.cpp`,
+`render/shared_picture.h`, `graphics/opengl_engine.cpp`, `graphics/vulkan_engine.cpp`,
 `ui/video_settings_window.*`, `tools/boot_runner.cpp`
 
 Built on request - "make the d3d12 one but keep the current one also in case i want to switch" -
@@ -8398,7 +8398,7 @@ matched only a shader-model-5 build.
 
 `graphics/shared_device.h`, `graphics/d3d12_graphics_engine.*`, `graphics/d3d12_dlss.cpp`,
 `graphics/video_presenter.*`, `graphics/igraphicsengine.h`, `graphics/hw_raster/`,
-`psx/shared_picture.h`, `app/app.*`, `tools/boot_runner.cpp`, `tools/hw_raster_test.cpp`
+`render/shared_picture.h`, `app/app.*`, `tools/boot_runner.cpp`, `tools/hw_raster_test.cpp`
 
 Not a bug: a request - "let them share one device, want best performance without any
 compromise". Docs/Hardware-Renderer-Plan.md has the design and the measurements.
@@ -8443,7 +8443,7 @@ right, at full speed.
 
 ## 138. DLSS on 480 lines interlaced, and what DLSS is given, checked
 
-`psx/gpu.*`, `psx/raster.h`, `psx/shared_picture.h`, `graphics/hw_raster/` (`raster_common.h`,
+`psx/gpu.*`, `render/raster.h`, `render/shared_picture.h`, `graphics/hw_raster/` (`raster_common.h`,
 `d3d11_raster.*`, `d3d12_raster.*`), `graphics/d3d12_dlss.cpp`, `tools/boot_runner.cpp`,
 `tools/hw_raster_test.cpp`
 
@@ -8984,7 +8984,7 @@ old refusal.
 ## 148. Frame pacing against the display, and a custom filter chain
 
 `platform/display_sync.h` (new), `platform/frame_limiter.h`, `host/machine.*`,
-`host/frame_mailbox.h`, `host/video_output.*`, `psx/emuconfig.h`, `psx/settings.h`;
+`host/frame_mailbox.h`, `host/video_output.*`, `emu/emuconfig.h`, `emu/settings.h`;
 `graphics/display_clock.*`, `graphics/filter_chain.h`, `graphics/shader_pass.h` (new), the four
 engines, `graphics/video_presenter.*`, `app/app.*`, `app/const.h`, `ui/video_settings_window.*`;
 `tools/frame_limiter_test.cpp`, `tools/filter_chain_test.cpp` (new)
@@ -9061,7 +9061,7 @@ runs each cannot say whether matching adds to it.
 
 ## 149. LibCrypt: .sbi and .lsd patches, and the subchannel's CRC
 
-`psx/disc.h/.cpp`, `psx/cdrom.h/.cpp`, `app/app.cpp`, `tools/media_test.cpp`
+`media/disc.h/.cpp`, `psx/cdrom.h/.cpp`, `app/app.cpp`, `tools/media_test.cpp`
 
 Not a bug: a request - "implement sbi support", after LibCrypt was named the largest compatibility
 gap left.
@@ -9157,7 +9157,7 @@ a word are psx-spx's figure for a channel it notes nothing uses.
 
 ## 151. Input movies: BizHawk .bk2 files played into the ports
 
-`psx/movie.h/.cpp`, `tools/movie_test.cpp`, `tools/boot_runner.cpp`, `app/app.cpp`, `app/menu.cpp`
+`emu/movie.h/.cpp`, `tools/movie_test.cpp`, `tools/boot_runner.cpp`, `app/app.cpp`, `app/menu.cpp`
 
 Not a bug: a request - "can we do tas bk2 file support? meaning opening a game, loading the bk2
 file and the auto input etc works".
@@ -9439,7 +9439,7 @@ Air Combat's 849,419,002 and checksum at 3,000 frames.
 
 ## 152. A tint just under 80h never took a step off a bright texel - Silent Hill's trail stayed
 
-`psx/software_raster.cpp`, `PSXEmu.Win32/graphics/hw_raster/raster_common.h`, `tools/gpu_test.cpp`
+`render/software_raster.cpp`, `PSXEmu.Win32/graphics/hw_raster/raster_common.h`, `tools/gpu_test.cpp`
 
 Reported in Silent Hill (SLUS-00707), from a save state in the dark: running, Harry leaves marks
 behind him that should fade away like motion blur, and they stayed - smeared copies of his arms and

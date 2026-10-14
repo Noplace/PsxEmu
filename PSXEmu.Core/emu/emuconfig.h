@@ -203,7 +203,7 @@ struct EmuConfig {
   // emulators - in place of either model above: its seek times, its pauses, its command
   // delays (Cdrom::MednafenTiming). Not a setting, and never stored: a BizHawk movie is input
   // by frame number, and every load has to take the frames it took when it was recorded, so
-  // whoever plays one turns this on for as long as it plays (psx/movie.h, bug 151).
+  // whoever plays one turns this on for as long as it plays (emu/movie.h, bug 151).
   bool cdrom_mednafen_timing = false;
 
   // --- Boot -----------------------------------------------------------

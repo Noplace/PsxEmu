@@ -439,7 +439,7 @@ bool SharedMatches(const emulation::psx::SharedPicture& picture,
   return psxemu::HardwareRaster::ReadSharedPicture(picture, &read) && read == pixels;
 }
 
-// Phase 6 (psx/shared_picture.h): the picture left on the card, against the one read back. Two
+// Phase 6 (render/shared_picture.h): the picture left on the card, against the one read back. Two
 // rasterisers at 2x over the same native VRAM, one made to share its pictures and one not, each
 // resolving the display area; the shared one is read back the way a screenshot reads it.
 void SceneSharedPicture(Random& random) {
