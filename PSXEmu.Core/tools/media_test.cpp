@@ -2832,6 +2832,22 @@ void TestSettingsFile(const std::string& directory) {
           "a game can keep its own FSR mode and Frame Generation");
   }
 
+  // The GTE's commands as x64 (rec/gte_compiler.h): on by default, turned off and kept, and a
+  // game's own.
+  {
+    EmuConfig config;
+    Check(config.gte_x64, "GTE commands as x64 are on by default");
+    config.gte_x64 = false;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(!loaded.gte_x64, "GTE commands as x64 turned off survive the round trip");
+    const std::vector<std::string> keys = emulation::psx::GameSettingKeys();
+    Check(std::find(keys.begin(), keys.end(), "gte_x64") != keys.end(),
+          "a game can keep its own GTE commands as x64");
+  }
+
   // The graphics card (Settings > Video > Graphics Card): automatic by default, and a name -
   // spaces, brackets and all - kept as it is. A saved name for a card that is not here is
   // kept too: it is the front end that treats it as automatic, so that the choice comes back

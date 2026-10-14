@@ -18,6 +18,9 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <array>
+#include <utility>
+
 namespace emulation {
 namespace psx {
 
@@ -118,6 +121,39 @@ class Gte : public Component {
 
   // Kept for the aggregate header's older call site.
   void ExecuteCommand(uint32_t command) { Execute(command); }
+
+  // ---- For compiled code (psx/recompiler_bridge.h, rec::GteLayout) ---------
+  // Execute, one command at a time: the function that does only the command `opcode` names (the
+  // word's low six bits), with no dispatch on it, and how long it keeps the unit busy - the two
+  // halves of what Execute does and returns, which Execute itself is built from.
+  typedef void (*CommandFn)(void* gte, uint32_t command);
+  static CommandFn CommandFunction(uint32_t opcode);
+  static uint32_t CommandCycles(uint32_t opcode);
+
+  // Where a register lives in this object, for code that moves it without ReadData and WriteData:
+  // a word, or a halfword read with or without its sign, at `offset` bytes from the Gte. kComputed
+  // is a register that is more than its storage - SXYP's push, IRGB, LZCS, FLAG, and the SXY
+  // entries while PGXP keeps a shadow beside each - and has to go through those two.
+  struct Home {
+    enum Kind : uint8_t { kComputed, kWord, kSigned16, kUnsigned16, kHalf, kIgnored };
+    Kind read = kComputed;
+    Kind write = kComputed;
+    int32_t offset = 0;
+    int32_t cleared = -1;   // a word a write also sets to zero (where a vertex came from), or -1
+  };
+  Home RegisterHome(bool control, uint32_t index) const;
+
+  // Where the state the commands work on lives, for the commands emitted as x64
+  // (rec/gte_compiler.h): each member's offset from the Gte, the shapes as declared below, and the
+  // divide's reciprocal table. The emitted code keeps every one of them as Execute would leave it.
+  struct Fields {
+    int32_t v, rgbc, otz, ir, sxy, sz, rgb_fifo, mac;
+    int32_t matrix, translation, ofx, ofy, h, dqa, dqb, zsf3, zsf4, flag;
+    int32_t lm, sf, pgxp;
+    int32_t commands, unknown_commands, executed;
+    const uint8_t* divide_table;
+  };
+  Fields FieldOffsets() const;
 
   // How many commands ran, and how many were not recognised. An unimplemented
   // command that quietly does nothing is the failure mode worth counting.
@@ -220,6 +256,16 @@ class Gte : public Component {
   void DepthCue(uint8_t r, uint8_t g, uint8_t b);
 
   // ---- commands ----------------------------------------------------------
+  // One command, start to finish: FLAG cleared, the shift and limit bits taken, the counts, the
+  // command, the error bit. What Execute does for the word, without asking which command it is.
+  template <uint32_t kOpcode> void Run(uint32_t command);
+  template <uint32_t kOpcode> static void RunCommand(void* gte, uint32_t command) {
+    static_cast<Gte*>(gte)->Run<kOpcode>(command);
+  }
+  template <size_t... kOpcodes>
+  static constexpr std::array<CommandFn, 64> CommandTable(std::index_sequence<kOpcodes...>);
+  static const std::array<CommandFn, 64> kCommands;   // RunCommand<0> to RunCommand<63>
+
   void Rtps(int vector_index, bool compute_ir0);
   void Rtpt();
   void Nclip();

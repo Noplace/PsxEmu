@@ -88,6 +88,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <unordered_map>
 #include <vector>
 
@@ -188,6 +189,17 @@ struct HostInterface {
   uint32_t (*gte)(void* context, uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed,
                   uint32_t* extra_cycles) = nullptr;
 
+  // The GTE compiled in place (GteLayout in runtime.h), on top of `gte`: where its registers are in
+  // `gte_unit`, and the function for each command. Compiled code then moves registers itself, keeps
+  // the unit's busy clock itself - `gte_busy_until`, on `clock`, the very variables `gte`'s holds
+  // read and write, so the two agree whichever does an instruction - and calls a command's function
+  // directly. A register the layout says kCall, and every command it gives no function for, still
+  // goes to `gte`. All four or none.
+  const GteLayout* gte_layout = nullptr;
+  void* gte_unit = nullptr;
+  const uint64_t* clock = nullptr;
+  uint64_t* gte_busy_until = nullptr;
+
   // Advance the machine by `cycles`: the cycles a chain has run that the machine has not been
   // charged yet. Called just before a load or store that goes past RAM - a counter, the GPU, the
   // CD, DMA - because hardware answers by the clock, and compiled code does not tick as it goes: a
@@ -248,6 +260,14 @@ class Recompiler {
     state_.special = &SpecialThunk;
     compiler_.set_special_ops(host.overflow != nullptr && host.hilo != nullptr);
     compiler_.set_gte_ops(host.gte != nullptr);
+    if (host.gte != nullptr && host.gte_layout != nullptr && host.gte_unit != nullptr &&
+        host.clock != nullptr && host.gte_busy_until != nullptr) {
+      compiler_.set_gte_layout(host.gte_layout);
+      gte_compiler_.reset(new GteCompiler(host.gte_layout));
+      state_.gte = static_cast<uint8_t*>(host.gte_unit);
+      state_.clock = host.clock;
+      state_.gte_busy_until = host.gte_busy_until;
+    }
     ram_window_ = host.ram_window_bytes > host.ram_bytes ? host.ram_window_bytes : host.ram_bytes;
   }
 
@@ -305,8 +325,9 @@ class Recompiler {
     state_.budget = budget_;
     state_.fault = 0;
     state_.extra_cycles = 0;
-    special_extra_ = 0;
+    state_.special_cycles = 0;
     synced_ = 0;
+    state_.clock_offset = static_cast<uint32_t>(budget_);
     ++executing_;
     reinterpret_cast<void (*)(BlockState*)>(code)(&state_);
     --executing_;
@@ -329,7 +350,7 @@ class Recompiler {
     stats_.cycles_compiled += chain;
     // What direct reads owed, for stats() to divide into reads: not what the multiply and divide
     // unit asked for, which is in the same sum for the chain's charge.
-    stall_cycles_direct_ += state_.extra_cycles - special_extra_;
+    stall_cycles_direct_ += state_.extra_cycles - state_.special_cycles;
 
     // A memory access raised a guest exception and the block stopped where it
     // was. Whoever raised it has already moved the CPU's pc, so there is
@@ -407,6 +428,20 @@ class Recompiler {
     outgoing_.clear();
     reclaim_pending_ = true;
   }
+
+  // GTE commands as x64 (GteCompiler) rather than calls to the host's C++ for each. Every block
+  // has its commands' functions in it, so a change throws them all away (Reset). Off, and on with
+  // no layout the commands can be emitted from, the commands are the host's.
+  void set_gte_x64(bool on) {
+    on = on && gte_compiler_ != nullptr && gte_compiler_->available();
+    if (on == gte_x64_)
+      return;
+    gte_x64_ = on;
+    compiler_.set_gte_compiler(on ? gte_compiler_.get() : nullptr);
+    Reset();
+  }
+  bool gte_x64() const { return gte_x64_; }
+  const GteCompiler* gte_compiler() const { return gte_compiler_.get(); }
 
   // The budget a single entry into compiled code is given, in guest
   // instructions. In the emulator this would be the cycles until the next
@@ -667,7 +702,7 @@ class Recompiler {
             ? self->host_.gte(self->host_.context, funct, a, b, elapsed, &extra)
             : self->host_.hilo(self->host_.context, funct, a, b, elapsed, &extra);
     self->state_.extra_cycles += extra;
-    self->special_extra_ += extra;
+    self->state_.special_cycles += extra;
     return value;
   }
 
@@ -694,6 +729,9 @@ class Recompiler {
     if (total > synced_) {
       host_.sync(host_.context, total - synced_);
       synced_ = total;
+      // The host's clock has moved by what was synced; compiled code's reckoning from it moves back
+      // by the same, so an instruction's time on it (BlockState::clock_offset) stays where it was.
+      state_.clock_offset = static_cast<uint32_t>(budget_) - synced_;
     }
   }
 
@@ -744,8 +782,9 @@ class Recompiler {
   std::vector<CodeBlock*> arenas_;
   mutable Stats stats_;
   uint64_t stall_cycles_direct_ = 0;
-  uint32_t special_extra_ = 0;   // extra cycles the current chain's SpecialThunk calls asked for
   uint32_t synced_ = 0;          // cycles of the current chain the host has already been brought up to
+  std::unique_ptr<GteCompiler> gte_compiler_;   // with a GTE layout; used while gte_x64_
+  bool gte_x64_ = false;
   uint32_t ram_window_ = 0;      // physical addresses below this are RAM, which has no clock
   int executing_ = 0;
   bool reclaim_pending_ = false;

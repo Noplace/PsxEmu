@@ -753,12 +753,38 @@ class FakeBus {
   // cycles, during which a command or a read of a register waits (one cycle more than the command has
   // left, as Cpu::COP2 holds). What it computes is nothing like the GTE; what it holds to is the
   // GTE's rules about when - which is what a compiled instruction can get wrong.
+  //
+  // Most of its registers are words. A few are the other kinds the real GTE has, so that the in-place
+  // form (ToyGteLayout) has each kind to get right: data 8-11 and control 26 are signed halfwords and
+  // data 16-19 unsigned ones, in the low half of their word; a write to data 29 does nothing; and a
+  // write to data 2 also clears `gte_cleared`, as a write to a vertex clears where it was loaded from.
   uint32_t gdata[32] = {};
   uint32_t gctrl[32] = {};
+  uint32_t gte_cleared = 0;
   uint64_t gte_busy_until = 0;
   int gte_commands = 0;
+  static uint32_t GteRead(const uint32_t* file, bool control, uint32_t index) {
+    const uint32_t word = file[index];
+    if ((!control && index >= 8 && index <= 11) || (control && index == 26))
+      return static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(word)));
+    if (!control && index >= 16 && index <= 19)
+      return word & 0xFFFF;
+    return word;
+  }
+  static void GteWrite(uint32_t* file, uint32_t* cleared, bool control, uint32_t index, uint32_t value) {
+    if (!control && index == 29)
+      return;
+    if ((!control && ((index >= 8 && index <= 11) || (index >= 16 && index <= 19))) ||
+        (control && index == 26))
+      value = (file[index] & 0xFFFF0000u) | (value & 0xFFFF);
+    file[index] = value;
+    if (!control && index == 2)
+      *cleared = 0;
+  }
+  int gte_host_calls = 0;   // how many of the GTE's instructions came here rather than ran in place
   uint32_t GteImpl(uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed, uint32_t* extra) {
     const uint64_t now = clock + elapsed;
+    ++gte_host_calls;
     *extra = 0;
     auto hold = [&]() {
       if (now < gte_busy_until)
@@ -771,14 +797,24 @@ class FakeBus {
         gdata[31] += b & 0xFFFF;
         gte_busy_until = now + *extra + 1 + ((5 + (b & 0xF)) - 1);
         return 0;
-      case emulation::rec::kSpecialGteMfc2: hold(); return gdata[b];
-      case emulation::rec::kSpecialGteCfc2: hold(); return gctrl[b];
+      case emulation::rec::kSpecialGteMfc2: hold(); return GteRead(gdata, false, b);
+      case emulation::rec::kSpecialGteCfc2: hold(); return GteRead(gctrl, true, b);
       case emulation::rec::kSpecialGteMtc2:
-      case emulation::rec::kSpecialGteLoad: gdata[b] = a; return 0;
-      case emulation::rec::kSpecialGteCtc2: gctrl[b] = a; return 0;
-      default: return gdata[b];   // kSpecialGteStore
+      case emulation::rec::kSpecialGteLoad: GteWrite(gdata, &gte_cleared, false, b, a); return 0;
+      case emulation::rec::kSpecialGteCtc2: GteWrite(gctrl, &gte_cleared, true, b, a); return 0;
+      default: return GteRead(gdata, false, b);   // kSpecialGteStore
     }
   }
+  // A command run in place (GteLayout::commands): what GteImpl's does, with no clock - compiled code
+  // keeps that itself. `gte` is the bus, which is what BlockState::gte points at.
+  static void ToyCommand(void* gte, uint32_t word) {
+    FakeBus* bus = static_cast<FakeBus*>(gte);
+    ++bus->gte_commands;
+    bus->gdata[31] += word & 0xFFFF;
+  }
+  // Ticks the host's clock inside every call to a load or store, as Cpu::Load ticks out a stall:
+  // time that passes under compiled code without the chain knowing.
+  uint32_t callout_ticks = 0;
   static uint32_t Gte(void* c, uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed,
                       uint32_t* extra) {
     return Bus(c)->GteImpl(operation, a, b, elapsed, extra);
@@ -833,10 +869,12 @@ class FakeBus {
 
   uint32_t DoRead(uint32_t address, int width) {
     ++calls;
+    clock += callout_ticks;
     return Read(address, width);
   }
   void DoWrite(uint32_t address, int width, uint32_t value) {
     ++calls;
+    clock += callout_ticks;
     Write(address, width, value);
   }
 
@@ -847,6 +885,49 @@ class FakeBus {
 // The code-page bitmap a block-level test hands its state: nothing there is code, which is what
 // a direct store asks. (The engine's own state points at its BlockCache's.)
 uint64_t g_no_code_pages[2048] = {};
+
+// The toy GTE as compiled code is told it is laid out (GteLayout): every register its word in gdata
+// or gctrl, of the kind FakeBus::GteRead and GteWrite say - and, so that the in-place form has to mix
+// with the call it replaces, data 28 and the writes of data 12 and control 31 go through the host
+// (as IRGB, the SXY entries and FLAG do for the real one), and so does command 0x14.
+const emulation::rec::GteLayout* ToyGteLayout() {
+  using Access = emulation::rec::GteRegisterAccess;
+  static emulation::rec::GteLayout layout;
+  static bool built = false;
+  if (built)
+    return &layout;
+  built = true;
+  for (uint32_t i = 0; i < 64; ++i) {
+    const bool control = i >= 32;
+    const uint32_t index = i & 31;
+    Access& access = layout.registers[i];
+    access.offset = static_cast<int32_t>((control ? offsetof(FakeBus, gctrl) : offsetof(FakeBus, gdata)) + 4 * index);
+    access.read = Access::kWord;
+    access.write = Access::kWord;
+    if ((!control && index >= 8 && index <= 11) || (control && index == 26)) {
+      access.read = Access::kSigned16;
+      access.write = Access::kHalf;
+    }
+    if (!control && index >= 16 && index <= 19) {
+      access.read = Access::kUnsigned16;
+      access.write = Access::kHalf;
+    }
+    if (!control && index == 29)
+      access.write = Access::kIgnored;
+    if (!control && index == 2)
+      access.cleared = static_cast<int32_t>(offsetof(FakeBus, gte_cleared));
+    if (!control && index == 28)
+      access.read = access.write = Access::kCall;
+    if ((!control && index == 12) || (control && index == 31))
+      access.write = Access::kCall;
+    layout.commands[i] = i == 0x14 ? nullptr : &FakeBus::ToyCommand;
+    layout.cycles[i] = static_cast<uint8_t>(5 + (i & 0xF));
+  }
+  return &layout;
+}
+
+// And whether the GTE's instructions are compiled in place: off, every one calls out.
+bool g_gte_layout = false;
 
 emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
   emulation::rec::BlockState state;
@@ -864,6 +945,14 @@ emulation::rec::BlockState MakeState(uint32_t* regs, FakeBus* bus) {
   state.ram_store = bus->ram();
   state.scratchpad = bus->scratch();
   state.special = &FakeBus::Special;   // likewise, for the instructions that need a host
+  if (g_gte_layout) {
+    // A block run by itself starts at the bus's clock, as FakeBus::Special reckons it: a budget of
+    // zero, nothing synced.
+    state.gte = reinterpret_cast<uint8_t*>(bus);
+    state.clock = &bus->clock;
+    state.gte_busy_until = &bus->gte_busy_until;
+    state.clock_offset = 0;
+  }
   return state;
 }
 
@@ -903,6 +992,7 @@ emulation::rec::BlockCompiler MakeCompiler(Emitter* emitter) {
   compiler.set_direct_scratchpad(g_direct_ram && g_direct_scratch ? FakeBus::kScratchBase : 0, 1024);
   compiler.set_special_ops(g_special_ops);
   compiler.set_gte_ops(g_gte_ops);
+  compiler.set_gte_layout(g_gte_layout ? ToyGteLayout() : nullptr);
   // Allocate however short the block is. In the emulator a block has to be
   // long enough for allocation to pay; here it has to happen at all, or the
   // second pass over the suite would compile the same thing as the first and
@@ -1879,6 +1969,12 @@ class Engine {
     }
     if (g_gte_ops)
       host.gte = &FakeBus::Gte;
+    if (g_gte_ops && g_gte_layout) {
+      host.gte_layout = ToyGteLayout();
+      host.gte_unit = &bus;
+      host.clock = &bus.clock;
+      host.gte_busy_until = &bus.gte_busy_until;
+    }
     if (g_sync) {
       host.sync = &FakeBus::Sync;
       host.ram_window_bytes = g_direct_ram ? kBusBytes : 0;
@@ -3496,12 +3592,14 @@ struct GteReference {
   uint32_t r[32] = {};
   uint32_t data[32] = {};
   uint32_t ctrl[32] = {};
+  uint32_t cleared = 0;
   uint64_t cycles = 0;
   uint64_t busy_until = 0;
 };
 
-GteReference RunGteReference(const std::vector<uint32_t>& program, const uint32_t initial[32]) {
-  GteReference m;
+GteReference RunGteReference(const std::vector<uint32_t>& program, const uint32_t initial[32],
+                             const GteReference& start = GteReference()) {
+  GteReference m = start;
   for (int i = 0; i < 32; ++i)
     m.r[i] = initial[i];
   struct Late { uint32_t reg = 0, value = 0; bool active = false; } pending, armed;
@@ -3538,14 +3636,14 @@ GteReference RunGteReference(const std::vector<uint32_t>& program, const uint32_
     } else if (opcode == 0x12) {
       if (rs == 0 || rs == 2) {
         hold();
-        const uint32_t value = rs == 0 ? m.data[rd] : m.ctrl[rd];
+        const uint32_t value = rs == 0 ? FakeBus::GteRead(m.data, false, rd) : FakeBus::GteRead(m.ctrl, true, rd);
         if (pending.active && pending.reg == rt)
           pending.active = false;
         armed.reg = rt; armed.value = value; armed.active = rt != 0;
       } else if (rs == 4) {
-        m.data[rd] = m.r[rt];
+        FakeBus::GteWrite(m.data, &m.cleared, false, rd, m.r[rt]);
       } else if (rs == 6) {
-        m.ctrl[rd] = m.r[rt];
+        FakeBus::GteWrite(m.ctrl, &m.cleared, true, rd, m.r[rt]);
       }
       m.cycles += 1;
     } else if (opcode == 0x00 && (word & 0x3F) == 0x21) {
@@ -3603,7 +3701,9 @@ void TestTheGteMatchesTheInterpreter() {
   const uint32_t codes[] = { 0x00000001, 0x0000000F, 0x00000013, 0x00000FF8 };
   const int gaps[] = { 0, 1, 2, 4, 5, 8, 12, 25 };
   int runs = 0, failures = 0;
-  for (int reader = 0; reader < 2; ++reader) {
+  // mfc2 and cfc2 of a register the toy's layout has compiled code read itself, and mfc2 of one it
+  // leaves to the host (data 28) - which with the layout off are all three calls.
+  for (int reader = 0; reader < 3; ++reader) {
     for (uint32_t code : codes) {
       for (int gap : gaps) {
         std::vector<uint32_t> program = {
@@ -3613,7 +3713,7 @@ void TestTheGteMatchesTheInterpreter() {
         };
         for (int i = 0; i < gap; ++i)
           program.push_back(NOP());
-        program.push_back(reader == 0 ? MFC2_(5, 31) : CFC2_(5, 9));
+        program.push_back(reader == 0 ? MFC2_(5, 31) : reader == 1 ? CFC2_(5, 9) : MFC2_(5, 28));
         program.push_back(ADDU(6, 5, 0));      // the delay slot: the register's old value
         program.push_back(ADDU(7, 5, 0));      // and after it: the new one
         program.push_back(COP2CMD(code + 1));  // straight after
@@ -3647,7 +3747,7 @@ void TestTheGteMatchesTheInterpreter() {
     }
   }
   CheckEqual(failures, 0, "every command, gap and reader agrees with the interpreter");
-  Check(runs >= 64, "and the sweep covered what it says");
+  Check(runs >= 96, "and the sweep covered what it says");
 
   // The old value really is what the delay slot sees, and the new one what comes after.
   {
@@ -3867,6 +3967,157 @@ void TestTheGteClockFollowsTheChain() {
              "one block per entry costs what the interpreter's clock says");
   CheckEqual(static_cast<int64_t>(chained), static_cast<int64_t>(expected.cycles),
              "and so does the same code run as a chain of linked blocks");
+}
+
+// Every kind of register the in-place form knows - word, signed and unsigned halfword, a write that
+// does nothing, a write that clears a word beside it - and the ones it leaves to the host, written
+// and read back, against the interpreter's reading of the same toy registers.
+void TestTheGteInPlaceMovesEveryKindOfRegister() {
+  printf("every kind of GTE register moves in place as the interpreter moves it, and to the host when it says so\n");
+
+  const std::vector<uint32_t> program = {
+      MTC2_(1, 8),  MTC2_(1, 16), MTC2_(1, 29), MTC2_(1, 2),  MTC2_(1, 12), MTC2_(1, 28),
+      MTC2_(2, 31), CTC2_(1, 26), CTC2_(2, 31), CTC2_(2, 5),
+      MFC2_(10, 8), MFC2_(11, 16), MFC2_(12, 29), MFC2_(13, 2), MFC2_(14, 12), MFC2_(15, 28),
+      CFC2_(16, 26), CFC2_(17, 31), CFC2_(18, 5),
+      MFC2_(19, 9),                // a signed halfword whose upper half is not its sign
+      MFC2_(20, 17),               // an unsigned one whose upper half is not zero
+      MFC2_(21, 31),
+      NOP(),
+  };
+  uint32_t initial[32] = {};
+  initial[1] = 0x8001F234;         // low half negative, upper half not its sign
+  initial[2] = 0x00017FFF;
+  GteReference start;
+  for (uint32_t i = 0; i < 32; ++i) {
+    start.data[i] = 0xA5A50000u | (i * 0x111);
+    start.ctrl[i] = 0x5A5A0000u | (i * 0x101);
+  }
+  start.data[9] = 0x12348000;
+  start.data[17] = 0xFFFF1234;
+  start.cleared = 0x77;
+  const GteReference expected = RunGteReference(program, initial, start);
+
+  GteRun run;
+  memcpy(run.bus.gdata, start.data, sizeof(start.data));
+  memcpy(run.bus.gctrl, start.ctrl, sizeof(start.ctrl));
+  run.bus.gte_cleared = start.cleared;
+  RunGte(program, initial, &run);
+
+  CheckEqual(run.compiled, static_cast<int64_t>(program.size()), "the whole block compiled");
+  int registers_differing = 0;
+  for (int i = 0; i < 32; ++i)
+    registers_differing += (run.bus.gdata[i] != expected.data[i]) + (run.bus.gctrl[i] != expected.ctrl[i]);
+  CheckEqual(registers_differing, 0, "every data and control register holds what the interpreter's would");
+  CheckEqual(run.bus.gte_cleared, expected.cleared, "the word a write clears is cleared");
+  int read_differing = 0;
+  for (int i = 10; i <= 21; ++i) {
+    if (run.regs[i] != expected.r[i]) {
+      ++read_differing;
+      printf("  r%d = %08X, want %08X\n", i, run.regs[i], expected.r[i]);
+    }
+  }
+  CheckEqual(read_differing, 0, "and every read reads what the interpreter's would");
+  CheckEqual(run.regs[19], 0xFFFF8000u, "a signed halfword is sign-extended from its own bit 15");
+  CheckEqual(run.regs[20], 0x1234u, "an unsigned one is not");
+  CheckEqual(run.cycles, static_cast<int64_t>(expected.cycles), "at the interpreter's cost");
+  if (g_gte_layout) {
+    // data 12 and 28 written, 28 read, control 31 written: the four the layout leaves to the host.
+    CheckEqual(run.bus.gte_host_calls, 4, "in place, only what the layout leaves to the host goes to it");
+  }
+
+  // lwc2 and swc2 through the same kinds: a halfword loaded and stored back sign- or zero-extended.
+  {
+    const bool saved = g_direct_ram;
+    g_direct_ram = true;
+    uint32_t regs[32] = {};
+    regs[1] = kBusBase + 0x100;
+    const std::vector<uint32_t> moves = {
+        LWC2_(9, 1, 0), LWC2_(17, 1, 0), LWC2_(29, 1, 0), LWC2_(2, 1, 0),
+        SWC2_(9, 1, 0x10), SWC2_(17, 1, 0x14), SWC2_(29, 1, 0x18), SWC2_(2, 1, 0x1C),
+        NOP(),
+    };
+    GteRun loads;
+    loads.bus.Write(kBusBase + 0x100, 4, 0xCAFE9ABC);
+    loads.bus.gdata[29] = 0x29292929;
+    loads.bus.gte_cleared = 0x77;
+    RunGte(moves, regs, &loads);
+    g_direct_ram = saved;
+    CheckEqual(loads.compiled, static_cast<int64_t>(moves.size()), "lwc2 and swc2: the whole block compiled");
+    CheckEqual(loads.bus.Read(kBusBase + 0x110, 4), 0xFFFF9ABCu, "lwc2 then swc2 of a signed halfword");
+    CheckEqual(loads.bus.Read(kBusBase + 0x114, 4), 0x9ABCu, "and of an unsigned one");
+    CheckEqual(loads.bus.Read(kBusBase + 0x118, 4), 0x29292929u, "a load into a register that ignores writes");
+    CheckEqual(loads.bus.Read(kBusBase + 0x11C, 4), 0xCAFE9ABCu, "and of a word");
+    CheckEqual(loads.bus.gte_cleared, 0u, "whose write cleared the word beside it");
+  }
+}
+
+// The busy clock in place is the host's own clock, read as it runs - so time that passes under compiled
+// code without the chain counting it (a callout that ticks, as Cpu::Load ticks a stall; a sync before a
+// load past RAM) is seen exactly as the host's own hold sees it. The same chain with the layout and
+// without it has to come out the same.
+void TestTheGteInPlaceKeepsTheHostsClock() {
+  printf("the GTE's clock in place is the host's, across a sync and a callout that ticks\n");
+
+  const std::vector<uint32_t> program = {
+      LUI_(1, 0xBF80),             // 0
+      ORI_(1, 1, 0x1120),          // 1: past RAM
+      COP2CMD(0x0000000F),         // 2: twenty cycles
+      LW(3, 1, 0),                 // 3: a callout, and the host's clock brought up first
+      NOP(),                       // 4
+      MFC2_(5, 31),                // 5: may still have to wait, by however much the clock moved
+      ADDU(6, 5, 0),               // 6
+      COP2CMD(0x0000000E),         // 7
+      SW(6, 1, 0),                 // 8
+      CFC2_(7, 3),                 // 9
+      NOP(),                       // 10
+      JR(0),                       // 11
+      NOP(),                       // 12
+  };
+  int disagreements = 0;
+  for (uint32_t ticks : { 0u, 1u, 3u, 9u, 30u }) {
+    uint64_t total[2] = {};
+    uint32_t r5[2] = {}, r7[2] = {};
+    uint32_t result[2] = {};
+    int host_calls[2] = {};
+    for (int in_place = 0; in_place < 2; ++in_place) {
+      g_gte_ops = true;
+      g_gte_layout = in_place != 0;
+      g_direct_ram = true;
+      g_sync = true;
+      Engine engine;
+      engine.bus.WriteProgram(kProgramBase, program);
+      engine.bus.gctrl[3] = 0x3333;
+      engine.bus.callout_ticks = ticks;
+      engine.AttachRecompiler();
+      uint32_t pc = kProgramBase;
+      int steps = 0;
+      while (pc != 0 && steps++ < 8) {
+        pc = engine.recompiler()->Step(pc);
+        engine.bus.clock += engine.recompiler()->last_cycles();
+      }
+      g_gte_ops = false;
+      g_gte_layout = false;
+      g_direct_ram = false;
+      g_sync = false;
+      total[in_place] = engine.bus.clock;
+      r5[in_place] = engine.machine.r[5];
+      r7[in_place] = engine.machine.r[7];
+      result[in_place] = engine.bus.gdata[31];
+      host_calls[in_place] = engine.bus.gte_host_calls;
+    }
+    if (total[0] != total[1] || r5[0] != r5[1] || r7[0] != r7[1] || result[0] != result[1]) {
+      ++disagreements;
+      printf("  FAIL  %u ticks a callout: clock %llu in place, %llu called; r5 %X/%X r7 %X/%X\n", ticks,
+             static_cast<unsigned long long>(total[1]), static_cast<unsigned long long>(total[0]),
+             r5[1], r5[0], r7[1], r7[0]);
+    }
+    if (ticks == 3) {
+      CheckEqual(host_calls[0], 4, "called: two commands and two register reads go to the host");
+      CheckEqual(host_calls[1], 0, "in place: none of them does");
+    }
+  }
+  CheckEqual(disagreements, 0, "in place and called agree on the clock, whatever a callout ticks");
 }
 
 void TestTheClockIsBroughtUpBeforeHardwareIsTouched() {
@@ -4523,6 +4774,17 @@ int main() {
   TestThePgxpHostKeepsTheMovesButNotTheCommands();
   TestWhatItAdmitsWithTheGteOnIsWhatItCompiles();
   TestTheGteClockFollowsTheChain();
+  TestTheGteInPlaceMovesEveryKindOfRegister();
+  TestTheGteInPlaceKeepsTheHostsClock();
+  // The same again with the GTE compiled in place (GteLayout): the toy's registers moved by compiled
+  // code, its clock kept there, its commands called directly - and the answers have to be the same.
+  g_gte_layout = true;
+  TestTheGteMatchesTheInterpreter();
+  TestLwc2AndSwc2MoveWordsBetweenMemoryAndTheGte();
+  TestWhatItAdmitsWithTheGteOnIsWhatItCompiles();
+  TestTheGteClockFollowsTheChain();
+  TestTheGteInPlaceMovesEveryKindOfRegister();
+  g_gte_layout = false;
   TestTheClockIsBroughtUpBeforeHardwareIsTouched();
   TestABlockIsDroppedByAStoreToAWordItWatches();
   TestADelaySlotLoadIsDeliveredOnlyWhenTheSuccessorsCannotTell();

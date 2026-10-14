@@ -88,6 +88,7 @@
 #include "rec/emitter.h"
 #include "rec/block_decoder.h"
 #include "rec/runtime.h"
+#include "rec/gte_compiler.h"
 #include "rec/x86_extras.h"
 
 #include <cstddef>
@@ -501,6 +502,16 @@ class BlockCompiler {
   // stay the interpreter's.
   void set_gte_ops(bool on) { gte_ops_ = on; }
 
+  // And compile them in place where the layout allows (GteLayout in runtime.h): register moves as
+  // loads and stores into BlockState::gte, the unit's busy clock kept here, and a command as a call
+  // to its own function. Null, the default, leaves every one of them a call to BlockState::special.
+  // What is admitted does not change, only what is emitted.
+  void set_gte_layout(const GteLayout* layout) { gte_layout_ = layout; }
+
+  // And with this, a command is its arithmetic emitted as x64 (gte_compiler.h) rather than the
+  // layout's C++ for it. Null, the default, is the layout's.
+  void set_gte_compiler(GteCompiler* compiler) { gte_compiler_ = compiler; }
+
   // Compile the trapping add and addi and the multiply/divide unit, calling BlockState::special
   // for what compiled code cannot do itself. Off, the default, they stay the interpreter's.
   void set_special_ops(bool on) { special_ops_ = on; }
@@ -590,6 +601,11 @@ class BlockCompiler {
   // Past the first 128 bytes of BlockState, so it is addressed with a 32-bit displacement.
   static const int32_t kOffBailValue = static_cast<int32_t>(offsetof(BlockState, bail_value));
   static const int32_t kOffScratchpad = static_cast<int32_t>(offsetof(BlockState, scratchpad));
+  static const int32_t kOffGte = static_cast<int32_t>(offsetof(BlockState, gte));
+  static const int32_t kOffClock = static_cast<int32_t>(offsetof(BlockState, clock));
+  static const int32_t kOffGteBusyUntil = static_cast<int32_t>(offsetof(BlockState, gte_busy_until));
+  static const int32_t kOffClockOffset = static_cast<int32_t>(offsetof(BlockState, clock_offset));
+  static const int32_t kOffSpecialCycles = static_cast<int32_t>(offsetof(BlockState, special_cycles));
   static_assert(offsetof(BlockState, block_pc) <= 127 && offsetof(BlockState, ram_store) <= 127 &&
                 offsetof(BlockState, code_pages) <= 127 &&
                 offsetof(BlockState, special) <= 127,
@@ -1212,7 +1228,9 @@ class BlockCompiler {
   // needs - the register number or the instruction in arg 4, the value to write in arg 3. A command
   // and a read have to wait for the command before them by the machine's clock, which the host does
   // from `elapsed`; mfc2 and cfc2 then deliver late, as a load does, so they arm the load delay the
-  // way EmitLoad does.
+  // way EmitLoad does. With a layout (set_gte_layout) the moves of plain registers are a load or a
+  // store into the GTE, the wait is worked out here on the host's own clock, and a command is a
+  // call straight to its own function: the same three things, without the host's dispatch on them.
   void EmitCop2(const Instruction& instruction) {
     const uint32_t word = instruction.word;
     const uint32_t rs = (word >> 21) & 0x1F;
@@ -1220,16 +1238,31 @@ class BlockCompiler {
     const uint32_t rd = (word >> 11) & 0x1F;
 
     if (IsGteCommand(word)) {
-      x86::MovRegImm(emitter_, kArg4, word);
-      EmitSpecialCall(instruction, kSpecialGteCommand);
+      GteCommandFn command = gte_layout_ != nullptr ? gte_layout_->commands[word & 0x3F] : nullptr;
+      if (command != nullptr && gte_compiler_ != nullptr) {
+        if (const GteCommandFn emitted = gte_compiler_->Function(word))
+          command = emitted;
+      }
+      if (command != nullptr) {
+        EmitGteCommand(instruction, command, gte_layout_->cycles[word & 0x3F]);
+      } else {
+        x86::MovRegImm(emitter_, kArg4, word);
+        EmitSpecialCall(instruction, kSpecialGteCommand);
+      }
       FlushPending(0);
       return;
     }
+    const GteRegisterAccess* access = GteAccess(rs == 0x02 || rs == 0x06, rd);
     switch (rs) {
       case 0x00:   // mfc2
       case 0x02:   // cfc2
-        x86::MovRegImm(emitter_, kArg4, rd);
-        EmitSpecialCall(instruction, rs == 0x00 ? kSpecialGteMfc2 : kSpecialGteCfc2);
+        if (access != nullptr && access->read != GteRegisterAccess::kCall) {
+          EmitGteHold(instruction);
+          EmitGteRead(*access, kScratchA);
+        } else {
+          x86::MovRegImm(emitter_, kArg4, rd);
+          EmitSpecialCall(instruction, rs == 0x00 ? kSpecialGteMfc2 : kSpecialGteCfc2);
+        }
         FlushPending(rt);   // a load already in flight lands now, unless this writes its register
         if (rt != 0) {
           x86::Mov64RegReg(emitter_, kPending, kScratchA);
@@ -1239,9 +1272,14 @@ class BlockCompiler {
         return;
       case 0x04:   // mtc2
       case 0x06:   // ctc2
-        LoadReg(kArg3, rt);
-        x86::MovRegImm(emitter_, kArg4, rd);
-        EmitSpecialCall(instruction, rs == 0x04 ? kSpecialGteMtc2 : kSpecialGteCtc2);
+        if (access != nullptr && access->write != GteRegisterAccess::kCall) {
+          LoadReg(kScratchA, rt);
+          EmitGteWrite(*access, kScratchA);
+        } else {
+          LoadReg(kArg3, rt);
+          x86::MovRegImm(emitter_, kArg4, rd);
+          EmitSpecialCall(instruction, rs == 0x04 ? kSpecialGteMtc2 : kSpecialGteCtc2);
+        }
         FlushPending(0);
         return;
       default:
@@ -1267,6 +1305,11 @@ class BlockCompiler {
     if (direct_ram_bytes_ != 0)
       PatchRel8(code_, past_call, code_->cursor);
 
+    const GteRegisterAccess* access = GteAccess(false, rt);
+    if (access != nullptr && access->write != GteRegisterAccess::kCall) {
+      EmitGteWrite(*access, kScratchA);
+      return;
+    }
     x86::MovRegReg(emitter_, kArg3, kScratchA);    // the word
     x86::MovRegImm(emitter_, kArg4, rt);           // the GTE register
     EmitSpecialCall(instruction, kSpecialGteLoad);
@@ -1281,8 +1324,13 @@ class BlockCompiler {
     const uint16_t immediate = static_cast<uint16_t>(word & 0xFFFF);
 
     FlushPendingBeforeMemory();
-    x86::MovRegImm(emitter_, kArg4, rt);
-    EmitSpecialCall(instruction, kSpecialGteStore);
+    const GteRegisterAccess* access = GteAccess(false, rt);
+    if (access != nullptr && access->read != GteRegisterAccess::kCall) {
+      EmitGteRead(*access, kScratchA);   // swc2 does not wait for the unit (Cpu::CompiledGte)
+    } else {
+      x86::MovRegImm(emitter_, kArg4, rt);
+      EmitSpecialCall(instruction, kSpecialGteStore);
+    }
     x86::MovRegReg(emitter_, kArg3, kScratchA);    // the value, whole
     EmitAddress(rs, immediate);
     size_t past_call = 0;
@@ -1503,6 +1551,85 @@ class BlockCompiler {
     const uint32_t index = (instruction.pc - block_pc_) >> 2;
     x86::MovRegImm(emitter_, kScratchC, funct | (index << 8));
     EmitCall(kOffSpecial, instruction.pc, kScratchD);   // the pc register is not one it reads
+  }
+
+  // ---- The GTE in place (set_gte_layout) ------------------------------------------------------
+
+  // How a GTE register is reached - data registers first, then control - or null with no layout.
+  const GteRegisterAccess* GteAccess(bool control, uint32_t index) const {
+    return gte_layout_ == nullptr ? nullptr : &gte_layout_->registers[(control ? 32 : 0) + (index & 31)];
+  }
+
+  // A command, or a read of a register, waits for the command before it - Cpu::CompiledGte's
+  // hold(), on the same clock: the host's count of cycles (BlockState::clock) plus how far into
+  // the chain this instruction is, which is the `elapsed` a call to special would have been given.
+  // Busy until a cycle past now, it waits one cycle more than the difference (Cpu::COP2 says why),
+  // and that is owed by the chain like any other stall. Leaves the time the instruction goes ahead
+  // in RAX - the clock, plus the wait - for a command to start the unit's next busy spell from.
+  void EmitGteHold(const Instruction& instruction) {
+    const uint32_t index = (instruction.pc - block_pc_) >> 2;
+    x86::Mov64RegMemDisp32(emitter_, kScratchA, kStatePtr, kOffClock);
+    x86::Mov64RegMem(emitter_, kScratchA, kScratchA, 0);              // the host's clock
+    x86::MovRegMemDisp32(emitter_, kScratchB, kStatePtr, kOffClockOffset);
+    x86::AluRegMem(emitter_, x86::AluOp::kAdd, kScratchB, kStatePtr, kOffExtraCycles);
+    x86::AluRegMem(emitter_, x86::AluOp::kSub, kScratchB, kStatePtr, kOffBudget);
+    if (index != 0)
+      x86::AluRegImm(emitter_, x86::AluImmOp::kAdd, kScratchB, index);
+    x86::Add64RegReg(emitter_, kScratchA, kScratchB);                  // now (ECX zero-extends)
+    x86::Mov64RegMemDisp32(emitter_, kScratchC, kStatePtr, kOffGteBusyUntil);
+    x86::Mov64RegMem(emitter_, kScratchC, kScratchC, 0);
+    x86::Sub64RegReg(emitter_, kScratchC, kScratchA);                  // busy until - now
+    const size_t idle = code_->cursor;
+    x86::JccRel8(emitter_, x86::Cc::kLessEqual, 0);
+    x86::AluRegImm(emitter_, x86::AluImmOp::kAdd, kScratchC, 1);       // the wait
+    x86::AddMemReg(emitter_, kStatePtr, kOffExtraCycles, kScratchC);
+    x86::AddMemRegDisp32(emitter_, kStatePtr, kOffSpecialCycles, kScratchC);
+    x86::Add64RegReg(emitter_, kScratchA, kScratchC);
+    PatchRel8(code_, idle, code_->cursor);
+  }
+
+  // A command: wait for the last one, mark the unit busy for this one's whole duration from the
+  // cycle it goes ahead - one to issue, the rest in the background, as Cpu::CompiledGte reckons
+  // it - and call the function for exactly this command, handed the GTE and the instruction word.
+  void EmitGteCommand(const Instruction& instruction, GteCommandFn command, uint8_t cycles) {
+    EmitGteHold(instruction);
+    x86::MovRegImm(emitter_, kScratchB, cycles > 0 ? cycles : 1);
+    x86::Add64RegReg(emitter_, kScratchA, kScratchB);
+    x86::Mov64RegMemDisp32(emitter_, kScratchC, kStatePtr, kOffGteBusyUntil);
+    x86::MovMem64Reg(emitter_, kScratchC, kScratchA);
+    x86::Mov64RegMemDisp32(emitter_, kScratchB, kStatePtr, kOffGte);   // arg 1, the GTE
+    x86::MovRegImm(emitter_, kScratchC, instruction.word);             // arg 2, the command
+    x86::MovRegImm64(emitter_, kScratchA, reinterpret_cast<uint64_t>(command));
+    x86::CallReg(emitter_, kScratchA);
+  }
+
+  // A GTE register into `host` (not EDX, which holds the GTE while this reads it).
+  void EmitGteRead(const GteRegisterAccess& access, uint8_t host) {
+    x86::Mov64RegMemDisp32(emitter_, kScratchC, kStatePtr, kOffGte);
+    switch (access.read) {
+      case GteRegisterAccess::kSigned16:
+        x86::MovsxRegMem16Disp32(emitter_, host, kScratchC, access.offset);
+        return;
+      case GteRegisterAccess::kUnsigned16:
+        x86::MovzxRegMem16Disp32(emitter_, host, kScratchC, access.offset);
+        return;
+      default:
+        x86::MovRegMemDisp32(emitter_, host, kScratchC, access.offset);
+        return;
+    }
+  }
+
+  // `value` (not EDX) into a GTE register, and the word beside it the layout says to clear.
+  void EmitGteWrite(const GteRegisterAccess& access, uint8_t value) {
+    if (access.write == GteRegisterAccess::kIgnored)
+      return;
+    x86::Mov64RegMemDisp32(emitter_, kScratchC, kStatePtr, kOffGte);
+    if (access.write == GteRegisterAccess::kHalf)
+      x86::MovMem16RegDisp32(emitter_, value, kScratchC, access.offset);
+    else
+      x86::MovMemRegDisp32(emitter_, value, kScratchC, access.offset);
+    if (access.cleared >= 0)
+      x86::MovMemImmDisp32(emitter_, kScratchC, access.cleared, 0);
   }
 
   // A branch, as two addresses and a conditional move. `taken` is computed from
@@ -2042,6 +2169,8 @@ class BlockCompiler {
   // what a call to BlockState::special reports.
   bool special_ops_ = false;
   bool gte_ops_ = false;
+  const GteLayout* gte_layout_ = nullptr;
+  GteCompiler* gte_compiler_ = nullptr;
   uint32_t block_pc_ = 0;
 
   // Set by PatchRel8 when a jump would not reach, for Compile to see.

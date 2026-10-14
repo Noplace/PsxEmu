@@ -235,6 +235,13 @@ struct EmuConfig {
   // freeing the ground out from under it.
   bool recompiler = false;
 
+  // With the recompiler: each GTE command's arithmetic emitted as x64 for its instruction word
+  // (rec/gte_compiler.h), rather than a call to Gte's C++ for the command. The same results to the
+  // bit - gte_test compares the two on every command and every form of it - so this is about speed
+  // only, and on by default: each command is 1.6-1.8x faster as x64 (Docs/Recompiler-Profile.md).
+  // Safe to change while running: the compiled blocks are thrown away and compiled again.
+  bool gte_x64 = true;
+
   // Rasterise on a thread of its own, behind a queue of parsed primitives
   // (phase 7 of Docs/Threading-Plan.md). The GPU's timing stays on the machine
   // thread either way - only the pixels move - and every read of VRAM waits

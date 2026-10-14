@@ -266,6 +266,9 @@ struct Options {
   bool cd_mednafen;   // --cd-mednafen: the drive timed as Mednafen times it (a BizHawk movie)
   bool quiet;
   bool recompiler;
+  bool gte_x64;              // --gte-x64: with the recompiler, GTE commands emitted as x64 (the default)
+  bool gte_cpp;              // --no-gte-x64: the C++ for each command instead
+  int gte_x64_toggle;        // --gte-x64-toggle n: switch that every n frames
   bool gpu_thread;
   bool gpu_transfer_timing;
   bool icache_timing;
@@ -672,6 +675,9 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   // These three had no default, so they held whatever the stack did - false by luck until
   // --watchpoint added a member and moved them, and --recompiler-diff came on by itself.
   options->recompiler = false;
+  options->gte_x64 = false;
+  options->gte_cpp = false;
+  options->gte_x64_toggle = 0;
   options->gpu_thread = false;
   options->gpu_transfer_timing = false;
   options->icache_timing = false;
@@ -900,6 +906,12 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->write_queue_timing = true;
     } else if (strcmp(arg, "--recompiler") == 0) {
       options->recompiler = true;
+    } else if (strcmp(arg, "--gte-x64") == 0) {
+      options->gte_x64 = true;
+    } else if (strcmp(arg, "--no-gte-x64") == 0) {
+      options->gte_cpp = true;
+    } else if (strcmp(arg, "--gte-x64-toggle") == 0 && i + 1 < argc) {
+      options->gte_x64_toggle = atoi(argv[++i]);
     } else if (strcmp(arg, "--recompiler-toggle") == 0 && i + 1 < argc) {
       // Switch CPU every N frames, mid-run. The front end offers this from its
       // Emulation menu, and the menu cannot be clicked from a headless harness -
@@ -1493,6 +1505,13 @@ int main(int argc, char** argv) {
     system->EnableRecompiler(true);
     printf("cpu            recompiler (compiled blocks, interpreter fallback)\n");
   }
+  if (options.gte_x64)
+    system->config().gte_x64 = true;
+  if (options.gte_cpp)
+    system->config().gte_x64 = false;
+  if (options.recompiler)
+    printf("gte            %s\n", system->config().gte_x64 ? "commands emitted as x64"
+                                                         : "commands run as C++ (--no-gte-x64)");
 
   // Before anything mounts a disc or restores a state, so the drive is under
   // the timing the run asked for from its very first command.
@@ -1852,6 +1871,10 @@ int main(int argc, char** argv) {
           (frames % options.recompiler_toggle) == 0) {
         system->config().recompiler = !system->config().recompiler;
       }
+      // The same for the GTE's two ways of running a command under the recompiler: a run that
+      // switches them every n frames has to come out exactly as one that never does.
+      if (options.gte_x64_toggle > 0 && (frames % options.gte_x64_toggle) == 0)
+        system->config().gte_x64 = !system->config().gte_x64;
       // Put the disc in while the machine runs, which is how someone reaches
       // the CD player: the BIOS boots the game on any disc that is already
       // there, so the tray has to start empty.
@@ -1980,6 +2003,10 @@ int main(int argc, char** argv) {
            static_cast<unsigned long long>(rec.links_broken));
     printf("rec ram        %llu loads read RAM directly\n",
            static_cast<unsigned long long>(rec.ram_reads_direct));
+    if (const emulation::rec::GteCompiler* gte = system->recompiler()->gte_compiler()) {
+      if (system->config().gte_x64)
+        printf("rec gte x64    %zu command words emitted, %zu bytes\n", gte->functions(), gte->bytes());
+    }
   }
   {
     const double seconds =

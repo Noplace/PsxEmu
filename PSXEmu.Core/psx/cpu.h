@@ -361,6 +361,9 @@ class Cpu : public Component {
   // that wait. Not for PGXP, which the compiler leaves to the interpreter's moves, loads and stores.
   uint32_t CompiledGte(uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed,
                        uint32_t* extra_cycles);
+  // The cycle the GTE is busy until, on context()->cycles - for compiled code that keeps the hold
+  // itself (rec::GteLayout), reading and writing the one variable CompiledGte and COP2 use.
+  uint64_t* gte_busy_until() { return &gte_busy_until_cycles_; }
 
   // The instruction cache as a timing model (bug 94) - see EmuConfig::icache_
   // timing. System turns it on and off, between instructions and only while the

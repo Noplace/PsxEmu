@@ -17,6 +17,8 @@
 // not that it changed.
 
 #include "psx/psx.h"
+#include "psx/recompiler_bridge.h"
+#include "rec/gte_compiler.h"
 
 #include <cstdio>
 #include <cstring>
@@ -723,6 +725,357 @@ void TestUnknown(Machine& m) {
         "the unknown command was counted");
 }
 
+// ---------------------------------------------------------------------------
+// The register file as compiled code reaches it (Gte::RegisterHome)
+// ---------------------------------------------------------------------------
+
+// Every register's state, as ReadData and ReadControl give it.
+struct Snapshot {
+  uint32_t data[32];
+  uint32_t control[32];
+  bool operator==(const Snapshot& other) const {
+    return memcmp(this, &other, sizeof(*this)) == 0;
+  }
+};
+
+Snapshot Take(Machine& m) {
+  Snapshot s;
+  for (uint32_t i = 0; i < 32; ++i) {
+    s.data[i] = m.Data(i);
+    s.control[i] = m.Control(i);
+  }
+  return s;
+}
+
+// The same arbitrary state each time for a given seed, every register written.
+void Scramble(Machine& m, uint32_t seed) {
+  uint32_t x = seed * 2654435761u + 1;
+  auto next = [&x]() { x ^= x << 13; x ^= x >> 17; x ^= x << 5; return x; };
+  for (uint32_t i = 0; i < 32; ++i) {
+    m.SetControl(i, next());
+    m.SetData(i, next());
+  }
+}
+
+// Compiled code moves a register by loading or storing it at RegisterHome's offset into the Gte, of
+// the width and sign it says, where ReadData and the rest would have gone through a switch. So each
+// register said to be plain has to read, by its home, what ReadData reads - and written by its home,
+// leave every register as WriteData would have left it.
+void TestCompiledHomes(Machine& m) {
+  BeginTest("each register read by its home reads what ReadData and ReadControl read");
+  uint8_t* const base = reinterpret_cast<uint8_t*>(&m.gte());
+  int plain_reads = 0, plain_writes = 0, misread = 0, miswritten = 0;
+  for (uint32_t seed = 0; seed < 4; ++seed) {
+    for (uint32_t i = 0; i < 64; ++i) {
+      const bool control = i >= 32;
+      const uint32_t index = i & 31;
+      const Gte::Home home = m.gte().RegisterHome(control, index);
+      if (home.read == Gte::Home::kComputed)
+        continue;
+      Scramble(m, seed);
+      uint32_t raw = 0;
+      if (home.read == Gte::Home::kWord) {
+        memcpy(&raw, base + home.offset, 4);
+      } else {
+        uint16_t half = 0;
+        memcpy(&half, base + home.offset, 2);
+        raw = home.read == Gte::Home::kSigned16
+                  ? static_cast<uint32_t>(static_cast<int32_t>(static_cast<int16_t>(half)))
+                  : half;
+      }
+      const uint32_t expected = control ? m.Control(index) : m.Data(index);
+      if (raw != expected) {
+        printf("  %s %u by its home: %08X, read %08X\n", control ? "control" : "data", index, raw, expected);
+        ++misread;
+      }
+      if (seed == 0)
+        ++plain_reads;
+    }
+  }
+  CheckEqual(static_cast<uint32_t>(misread), 0u, "every plain register, in four states, reads the same by its home");
+
+  BeginTest("each register written by its home leaves what WriteData and WriteControl leave");
+  const uint32_t values[] = { 0x8001F234u, 0x00017FFFu, 0xFFFFFFFFu, 0x12345678u, 0 };
+  for (uint32_t i = 0; i < 64; ++i) {
+    const bool control = i >= 32;
+    const uint32_t index = i & 31;
+    const Gte::Home home = m.gte().RegisterHome(control, index);
+    if (home.write == Gte::Home::kComputed)
+      continue;
+    ++plain_writes;
+    for (uint32_t value : values) {
+      Scramble(m, i);
+      if (home.write == Gte::Home::kWord)
+        memcpy(base + home.offset, &value, 4);
+      else if (home.write == Gte::Home::kHalf)
+        memcpy(base + home.offset, &value, 2);
+      if (home.cleared >= 0)
+        memset(base + home.cleared, 0, 4);
+      const Snapshot by_home = Take(m);
+      Scramble(m, i);
+      if (control)
+        m.SetControl(index, value);
+      else
+        m.SetData(index, value);
+      const Snapshot by_write = Take(m);
+      if (!(by_home == by_write)) {
+        printf("  %s %u <- %08X by its home differs from the write\n", control ? "control" : "data", index, value);
+        ++miswritten;
+      }
+    }
+  }
+  CheckEqual(static_cast<uint32_t>(miswritten), 0u, "every plain register, with five values, writes the same by its home");
+  // Which registers are plain is a fact about the hardware, not about this test: these are the
+  // counts the layout comments in gte.cpp describe (data 28 and 29 are worked out when read; SXYP,
+  // the SXY entries, IRGB, LZCS and FLAG when written).
+  CheckEqual(static_cast<uint32_t>(plain_reads), 62u, "sixty-two registers read as their storage");
+  CheckEqual(static_cast<uint32_t>(plain_writes), 57u, "fifty-seven written as it");
+
+  BeginTest("a command run by its own function is what Execute runs, at Execute's cost");
+  const uint32_t opcodes[] = { 0x01, 0x06, 0x0C, 0x10, 0x11, 0x12, 0x13, 0x14, 0x16, 0x1B, 0x1C,
+                               0x1E, 0x20, 0x28, 0x29, 0x2A, 0x2D, 0x2E, 0x30, 0x3D, 0x3E, 0x3F, 0x02 };
+  for (uint32_t opcode : opcodes) {
+    const uint32_t command = Command(opcode, true, false, 1, 2, 0);
+    Scramble(m, opcode);
+    const uint32_t cycles = m.gte().Execute(command);
+    const Snapshot executed = Take(m);
+    Scramble(m, opcode);
+    Gte::CommandFunction(opcode)(&m.gte(), command);
+    const Snapshot direct = Take(m);
+    Check(executed == direct, "the same registers either way");
+    CheckEqual(Gte::CommandCycles(opcode), cycles, "and the same cost");
+  }
+  CheckEqual(Gte::CommandCycles(0x30), 23u, "RTPT is 23 cycles");
+  CheckEqual(Gte::CommandCycles(0x16), 44u, "NCDT is 44");
+  CheckEqual(Gte::CommandCycles(0x02), 1u, "and a word that is not a command costs one");
+}
+
+// ---------------------------------------------------------------------------
+// The commands emitted as x64 (rec/gte_compiler.h)
+// ---------------------------------------------------------------------------
+
+// A value for a register, biased toward where the arithmetic has edges: each half often one of
+// the 16-bit limits, the word sometimes one of the 32-bit ones, and small numbers, which are most
+// of what games use.
+//
+// A third of the states are instead all moderate - halves within +-2048, words within +-2^20, what
+// a game's coordinates and colours look like - because at the edges nearly everything saturates,
+// and a result that always clamps proves nothing about the arithmetic before the clamp (AVSZ's
+// shift went uncaught by edge values alone).
+struct Values {
+  uint32_t x;
+  bool moderate;
+  explicit Values(uint32_t seed) : x(seed * 2654435761u + 0x9E3779B9u), moderate(seed % 3 == 0) {}
+  uint32_t Next() { x ^= x << 13; x ^= x >> 17; x ^= x << 5; return x; }
+  uint16_t Half() {
+    if (moderate)
+      return static_cast<uint16_t>(static_cast<int16_t>(Next() % 4096) - 2048);
+    static const uint16_t kEdges[] = { 0, 1, 0xFFFF, 0x7FFF, 0x8000, 0x1000, 0xF000, 0x00FF, 0x0100, 0x8001 };
+    const uint32_t pick = Next() % 4;
+    if (pick == 0)
+      return kEdges[Next() % (sizeof(kEdges) / sizeof(kEdges[0]))];
+    if (pick == 1)
+      return static_cast<uint16_t>(static_cast<int16_t>(Next() % 512) - 256);
+    return static_cast<uint16_t>(Next());
+  }
+  uint32_t Word() {
+    if (moderate) {
+      if (Next() % 2)
+        return Half() | (static_cast<uint32_t>(Half()) << 16);
+      return static_cast<uint32_t>(static_cast<int32_t>(Next() % 0x200000) - 0x100000);
+    }
+    static const uint32_t kEdges[] = { 0x7FFFFFFFu, 0x80000000u, 0, 0xFFFFFFFFu, 0x00010000u, 0x7FFF0000u };
+    switch (Next() % 4) {
+      case 0: return kEdges[Next() % (sizeof(kEdges) / sizeof(kEdges[0]))];
+      case 1: return static_cast<uint32_t>(static_cast<int32_t>(Next() % 0x20000) - 0x10000);
+      case 2: return Half() | (static_cast<uint32_t>(Half()) << 16);
+      default: return Next();
+    }
+  }
+};
+
+// Every register given a value from `seed`, the same each time - IR1-3 last, since writing IRGB
+// would otherwise leave them only its 5-bit steps.
+void Fill(Machine& m, uint32_t seed) {
+  Values values(seed);
+  for (uint32_t i = 0; i < 31; ++i)
+    m.SetControl(i, values.Word());
+  for (uint32_t i = 0; i < 32; ++i) {
+    if (i == 15 || i == 28 || i == 29 || i == 31 || (i >= 8 && i <= 11))
+      continue;
+    m.SetData(i, values.Word());
+  }
+  for (uint32_t i = 8; i <= 11; ++i)
+    m.SetData(i, values.Word());
+}
+
+struct Counts {
+  uint64_t commands, unknown;
+  uint32_t executed[64];
+};
+Counts TakeCounts(Machine& m) {
+  Counts c;
+  c.commands = m.gte().stats().commands;
+  c.unknown = m.gte().stats().unknown_commands;
+  memcpy(c.executed, m.gte().stats().executed, sizeof(c.executed));
+  return c;
+}
+
+// The bytes the assembler gives for one instruction, as hex.
+template <typename Emit>
+std::string Encoded(Emit emit) {
+  emulation::rec::Emitter emitter;
+  emulation::rec::CodeBlock* block = emitter.create_block(4096);
+  emitter.set_block(block);
+  emulation::rec::x64::Asm a(&emitter);
+  emit(a);
+  std::string hex;
+  char byte[4];
+  for (size_t i = 0; i < block->cursor; ++i) {
+    snprintf(byte, sizeof(byte), "%02X", block->ptr8bit[i]);
+    if (!hex.empty())
+      hex += ' ';
+    hex += byte;
+  }
+  emitter.destroy_block(block);
+  return hex;
+}
+
+void CheckBytes(const std::string& got, const char* expected, const char* what) {
+  ++g_checks;
+  if (got != expected) {
+    ++g_failures;
+    printf("  FAIL  %s / %s\n        got %s, expected %s\n", g_test.c_str(), what, got.c_str(), expected);
+  }
+}
+
+void TestX64(Machine& m) {
+  using namespace emulation::rec::x64;
+  BeginTest("the assembler encodes the forms the commands use");
+  CheckBytes(Encoded([](Asm& a) { a.mov(32, r8, At(r10, 0x1234)); }), "45 8B 82 34 12 00 00", "mov r8d, [r10+1234h]");
+  CheckBytes(Encoded([](Asm& a) { a.movsx16(64, r9, At(r10, 8)); }), "4D 0F BF 4A 08", "movsx r9, word [r10+8]");
+  CheckBytes(Encoded([](Asm& a) { a.movzx8(rax, At(rcx, rax, 1)); }), "0F B6 04 01", "movzx eax, byte [rcx+rax]");
+  CheckBytes(Encoded([](Asm& a) { a.movzx16(r9, At(r10, 0)); }), "45 0F B7 0A", "movzx r9d, word [r10]");
+  CheckBytes(Encoded([](Asm& a) { a.imul(64, rax, rdx); }), "48 0F AF C2", "imul rax, rdx");
+  CheckBytes(Encoded([](Asm& a) { a.imul(32, r9, rax); }), "44 0F AF C8", "imul r9d, eax");
+  CheckBytes(Encoded([](Asm& a) { a.mov(16, At(r10, 4), rax); }), "66 41 89 42 04", "mov word [r10+4], ax");
+  CheckBytes(Encoded([](Asm& a) { a.mov(8, At(r10, 3), rax); }), "41 88 42 03", "mov byte [r10+3], al");
+  CheckBytes(Encoded([](Asm& a) { a.alu(Asm::kAdd, 64, At(r10, 16), 1); }), "49 83 42 10 01", "add qword [r10+16], 1");
+  CheckBytes(Encoded([](Asm& a) { a.sar(64, r8, 12); }), "49 C1 F8 0C", "sar r8, 12");
+  CheckBytes(Encoded([](Asm& a) { a.cmov(kA, 64, rax, rcx); }), "48 0F 47 C1", "cmova rax, rcx");
+  CheckBytes(Encoded([](Asm& a) { a.bsr(32, rax, r9); }), "41 0F BD C1", "bsr eax, r9d");
+  CheckBytes(Encoded([](Asm& a) { a.shift_cl(Asm::kShl, 32, rdx); }), "D3 E2", "shl edx, cl");
+  CheckBytes(Encoded([](Asm& a) { a.movsxd(rax, r8); }), "49 63 C0", "movsxd rax, r8d");
+  CheckBytes(Encoded([](Asm& a) { a.movsxd(rdx, At(r10, 0x40)); }), "49 63 52 40", "movsxd rdx, [r10+40h]");
+  CheckBytes(Encoded([](Asm& a) { a.alu(Asm::kCmp, 32, rax, -0x8000); }), "81 F8 00 80 FF FF", "cmp eax, -8000h");
+  CheckBytes(Encoded([](Asm& a) { a.alu(Asm::kOr, 32, r11, 0x40000000); }), "41 81 CB 00 00 00 40", "or r11d, 40000000h");
+  CheckBytes(Encoded([](Asm& a) { a.mov_imm(8, At(r10, 5), 1); }), "41 C6 42 05 01", "mov byte [r10+5], 1");
+  CheckBytes(Encoded([](Asm& a) { a.mov_imm(32, rcx, 15); }), "B9 0F 00 00 00", "mov ecx, 15");
+  CheckBytes(Encoded([](Asm& a) { a.neg(64, rdx); }), "48 F7 DA", "neg rdx");
+  CheckBytes(Encoded([](Asm& a) { a.jmp(rax); }), "FF E0", "jmp rax");
+  CheckBytes(Encoded([](Asm& a) { a.mov(32, At(r13, 0), rax); }), "41 89 45 00", "mov [r13], eax (r13 needs a disp8)");
+  CheckBytes(Encoded([](Asm& a) { a.mov(32, rax, At(r12, 8)); }), "41 8B 44 24 08", "mov eax, [r12+8] (r12 needs a SIB)");
+  CheckBytes(Encoded([](Asm& a) { Label l; a.jcc(kE, l); a.bind(l); }), "0F 84 00 00 00 00", "je to the next instruction");
+
+  BeginTest("every command, emitted as x64, leaves every register as the C++ does");
+  emulation::rec::GteLayout layout;
+  emulation::psx::RecompilerBridge::DescribeGte(m.gte(), &layout);
+  emulation::rec::GteCompiler compiler(&layout);
+  Check(compiler.available(), "the layout describes enough to emit from");
+
+  const uint32_t opcodes[] = { 0x01, 0x06, 0x0C, 0x10, 0x11, 0x13, 0x14, 0x16, 0x1B, 0x1C, 0x1E,
+                               0x20, 0x28, 0x29, 0x2A, 0x2D, 0x2E, 0x30, 0x3D, 0x3E, 0x3F,
+                               0x00, 0x02, 0x3C };   // and three that are not commands
+  struct Form { uint32_t word; int states; };
+  std::vector<Form> forms;
+  for (uint32_t opcode : opcodes)
+    for (uint32_t sf = 0; sf < 2; ++sf)
+      for (uint32_t lm = 0; lm < 2; ++lm)
+        forms.push_back({ Command(opcode, sf != 0, lm != 0), 3000 });
+  for (uint32_t mx = 0; mx < 4; ++mx)
+    for (uint32_t v = 0; v < 4; ++v)
+      for (uint32_t tx = 0; tx < 4; ++tx)
+        for (uint32_t sf = 0; sf < 2; ++sf)
+          for (uint32_t lm = 0; lm < 2; ++lm)
+            forms.push_back({ Command(0x12, sf != 0, lm != 0, mx, v, tx), 400 });
+
+  int runs = 0, differing = 0, missing = 0, flags_seen = 0;
+  uint32_t flag_union = 0;
+  for (const Form& form : forms) {
+    const emulation::rec::GteCommandFn emitted = compiler.Function(form.word);
+    if (emitted == nullptr) {
+      ++missing;
+      continue;
+    }
+    for (int s = 0; s < form.states; ++s) {
+      const uint32_t seed = form.word * 7919u + static_cast<uint32_t>(s);
+      // The bits the command ignores (20-24) vary too.
+      const uint32_t word = form.word ^ ((seed & 0x1F) << 20);
+      Fill(m, seed);
+      const Counts before_cpp = TakeCounts(m);
+      m.gte().Execute(word);
+      const Snapshot cpp = Take(m);
+      const Counts after_cpp = TakeCounts(m);
+      Fill(m, seed);
+      const Counts before_x64 = TakeCounts(m);
+      emitted(&m.gte(), word);
+      const Snapshot x64 = Take(m);
+      const Counts after_x64 = TakeCounts(m);
+      ++runs;
+      bool counted_alike = after_cpp.commands - before_cpp.commands == after_x64.commands - before_x64.commands &&
+                           after_cpp.unknown - before_cpp.unknown == after_x64.unknown - before_x64.unknown;
+      for (int i = 0; i < 64 && counted_alike; ++i)
+        counted_alike = after_cpp.executed[i] - before_cpp.executed[i] == after_x64.executed[i] - before_x64.executed[i];
+      if (!(cpp == x64) || !counted_alike) {
+        if (++differing <= 6) {
+          printf("  word %08X state %d differs:", word, s);
+          for (int i = 0; i < 32; ++i) {
+            if (cpp.data[i] != x64.data[i])
+              printf(" data%d %08X/%08X", i, cpp.data[i], x64.data[i]);
+            if (cpp.control[i] != x64.control[i])
+              printf(" ctrl%d %08X/%08X", i, cpp.control[i], x64.control[i]);
+          }
+          printf(counted_alike ? " (C++/x64)\n" : " and the counts (C++/x64)\n");
+        }
+      }
+      flag_union |= cpp.control[31];
+      flags_seen += cpp.control[31] != 0;
+    }
+  }
+  CheckEqual(static_cast<uint32_t>(missing), 0u, "a function for every form");
+  CheckEqual(static_cast<uint32_t>(differing), 0u, "no state of any form differs in any register or count");
+  CheckEqual(static_cast<uint32_t>(runs), 24u * 4u * 3000u + 256u * 400u, "and that is every form's every state");
+  // The states reach every flag the commands can set - a sweep that never overflowed would prove
+  // nothing about overflow.
+  CheckEqual(flag_union, 0xFFFFF000u, "every FLAG bit was set by some run");
+  printf("  %d runs, %d with flags, %zu command words, %zu bytes of x64\n", runs, flags_seen,
+         compiler.functions(), compiler.bytes());
+
+  BeginTest("with PGXP on, RTPS, RTPT and NCLIP are the C++'s, unrounded positions and all");
+  m.gte().set_pgxp(true, true);
+  int pgxp_differing = 0;
+  for (uint32_t opcode : { 0x01u, 0x30u, 0x06u }) {
+    const uint32_t word = Command(opcode, true, false);
+    const emulation::rec::GteCommandFn emitted = compiler.Function(word);
+    for (int s = 0; s < 200; ++s) {
+      Fill(m, 0xC0FFEEu + static_cast<uint32_t>(s));
+      m.gte().Execute(Command(0x30, true, false));   // projected vertices, so there are positions to keep
+      m.gte().Execute(word);
+      const Snapshot cpp = Take(m);
+      const emulation::psx::PreciseVertex p_cpp = m.gte().Precise(14);
+      Fill(m, 0xC0FFEEu + static_cast<uint32_t>(s));
+      m.gte().Execute(Command(0x30, true, false));
+      emitted(&m.gte(), word);
+      const Snapshot x64 = Take(m);
+      const emulation::psx::PreciseVertex p_x64 = m.gte().Precise(14);
+      if (!(cpp == x64) || p_cpp.valid != p_x64.valid || p_cpp.x != p_x64.x || p_cpp.y != p_x64.y)
+        ++pgxp_differing;
+    }
+  }
+  m.gte().set_pgxp(false, false);
+  CheckEqual(static_cast<uint32_t>(pgxp_differing), 0u, "the same registers and the same positions");
+}
+
 struct Group {
   const char* name;
   void (*run)(Machine&);
@@ -809,6 +1162,8 @@ const Group kGroups[] = {
   { "opcode",     TestOpcode },
   { "unknown",    TestUnknown },
   { "motion",     TestMotion },
+  { "homes",      TestCompiledHomes },
+  { "x64",        TestX64 },
 };
 
 }  // namespace

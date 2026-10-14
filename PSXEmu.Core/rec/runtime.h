@@ -83,6 +83,58 @@ const uint32_t kSpecialGteCtc2 = 0x44;        // control register b <- a
 const uint32_t kSpecialGteLoad = 0x45;        // lwc2: data register b <- a, the word just loaded
 const uint32_t kSpecialGteStore = 0x46;       // swc2: data register b -> the value returned
 
+// The GTE compiled in place (HostInterface::gte_layout): what the host says about its coprocessor
+// so that compiled code can do without BlockState::special for most of it. A register move becomes
+// a load or store at a fixed offset into the host's GTE object, the busy clock is kept by compiled
+// code against the host's own clock, and a command is a direct call to the function for that one
+// command - picked when the block is compiled, from the instruction word - rather than a trip
+// through the special thunk, the host's callback and a dispatch on the opcode at run time.
+//
+// How compiled code reaches one register. A register whose read or write is more than a load or a
+// store - SXYP's push, IRGB's expansion, LZCS's count, FLAG's error bit - says kCall, and that
+// instruction goes to `special` as before.
+struct GteRegisterAccess {
+  enum Kind : uint8_t {
+    kCall = 0,       // through BlockState::special
+    kWord,           // 32 bits, read or written whole
+    kSigned16,       // read: a halfword, sign-extended
+    kUnsigned16,     // read: a halfword, zero-extended
+    kHalf,           // write: the low halfword
+    kIgnored,        // write: nothing happens (a read-only register)
+  };
+  uint8_t read = kCall;
+  uint8_t write = kCall;
+  int32_t offset = 0;      // from the GTE object
+  // A word the host clears beside a write - where a vertex was loaded from, which a write that
+  // carries no address (every compiled one) says is not known. -1 for none.
+  int32_t cleared = -1;
+};
+
+// One command, run directly: the host's GTE object and the instruction word.
+typedef void (*GteCommandFn)(void* gte, uint32_t word);
+
+// Where the GTE keeps its state, for the commands emitted as x64 (GteCompiler, gte_compiler.h):
+// each field's offset from the GTE object, in the hardware's own shapes - V0-V2 as three rows of
+// three int16, the three matrices as 3x3x3 int16 and the three vectors beside them as 3x3 int32,
+// the FIFOs oldest first. `divide_table` is the perspective divide's 257-entry reciprocal seed;
+// null, and no command is emitted.
+struct GteFields {
+  int32_t v = 0, rgbc = 0, otz = 0, ir = 0, sxy = 0, sz = 0, rgb_fifo = 0, mac = 0;
+  int32_t matrix = 0, translation = 0, ofx = 0, ofy = 0, h = 0, dqa = 0, dqb = 0;
+  int32_t zsf3 = 0, zsf4 = 0, flag = 0;
+  int32_t lm = 0, sf = 0;    // a bool and an int32: the command's limit and shift, as Execute leaves them
+  int32_t pgxp = 0;          // a bool: set, RTPS, RTPT and NCLIP are run by the host's own function
+  int32_t commands = 0, unknown_commands = 0, executed = 0;   // the counts: u64, u64, u32[64]
+  const uint8_t* divide_table = nullptr;
+};
+
+struct GteLayout {
+  GteRegisterAccess registers[64];   // data registers 0-31, then control registers 0-31
+  GteCommandFn commands[64];         // by the command's low six bits; null calls out
+  uint8_t cycles[64];                // how long each keeps the unit busy (Gte::Execute's return)
+  GteFields fields;                  // for the commands as x64, when the host allows it
+};
+
 // The layout the emitted code addresses by offset. Field order is load-bearing
 // in the sense that the compiler hard-codes the offsets - keep the two in step,
 // and BlockCompiler asserts the ones it uses against offsetof.
@@ -179,6 +231,22 @@ struct BlockState {
   // the same meaning for null: the host wants every access to go through its callbacks. Also past
   // the 128 bytes of one-byte offsets.
   uint8_t* scratchpad = nullptr;
+
+  // The GTE compiled in place (GteLayout), all past the 128 bytes too. `gte` is the host's GTE
+  // object, which the layout's offsets are from and which a command is handed. `clock` is the
+  // host's cycle count, and `gte_busy_until` the cycle on it the unit is busy until - the host's
+  // own variables, so compiled code and the host's callbacks hold one clock between them, whatever
+  // a callout ticks in between.
+  uint8_t* gte = nullptr;
+  const uint64_t* clock = nullptr;
+  uint64_t* gte_busy_until = nullptr;
+  // Where in time an instruction is, on `clock`: *clock + clock_offset + extra_cycles - budget +
+  // the instruction's index in its block. The engine keeps it (the budget it gave the chain, less
+  // what it has synced the host for), and it is the same `elapsed` a SpecialFn call is given.
+  uint32_t clock_offset = 0;
+  // What `extra_cycles` holds that the multiply/divide unit and the GTE asked for - the rest is
+  // direct reads' stalls - for the engine's statistics.
+  uint32_t special_cycles = 0;
 };
 
 }  // namespace rec

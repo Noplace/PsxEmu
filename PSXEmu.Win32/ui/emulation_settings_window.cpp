@@ -70,6 +70,9 @@ namespace psxemu {
             { &EmuConfig::recompiler, L"CPU", 0, L"&Recompiler",
               L"About twice as fast. A game's timing differs slightly from the interpreter, "
               L"which every test here is measured with." },
+            { &EmuConfig::gte_x64, L"CPU", 0, L"&GTE commands as x64",
+              L"With the recompiler, each GTE command compiled to machine code for its own word. "
+              L"The same results as without it. Not changed by the presets." },
             { &EmuConfig::icache_timing, L"CPU", 0, L"&Instruction cache timing",
               L"Instruction fetches pay for cache misses, and uncached code such as the BIOS "
               L"for every fetch. Interpreter only." },

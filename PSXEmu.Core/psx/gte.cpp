@@ -748,57 +748,107 @@ void Gte::Cdp() {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-uint32_t Gte::Execute(uint32_t command) {
-  const uint32_t opcode = command & 0x3F;
+namespace {
 
+// Real hardware's per-command latency, measured rather than uniform - a
+// command charged 1 cycle like a plain COP2 register move is where this
+// came from: 22 opcodes with 22 different real costs and nothing here
+// distinguishing them, which is exactly what amidog's psxtest_gte's
+// per-opcode timing group exists to catch. Figures from DuckStation, the
+// same source already trusted for DMA timing (see Docs/Gaps.md). An opcode
+// that is not a command costs the one cycle any instruction does.
+constexpr uint32_t CyclesOf(uint32_t opcode) {
+  switch (opcode) {
+    case 0x01: return 15;   // RTPS
+    case 0x06: return 8;    // NCLIP
+    case 0x0C: return 6;    // OP
+    case 0x10: return 8;    // DPCS
+    case 0x11: return 8;    // INTPL
+    case 0x12: return 8;    // MVMVA
+    case 0x13: return 19;   // NCDS
+    case 0x14: return 13;   // CDP
+    case 0x16: return 44;   // NCDT
+    case 0x1B: return 17;   // NCCS
+    case 0x1C: return 11;   // CC
+    case 0x1E: return 14;   // NCS
+    case 0x20: return 30;   // NCT
+    case 0x28: return 5;    // SQR
+    case 0x29: return 8;    // DCPL
+    case 0x2A: return 17;   // DPCT
+    case 0x2D: return 5;    // AVSZ3
+    case 0x2E: return 6;    // AVSZ4
+    case 0x30: return 23;   // RTPT
+    case 0x3D: return 5;    // GPF
+    case 0x3E: return 5;    // GPL
+    case 0x3F: return 39;   // NCCT
+    default:   return 1;
+  }
+}
+
+}  // namespace
+
+template <uint32_t kOpcode>
+void Gte::Run(uint32_t command) {
   // Every command starts with FLAG clear: it reports what *this* command did.
   flag_ = 0;
   sf_ = (command & (1u << 19)) ? 12 : 0;
   lm_ = (command & (1u << 10)) != 0;
 
   ++stats_.commands;
-  ++stats_.executed[opcode];
+  ++stats_.executed[kOpcode];
 
-  // Real hardware's per-command latency, measured rather than uniform - a
-  // command charged 1 cycle like a plain COP2 register move is where this
-  // came from: 22 opcodes with 22 different real costs and nothing here
-  // distinguishing them, which is exactly what amidog's psxtest_gte's
-  // per-opcode timing group exists to catch. Figures from DuckStation, the
-  // same source already trusted for DMA timing (see Docs/Gaps.md).
-  uint32_t cycles = 1;
-
-  switch (opcode) {
-    case 0x01: Rtps(0, true); cycles = 15; break;
-    case 0x06: Nclip();       cycles = 8;  break;
-    case 0x0C: Op();          cycles = 6;  break;
-    case 0x10: Dpcs(false);   cycles = 8;  break;
-    case 0x11: Intpl();       cycles = 8;  break;
-    case 0x12: Mvmva(command);cycles = 8;  break;
-    case 0x13: Ncds(0);       cycles = 19; break;
-    case 0x14: Cdp();         cycles = 13; break;
-    case 0x16: Ncdt();        cycles = 44; break;
-    case 0x1B: Nccs(0);       cycles = 17; break;
-    case 0x1C: Cc();          cycles = 11; break;
-    case 0x1E: Ncs(0);        cycles = 14; break;
-    case 0x20: Nct();         cycles = 30; break;
-    case 0x28: Sqr();         cycles = 5;  break;
-    case 0x29: Dcpl();        cycles = 8;  break;
-    case 0x2A: Dpct();        cycles = 17; break;
-    case 0x2D: Avsz3();       cycles = 5;  break;
-    case 0x2E: Avsz4();       cycles = 6;  break;
-    case 0x30: Rtpt();        cycles = 23; break;
-    case 0x3D: Gpf();         cycles = 5;  break;
-    case 0x3E: Gpl();         cycles = 5;  break;
-    case 0x3F: Ncct();        cycles = 39; break;
-    default:
-      ++stats_.unknown_commands;
-      break;
-  }
+  if constexpr (kOpcode == 0x01) Rtps(0, true);
+  else if constexpr (kOpcode == 0x06) Nclip();
+  else if constexpr (kOpcode == 0x0C) Op();
+  else if constexpr (kOpcode == 0x10) Dpcs(false);
+  else if constexpr (kOpcode == 0x11) Intpl();
+  else if constexpr (kOpcode == 0x12) Mvmva(command);
+  else if constexpr (kOpcode == 0x13) Ncds(0);
+  else if constexpr (kOpcode == 0x14) Cdp();
+  else if constexpr (kOpcode == 0x16) Ncdt();
+  else if constexpr (kOpcode == 0x1B) Nccs(0);
+  else if constexpr (kOpcode == 0x1C) Cc();
+  else if constexpr (kOpcode == 0x1E) Ncs(0);
+  else if constexpr (kOpcode == 0x20) Nct();
+  else if constexpr (kOpcode == 0x28) Sqr();
+  else if constexpr (kOpcode == 0x29) Dcpl();
+  else if constexpr (kOpcode == 0x2A) Dpct();
+  else if constexpr (kOpcode == 0x2D) Avsz3();
+  else if constexpr (kOpcode == 0x2E) Avsz4();
+  else if constexpr (kOpcode == 0x30) Rtpt();
+  else if constexpr (kOpcode == 0x3D) Gpf();
+  else if constexpr (kOpcode == 0x3E) Gpl();
+  else if constexpr (kOpcode == 0x3F) Ncct();
+  else ++stats_.unknown_commands;
 
   if (flag_ & kFlagErrorMask)
     flag_ |= 0x80000000u;
+}
 
-  return cycles;
+template <size_t... kOpcodes>
+constexpr std::array<Gte::CommandFn, 64> Gte::CommandTable(std::index_sequence<kOpcodes...>) {
+  return {{ &Gte::RunCommand<static_cast<uint32_t>(kOpcodes)>... }};
+}
+
+const std::array<Gte::CommandFn, 64> Gte::kCommands = Gte::CommandTable(std::make_index_sequence<64>());
+
+Gte::CommandFn Gte::CommandFunction(uint32_t opcode) {
+  return kCommands[opcode & 0x3F];
+}
+
+uint32_t Gte::CommandCycles(uint32_t opcode) {
+  static constexpr auto table = [] {
+    std::array<uint8_t, 64> cycles = {};
+    for (uint32_t i = 0; i < 64; ++i)
+      cycles[i] = static_cast<uint8_t>(CyclesOf(i));
+    return cycles;
+  }();
+  return table[opcode & 0x3F];
+}
+
+uint32_t Gte::Execute(uint32_t command) {
+  CommandFunction(command)(this, command);
+  return CommandCycles(command);
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,6 +1084,115 @@ void Gte::WriteControl(uint32_t index, uint32_t value) {
       if (flag_ & kFlagErrorMask)
         flag_ |= 0x80000000u;
       break;
+  }
+}
+
+Gte::Fields Gte::FieldOffsets() const {
+  const uint8_t* const base = reinterpret_cast<const uint8_t*>(this);
+  auto at = [base](const void* member) {
+    return static_cast<int32_t>(static_cast<const uint8_t*>(member) - base);
+  };
+  Fields f;
+  f.v = at(&v_[0][0]);
+  f.rgbc = at(&rgbc_[0]);
+  f.otz = at(&otz_);
+  f.ir = at(&ir_[0]);
+  f.sxy = at(&sxy_[0][0]);
+  f.sz = at(&sz_[0]);
+  f.rgb_fifo = at(&rgb_fifo_[0][0]);
+  f.mac = at(&mac_[0]);
+  f.matrix = at(&matrix_[0][0][0]);
+  f.translation = at(&translation_[0][0]);
+  f.ofx = at(&ofx_);
+  f.ofy = at(&ofy_);
+  f.h = at(&h_);
+  f.dqa = at(&dqa_);
+  f.dqb = at(&dqb_);
+  f.zsf3 = at(&zsf3_);
+  f.zsf4 = at(&zsf4_);
+  f.flag = at(&flag_);
+  f.lm = at(&lm_);
+  f.sf = at(&sf_);
+  f.pgxp = at(&pgxp_);
+  f.commands = at(&stats_.commands);
+  f.unknown_commands = at(&stats_.unknown_commands);
+  f.executed = at(&stats_.executed[0]);
+  f.divide_table = kUnrTable;
+  static_assert(sizeof(lm_) == 1 && sizeof(sf_) == 4 && sizeof(pgxp_) == 1,
+                "the emitted commands write lm_ as a byte and sf_ as a dword, and read pgxp_ as a byte");
+  return f;
+}
+
+// ReadData, WriteData, ReadControl and WriteControl above, as storage: each case there that is a
+// plain load or store of a member is that member's offset here, and must stay so - rec_test's
+// GTE layout test reads and writes every register both ways and compares.
+Gte::Home Gte::RegisterHome(bool control, uint32_t index) const {
+  const uint8_t* const base = reinterpret_cast<const uint8_t*>(this);
+  auto at = [base](const void* member) {
+    return static_cast<int32_t>(static_cast<const uint8_t*>(member) - base);
+  };
+  auto home = [](Home::Kind read, Home::Kind write, int32_t offset) {
+    Home result;
+    result.read = read;
+    result.write = write;
+    result.offset = offset;
+    return result;
+  };
+  const Home::Kind kWord = Home::kWord, kSigned16 = Home::kSigned16, kUnsigned16 = Home::kUnsigned16,
+                   kHalf = Home::kHalf, kComputed = Home::kComputed, kIgnored = Home::kIgnored;
+  index &= 31;
+
+  if (control) {
+    // Each matrix is nine halfwords in a row, and its registers are pairs of them, the last alone.
+    if (index <= 20 && index % 8 < 5) {
+      const int16_t* m = &matrix_[index / 8][0][0] + (index % 8) * 2;
+      return index % 8 == 4 ? home(kSigned16, kHalf, at(m)) : home(kWord, kWord, at(m));
+    }
+    if (index <= 23)
+      return home(kWord, kWord, at(&translation_[index / 8][index % 8 - 5]));
+    switch (index) {
+      case 24: return home(kWord, kWord, at(&ofx_));
+      case 25: return home(kWord, kWord, at(&ofy_));
+      case 26: return home(kSigned16, kHalf, at(&h_));   // stored unsigned, read sign-extended
+      case 27: return home(kSigned16, kHalf, at(&dqa_));
+      case 28: return home(kWord, kWord, at(&dqb_));
+      case 29: return home(kSigned16, kHalf, at(&zsf3_));
+      case 30: return home(kSigned16, kHalf, at(&zsf4_));
+      default: return home(kWord, kComputed, at(&flag_));   // bit 31 is worked out on a write
+    }
+  }
+
+  if (index <= 5) {
+    const int vertex = static_cast<int>(index / 2);
+    if (index % 2 == 1)
+      return home(kSigned16, kHalf, at(&v_[vertex][2]));
+    // x and y, and where they were loaded from - which a write that carries no address does not
+    // know (WriteData's `source`, zero when it is not given).
+    Home xy = home(kWord, kWord, at(&v_[vertex][0]));
+    xy.cleared = at(&v_source_[vertex]);
+    return xy;
+  }
+  if (index >= 8 && index <= 11)
+    return home(kSigned16, kHalf, at(&ir_[index - 8]));
+  if (index >= 12 && index <= 15) {
+    // Read, the FIFO's entry (SXYP is the newest). Written, SXYP pushes, and an entry written
+    // carries PGXP's shadow - neither of which is a store.
+    return home(kWord, kComputed, at(&sxy_[index == 15 ? 2 : index - 12][0]));
+  }
+  if (index >= 16 && index <= 19)
+    return home(kUnsigned16, kHalf, at(&sz_[index - 16]));
+  if (index >= 20 && index <= 22)
+    return home(kWord, kWord, at(&rgb_fifo_[index - 20][0]));
+  if (index >= 24 && index <= 27)
+    return home(kWord, kWord, at(&mac_[index - 24]));
+  switch (index) {
+    case 6:  return home(kWord, kWord, at(&rgbc_[0]));
+    case 7:  return home(kUnsigned16, kHalf, at(&otz_));
+    case 23: return home(kWord, kWord, at(&res1_));
+    case 28: return home(kComputed, kComputed, 0);           // IRGB: IR1-3, five bits each
+    case 29: return home(kComputed, kIgnored, 0);            // ORGB: the same, read-only
+    case 30: return home(kWord, kComputed, at(&lzcs_));      // a write counts its leading bits
+    default: return home(kWord, kIgnored, at(&lzcr_));       // LZCR, read-only
   }
 }
 

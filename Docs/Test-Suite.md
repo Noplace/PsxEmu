@@ -57,7 +57,7 @@ Unit tests for the geometry coprocessor. No BIOS, no window. Registers are
 loaded, a command word is executed, and the results are checked - the same path
 a game takes, through the same MFC2/MTC2/CFC2/CTC2 semantics.
 
-**Current: 114 checks, 0 failures.**
+**Current: 197 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -72,6 +72,8 @@ a game takes, through the same MFC2/MTC2/CFC2/CTC2 semantics.
 | `opcode` | what amidog's OPCODE group caught (bug 79): a translated product checking the 44-bit accumulator after *each* partial sum, in MVMVA, RTPS and the lighting chain's background step, and RTPS taking IR0 from the full depth-cue sum rather than from wrapped MAC0 |
 | `unknown` | an unrecognised command being counted rather than silently ignored |
 | `motion` | motion for DLSS (Docs/DLSS-Plan.md, phase 2), with PGXP: nothing known in the first picture; a vertex found in the next by its model's coordinates, moved by exactly what the translation moved it; another vertex not found under its key; of two of the same vertex, the nearer taken; one too far away not taken; a vertex the CPU moves itself found by its place in a list that stayed the same; nothing found after being forgotten |
+| `homes` | the register file as the recompiler reaches it in place (`Gte::RegisterHome`): every register said to be plain, read by its offset, width and sign in four scrambled states, reads what ReadData/ReadControl read, and written by it with five values leaves all 64 registers as WriteData/WriteControl leave them; 62 plain to read and 57 to write; each command's own function (`Gte::CommandFunction`) leaves what Execute leaves, at `CommandCycles`' cost |
+| `x64` | the commands emitted as x64 (`rec/gte_compiler.h`): the assembler's bytes for 24 of the forms it emits (REX, SIB, the r12/r13 rules, rel32 jumps); every command and three non-commands at both sf and lm, and all 64 MVMVA forms at both, 390,400 runs from states biased to the edges (a third of them moderate, so that results are not always clamped), each run through Execute and through the emitted function and all 64 registers and the command counts compared; every FLAG bit set by some run; and with PGXP on, RTPS, RTPT and NCLIP left to the C++ with their unrounded positions. Eleven mutants of the generator are each caught |
 
 Expected values are derived from the hardware description, not from this
 implementation, so a failure means the code is wrong rather than that it
@@ -174,7 +176,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 531 checks, 0 failures.**
+**Current: 555 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -828,12 +830,12 @@ the most likely answer is the network share rather than the emulator.
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
 | `cpu_test` | 341 | | `gpu_test` | 98 |
-| `gte_test` | 114 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 531 |
+| `gte_test` | 197 | | `mdec_test` | 85 |
+| `timer_test` | 80 | | `media_test` | 555 |
 | `sio_test` | 203 | | `spu_test` | 150 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,879 checks, 0 failures**, all ten green. Each harness's own section above
+**1,986 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -923,7 +925,7 @@ negated 0.054, motion as given 0.094 on the Radeon, every other sign 0.08-0.22);
 time. AMD's loader finds its effect DLLs only beside the running executable, so
 `build_tools.bat` copies them into `Temp\tools`.
 
-`rec_test` (2003 checks) is not counted either, and for a different reason: it
+`rec_test` (2059 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
 `psx/recompiler_bridge.h` is the one file that knows both. Its compiler checks are differential - a block is compiled,
@@ -954,6 +956,15 @@ changed while a game is running. The BIOS
 boot is identical either way; a game's framebuffer checksum is not yet, because
 the cycle model is approximate - see the timing section of
 `Docs/Recompiler-Plan.md`. Without the flag nothing about the run changes.
+
+With `--recompiler` the GTE's commands run as x64 emitted for each command word
+(`rec/gte_compiler.h`, **Settings > Emulation > GTE commands as x64**, the default since
+2026-10-14), and the report adds how many command words were emitted and how many bytes
+that came to; `--no-gte-x64` runs them as calls to `Gte`'s C++ instead. Which one changes
+nothing the machine does - every checkpoint, count and picture is the same - and `--gte-x64-toggle N`,
+which switches between the two every N frames and so throws the compiled blocks
+away each time, has to come out the same too. `gte_test`'s `x64` group is what
+holds the two to each other command by command.
 
 `boot_runner --recompiler-diff` is the differential harness: two whole machines,
 one on each CPU, with all 32 registers plus HI, LO and the pc compared at every

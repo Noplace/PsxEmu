@@ -93,6 +93,11 @@ class RecompilerBridge {
     host.overflow = &Overflow;
     host.hilo = &HiLo;
     host.gte = &GteOp;
+    DescribeGte(system_->gte(), &gte_layout_);
+    host.gte_layout = &gte_layout_;
+    host.gte_unit = &system_->gte();
+    host.clock = &system_->cpu().context()->cycles;
+    host.gte_busy_until = system_->cpu().gte_busy_until();
     host.sync = &Sync;
     host.ram_bytes = kRamBytes;
     host.ram_window_bytes = kRamWindowBytes;
@@ -149,6 +154,9 @@ class RecompilerBridge {
     // interpreter's moves carry them the same way (psx/pgxp.h).
     const bool pgxp = system_->pgxp().enabled();
     recompiler_->set_track_moves(pgxp);
+    // Which of the two ways a GTE command runs: the C++ for it, or its arithmetic emitted as x64.
+    // A change throws every block away, since each has its commands' functions in it.
+    recompiler_->set_gte_x64(system_->config().gte_x64);
 
     // Compiled loads read RAM themselves only while a load of it is a read and a stall and
     // nothing more (item 5 above). PGXP's shadow comes through Access, below; the rest is
@@ -191,6 +199,9 @@ class RecompilerBridge {
   const emulation::rec::Recompiler::Stats& stats() const {
     return recompiler_->stats();
   }
+
+  // The GTE commands emitted as x64 so far, for the harnesses' reports.
+  const emulation::rec::GteCompiler* gte_compiler() const { return recompiler_->gte_compiler(); }
 
  private:
   Cpu* cpu() { return &system_->cpu(); }
@@ -269,6 +280,46 @@ class RecompilerBridge {
     Of(context)->cpu()->TickCycles(cycles);
   }
 
+ public:
+  // The GTE compiled in place: where each register is in the Gte, and each command's own function
+  // and cost - so that compiled code moves registers, holds for the unit and runs a command without
+  // GteOp below, which is left with the registers that are more than their storage. Public for
+  // gte_test, which emits the commands as x64 from the same description.
+  static void DescribeGte(const Gte& gte, emulation::rec::GteLayout* layout) {
+    using Access = emulation::rec::GteRegisterAccess;
+    auto kind = [](Gte::Home::Kind home) -> uint8_t {
+      switch (home) {
+        case Gte::Home::kWord: return Access::kWord;
+        case Gte::Home::kSigned16: return Access::kSigned16;
+        case Gte::Home::kUnsigned16: return Access::kUnsigned16;
+        case Gte::Home::kHalf: return Access::kHalf;
+        case Gte::Home::kIgnored: return Access::kIgnored;
+        default: return Access::kCall;
+      }
+    };
+    for (uint32_t i = 0; i < 64; ++i) {
+      const Gte::Home home = gte.RegisterHome(i >= 32, i & 31);
+      Access& access = layout->registers[i];
+      access.read = kind(home.read);
+      access.write = kind(home.write);
+      access.offset = home.offset;
+      access.cleared = home.cleared;
+      layout->commands[i] = Gte::CommandFunction(i);
+      layout->cycles[i] = static_cast<uint8_t>(Gte::CommandCycles(i));
+    }
+    // And the fields themselves, for the commands as x64 (EmuConfig::gte_x64).
+    const Gte::Fields from = gte.FieldOffsets();
+    emulation::rec::GteFields& to = layout->fields;
+    to.v = from.v; to.rgbc = from.rgbc; to.otz = from.otz; to.ir = from.ir; to.sxy = from.sxy;
+    to.sz = from.sz; to.rgb_fifo = from.rgb_fifo; to.mac = from.mac; to.matrix = from.matrix;
+    to.translation = from.translation; to.ofx = from.ofx; to.ofy = from.ofy; to.h = from.h;
+    to.dqa = from.dqa; to.dqb = from.dqb; to.zsf3 = from.zsf3; to.zsf4 = from.zsf4;
+    to.flag = from.flag; to.lm = from.lm; to.sf = from.sf; to.pgxp = from.pgxp;
+    to.commands = from.commands; to.unknown_commands = from.unknown_commands;
+    to.executed = from.executed; to.divide_table = from.divide_table;
+  }
+
+ private:
   // The GTE (Cpu::CompiledGte).
   static uint32_t GteOp(void* context, uint32_t operation, uint32_t a, uint32_t b, uint32_t elapsed,
                       uint32_t* extra_cycles) {
@@ -375,6 +426,8 @@ class RecompilerBridge {
   }
 
   System* system_;
+  // The GTE as compiled code sees it (DescribeGte); the compiler keeps a pointer to it.
+  emulation::rec::GteLayout gte_layout_;
   std::unique_ptr<emulation::rec::Recompiler> recompiler_;
 };
 

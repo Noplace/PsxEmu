@@ -62,7 +62,7 @@ namespace psxemu {
         HWND window() const { return window_; }
 
         // How many switches the window has - one per entry in its table.
-        static constexpr int kSwitchCount = 12;
+        static constexpr int kSwitchCount = 13;
 
      private:
         static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wparam,

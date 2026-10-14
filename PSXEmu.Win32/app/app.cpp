@@ -2265,6 +2265,7 @@ namespace psxemu {
         // The ones that change how a game runs say so over the picture, since the window
         // may not be where the person is looking.
         const wchar_t* name = setting == &EmuConfig::recompiler           ? L"Recompiler"
+                              : setting == &EmuConfig::gte_x64            ? L"GTE commands as x64"
                               : setting == &EmuConfig::exact_event_timing ? L"Exact event timing"
                               : setting == &EmuConfig::dma_stops_cpu      ? L"DMA stops the CPU"
                               : setting == &EmuConfig::measured_bus_timing ? L"Measured bus timing"

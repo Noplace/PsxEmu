@@ -508,6 +508,129 @@ off every side of the drawing area, are wound either way, degenerate, in every b
 field combination, comparing VRAM and every count; the reference agrees with the code it replaced, and three
 mutants (a run's start rounded down, its end one short, the flat run's mask bit) are each caught.
 
+## Done: the GTE compiled in place (2026-10-14)
+
+Compiling the GTE's instructions (above) made each of them a call to `BlockState::special` - the thunk, then
+`HostInterface::gte`, then `Cpu::CompiledGte`, then `Gte::Execute`'s or `WriteData`'s switch. Profiled on Ridge
+Racer for 20,000 frames (the race, not the attract screens of the first 3,000), that chain was the biggest
+thing on the machine thread after the compiled code itself: `Gte::WriteData` 11.0% self, `SpecialThunk` 3.4%,
+`CompiledGte` 2.3%, `GteOp` 1.1%; the commands' own arithmetic (`Rtps`, `TranslatedDot`,
+`InterpolateFarColour`) about 5%. So most of it was the moves - 7.7M `mtc2` and 4M `lwc2` in 3,000 frames -
+and the dispatch, not the GTE.
+
+The host now describes its GTE to the engine (`rec::GteLayout`, filled by the bridge from
+`Gte::RegisterHome`, `Gte::CommandFunction` and `Gte::CommandCycles`), and the compiler uses it:
+
+- **A move is a load or a store.** Each of the 64 registers says how compiled code reaches it: a word, a
+  halfword read signed or unsigned, a halfword written, a write that does nothing, or a call. 62 are plain to
+  read and 57 to write; what is not - IRGB and ORGB, SXYP's push, the SXY entries while PGXP keeps a shadow
+  beside each, LZCS's count, FLAG's error bit - still goes to `special`. A write to V0-V2's x and y also
+  zeroes where the vertex was loaded from, as `WriteData` does when it is given no address. `lwc2` and `swc2`
+  use the same layout after and before their memory access.
+- **The hold is worked out in compiled code, on the host's own clock.** `BlockState::clock` points at the
+  CPU's cycle count and `gte_busy_until` at `Cpu`'s, the variables `CompiledGte` and `COP2` already use,
+  so compiled and called instructions in one chain agree. An instruction's time is `*clock + clock_offset +
+  extra_cycles - budget + index`, which is `CompiledGte`'s `now`; the engine keeps `clock_offset` (the
+  budget less what it has synced) right at entry and at each sync. Reading the live clock matters: a callout
+  ticks the machine itself (`Cpu::Load`'s stalls), and a chain-relative copy would have missed that time -
+  amidog's TIMING group reads a root counter between commands. The 64-bit compare keeps a long idle stretch
+  from wrapping into a wait.
+- **A command is a direct call** to the function for that one command, picked from the instruction word when
+  the block is compiled (`Gte::RunCommand<opcode>`, which `Execute` itself now indexes too), with its cost
+  known then as well.
+
+Ridge Racer, 20,000 frames, after: `Gte::WriteData` 1.1% (the registers that still call out), and the thunk,
+`CompiledGte` and `GteOp` gone from the profile; the machine thread now waits on the rasteriser thread more.
+
+| Run, alternated (base new base new base new base) | Before | After | |
+|---|---|---|---|
+| Ridge Racer, 20,000 frames, software rasteriser | 8.59, 8.87, 8.66, 8.89x | 9.25, 9.34, 9.25x | +6% |
+| Ridge Racer, 20,000 frames, `--hw-raster` on the Radeon | 4.95, 5.04, 5.06, 5.02x | 5.37, 5.35, 5.37x | +6.5% |
+| Ace Combat 3, 20,000 frames | 11.26, 11.40, 10.94, 11.21x | 11.73, 11.61, 10.80x | noise |
+| Final Fantasy VII, 6,000 frames | 13.91-13.99x | 13.66-13.96x | noise |
+| Wild Arms, 6,000 frames | 13.28-13.58x | 13.32-13.70x | noise |
+
+Every checksum is the same. The sampler had put the call chain at a sixth of the thread; what it bought
+back is a sixteenth, so read that profile's shares of short calls as an upper bound.
+
+What was left of the GTE after this was the commands' arithmetic itself; that is the next section.
+
+Validation: the twelve-disc table, `--recompiler`, every line of every report identical to the build before
+(36 pictures, sector, GP0 and MDEC counts, instructions) bar the wall-clock lines; the 48 programs under
+`test/test suite` with `--auto-boot` the same; `psxtest_cpu`'s results screen the same; amidog's `psxtest_gte` with start pressed at frame 1,000, 558,200
+frames, the same 10,139,010,617 instructions and a byte-identical results screen; the Win32 app builds. Not
+re-run: PGXP on FF7 - with PGXP the moves stay interpreted as before and the commands run the same `Run<opcode>`.
+`rec_test` 2003 -> 2059: the toy GTE now has registers of every kind (signed and unsigned halfwords, a write
+ignored, a word cleared, three left to the host, one command without a function), the existing GTE tests run
+again with the layout, a register-by-register test against the reference, and the in-place clock against the
+called one across a sync and callouts that tick 0-30 cycles. Nine mutants - the wait's extra cycle, the
+instruction's index, the stall not charged, the busy time one short, the sign of a halfword read, a halfword
+written whole, the cleared word, `clock_offset` at entry and at a sync - each fail one to four checks. `gte_test`
+114 -> 167: the `homes` group reads and writes every plain register by its home and compares all 64 against
+ReadData/WriteData; pointing H's home at DQA fails nine.
+
+## Done: a second GTE - the commands emitted as x64 (2026-10-14)
+
+Kept beside the C++ one, and chosen by a setting: `EmuConfig::gte_x64` (`gte_x64` in settings.ini, a game may
+keep its own), **Settings > Emulation > GTE commands as x64**, `boot_runner --gte-x64` / `--no-gte-x64`. On by
+default since the measurements below (it was off while they were taken).
+
+- **`rec/gte_compiler.h`** writes each command out as machine code, once per distinct command word, cached by
+  the bits a command depends on (opcode, sf, lm, MVMVA's matrix, vector and translation). Everything those
+  bits decide is decided at emit time: the shift, the IR floor, which matrix and vector and translation, the
+  far-colour MVMVA's discarded first product, MVMVA's garbage matrix 3. The arithmetic is `gte.cpp`'s step for
+  step - the accumulator checked after each partial sum, MAC truncated to 32 bits before saturation, IR3's
+  flag on z >> 12, IR0 from the full depth sum, the divide off the same 257-entry table - with each row's MAC
+  written as it goes and the IRs at the end, which is the same because no row of any step reads another row's
+  MAC. The block calls the emitted function exactly where it called the C++ one (`EmitGteCommand`), so the
+  in-place moves and the clock of the section above are shared by both.
+- **`rec/x64_asm.h`**, a small general encoder (register or `[base + index*scale + disp]` operands, 8 to 64
+  bits, rel32 labels), because the commands need sign- and zero-extending loads at arbitrary offsets, 64-bit
+  multiplies, a table indexed by a register and dozens of forward jumps, none of which `x86_extras.h`'s
+  fixed forms have.
+- **PGXP stays the C++'s:** RTPS, RTPT and NCLIP read and write its unrounded positions, so their emitted code
+  first tests `Gte::pgxp_` and, when it is set, jumps to the C++ for the command.
+- The host describes its fields (`Gte::FieldOffsets` -> `rec::GteFields`, filled by the bridge with the
+  register layout), and the emitted code also keeps the counts, FLAG's error bit and `lm_`/`sf_` as `Execute`
+  leaves them. Switching the setting throws the compiled blocks away (`Recompiler::set_gte_x64`), since each
+  has its commands' functions in it.
+
+**Per command it is 1.6-1.8x faster** on the commands that do work (a scratch benchmark, one command
+repeatedly from a game-like state, ns per command):
+
+| | RTPS | RTPT | MVMVA | NCS | NCT | NCDS | NCDT | NCCT | CC | NCLIP | AVSZ3 | SQR |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| C++ | 22.1 | 61.5 | 14.1 | 29.6 | 84.6 | 37.4 | 109.8 | 99.5 | 21.6 | 3.8 | 3.1 | 5.6 |
+| x64 | 14.2 | 39.6 | 7.7 | 16.7 | 47.2 | 23.0 | 62.2 | 59.4 | 13.7 | 3.1 | 3.1 | 4.6 |
+
+**In a whole game it is within noise**, because the arithmetic is a small part of a frame - Ridge Racer runs 81M
+GTE commands in 20,000 frames, most of them RTPT, NCLIP and AVSZ3, and the RTPTs' saving is about half a second
+of 34. Same binary, `--gte-x64` off and on, alternated:
+
+| Run | C++ | x64 |
+|---|---|---|
+| amidog's `psxtest_gte`, 100,000 frames | 13.11, 13.08, 13.08, 13.07x | 12.95, 12.38, 13.08x |
+| Ridge Racer, 20,000 frames | 11.84, 11.94, 11.92, 11.92x | 11.99, 11.97, 11.91x |
+| Ace Combat 3, 20,000 frames | 13.58, 13.91, 13.86, 13.84x | 13.69, 13.87, 13.99x |
+
+So it is a second, faster GTE core, not a faster emulator. The remaining GTE share is no longer worth more work;
+what a frame spends is elsewhere (the start of this document).
+
+Validation: `gte_test`'s new `x64` group runs every command and three non-commands at both sf and lm, and
+all 64 MVMVA forms at both, 390,400 times from states biased to the edges (a third moderate, so that results
+are not always clamped), through `Execute` and through the emitted code, and compares all 64 registers and the
+command counts - every FLAG bit is set by some run; with PGXP on, RTPS, RTPT and NCLIP are checked to be the
+C++'s, unrounded positions included; and 24 encodings of the assembler are checked byte for byte. Eleven
+mutants of the generator (the 44-bit wrap, the partial-sum checks, IR3's shift, the divide's seed, the IR
+floor, the far-colour MVMVA's limit, the garbage matrix's sign, GPL's shift, CODE, AVSZ's shift, IR0 from MAC0)
+each fail it - AVSZ's only once a third of the states were moderate, since at the edges OTZ always clamps.
+With `--gte-x64`: the twelve-disc table identical to without it, every line bar the wall clock; the 48
+programs under `test/test suite` (`--auto-boot`) identical; `psxtest_gte` in full, 558,200 frames, the same
+10,139,010,617 instructions and every checkpoint and the results screen byte-identical; Ridge Racer switching
+between the two every 7 frames (`--gte-x64-toggle 7`, so the blocks are thrown away about 2,860 times) gives
+every 100-frame checkpoint of the run that never switches. `gte_test` 167 -> 197, `media_test` +3 (the setting
+on by default, turned off and kept, a game's own); `rec_test`, `cpu_test` unchanged; the Win32 app builds.
+
 ## Method and caveats
 
 - `boot_runner` built `/O2 /Zi /DEBUG /INCREMENTAL:NO` (no incremental-link

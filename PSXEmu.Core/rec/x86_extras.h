@@ -258,6 +258,83 @@ inline void MovMemRegDisp32(Emitter* e, uint8_t reg, uint8_t base, int32_t displ
   e->emit32(static_cast<uint32_t>(displacement));
 }
 
+// mov r32, [base + disp32] and the halfword loads and store beside it - a register of the GTE's,
+// which sits in an object far bigger than a disp8 reaches, or a field of BlockState past one. As
+// above, the base is never rsp or r12.
+inline void MovRegMemDisp32(Emitter* e, uint8_t reg, uint8_t base, int32_t displacement) {
+  EmitRex(e, false, reg, base);
+  e->emit8(0x8B);
+  e->emit8(ModRM(2, reg, base));
+  e->emit32(static_cast<uint32_t>(displacement));
+}
+
+inline void MovsxRegMem16Disp32(Emitter* e, uint8_t reg, uint8_t base, int32_t displacement) {
+  EmitRex(e, false, reg, base);
+  e->emit8(0x0F);
+  e->emit8(0xBF);
+  e->emit8(ModRM(2, reg, base));
+  e->emit32(static_cast<uint32_t>(displacement));
+}
+
+inline void MovzxRegMem16Disp32(Emitter* e, uint8_t reg, uint8_t base, int32_t displacement) {
+  EmitRex(e, false, reg, base);
+  e->emit8(0x0F);
+  e->emit8(0xB7);
+  e->emit8(ModRM(2, reg, base));
+  e->emit32(static_cast<uint32_t>(displacement));
+}
+
+inline void MovMem16RegDisp32(Emitter* e, uint8_t reg, uint8_t base, int32_t displacement) {
+  e->emit8(0x66);
+  EmitRex(e, false, reg, base);
+  e->emit8(0x89);
+  e->emit8(ModRM(2, reg, base));
+  e->emit32(static_cast<uint32_t>(displacement));
+}
+
+// mov dword [base + disp32], imm32
+inline void MovMemImmDisp32(Emitter* e, uint8_t base, int32_t displacement, uint32_t value) {
+  EmitRex(e, false, 0, base);
+  e->emit8(0xC7);
+  e->emit8(ModRM(2, 0, base));
+  e->emit32(static_cast<uint32_t>(displacement));
+  e->emit32(value);
+}
+
+// add [base + disp8], r32 and add [base + disp32], r32 - a stall added to a running total in the
+// block's state, without a register to read it into first.
+inline void AddMemReg(Emitter* e, uint8_t base, int8_t displacement, uint8_t reg) {
+  EmitRegMem8(e, 0x01, reg, base, displacement);
+}
+
+inline void AddMemRegDisp32(Emitter* e, uint8_t base, int32_t displacement, uint8_t reg) {
+  EmitRex(e, false, reg, base);
+  e->emit8(0x01);
+  e->emit8(ModRM(2, reg, base));
+  e->emit32(static_cast<uint32_t>(displacement));
+}
+
+// mov r64, imm64 - a function's address, for a call that does not go through BlockState: the
+// GTE command an instruction word names is known when the block is compiled.
+inline void MovRegImm64(Emitter* e, uint8_t reg, uint64_t value) {
+  EmitRex(e, true, 0, reg);
+  e->emit8(static_cast<uint8_t>(0xB8 + (reg & 7)));
+  e->emit64(value);
+}
+
+// sub r64, r64 - the distance between two points on the host's 64-bit clock.
+inline void Sub64RegReg(Emitter* e, uint8_t dest, uint8_t src) {
+  EmitRegReg(e, 0x2B, dest, src, true);
+}
+
+// mov [base], r64 - a 64-bit clock written back through a pointer. The base is one ModRM encodes
+// with no displacement: not rsp, rbp, r12 or r13.
+inline void MovMem64Reg(Emitter* e, uint8_t base, uint8_t reg) {
+  EmitRex(e, true, reg, base);
+  e->emit8(0x89);
+  e->emit8(ModRM(0, reg, base));
+}
+
 // mov r64, [base + disp8] - for pulling a pointer out of the block's state:
 // the register file, the callback context, a function address.
 inline void Mov64RegMem(Emitter* e, uint8_t dest, uint8_t base,
