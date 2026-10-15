@@ -67,6 +67,11 @@
 //                        changed - each over n tries (Docs/Rewind-and-Run-Ahead-Plan.md)
 //     --memory-state-every <n>  every n frames, save a state in memory (cards and all) and
 //                        load it straight back: the run must be exactly the run without it
+//     --run-ahead <n>    after every frame, run n frames ahead on its input, take their last
+//                        picture as the one shown, and go back: everything the run reports
+//                        is still the real frames' (Docs/Rewind-and-Run-Ahead-Plan.md)
+//     --shown-log <f>    a line per frame to f: the frame, and the checksum and non-black
+//                        pixels of the picture shown - with --run-ahead, the one n frames ahead
 //     --hw-raster        draw with the Direct3D 11 hardware rasteriser rather than the software
 //                        one (Docs/Hardware-Renderer-Plan.md)
 //     --d3d12            ...the Direct3D 12 one instead; on its own it means --hw-raster too
@@ -326,6 +331,8 @@ struct Options {
   const char* save_state;
   int bench_state;   // --bench-state n: tries per measurement, 0 for none
   int memory_state_every;   // --memory-state-every n: a memory state round trip every n frames
+  int run_ahead;            // --run-ahead n: frames run ahead of the real one, 0 for none
+  const char* shown_log;    // --shown-log f: the picture shown, frame by frame
   // --hw-raster: draw with the Direct3D 11 rasteriser the front end has (12 with --d3d12), on
   // the graphics card or, with --warp, on WARP - Windows' software Direct3D, which needs no card and gives the
   // same pictures every run. Only in a build that compiles it in (PSXEMU_HW_RASTER).
@@ -712,6 +719,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->save_state = nullptr;
   options->bench_state = 0;
   options->memory_state_every = 0;
+  options->run_ahead = 0;
+  options->shown_log = nullptr;
   options->hw_raster = false;
   options->warp = false;
   options->d3d12 = false;
@@ -744,6 +753,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->save_state = argv[++i];
     } else if (strcmp(arg, "--bench-state") == 0 && i + 1 < argc) {
       options->bench_state = atoi(argv[++i]);
+    } else if (strcmp(arg, "--run-ahead") == 0 && i + 1 < argc) {
+      options->run_ahead = atoi(argv[++i]);
+    } else if (strcmp(arg, "--shown-log") == 0 && i + 1 < argc) {
+      options->shown_log = argv[++i];
     } else if (strcmp(arg, "--memory-state-every") == 0 && i + 1 < argc) {
       options->memory_state_every = atoi(argv[++i]);
     } else if (strcmp(arg, "--frames") == 0 && i + 1 < argc) {
@@ -1963,6 +1976,29 @@ int main(int argc, char** argv) {
   uint64_t memory_states = 0;
   double memory_state_save_ms = 0.0;
   double memory_state_load_ms = 0.0;
+  // --run-ahead: the state the real frame is kept in, and what the frames ahead cost.
+  System::MemoryState ahead_state;
+  uint64_t ahead_frames = 0;
+  uint64_t ahead_instructions = 0;
+  double ahead_save_ms = 0.0;
+  double ahead_load_ms = 0.0;
+  if (options.run_ahead > 0 &&
+      (movie.playing() || !options.breaks.empty() || !options.watches.empty() ||
+       options.track_calls || options.shared_picture)) {
+    // A movie is input by frame number, a halt lands in whichever frame - real or ahead - it
+    // falls in, and a picture left on the card from a frame ahead is one nobody takes.
+    fprintf(stderr, "--run-ahead does not go with --movie, the debugger's options or "
+                    "--shared-picture\n");
+    return 2;
+  }
+  FILE* shown_log = nullptr;
+  if (options.shown_log != nullptr) {
+    shown_log = fopen(options.shown_log, "w");
+    if (shown_log == nullptr) {
+      fprintf(stderr, "could not write %s\n", options.shown_log);
+      return 2;
+    }
+  }
   uint64_t last_frame = system->gpu().frame_count();
   // Frames this run produced. gpu().frame_count() is not it: a loaded save state
   // restores the counter the state was made with, so dividing by it understates a
@@ -2276,6 +2312,50 @@ int main(int argc, char** argv) {
         const uint32_t* px = system->gpu().framebuffer(w, h);
         WriteFrame(name.c_str(), px, w, h);
       }
+      // --run-ahead: the frame just run is the real one. The machine is kept as it stands, n
+      // more frames run on the input the real frame had, the last of their pictures is the one
+      // shown, and the machine goes back - as the front end will. So it comes before the
+      // buttons change below, and nothing else here sees the frames ahead: everything this run
+      // reports is the real frames' (Docs/Rewind-and-Run-Ahead-Plan.md, phase 2).
+      if (options.run_ahead > 0 || shown_log != nullptr) {
+        if (options.run_ahead > 0) {
+          // The real frame's sound first: the SPU's output is not in a state, and what the
+          // frames ahead make is thrown away.
+          if (options.wav != nullptr) {
+            int16_t chunk[2048];
+            int got = 0;
+            while ((got = system->spu().ReadSamples(
+                        chunk, static_cast<int>(sizeof(chunk) / 2 / 2))) > 0)
+              audio.insert(audio.end(), chunk, chunk + got * 2);
+          }
+          const auto start = std::chrono::steady_clock::now();
+          system->SaveMemoryState(&ahead_state, /*with_cards=*/true);
+          const auto saved = std::chrono::steady_clock::now();
+          for (int i = 0; i < options.run_ahead; ++i)
+            ahead_instructions += bench::RunFrame(system);
+          ahead_frames += options.run_ahead;
+          ahead_save_ms += std::chrono::duration<double, std::milli>(saved - start).count();
+        }
+        int w = 0;
+        int h = 0;
+        const uint32_t* px = system->gpu().framebuffer(w, h);
+        if (shown_log != nullptr)
+          fprintf(shown_log, "%d %016llx %d\n", frames,
+                  static_cast<unsigned long long>(Checksum(px, w * h)), NonBlackPixels(px, w * h));
+        if (options.run_ahead > 0) {
+          int16_t discard[2048];
+          while (system->spu().ReadSamples(discard, static_cast<int>(sizeof(discard) / 2 / 2)) > 0) {
+          }
+          const auto start = std::chrono::steady_clock::now();
+          const std::string error = system->LoadMemoryState(ahead_state);
+          ahead_load_ms += std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - start).count();
+          if (!error.empty()) {
+            fprintf(stderr, "run-ahead at frame %d: %s\n", frames, error.c_str());
+            return 1;
+          }
+        }
+      }
       // Buttons change on the frame boundary, which is where the front end
       // samples them too.
       if (!options.presses.empty()) {
@@ -2347,9 +2427,10 @@ int main(int argc, char** argv) {
            static_cast<unsigned long long>(rec.instructions_compiled),
            static_cast<unsigned long long>(rec.instructions_interpreted),
            static_cast<unsigned long long>(rec.faults));
-    printf("rec links      %llu made, %llu broken\n",
+    printf("rec links      %llu made, %llu broken, %llu chains carried on past one not made\n",
            static_cast<unsigned long long>(rec.links_made),
-           static_cast<unsigned long long>(rec.links_broken));
+           static_cast<unsigned long long>(rec.links_broken),
+           static_cast<unsigned long long>(rec.chains_carried_on));
     printf("rec ram        %llu loads read RAM directly\n",
            static_cast<unsigned long long>(rec.ram_reads_direct));
     if (const emulation::rec::GteCompiler* gte = system->recompiler()->gte_compiler()) {
@@ -2374,6 +2455,16 @@ int main(int argc, char** argv) {
     printf("memory states  %llu saved and loaded back, %.3f ms a save, %.3f ms a load\n",
            static_cast<unsigned long long>(memory_states), memory_state_save_ms / memory_states,
            memory_state_load_ms / memory_states);
+  if (options.run_ahead > 0 && frames > 0)
+    printf("run-ahead      %d frames ahead of each: %llu frames and %llu steps run ahead, "
+           "%.3f ms a save, %.3f ms a load\n",
+           options.run_ahead, static_cast<unsigned long long>(ahead_frames),
+           static_cast<unsigned long long>(ahead_instructions), ahead_save_ms / frames,
+           ahead_load_ms / frames);
+  if (shown_log != nullptr) {
+    fclose(shown_log);
+    printf("wrote          %s (the picture shown, frame by frame)\n", options.shown_log);
+  }
   printf("resolution     %dx%d\n", width, height);
   printf("display        vram (%u,%u) %dx%d, %s\n",
          system->gpu().display_vram_x(), system->gpu().display_vram_y(),

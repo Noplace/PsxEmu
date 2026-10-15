@@ -357,17 +357,20 @@ namespace emulation {
             io.Plain(scanline_);
             io.Plain(was_in_vblank_);
             io.Plain(frame_count_);
-            // pending_draw_ticks_ is deliberately not saved. It is at most a few
-            // thousand GPU clocks of work in flight, it is gone a scanline later, and
-            // saving it would change the state format - which would refuse every save
-            // state anyone already has, for a number that is worth nothing once the
-            // machine has run for a frame. A loaded state resumes with an idle GPU.
+            // The drawing still owed - the GP0 queue and the draw ticks - is saved after every
+            // component (SerialiseDrawing), so states from before still load. Here a load
+            // starts it idle and empty, which is what one of those gets: before, a load left
+            // the queue holding whatever was in it, from some other moment entirely.
 
             // framebuffer_ is derived, not saved - rebuild it now so a caller that
             // reads it right after a load (boot_runner --ppm, the front end's next
             // Present) sees the picture the restored VRAM actually holds, not
             // whatever the buffer held before the load.
             if (!io.saving()) {
+                // Idle and empty until SerialiseDrawing says otherwise (above).
+                pending_draw_ticks_ = 0;
+                prepaid_ticks_ = 0;
+                queue_head_ = queue_size_ = 0;
                 // PGXP's shadows are not in a state: the words loaded come without.
                 for (PreciseVertex& precise : fifo_precise_)
                     precise.valid = false;
@@ -379,6 +382,36 @@ namespace emulation {
                 backend_->Reloaded();
                 PushWatch();
                 ResolveFramebuffer();
+            }
+        }
+
+        // The drawing the GPU still owes - the commands waiting in the GP0 queue for drawing
+        // time, the draw ticks left on the one being drawn, those a transfer already paid, and
+        // whether the transfer in progress is charged at all - saved after every component
+        // (System::SerialiseAdditions) so states from before still load, starting idle. It was
+        // left out as gone a scanline later; but a load in that scanline resumed with an idle
+        // GPU, and a game polling GPUSTAT went round its loop a different number of times. With
+        // a load every frame and buttons pressed, Wild Arms 2 ran 9,632 fewer instructions in
+        // 3,000 frames, interpreted, before coming back to the same state
+        // (Docs/Rewind-and-Run-Ahead-Plan.md, phase 2). The queue goes in order, oldest first.
+        void Gpu::SerialiseDrawing(StateIO& io) {
+            if (!io.saving() && !io.more())
+                return;
+            SyncRaster();
+            io.Plain(pending_draw_ticks_);
+            io.Plain(prepaid_ticks_);
+            io.Plain(transfer_timing_);
+            int32_t size = queue_size_;
+            io.Plain(size);
+            if (!io.saving()) {
+                queue_head_ = 0;
+                queue_size_ = (size >= 0 && size <= kQueueCapacity) ? size : 0;
+            }
+            for (int i = 0; i < queue_size_; ++i) {
+                const int slot = io.saving() ? (queue_head_ + i) % kQueueCapacity : i;
+                io.Plain(queue_[slot]);
+                if (!io.saving())
+                    queue_precise_[slot].valid = false;
             }
         }
 

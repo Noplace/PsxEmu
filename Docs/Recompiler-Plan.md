@@ -25,6 +25,35 @@ code is only part of it:
 So: dynamic. The interesting question is not that, it is what to invalidate on
 and how much of the interpreter to keep.
 
+## Correction, 2026-10-16: a chain ends where its budget does, linked or not
+
+Step 7 below says an unlinked slot "costs one predictable jump and nothing else". It cost more:
+it ended the chain. A chain ran on through linked blocks within one step and its budget, but a
+slot whose target had not been compiled when its block was returned to the machine, which ticked
+the devices and could take an interrupt there. Which slots are linked depends on what has been
+compiled before. So the same machine, in the same state, could take an interrupt at a different
+instruction depending on its past (bug 160).
+
+Run-ahead found it (Rewind-and-Run-Ahead-Plan.md, phase 2): frames run ahead compile and link
+blocks a plain run has not yet. After the load back, the real frames chained where the plain run
+returned. Pictures matched, but the machine drifted: Ridge Racer ended 900 frames on with a
+different clock and registers.
+
+Now an unlinked slot returns through a stub of its own that says so (`BlockState::unlinked_exit`),
+and `Recompiler::Step` carries the chain on into the block that slot wanted, compiling it if it
+must, with what is left of the budget - exactly where the link would have taken it. Links make a
+chain faster and change nothing else. A chain still ends where it did when its budget runs out,
+at a fault or a bail, at an indirect jump (never linked), at a block that cannot be compiled
+(never linked either), or at a Reset part-way through.
+
+The recompiled twelve-disc table keeps every checkpoint's picture, and the run takes 0.01-0.06%
+fewer steps, since chains no longer stop early while their blocks are first being compiled.
+`rec_test` 2059 and `psxtest_cpu` (recompiled picture identical to interpreted) pass unchanged.
+It costs 0.6-1.2% on Ridge Racer and Wild Arms, alternated against the build before, with the
+carrying-on out of line (`CarryOnPastUnlinked`); written into `Step` itself it cost 1.5-3%.
+One disagreement with the interpreter on the table is older than all of this: Ace Combat 3 at
+frame 3000, on master as well.
+
 ## Correction, 2026-10-02: invalidation is by the word, and a block takes its links with it
 
 "Track which pages hold compiled code ... a store into such a page throws away

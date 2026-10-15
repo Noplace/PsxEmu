@@ -358,6 +358,8 @@ class Gpu : public GpuCore {
   // from vram_ after a load, so a state taken mid-frame never shows a torn
   // picture that then corrects itself (Docs/Save-States-Plan.md's own trap).
   void Serialise(StateIO& io);
+  // The drawing still owed - GP0 queue and draw ticks - saved after every component.
+  void SerialiseDrawing(StateIO& io);
 
  private:
   // ---- state -------------------------------------------------------------

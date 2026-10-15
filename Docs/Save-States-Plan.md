@@ -157,7 +157,8 @@ The harness is the test, as it is for everything else:
   state from before them plays CD audio straight through and unmuted, which is
   what nearly every game sets anyway. Something whose absence would leave the
   machine subtly wrong still needs the bump. Since bug 159 the SPU's resampler
-  histories and the device batch's end follow it, in that order.
+  histories and the device batch's end follow it, and since bug 161 the GPU's
+  queue and drawing debt and two CD-ROM command timings, in that order.
 - **A `Serialise` must change nothing when saving.** Work a load has to redo -
   deriving timing from registers just restored, restarting a batch - goes under
   `if (!io.saving())`. `IOInterface::Serialise` did it both ways, so every save

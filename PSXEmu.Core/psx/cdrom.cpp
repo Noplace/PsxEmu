@@ -131,6 +131,18 @@ void Cdrom::SerialiseAudioControls(StateIO& io) {
   io.Plain(next_audio_matrix_);
 }
 
+// Two things about the command in progress that were left out of a state as too brief to
+// matter: whether the drive was paused when it arrived (what its seek costs under mechanical
+// timing), and how long the BIOS bootstrap's Init still has. A load every frame, as run-ahead
+// does, lands in those moments too (Docs/Rewind-and-Run-Ahead-Plan.md, phase 2). Saved after
+// every component (System::SerialiseAdditions); a state from before keeps them as they were.
+void Cdrom::SerialiseCommandTiming(StateIO& io) {
+  if (!io.saving() && !io.more())
+    return;
+  io.Plain(command_found_paused_);
+  io.Plain(init_seek_cycles_);
+}
+
 void Cdrom::MixAudioFrame(int16_t* left, int16_t* right) const {
   const int32_t l = *left, r = *right;
   const int32_t out_l = ((l * audio_matrix_[kLeftToLeft]) >> 7) +

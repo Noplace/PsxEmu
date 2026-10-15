@@ -590,6 +590,8 @@ void System::SerialiseAdditions(StateIO& state) {
   io_.cdrom.SerialiseAudioControls(state);   // bug 157: the drive's mute and volume matrix
   spu_.SerialiseResamplerHistory(state);      // rewind/run-ahead phase 1: the SPU's filters
   io_.SerialiseBatch(state);                  // rewind/run-ahead phase 1: the device batch
+  gpu_.SerialiseDrawing(state);               // rewind/run-ahead phase 2: the GP0 queue
+  io_.cdrom.SerialiseCommandTiming(state);    // rewind/run-ahead phase 2: the command in hand
 }
 
 // See Docs/Save-States-Plan.md. Fixed serialisation order, both directions:

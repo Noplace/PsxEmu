@@ -825,7 +825,10 @@ shortfall is recognised: about 5,500 short frames once, then none.
   and compiled code charges its cycles more coarsely, so it runs 14-19% more
   instructions in the same frames and three discs read a CD sector more or fewer
   by a checkpoint - but no game in the table shows it. See
-  [Recompiler-Plan.md](Recompiler-Plan.md).
+  [Recompiler-Plan.md](Recompiler-Plan.md). **No longer quite true, 2026-10-16:** Ace Combat 3's
+  frame-3000 picture differs compiled from interpreted (`8787981dfb94e189` against
+  `2e6db11119920d31`), on master as well; 1000 and 2000 agree. Not looked into yet. A compiled
+  machine's course no longer depends on what it compiled before, at least (bug 160).
 
 ## Features other emulators have, absent here
 
@@ -833,8 +836,9 @@ Not the machine - each of these is something a player of DuckStation, Mednafen o
 look for. Each was looked for in the code and settings on 2026-10-14 and is not there.
 
 - **Rewind and run-ahead.** Neither exists for a player yet. Save states are the only way
-  back. The state they need, kept in memory and exact enough to load every frame, is built
-  ([Rewind-and-Run-Ahead-Plan.md](Rewind-and-Run-Ahead-Plan.md), phases 0-1, 2026-10-15).
+  back. The state they need, kept in memory and exact enough to load every frame, is built, and
+  run-ahead works in `boot_runner --run-ahead` without changing what any game in the table does
+  ([Rewind-and-Run-Ahead-Plan.md](Rewind-and-Run-Ahead-Plan.md), phases 0-2, 2026-10-16).
 - **Turbo / autofire buttons.** Fast-forward exists (Tab); a held button repeating does not.
 - **Picture options beyond the filters:**
   - no widescreen hack (the GTE's projection is the game's);

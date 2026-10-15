@@ -586,6 +586,9 @@ class BlockCompiler {
   static const int8_t kOffNextPc = static_cast<int8_t>(offsetof(BlockState, next_pc));
   static const int8_t kOffBudget = static_cast<int8_t>(offsetof(BlockState, budget));
   static const int8_t kOffFault = static_cast<int8_t>(offsetof(BlockState, fault));
+  static const int8_t kOffUnlinkedExit =
+      static_cast<int8_t>(offsetof(BlockState, unlinked_exit));
+  static_assert(offsetof(BlockState, unlinked_exit) < 128, "reached with a disp8");
   static const int8_t kOffMove = static_cast<int8_t>(offsetof(BlockState, move));
   static const int8_t kOffRam = static_cast<int8_t>(offsetof(BlockState, ram));
   static const int8_t kOffExtraCycles =
@@ -858,8 +861,12 @@ class BlockCompiler {
     PatchRel8(code, budget_jump, code->cursor);
     x86::Ret(emitter_);
 
-    // Every slot's "not linked yet" displacement points at that `ret`.
-    const size_t exit = code->cursor - 1;
+    // Every slot's "not linked yet" displacement points here: the same return, saying it was
+    // one, so Recompiler::Step carries the chain on into the block the link would have reached
+    // (BlockState::unlinked_exit).
+    const size_t exit = code->cursor;
+    x86::MovMemImm(emitter_, kScratchB, kOffUnlinkedExit, 1);
+    x86::Ret(emitter_);
     for (int i = 0; i < result->link_count; ++i) {
       CompiledBlock::LinkSlot& slot = result->links[i];
       slot.unlinked = static_cast<int32_t>(exit - (block_start + slot.after));

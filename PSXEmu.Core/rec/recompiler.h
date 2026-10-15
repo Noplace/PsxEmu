@@ -220,6 +220,7 @@ class Recompiler {
     uint64_t host_bytes = 0;                // code emitted, cumulative
     uint64_t links_made = 0;
     uint64_t links_broken = 0;
+    uint64_t chains_carried_on = 0;        // unlinked slots Step went on from, as a link would
     uint64_t blocks_with_allocation = 0;   // blocks that cached any register
     uint64_t faults = 0;                   // accesses that raised an exception
     uint64_t bails = 0;                    // blocks that left for the interpreter to run one instruction
@@ -328,9 +329,23 @@ class Recompiler {
     state_.special_cycles = 0;
     synced_ = 0;
     state_.clock_offset = static_cast<uint32_t>(budget_);
+    state_.unlinked_exit = 0;
     ++executing_;
     reinterpret_cast<void (*)(BlockState*)>(code)(&state_);
     --executing_;
+
+    // A chain that left through a link slot not linked yet goes on into the block that slot
+    // wanted, with what is left of the budget, exactly as the link would have taken it. Which
+    // links exist depends on what was compiled before, so without this the same machine could
+    // end a chain - and so take an interrupt - at a different place depending on its past: a
+    // state loaded after frames run ahead had compiled and linked more went another way from
+    // the run that never ran ahead (Docs/Rewind-and-Run-Ahead-Plan.md, phase 2). A block that
+    // cannot be compiled is never linked to either, so that ends the chain as before; so does a
+    // Reset part-way through it, whose blocks are on their way out. Out of line: it is seldom
+    // wanted, and written in here, the dispatch every chain starts from, it cost 1.5-3% of a
+    // recompiled run; out of line, 0.6-1.2%.
+    if (state_.unlinked_exit != 0)
+      CarryOnPastUnlinked();
 
     ++stats_.blocks_executed;
     stats_.instructions_compiled +=
@@ -625,6 +640,27 @@ class Recompiler {
         incoming_.erase(in);
     }
     outgoing_.erase(out);
+  }
+
+  // Step's carrying on: see there.
+  __declspec(noinline) void CarryOnPastUnlinked() {
+    while (state_.unlinked_exit != 0 && state_.fault == 0 && state_.budget > 0 &&
+           !reclaim_pending_) {
+      state_.unlinked_exit = 0;
+      const uint32_t target = state_.next_pc;
+      const Block* next = cache_.Find(target);
+      if (next == nullptr)
+        next = Compile(target);
+      if (next == nullptr || next->code == nullptr)
+        break;
+      void* const next_code = next->code;
+      state_.next_pc = target + next->guest_bytes;
+      ++stats_.chains_carried_on;
+      ++executing_;
+      reinterpret_cast<void (*)(BlockState*)>(next_code)(&state_);
+      --executing_;
+    }
+    state_.unlinked_exit = 0;
   }
 
   // Point every slot that wants this address at the block now sitting there.

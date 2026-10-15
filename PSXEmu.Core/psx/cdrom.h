@@ -167,6 +167,9 @@ class Cdrom : public Component {
   // SerialiseAdditions) so that states from before they existed still load:
   // one of those leaves them as a reset does - unmuted, straight through.
   void SerialiseAudioControls(StateIO& io);
+  // Whether the drive was paused when the command in progress arrived, and the BIOS Init
+  // window - saved after every component, see the .cpp.
+  void SerialiseCommandTiming(StateIO& io);
 
   // A frame of CD audio - CD-DA or XA - on its way into the SPU, through the
   // drive's volume matrix: each output side is the sum of both input sides,

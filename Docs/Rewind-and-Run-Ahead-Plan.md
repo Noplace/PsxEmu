@@ -1,11 +1,14 @@
 # Rewind and run-ahead
 
-> **Status: phases 0 and 1 done, 2026-10-15; nothing a player can use is built yet.**
-> `System::SaveMemoryState`/`LoadMemoryState` exist. A memory state saved and loaded straight
-> back after every frame leaves the twelve-disc table exactly as without it, under either CPU:
-> every report line, and each disc's final state byte for byte. Run-ahead 1 on them costs two
-> frames plus 0.7-0.9 ms. Getting there found that a save state was not the machine exactly
-> (bug 159). Phase 0 found that the suspected CD problem was the first benchmark's own fault.
+> **Status: phases 0-2 done, 2026-10-16; nothing a player can use is built yet.**
+> `System::SaveMemoryState`/`LoadMemoryState` exist, and `boot_runner --run-ahead <n>` runs on
+> them as the front end will. With buttons pressed, run-ahead 2 leaves the twelve-disc table
+> exactly as without it under either CPU: every checkpoint picture, every instruction count and
+> each final state byte for byte. Every press shows up 2 frames earlier, or 1 where the game
+> itself reacts within a frame. Run-ahead 1 costs two frames plus 0.7-0.9 ms. Getting there found
+> that a save state was not the machine exactly (bugs 159 and 161), and that the recompiler's
+> course depended on what it had compiled before (bug 160). Phase 0 found that the suspected CD
+> problem was the first benchmark's own fault.
 > `boot_runner --bench-state <n>` makes every measurement here ("How it was measured"). Every
 > phase ends with a harness check that a person does not have to watch.
 
@@ -342,6 +345,42 @@ Each frame shown, with N frames of run-ahead (1-3) and a kept state S:
 Cost: N + 1 frames, a save and a load. On the improved load that is 2 frames plus about 1 ms
 for run-ahead 1 in every clean scene above, 4-9 ms a frame shown against a 16.7 ms budget.
 
+**Built in `boot_runner` (phase 2).** `--run-ahead <n>` does it at each frame boundary, after the
+real frame's bookkeeping and before the buttons change for the next. So the frames ahead run on
+the input the real frame had, as a front end that has only that input would. The real frame's
+sound is drained first, and what the frames ahead make is thrown away. Everything the run
+reports - the frame log's pictures, the instruction count, the final state - is the real
+frames'. `--shown-log <file>` writes the picture shown each frame: with run-ahead, the one n
+frames ahead. Refused with `--movie`, the debugger's options and `--shared-picture`.
+
+The counters in the frame log (flips, CD sectors, GP0 words) and the recompiler's statistics
+are diagnostics outside the state. They count the frames run ahead too, so they come out about
+n + 1 times as large. The instruction count is the real frames' alone.
+
+The results, twelve discs, 3,000 frames, Start and Cross pressed at frames 1000, 1500, 2000 and
+2500 for ten frames each, `--run-ahead 2` against none, both CPUs:
+
+- **Exactly the same machine.** Every checkpoint picture, every instruction count and each final
+  state byte for byte, in all 24 pairs. It took bugs 160 and 161 to get there.
+- **The press shows 2 frames earlier** in 22 of the 24. In the other two (Wild Arms 2 under both
+  CPUs, Captain Tsubasa interpreted) it shows 1 frame earlier: the game reacts on the very next
+  frame, and run-ahead cannot show a press before the frame that reads it. It takes away up to n
+  frames of the game's own lag, and no more than the game has.
+- **Every shown picture is the plain run's n frames on**, except for 0-2 frames a run. Those are
+  where the frames ahead ran on the input from before a press that the real frames then had.
+
+What it costs, from local copies, recompiled, alternated, 3,000 frames from a cold boot:
+
+| | Ridge Racer | Wild Arms |
+|---|---|---|
+| No run-ahead | 4.40 s (1.47 ms a frame) | 3.43 s (1.14 ms a frame) |
+| Run-ahead 1 | 11.31 s (3.77 ms) | 9.21 s (3.07 ms) |
+| Run-ahead 2 | 15.66 s (5.22 ms) | 12.77 s (4.26 ms) |
+
+Run-ahead 2 still runs over three times faster than real time in both. These averages include
+the boot and its loading, where the frames are cheap; the scenes measured above are the ones to
+budget by.
+
 What has to split in `host::Machine`:
 
 - **Hooks per emulated frame and per frame shown.** Cheats run after every emulated frame.
@@ -426,7 +465,7 @@ states to carry the movie's position, is the TAS work in Gaps.md, and builds on 
 |---|---|---|
 | 0 | **Done 2026-10-15.** `boot_runner --bench-state <n>`, on `System::SerialisePayload`/`FinishLoad` and `StateIO::ReuseBuffer`; `Cdrom::set_reopen_on_load`; `Disc::read_stats`. The CD across loads, from the share and a local copy | The numbers repeat; Ridge Racer and Wild Arms cost what their parts add up to, and the reason they seemed not to is known (the first loop). Found on the way: a dropped-code load every frame changes the machine's course |
 | 1 | **Done 2026-10-15.** `SaveMemoryState`/`LoadMemoryState`: reused buffers, no copy in, no reopen, only code from changed words thrown away, four read-ahead blocks, cards in run-ahead states (`MC::Snapshot`); `SaveState`/`LoadState` on the same buffer. Bug 159 on the way: a save moved the recompiler's path, and the SPU's resampler histories and the device batch's end were not saved | `boot_runner --memory-state-every 1` on the twelve discs, recompiled and interpreted: every report line as without it, and each final state the same byte for byte. Two identical runs save identical states. A memory-state load costs 0.46-0.59 ms recompiled. `mc_test` 112, `spu_test` 199 |
-| 2 | Run-ahead in `boot_runner --run-ahead <n>` | The twelve discs with `--press` input give the same checksums at every checkpoint as without it, the machine's timeline being untouched; with a press at frame F, the first changed picture comes N frames earlier |
+| 2 | **Done 2026-10-16.** Run-ahead in `boot_runner --run-ahead <n>`, and `--shown-log` for the picture shown. Bug 160 on the way (a recompiled chain ended where its links did, so its course depended on what was compiled before) and bug 161 (the GP0 queue and drawing debt not in a state) | Twelve discs, both CPUs, four presses each, `--run-ahead 2` against none: every checkpoint picture, instruction count and final state the same. Each press shows 2 frames earlier in 22 runs of 24, 1 earlier in the two where the game reacts within one frame. Every shown picture is the plain run's 2 frames on, except 0-2 frames a run where the frames ahead ran on the input before a press |
 | 3 | Run-ahead in the front end: the hook split, the sound, the setting, per game | `host_test` runs a machine with run-ahead to `boot_runner`'s instruction count; then an hour of play |
 | 4 | Hardware rasteriser snapshots on the card | A run-ahead load at 4x costs what it does at 1x, and `hw_raster_test`'s scenes are identical with run-ahead on |
 | 5 | Rewind's store: reverse deltas on a thread, the budget | Record 600 frames, step back to frame 300, compare with a state saved at frame 300: byte-identical. Changed-page compression measured |

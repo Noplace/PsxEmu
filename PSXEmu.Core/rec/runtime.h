@@ -189,6 +189,14 @@ struct BlockState {
   // how many instructions the chain executed.
   int32_t budget = 0;
 
+  // Set by a link slot that is not linked yet, as it returns with budget left: the chain would
+  // have gone on into the block at next_pc had that block been compiled already, and
+  // Recompiler::Step carries it on there itself. So whether a link exists - which depends on
+  // what has been compiled before - changes how fast a chain runs, never where it ends, and a
+  // recompiled machine's course is its state's alone (Docs/Rewind-and-Run-Ahead-Plan.md,
+  // phase 2). Sits in the padding before `move`.
+  uint32_t unlinked_exit = 0;
+
   MoveFn move = nullptr;
 
   // Main RAM, for the loads compiled to read it directly - or nullptr, and every

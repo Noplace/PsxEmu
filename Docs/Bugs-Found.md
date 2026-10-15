@@ -9740,3 +9740,68 @@ Save-States-Plan.md's rule.
 - `spu_test` 197 -> 199 (`xaresample`): a state carrying the XA filter's history plays on exactly
   as if no load had happened, and one without it does not. Leaving the ring out of the history
   fails the first.
+
+## 160. A recompiled machine's course depended on what it had compiled before
+
+`rec/recompiler.h`, `rec/block_compiler.h`, `rec/runtime.h`
+
+Compiled code runs as a chain, through as many blocks as its budget allows, and the machine
+ticks its devices and takes interrupts between chains. A chain went on into the next block
+only through a link, and a link exists only once both blocks have been compiled. An exit
+whose target was not compiled yet returned to the machine instead, which could take an
+interrupt there. So the same machine, in the same state, could take an interrupt at a
+different instruction depending on what it had happened to compile before.
+
+A plain run never showed it: it compiles the same blocks in the same order every time.
+Run-ahead does not (Rewind-and-Run-Ahead-Plan.md, phase 2). Its frames ahead compile and link
+blocks the real frames have not reached yet, and after the load back the real frames chained
+where a plain run had returned. Ridge Racer with `--run-ahead 2` showed every picture the plain
+run did, but ended 900 frames on with a different clock and registers, in 2,377 fewer steps.
+
+An unlinked slot now returns through a stub of its own that says so
+(`BlockState::unlinked_exit`, in padding that was already there), and `Recompiler::Step`
+carries the chain on into the block it wanted, compiling it if need be, with the budget that is
+left: where the link would have taken it. A chain ends where it always ended otherwise. Links
+now only make a chain faster.
+
+**Checked.**
+- `--run-ahead 2` against no run-ahead, twelve discs, 3,000 frames, recompiled, with buttons
+  pressed: the same checkpoint pictures, the same steps and the same final state byte for byte,
+  disc by disc. Before: Ridge Racer's state and steps differed after 900 frames.
+- The plain recompiled table: every checkpoint picture as before, in 0.01-0.06% fewer steps,
+  since chains no longer stop early while their blocks are first being compiled.
+- `rec_test` 2059 and `psxtest_cpu` (recompiled picture identical to interpreted) unchanged.
+- 0.6-1.2% slower on Ridge Racer and Wild Arms, alternated against the build before, with the
+  carrying-on kept out of `Step`'s own body; written inside it, it cost 1.5-3%.
+
+**Not this.** Ace Combat 3's frame-3000 picture differs recompiled from interpreted, on master
+as well as here (`8787981dfb94e189` against `2e6db11119920d31`); frames 1000 and 2000 agree.
+
+## 161. The GP0 queue and the drawing still owed were not in a save state
+
+`psx/gpu.cpp`, `psx/gpu.h`, `psx/cdrom.cpp`, `psx/cdrom.h`, `psx/system.cpp`
+
+`Gpu::Serialise` left out the commands waiting in the GP0 queue for drawing time, the draw
+ticks owed on the one being drawn, those a transfer had paid already, and whether the transfer
+in progress was charged. It did so on purpose, as work "gone a scanline later". But a load did
+not empty the queue, it left it as it was. So a state loaded mid-drawing resumed with an idle
+GPU, plus whatever commands the queue held from before the load, from some other moment
+entirely.
+
+Found by `--run-ahead 2` with buttons pressed (Rewind-and-Run-Ahead-Plan.md, phase 2), which
+loads a state after every frame. Wild Arms 2 interpreted ran 9,632 fewer instructions in 3,000
+frames than without run-ahead, a game polling GPUSTAT going round its loop a different number of
+times, before coming back to the same final state. Air Combat, Bomberman, Vandal Hearts and
+Wild Arms 2 did likewise recompiled. Bug 159's table, with no buttons pressed, never caught a
+load in that scanline.
+
+All four now follow bug 159's additions at the end of a state (`Gpu::SerialiseDrawing`, the
+queue oldest first). A state from before starts the GPU idle and its queue empty, rather than
+holding what was there. With them go two CD-ROM fields left out as too brief to matter:
+whether the drive was paused when the command in progress arrived (what its seek costs under
+mechanical timing), and how long the BIOS bootstrap's Init has left
+(`Cdrom::SerialiseCommandTiming`).
+
+**Checked.** The five runs that differed, then the whole table: twelve discs, both CPUs,
+buttons pressed, with and without `--run-ahead 2`. Every checkpoint picture, every instruction
+count and every final state now matches.
