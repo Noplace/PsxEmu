@@ -1493,6 +1493,32 @@ void TestXaResampler(Machine& m) {
   m.spu().QueueCdSamples(steady.data(), 100, 37800);
   CheckEqual(static_cast<int32_t>(QueuedCd(m).size() / 2), 600 / 6 * 7,
              "after a save state, the pattern carries on where it was");
+
+  // With the filter's history too, which a state carries after every component
+  // (Spu::SerialiseResamplerHistory): the frames after a load are the frames there would have
+  // been, not ones filtered from silence - which a load every frame, as run-ahead does, would
+  // otherwise hear sixty times a second (Docs/Rewind-and-Run-Ahead-Plan.md, phase 1).
+  m.Reset();
+  m.spu().QueueCdSamples(stream.data(), 500, 37800);
+  emulation::psx::StateIO held(true);
+  m.spu().Serialise(held);
+  m.spu().SerialiseResamplerHistory(held);
+  const std::vector<uint8_t> held_bytes = held.bytes();
+  m.spu().QueueCdSamples(stream.data() + 1000, 300, 37800);
+  const std::vector<int16_t> straight_on = QueuedCd(m);
+  for (int with_history = 1; with_history >= 0; --with_history) {
+    m.Reset();
+    emulation::psx::StateIO restore(false);
+    restore.BeginLoad(held_bytes.data(), held_bytes.size());
+    m.spu().Serialise(restore);
+    if (with_history)
+      m.spu().SerialiseResamplerHistory(restore);
+    m.spu().QueueCdSamples(stream.data() + 1000, 300, 37800);
+    if (with_history)
+      Check(QueuedCd(m) == straight_on, "with its history, a load plays on as if it had not happened");
+    else
+      Check(QueuedCd(m) != straight_on, "and without it, as from a state before, it does not");
+  }
 }
 
 // ---------------------------------------------------------------------------

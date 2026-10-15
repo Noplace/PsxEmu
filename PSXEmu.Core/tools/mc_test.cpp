@@ -342,6 +342,76 @@ void TestTheFile() {
   DeleteFileA(other.c_str());
 }
 
+// A card snapshot, which a state kept in memory takes for run-ahead: what speculative frames
+// write has to come back off the card (Docs/Rewind-and-Run-Ahead-Plan.md, phase 1).
+void TestSnapshot() {
+  Group("a snapshot for run-ahead");
+  const std::string path = TempCardPath();
+  const std::string other = path + ".other";
+  DeleteFileA(path.c_str());
+  DeleteFileA(other.c_str());
+
+  MC mc;
+  mc.Initialize();
+  mc.CreateFile(path.c_str());
+  uint8_t sector[128];
+  memset(sector, 0x11, sizeof(sector));
+  mc.WriteSector(50, sector);
+  mc.Flush();
+
+  MC::Snapshot snapshot;
+  mc.TakeSnapshot(&snapshot);
+  Check(snapshot.present && snapshot.image.size() == 0x20000, "takes the whole card");
+  memset(sector, 0x22, sizeof(sector));
+  mc.WriteSector(50, sector);
+  mc.set_flag(0x08);
+  mc.RestoreSnapshot(snapshot);
+  uint8_t back[128];
+  mc.ReadSector(50, back);
+  CheckEqual(back[0], 0x11, "a write after it is taken back");
+  CheckEqual(mc.flag() & 0x08, 0, "and so is the flag");
+  Check(mc.dirty(), "and the card is due to be written again");
+  mc.Flush();
+
+  memset(sector, 0x33, sizeof(sector));
+  const uint8_t was = ReadFileBytes(path)[60 * 128];
+  mc.TakeSnapshot(&snapshot);
+  mc.WriteSector(60, sector);
+  mc.Flush();
+  CheckEqual(ReadFileBytes(path)[60 * 128], 0x33, "a write that reached the file");
+  mc.RestoreSnapshot(snapshot);
+  mc.Flush();
+  CheckEqual(ReadFileBytes(path)[60 * 128], was,
+             "is taken back off the file too, once it is written again");
+
+  mc.TakeSnapshot(&snapshot);
+  mc.RestoreSnapshot(snapshot);
+  Check(!mc.dirty(), "a snapshot of the card as it is changes nothing, and writes nothing");
+
+  {
+    MC maker;
+    maker.Initialize();
+    maker.CreateFile(other.c_str());
+  }
+  memset(sector, 0x44, sizeof(sector));
+  mc.WriteSector(70, sector);
+  mc.TakeSnapshot(&snapshot);
+  mc.LoadFile(other.c_str());
+  mc.RestoreSnapshot(snapshot);
+  mc.ReadSector(70, back);
+  Check(back[0] != 0x44, "a card swapped in since is left alone");
+
+  MC::Snapshot empty;
+  mc.RestoreSnapshot(empty);
+  Check(mc.connected() && !mc.dirty(), "and so is a card where the snapshot had none");
+
+  mc.Deinitialize();
+  DeleteFileA((path + ".tmp").c_str());
+  DeleteFileA((other + ".tmp").c_str());
+  DeleteFileA(path.c_str());
+  DeleteFileA(other.c_str());
+}
+
 }  // namespace
 
 // mc_test <card.mcr>: lists a card instead of testing - read only, the file is never written.
@@ -482,6 +552,7 @@ int main(int argc, char** argv) {
   TestDeleteUndelete();
   TestRoundTrip();
   TestTheFile();
+  TestSnapshot();
   TestOtherFormats();
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   return g_failures == 0 ? 0 : 1;

@@ -156,4 +156,13 @@ The harness is the test, as it is for everything else:
   states still load. The CD-ROM's mute and volume matrix were the first: a
   state from before them plays CD audio straight through and unmuted, which is
   what nearly every game sets anyway. Something whose absence would leave the
-  machine subtly wrong still needs the bump.
+  machine subtly wrong still needs the bump. Since bug 159 the SPU's resampler
+  histories and the device batch's end follow it, in that order.
+- **A `Serialise` must change nothing when saving.** Work a load has to redo -
+  deriving timing from registers just restored, restarting a batch - goes under
+  `if (!io.saving())`. `IOInterface::Serialise` did it both ways, so every save
+  moved where the next device batch ended and sent a recompiled machine down
+  another path (bug 159). `boot_runner --memory-state-every 1` catches this and
+  any field left out: a save and a load after every frame must leave the run,
+  and its final state, exactly as without them
+  ([Rewind-and-Run-Ahead-Plan.md](Rewind-and-Run-Ahead-Plan.md)).

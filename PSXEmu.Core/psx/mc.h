@@ -19,6 +19,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace emulation {
 namespace psx {
@@ -124,6 +125,24 @@ class MC : public Component {
   void Modified();
 
   static const int kFlushAfterIdleFrames = 60;
+
+  // The card as it stands, for a state kept in memory (Docs/Rewind-and-Run-Ahead-Plan.md):
+  // run-ahead has to take back what its speculative frames wrote, on input the player has not
+  // given yet. A save state never carries a card - loading one leaves the cards as they are.
+  // Reused: taking another into the same Snapshot allocates nothing.
+  struct Snapshot {
+    bool present = false;
+    std::string filename;
+    std::vector<uint8_t> image;
+    uint8_t flag = 0;
+    bool dirty = false;
+    int idle_frames = 0;
+  };
+  void TakeSnapshot(Snapshot* out) const;
+  // Puts the card back as the snapshot has it, if the same card is still in the slot - one
+  // inserted or ejected since is left alone. A card whose bytes this changes is due to be written
+  // again, in case what it is taking back already went to disk.
+  void RestoreSnapshot(const Snapshot& in);
 
  private:
   static bool WriteWholeFile(const std::string& path, const MCFile* card);

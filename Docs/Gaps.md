@@ -832,8 +832,9 @@ shortfall is recognised: about 5,500 short frames once, then none.
 Not the machine - each of these is something a player of DuckStation, Mednafen or RetroArch would
 look for. Each was looked for in the code and settings on 2026-10-14 and is not there.
 
-- **Rewind and run-ahead.** Neither exists. Save states are the only way back. Planned and
-  measured in [Rewind-and-Run-Ahead-Plan.md](Rewind-and-Run-Ahead-Plan.md) (2026-10-15).
+- **Rewind and run-ahead.** Neither exists for a player yet. Save states are the only way
+  back. The state they need, kept in memory and exact enough to load every frame, is built
+  ([Rewind-and-Run-Ahead-Plan.md](Rewind-and-Run-Ahead-Plan.md), phases 0-1, 2026-10-15).
 - **Turbo / autofire buttons.** Fast-forward exists (Tab); a held button repeating does not.
 - **Picture options beyond the filters:**
   - no widescreen hack (the GTE's projection is the game's);

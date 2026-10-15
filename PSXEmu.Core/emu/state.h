@@ -130,8 +130,56 @@ class StateIO {
   // (after the header has already been consumed by whoever read the file).
   void BeginLoad(const uint8_t* data, size_t size) {
     buffer_.assign(data, data + size);
+    BeginLoadView(buffer_.data(), buffer_.size());
+  }
+
+  // Loading only: read the payload where it is, without copying it. The bytes must stay put
+  // until the load is over - a state kept in memory, or a file's bytes the caller holds.
+  void BeginLoadView(const uint8_t* data, size_t size) {
+    source_ = data;
+    source_size_ = size;
     cursor_ = 0;
     truncated_ = false;
+  }
+
+  // Main RAM, which compiled code is made from: saved and loaded as Bytes. On a load with a
+  // watcher set, every run of words whose bytes differ from what they replace is reported
+  // first, as the CPU's own stores would be - so the recompiler throws away only the code
+  // compiled from words that changed. Throwing it all away on a load every frame changes what a
+  // recompiled machine computes (Docs/Rewind-and-Run-Ahead-Plan.md, phase 0); keeping code
+  // whose bytes are the same does not. A page at a time is compared first, since nearly all
+  // are the same; `size` is a whole number of words.
+  typedef void (*RamWatcher)(void* context, uint32_t offset, uint32_t bytes);
+  static const size_t kRamPage = 4096;
+  void WatchRam(RamWatcher watcher, void* context) {
+    ram_watcher_ = watcher;
+    ram_watcher_context_ = context;
+  }
+  void Ram(void* data, size_t size) {
+    if (!saving_ && ram_watcher_ != nullptr && !truncated_ && cursor_ + size <= source_size_) {
+      const uint8_t* incoming = source_ + cursor_;
+      const uint8_t* current = static_cast<const uint8_t*>(data);
+      for (size_t page = 0; page < size; page += kRamPage) {
+        const size_t end = size - page < kRamPage ? size : page + kRamPage;
+        if (memcmp(current + page, incoming + page, end - page) == 0)
+          continue;
+        size_t run = end;   // the start of a run of words that differ, `end` while there is none
+        for (size_t at = page; at < end; at += 4) {
+          const bool differs = memcmp(current + at, incoming + at, 4) != 0;
+          if (differs && run == end) {
+            run = at;
+          } else if (!differs && run != end) {
+            ram_watcher_(ram_watcher_context_, static_cast<uint32_t>(run),
+                         static_cast<uint32_t>(at - run));
+            run = end;
+          }
+        }
+        if (run != end)
+          ram_watcher_(ram_watcher_context_, static_cast<uint32_t>(run),
+                       static_cast<uint32_t>(end - run));
+      }
+    }
+    Bytes(data, size);
   }
 
   // Saving only: the payload accumulated so far, ready to append to a file
@@ -157,7 +205,7 @@ class StateIO {
   // Loading only: whether the payload holds anything past what has been read.
   // For the additions System saves after every component: a file from before
   // one was added ends where it starts, and the addition keeps its reset value.
-  bool more() const { return !saving_ && !truncated_ && cursor_ < buffer_.size(); }
+  bool more() const { return !saving_ && !truncated_ && cursor_ < source_size_; }
 
   // A component's Serialise can have a real side effect that fails on load -
   // Cdrom reopening its Disc from a saved path being the one case in this
@@ -178,18 +226,22 @@ class StateIO {
   }
 
   void Extract(void* data, size_t size) {
-    if (truncated_ || cursor_ + size > buffer_.size()) {
+    if (truncated_ || cursor_ + size > source_size_) {
       truncated_ = true;
       memset(data, 0, size);
       return;
     }
-    memcpy(data, buffer_.data() + cursor_, size);
+    memcpy(data, source_ + cursor_, size);
     cursor_ += size;
   }
 
   bool saving_;
-  std::vector<uint8_t> buffer_;
+  std::vector<uint8_t> buffer_;   // what a save writes; a BeginLoad's own copy
+  const uint8_t* source_ = nullptr;   // what a load reads
+  size_t source_size_ = 0;
   size_t cursor_ = 0;
+  RamWatcher ram_watcher_ = nullptr;
+  void* ram_watcher_context_ = nullptr;
   bool truncated_ = false;
   std::string error_;
 };

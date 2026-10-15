@@ -1,11 +1,13 @@
 # Rewind and run-ahead
 
-> **Status: phase 0 done, 2026-10-15; nothing a player can use is built.** `boot_runner
-> --bench-state <n>` makes every measurement here (see "How it was measured"). Phase 0 found
-> that the suspected CD problem was the first benchmark's own fault, and that throwing compiled
-> code away on a load changes what the machine computes. Phase 1 has to keep it for that
-> reason, not only for speed. Every phase ends with a harness check that a person does not have
-> to watch.
+> **Status: phases 0 and 1 done, 2026-10-15; nothing a player can use is built yet.**
+> `System::SaveMemoryState`/`LoadMemoryState` exist. A memory state saved and loaded straight
+> back after every frame leaves the twelve-disc table exactly as without it, under either CPU:
+> every report line, and each disc's final state byte for byte. Run-ahead 1 on them costs two
+> frames plus 0.7-0.9 ms. Getting there found that a save state was not the machine exactly
+> (bug 159). Phase 0 found that the suspected CD problem was the first benchmark's own fault.
+> `boot_runner --bench-state <n>` makes every measurement here ("How it was measured"). Every
+> phase ends with a harness check that a person does not have to watch.
 
 Two features built on one thing: a save state that stays in memory, fast enough to take and
 restore every frame.
@@ -43,8 +45,9 @@ load within one session does not need:
    would (phase 0, below). The interpreter is exact either way.
 3. **The payload is copied** into `StateIO` before it is read (0.13-0.38 ms).
 
-With those three fixed, a save and a load cost about **0.6-1.2 ms together**, recompiled. On
-that budget, run-ahead of one or two frames fits easily in every scene measured. Rewind's
+With those three fixed, a save and a load cost about **0.6-1.2 ms together**, recompiled. Phase
+1 built that and measured **0.13-0.20 ms a save and 0.46-0.59 ms a load**. On that budget,
+run-ahead of one or two frames fits easily in every scene measured. Rewind's
 capture costs only the save plus storage, and the storage is the real design question: what
 changes between consecutive states compresses to **19-116 KB** a frame.
 
@@ -172,6 +175,34 @@ one that does not. It also means `boot_runner --run-ahead` could never pass phas
 Phase 1's "only code that changed is thrown away" is a correctness requirement, not an
 optimisation.
 
+### A state in memory, as built (phase 1)
+
+`--bench-state 120`, recompiled, from local copies of the discs, after phase 1. One batch, so
+the two games' columns compare with each other but not with the tables above.
+
+| | Ridge Racer | Wild Arms |
+|---|---|---|
+| A frame | 2.54 ms | 1.94 ms |
+| Save as `SaveState` builds it, a fresh vector | 2.05 ms | 1.93 ms |
+| `SaveMemoryState` | **0.20 ms** | **0.13 ms** |
+| ...with the cards (none inserted here) | 0.16 ms | 0.13 ms |
+| Load as `LoadState` does it, minus the file | 1.16 ms | 1.27 ms |
+| `LoadMemoryState` | **0.46 ms** | **0.59 ms** |
+| The frame after a load: code dropped / all kept / a memory state's load | 1.43 / 0.94 / 0.95 ms | 4.81 / 3.30 / 3.25 ms |
+| No run-ahead, per frame shown | 2.63 ms | 1.72 ms |
+| Run-ahead 1, loads as `LoadState` | 10.31 ms | 7.62 ms |
+| **Run-ahead 1 on memory states** | **5.92 ms** | **4.38 ms** |
+| ...its save and load | 0.27 + 0.40 ms | 0.30 + 0.58 ms |
+| ...its disc reads per frame shown | 0.07, as with none | 0.10, as with none |
+| 120 frames with a memory state every frame | the hash of no load | the hash of no load |
+
+A memory state's load throws away no more code than keeping it all does: the frame after costs
+the same. The four read-ahead blocks take the disc reads back to what no run-ahead makes. The
+payload grew by about 0.9 KB, the SPU's resampler histories and the device batch's end.
+
+Compressing the pages that changed from one frame's state to the next, as they are, comes to
+106-123 KB in 4.0-4.3 ms a frame. That is phase 5's starting point.
+
 ### The hardware rasteriser
 
 Ridge Racer, Direct3D 12 on the Radeon 780M, 100 iterations.
@@ -216,49 +247,63 @@ the design below, and phase 5's first measurement.
 
 ## The design
 
-### A state in memory
+### A state in memory (phase 1, built)
 
-New beside `SaveState`/`LoadState` in `psx/system.h`:
+Beside `SaveState`/`LoadState` in `psx/system.h`:
 
 ```cpp
-// A state kept in memory for rewind and run-ahead. No header: it never leaves this process,
-// this BIOS or this disc. Its buffer is kept and reused, so taking one allocates nothing.
 struct MemoryState {
   std::vector<uint8_t> payload;
-  std::vector<uint8_t> cards;      // the inserted cards' images - see Memory cards, below
-  uint64_t frame = 0;              // gpu().frame_count() when taken
+  bool has_cards = false;                       // taken with the cards: run-ahead's, not rewind's
+  MC::Snapshot cards[2][kCardSlotsPerPort];
 };
-void SaveMemoryState(MemoryState* state);
-void LoadMemoryState(const MemoryState& state);
+void SaveMemoryState(MemoryState* state, bool with_cards);
+std::string LoadMemoryState(const MemoryState& state);   // empty, or why not
 ```
 
-They run the same `Serialise` chain as the file functions, so no new field can be forgotten.
-What differs:
+It has no header: it never leaves the process, the BIOS or the disc set. Its buffers are kept,
+so taking another into the same `MemoryState` allocates nothing. Both functions run the same
+`Serialise` chain as the file functions (`System::SerialisePayload`), so no new field can be
+forgotten. What differs:
 
-- **`StateIO` writes into a buffer it is handed and keeps its capacity**, and reads from a
-  pointer and size it does not copy. `SaveState` and `LoadState` use the same two paths, which
-  takes 2 ms off every F-key save as a side effect.
-- **The disc is not reopened if it is the disc already open.** `Cdrom::Serialise` reopens only
-  when the saved path differs from `disc_.path()`, on a memory load. A file load keeps
-  reopening, since the image might have changed on disk since. `Iso9660` is likewise left
-  alone when the disc is the same.
-- **Only code that actually changed is thrown away.** RAM is restored through a new
-  `StateIO::Ram` that, on load, compares each 4 KB page with the page it is about to replace.
-  It only does that for pages the block cache has compiled code from (`IsCodePage`, a bitmap
-  lookup), and calls `NoteBulkWrite` for those that differ before copying. On FF7 that is
-  1.7 ms a load back. More importantly, it is what keeps a recompiled machine on the course it
-  would take with no load, which a load every frame needs (phase 0's determinism table). The
-  file load can use it too.
-- **A few read-ahead blocks, not one.** `Disc` keeps the last four blocks it read, so a load
-  that steps back a frame or three reads nothing. That is about 300 KB.
-- **The debugger is not reset.** Rewind and run-ahead are off while the debugger is armed, so
-  a memory load never lands under a halt.
-- **What a load forgets on the GPU is kept for run-ahead.** `Gpu::Serialise` drops the sprite
-  motion tracker and PGXP's FIFO shadows, because nothing drawn before a loaded state is
-  related to anything after it. Under run-ahead it is related: the real frame redraws what the
-  last shown frame showed, one frame later. A run-ahead load keeps the motion tracker, so DLSS
-  and FSR keep their 2D motion. PGXP's RAM and register shadows are validated by value and
-  already survive a load.
+- **`StateIO` writes into a buffer it is handed and keeps its capacity** (`ReuseBuffer`), and
+  reads from a pointer and size it does not copy (`BeginLoadView`). `SaveState` and `LoadState`
+  use the same two paths, through a buffer `System` keeps, which takes about 2 ms off every
+  F-key save.
+- **The disc is not reopened if it is the disc already open** (`Cdrom::set_reopen_on_load`,
+  off only for a memory load). A file load keeps reopening, since the image might have changed
+  on disk. `Iso9660` is opened again from the open disc, which reads nothing new.
+- **Only code compiled from words that changed is thrown away.** RAM is restored through
+  `StateIO::Ram`. On a memory load with the recompiler on, it compares each 4 KB page with the
+  one it replaces, and in a page that differs, each word. Each run of words that differ goes to
+  `NoteBulkWrite` before the copy, as the CPU's own stores would. The first version did it a
+  page at a time, but pages holding code and data change every frame, and a word at a time is
+  what the store path does.
+- **Four read-ahead blocks, not one.** `Disc` keeps the last four blocks it read and replaces the
+  one longest unused, so a load that steps back a frame or three reads nothing. That is about
+  300 KB per image file.
+- **The debugger is reset, as on any load** (`FinishLoad`). Rewind and run-ahead will be off
+  while it is armed, so a memory load never lands under a halt.
+- **Not yet: what a load forgets on the GPU.** `Gpu::Serialise` drops the sprite motion
+  tracker and PGXP's FIFO shadows, because nothing drawn before a loaded state is related to
+  anything after it. Under run-ahead it is: the real frame redraws what the last frame shown
+  showed, one frame later. Phase 3 keeps the motion tracker over a run-ahead load, so DLSS and
+  FSR keep their 2D motion; `boot_runner --motion` can score it. PGXP's RAM and register shadows
+  are validated by value and already survive a load.
+
+**What made a load exact** (bug 159). A save and a load every frame has to leave a run exactly
+the run without it, and at first it did not:
+
+- Saving restarted the device batch and recomputed the bus timing, in both directions.
+- A load restarted the batch at 32 cycles, where the recompiler had it reaching to the next
+  event.
+- The SPU's resampler histories weren't saved.
+- 4 KB of the state was uninitialised memory.
+
+The batch's end and the histories now go at the end of every state, after bug 157's addition.
+`IOInterface::Serialise` derives what it derives on a load only, and the buffer is zeroed.
+Phase 0's determinism table was right that the compiled code mattered. It was wrong that "the
+state is complete": its scene, late in a run, did not happen to show these.
 
 ### Memory cards
 
@@ -267,10 +312,16 @@ cannot keep that rule. A save written by the speculative frames ran on input the
 not given yet. If the next real frame's input differs, the game may write something else, or
 nothing, and the speculative write would be left on the card.
 
-- **Run-ahead states carry the cards**: every inserted card's 128 KB image and its `flag_`,
-  about 0.03 ms for two cards. The card's protocol state is already in `Sio::Serialise`. The
-  card goes to disk a second after the last write (`MC::OnFrame`, called once per frame shown),
-  so it always writes the real timeline's card, never a speculative one.
+- **Run-ahead states carry the cards** (`MC::Snapshot`, built in phase 1): every inserted
+  card's 128 KB image, its flag, and whether it is due to be written. The card's protocol state
+  is already in `Sio::Serialise`. A snapshot goes back only into the card it was taken from; a
+  card swapped in since is left alone. A card the restore changes is marked to be written again,
+  since what it takes back may already have reached the file. `mc_test`'s `a snapshot for
+  run-ahead` group holds all of this.
+- **Phase 3 flushes only on the real timeline.** A card goes to disk a second after the last
+  write (`MC::OnFrame`, once per frame shown). If that ran between a speculative frame and the
+  load after it, the file would hold a speculative write until the restore's rewrite a second
+  later. Calling it after the load, not after the frame shown, means it never does.
 - **Rewind leaves the cards alone**, as loading a state does. Rewinding past a save does not
   undo it, and a rewind never loses a save the player made. A rewind that lands partway through
   a save is safe: the card already holds the finished save, and the game writes the same
@@ -374,7 +425,7 @@ states to carry the movie's position, is the TAS work in Gaps.md, and builds on 
 | Phase | What | Done when |
 |---|---|---|
 | 0 | **Done 2026-10-15.** `boot_runner --bench-state <n>`, on `System::SerialisePayload`/`FinishLoad` and `StateIO::ReuseBuffer`; `Cdrom::set_reopen_on_load`; `Disc::read_stats`. The CD across loads, from the share and a local copy | The numbers repeat; Ridge Racer and Wild Arms cost what their parts add up to, and the reason they seemed not to is known (the first loop). Found on the way: a dropped-code load every frame changes the machine's course |
-| 1 | `SaveMemoryState`/`LoadMemoryState`: reused buffers, no copy in, no reopen, only changed code thrown away, a few read-ahead blocks, cards in run-ahead states; `SaveState`/`LoadState` on the same paths | `boot_runner --memory-state-every 1`, saving and loading after every frame, gives the plain run's checksums and instruction counts on the twelve discs, recompiled as well as interpreted; a save, load, save gives identical bytes; a load costs under 0.6 ms recompiled |
+| 1 | **Done 2026-10-15.** `SaveMemoryState`/`LoadMemoryState`: reused buffers, no copy in, no reopen, only code from changed words thrown away, four read-ahead blocks, cards in run-ahead states (`MC::Snapshot`); `SaveState`/`LoadState` on the same buffer. Bug 159 on the way: a save moved the recompiler's path, and the SPU's resampler histories and the device batch's end were not saved | `boot_runner --memory-state-every 1` on the twelve discs, recompiled and interpreted: every report line as without it, and each final state the same byte for byte. Two identical runs save identical states. A memory-state load costs 0.46-0.59 ms recompiled. `mc_test` 112, `spu_test` 199 |
 | 2 | Run-ahead in `boot_runner --run-ahead <n>` | The twelve discs with `--press` input give the same checksums at every checkpoint as without it, the machine's timeline being untouched; with a press at frame F, the first changed picture comes N frames earlier |
 | 3 | Run-ahead in the front end: the hook split, the sound, the setting, per game | `host_test` runs a machine with run-ahead to `boot_runner`'s instruction count; then an hour of play |
 | 4 | Hardware rasteriser snapshots on the card | A run-ahead load at 4x costs what it does at 1x, and `hw_raster_test`'s scenes are identical with run-ahead on |
@@ -384,7 +435,9 @@ states to carry the movie's position, is the TAS work in Gaps.md, and builds on 
 
 The phase 1 test is the one that guards everything after it. A load of a state just saved
 must change nothing the machine computes. If any field is missing from a `Serialise`, it fails
-at once, on every disc.
+at once, on every disc. Run it with the final states compared byte for byte, not just the
+checksums: in phase 1 every picture matched while the states, and the recompiler's path,
+did not.
 
 ## Traps
 

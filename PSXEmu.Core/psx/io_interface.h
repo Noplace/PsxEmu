@@ -162,6 +162,8 @@ class IOInterface : public Component {
   // not machine state; a state file carries a hash of it instead and refuses
   // to load against a different one. access_log is diagnostics.
   void Serialise(StateIO& io);
+  // Where the current device batch ends - saved after every component, see the .cpp.
+  void SerialiseBatch(StateIO& state);
 };
 
 }

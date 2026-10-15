@@ -127,6 +127,9 @@ class ICache2 : public Component {
   uint32_t addresses[0x1000];
   int Initialize() {
     buffer.Alloc(0x1000*4);
+    // Zeroed: a save state carries these bytes, and left as the heap had them they made two
+    // identical runs save different states (Docs/Rewind-and-Run-Ahead-Plan.md, phase 1).
+    memset(buffer.u8, 0, 0x1000*4);
     Invalidate();
     return S_OK;
   }

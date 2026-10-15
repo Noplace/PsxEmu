@@ -1499,7 +1499,7 @@ void Disc::SynthesiseSectorHeader(uint8_t* sector, uint32_t lba,
   }
 }
 
-// One sector out of an image file, through the read-ahead block described in
+// One sector out of an image file, through the read-ahead blocks described in
 // disc.h. A hit is a memcpy; a miss reads a block of sectors and serves this one
 // out of its front. Sequential reads - which is nearly all of them - hit
 // thirty-one times in thirty-two.
@@ -1517,35 +1517,45 @@ size_t Disc::ReadImageBytes(const Source& source, long long offset, uint8_t* out
 
 bool Disc::ReadFileSector(const Source& source, long long offset, uint32_t wanted,
                           uint8_t* out) const {
-  if (source.ahead_offset >= 0 && offset >= source.ahead_offset &&
-      offset + static_cast<long long>(wanted) <=
-          source.ahead_offset + static_cast<long long>(source.ahead_size)) {
-    memcpy(out, &source.ahead[static_cast<size_t>(offset - source.ahead_offset)],
-           wanted);
-    return true;
+  const uint64_t now = ++source.ahead_clock;
+  Source::AheadBlock* oldest = &source.ahead[0];
+  Source::AheadBlock* newest = &source.ahead[0];
+  for (Source::AheadBlock& held : source.ahead) {
+    if (held.offset >= 0 && offset >= held.offset &&
+        offset + static_cast<long long>(wanted) <= held.offset + static_cast<long long>(held.size)) {
+      memcpy(out, &held.bytes[static_cast<size_t>(offset - held.offset)], wanted);
+      held.used = now;
+      return true;
+    }
+    if (held.used < oldest->used)
+      oldest = &held;
+    if (held.used > newest->used)
+      newest = &held;
   }
 
+  // A miss: a block from here, in place of the one that has gone longest unused.
   const size_t block =
       static_cast<size_t>(kReadAheadSectors) *
       (source.sector_size > 0 ? source.sector_size : kRawSectorSize);
-  if (source.ahead.size() < block)
-    source.ahead.resize(block);
+  if (oldest->bytes.size() < block)
+    oldest->bytes.resize(block);
 
-  if (source.ahead_offset >= 0 && offset < source.ahead_offset)
+  if (newest->offset >= 0 && offset < newest->offset)
     ++read_stats_.backward;
-  source.ahead_offset = -1;
-  source.ahead_size = 0;
+  oldest->offset = -1;
+  oldest->size = 0;
   const auto start = std::chrono::steady_clock::now();
-  const size_t got = ReadImageBytes(source, offset, &source.ahead[0], block);
+  const size_t got = ReadImageBytes(source, offset, &oldest->bytes[0], block);
   read_stats_.ms +=
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
   ++read_stats_.reads;
   read_stats_.bytes += got;
   if (got < wanted)
     return false;
-  source.ahead_offset = offset;
-  source.ahead_size = static_cast<uint32_t>(got);
-  memcpy(out, &source.ahead[0], wanted);
+  oldest->offset = offset;
+  oldest->size = static_cast<uint32_t>(got);
+  oldest->used = now;
+  memcpy(out, &oldest->bytes[0], wanted);
   return true;
 }
 

@@ -157,7 +157,7 @@ class Disc {
   // boot_runner --bench-state: reads that went to the file itself (a read-ahead block, a CHD
   // hunk) and the wall-clock time they took. A sector served from the block already in memory
   // is not one. `backward` counts the misses that wanted a sector before the start of the block
-  // held - the machine having gone back, as a save state loaded does.
+  // last read from - the machine having gone back, as a save state loaded does.
   struct ReadStats {
     uint64_t reads = 0;
     uint64_t backward = 0;
@@ -182,11 +182,21 @@ class Disc {
     // of sectors and serving the rest from it turns thirty-two of those into
     // one. Purely a cache: the bytes handed back are the same bytes.
     //
+    // The last four blocks read are kept, not just the last. A state loaded for rewind or
+    // run-ahead steps the drive back a frame or three, and with one block every such load was a
+    // read (Docs/Rewind-and-Run-Ahead-Plan.md). Four is about 300 KB.
+    //
     // Mutable because reading a sector does not change the disc, and
     // Disc::ReadSector is const for that reason.
-    mutable std::vector<uint8_t> ahead;
-    mutable long long ahead_offset = -1;   // where the block starts in the file
-    mutable uint32_t ahead_size = 0;       // how much of it came back
+    struct AheadBlock {
+      std::vector<uint8_t> bytes;
+      long long offset = -1;   // where the block starts in the file
+      uint32_t size = 0;       // how much of it came back
+      uint64_t used = 0;       // when it last served a sector: the oldest is replaced
+    };
+    static const int kAheadBlocks = 4;
+    mutable std::array<AheadBlock, kAheadBlocks> ahead;
+    mutable uint64_t ahead_clock = 0;
 
     // A CHD, when this is one (chd_file*): sectors come out of hunks of
     // several frames each, decompressed whole, and the last one is kept -

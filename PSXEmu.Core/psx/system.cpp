@@ -588,6 +588,8 @@ bool System::BootDisc(DiscBootInfo* info) {
 // version bump turning every existing state away. Each new thing goes last.
 void System::SerialiseAdditions(StateIO& state) {
   io_.cdrom.SerialiseAudioControls(state);   // bug 157: the drive's mute and volume matrix
+  spu_.SerialiseResamplerHistory(state);      // rewind/run-ahead phase 1: the SPU's filters
+  io_.SerialiseBatch(state);                  // rewind/run-ahead phase 1: the device batch
 }
 
 // See Docs/Save-States-Plan.md. Fixed serialisation order, both directions:
@@ -626,9 +628,50 @@ void System::FinishLoad(bool drop_compiled_code) {
   debugger_.Reset();
 }
 
+void System::SaveMemoryState(MemoryState* state, bool with_cards) {
+  StateIO io(/*saving=*/true);
+  io.ReuseBuffer(&state->payload);
+  SerialisePayload(io);
+  io.TakeBytes(&state->payload);
+  state->has_cards = with_cards;
+  if (with_cards) {
+    for (int port = 0; port < 2; ++port)
+      for (int slot = 0; slot < kCardSlotsPerPort; ++slot)
+        mc(port, slot).TakeSnapshot(&state->cards[port][slot]);
+  }
+}
+
+void System::RamWordsChanged(void* context, uint32_t offset, uint32_t bytes) {
+  static_cast<System*>(context)->cpu_.NoteBulkWrite(offset, bytes);
+}
+
+std::string System::LoadMemoryState(const MemoryState& state) {
+  StateIO io(/*saving=*/false);
+  io.BeginLoadView(state.payload.data(), state.payload.size());
+  // Without the recompiler there is no compiled code to keep, and nothing to compare for.
+  if (recompiler_ != nullptr)
+    io.WatchRam(&System::RamWordsChanged, this);
+  io_.cdrom.set_reopen_on_load(false);
+  SerialisePayload(io);
+  io_.cdrom.set_reopen_on_load(true);
+  if (io.truncated())
+    return "the state in memory is truncated";
+  if (!io.error().empty())
+    return io.error();
+  if (state.has_cards) {
+    for (int port = 0; port < 2; ++port)
+      for (int slot = 0; slot < kCardSlotsPerPort; ++slot)
+        mc(port, slot).RestoreSnapshot(state.cards[port][slot]);
+  }
+  FinishLoad(/*drop_compiled_code=*/false);
+  return "";
+}
+
 std::string System::SaveState(const std::string& path) {
   StateIO state(/*saving=*/true);
+  state.ReuseBuffer(&state_buffer_);
   SerialisePayload(state);
+  state.TakeBytes(&state_buffer_);
 
   FILE* fp = fopen(path.c_str(), "wb");
   if (fp == nullptr)
@@ -645,9 +688,8 @@ std::string System::SaveState(const std::string& path) {
   if (disc_path_length > 0)
     fwrite(disc_path.data(), 1, disc_path_length, fp);
 
-  const std::vector<uint8_t>& payload = state.bytes();
-  if (!payload.empty())
-    fwrite(payload.data(), 1, payload.size(), fp);
+  if (!state_buffer_.empty())
+    fwrite(state_buffer_.data(), 1, state_buffer_.size(), fp);
   fclose(fp);
   return "";
 }
@@ -689,7 +731,8 @@ std::string System::LoadState(const std::string& path) {
   if (disc_path_length > 0)
     fseek(fp, disc_path_length, SEEK_CUR);
 
-  std::vector<uint8_t> payload;
+  std::vector<uint8_t>& payload = state_buffer_;
+  payload.clear();
   uint8_t chunk[65536];
   size_t read;
   while ((read = fread(chunk, 1, sizeof(chunk), fp)) > 0)
@@ -697,7 +740,7 @@ std::string System::LoadState(const std::string& path) {
   fclose(fp);
 
   StateIO state(/*saving=*/false);
-  state.BeginLoad(payload.data(), payload.size());
+  state.BeginLoadView(payload.data(), payload.size());
   SerialisePayload(state);
 
   if (state.truncated())

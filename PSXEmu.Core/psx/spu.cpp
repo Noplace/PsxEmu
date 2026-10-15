@@ -215,9 +215,9 @@ void Spu::Serialise(StateIO& io) {
   io.Plain(noise_level_);
   io.Plain(reverb_base_);
   io.Plain(reverb_cursor_);
-  // Only the resampler's phase is kept - its history is not, see
-  // reverb_downsample_ - so a loaded state steps the reverb on the same
-  // samples it would have.
+  // Only the resampler's phase is kept here, so a loaded state steps the reverb on the same
+  // samples it would have. Its history and whole position come after every component
+  // (SerialiseResamplerHistory); a state from before they did starts the history from silence.
   reverb_left_phase_ = (reverb_resample_position_ & 1) != 0;
   io.Plain(reverb_left_phase_);
   if (!io.saving()) {
@@ -236,9 +236,9 @@ void Spu::Serialise(StateIO& io) {
   io.Plain(cd_audio_count_);
   // The XA resampler, in the twelve bytes the linear one it replaced kept - so states made before
   // still load, without a new state version: where it is in its ring and its pattern, marked
-  // "XA" so that an older state's fraction is not read as one. Not its history, as with the
-  // reverb's above: a loaded state's first XA frames are filtered from silence, less than a
-  // millisecond of it.
+  // "XA" so that an older state's fraction is not read as one. Its history follows at the end,
+  // as the reverb's does; a state from before that starts the XA filter from silence, less
+  // than a millisecond of it.
   uint32_t xa_state = 0x58410000u | ((xa_sixstep_ & 0xFF) << 8) | (xa_ring_position_ & 31);
   int16_t xa_unused[4] = {};
   io.Plain(xa_state);
@@ -254,6 +254,22 @@ void Spu::Serialise(StateIO& io) {
         xa_sixstep_ = sixstep;
     }
   }
+}
+
+// Saved after every component (System::SerialiseAdditions), so states from before still load:
+// one ends where this would start, and keeps the silence Serialise filled the histories with.
+// Silence is less than a millisecond after one load; after a load every frame, as run-ahead
+// does, it was a fresh start of the reverb sixty times a second
+// (Docs/Rewind-and-Run-Ahead-Plan.md, phase 1).
+void Spu::SerialiseResamplerHistory(StateIO& io) {
+  if (!io.saving() && !io.more())
+    return;
+  io.Plain(reverb_downsample_);
+  io.Plain(reverb_upsample_);
+  io.Plain(reverb_resample_position_);
+  io.Plain(xa_ring_);
+  io.Plain(xa_ring_position_);
+  io.Plain(xa_sixstep_);
 }
 
 int Spu::Deinitialize() {

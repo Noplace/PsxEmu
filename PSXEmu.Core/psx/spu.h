@@ -160,6 +160,9 @@ class Spu : public Component {
   // and the opt-in voice_events_ trace, and the reverb's resampling history
   // (see reverb_downsample_).
   void Serialise(StateIO& io);
+  // The reverb's and the XA filter's resampler histories, saved after every component
+  // (System::SerialiseAdditions) so older states still load.
+  void SerialiseResamplerHistory(StateIO& io);
 
  private:
   enum AdsrPhase { kAttack, kDecay, kSustain, kRelease, kOff };

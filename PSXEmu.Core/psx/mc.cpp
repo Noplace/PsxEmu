@@ -149,6 +149,31 @@ void MC::Modified() {
   flag_ |= 0x08;
 }
 
+void MC::TakeSnapshot(Snapshot* out) const {
+  out->present = mcfile != nullptr;
+  if (!out->present)
+    return;
+  out->filename = filename_;
+  out->image.resize(sizeof(MCFile));
+  memcpy(out->image.data(), mcfile, sizeof(MCFile));
+  out->flag = flag_;
+  out->dirty = dirty_;
+  out->idle_frames = idle_frames_;
+}
+
+void MC::RestoreSnapshot(const Snapshot& in) {
+  if (!in.present || mcfile == nullptr || in.filename != filename_ ||
+      in.image.size() != sizeof(MCFile))
+    return;
+  const bool changed = memcmp(mcfile, in.image.data(), sizeof(MCFile)) != 0;
+  if (changed)
+    memcpy(mcfile, in.image.data(), sizeof(MCFile));
+  flag_ = in.flag;
+  // What it takes back may have been written to disk in between: then it is written again.
+  dirty_ = in.dirty || changed;
+  idle_frames_ = in.dirty ? in.idle_frames : 0;
+}
+
 uint8_t* MC::data() { return reinterpret_cast<uint8_t*>(mcfile); }
 const uint8_t* MC::data() const { return reinterpret_cast<const uint8_t*>(mcfile); }
 

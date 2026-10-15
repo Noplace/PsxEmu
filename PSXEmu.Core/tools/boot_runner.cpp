@@ -65,6 +65,8 @@
 //     --bench-state <n>  at the very end, time a save state kept in memory - saves, loads, the
 //                        frame after a load, run-ahead and what a state a frame later has
 //                        changed - each over n tries (Docs/Rewind-and-Run-Ahead-Plan.md)
+//     --memory-state-every <n>  every n frames, save a state in memory (cards and all) and
+//                        load it straight back: the run must be exactly the run without it
 //     --hw-raster        draw with the Direct3D 11 hardware rasteriser rather than the software
 //                        one (Docs/Hardware-Renderer-Plan.md)
 //     --d3d12            ...the Direct3D 12 one instead; on its own it means --hw-raster too
@@ -323,6 +325,7 @@ struct Options {
   // Applied once, after the frame loop finishes, alongside --ppm/--vram.
   const char* save_state;
   int bench_state;   // --bench-state n: tries per measurement, 0 for none
+  int memory_state_every;   // --memory-state-every n: a memory state round trip every n frames
   // --hw-raster: draw with the Direct3D 11 rasteriser the front end has (12 with --d3d12), on
   // the graphics card or, with --warp, on WARP - Windows' software Direct3D, which needs no card and gives the
   // same pictures every run. Only in a build that compiles it in (PSXEMU_HW_RASTER).
@@ -708,6 +711,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->load_state = nullptr;
   options->save_state = nullptr;
   options->bench_state = 0;
+  options->memory_state_every = 0;
   options->hw_raster = false;
   options->warp = false;
   options->d3d12 = false;
@@ -740,6 +744,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->save_state = argv[++i];
     } else if (strcmp(arg, "--bench-state") == 0 && i + 1 < argc) {
       options->bench_state = atoi(argv[++i]);
+    } else if (strcmp(arg, "--memory-state-every") == 0 && i + 1 < argc) {
+      options->memory_state_every = atoi(argv[++i]);
     } else if (strcmp(arg, "--frames") == 0 && i + 1 < argc) {
       options->frames = atoi(argv[++i]);
     } else if (strcmp(arg, "--insert") == 0 && i + 2 < argc) {
@@ -1355,32 +1361,52 @@ void Run(System* system, int n) {
   for (int i = 0; i < n; ++i)
     memcpy(scratch.data(), state.data(), std::min(scratch.size(), state.size()));
   Line("memcpy of the payload (the floor)", Ms(Clock::now() - t), n);
+  System::MemoryState memory, memory_scratch;
+  system->SaveMemoryState(&memory_scratch, true);
+  t = Clock::now();
+  for (int i = 0; i < n; ++i)
+    system->SaveMemoryState(&memory_scratch, false);
+  Line("save, a memory state (SaveMemoryState)", Ms(Clock::now() - t), n);
+  t = Clock::now();
+  for (int i = 0; i < n; ++i)
+    system->SaveMemoryState(&memory_scratch, true);
+  Line("save, a memory state with the cards", Ms(Clock::now() - t), n);
 
-  // Loading, the disc reopened as LoadState does and kept open, taking turns.
+  // Loading, taking turns: as LoadState does, with the disc kept open, and as a memory state.
   Save(system, &state);
+  system->SaveMemoryState(&memory, false);
   {
-    double ms[2] = {};
-    for (int i = 0; i < 2 * n; ++i) {
+    double ms[3] = {};
+    for (int i = 0; i < 3 * n; ++i) {
       t = Clock::now();
-      Load(system, &loader, state, (i & 1) == 0, true);
-      ms[i & 1] += Ms(Clock::now() - t);
+      if (i % 3 == 2)
+        system->LoadMemoryState(memory);
+      else
+        Load(system, &loader, state, i % 3 == 0, true);
+      ms[i % 3] += Ms(Clock::now() - t);
     }
     Line("load, the disc reopened (as LoadState)", ms[0], n);
     Line("load, the disc kept open", ms[1], n);
+    Line("load, a memory state (LoadMemoryState)", ms[2], n);
   }
 
   // The frame after a load, from the same state each time: compiled code thrown away as
-  // LoadState does, or kept. The difference is recompiling.
+  // LoadState does, all kept, or kept where its page did not change, as LoadMemoryState does.
+  // The difference from the first is recompiling.
   {
-    double ms[2] = {};
-    for (int i = 0; i < 2 * n; ++i) {
-      Load(system, &loader, state, false, (i & 1) == 0);
+    double ms[3] = {};
+    for (int i = 0; i < 3 * n; ++i) {
+      if (i % 3 == 2)
+        system->LoadMemoryState(memory);
+      else
+        Load(system, &loader, state, false, i % 3 == 0);
       t = Clock::now();
       RunFrame(system);
-      ms[i & 1] += Ms(Clock::now() - t);
+      ms[i % 3] += Ms(Clock::now() - t);
     }
     Line("the frame after a load, compiled code dropped", ms[0], n);
     Line("the frame after a load, compiled code kept", ms[1], n);
+    Line("the frame after a memory state's load", ms[2], n);
   }
 
   // Run-ahead of one frame, per frame shown: the frame the input is for runs, a state is kept,
@@ -1391,8 +1417,8 @@ void Run(System* system, int n) {
     const int kStretch = 30;
     const int stretches = std::max(1, n / kStretch);
     const char* names[4] = {"no run-ahead", "run-ahead 1, a load as LoadState does",
-                            "run-ahead 1, the disc kept open",
-                            "run-ahead 1, disc kept, compiled code kept"};
+                            "run-ahead 1, memory states",
+                            "run-ahead 1, memory states with the cards"};
     double ms[4] = {};
     double part[4][4] = {};   // the first frame, the save, the second frame, the load
     uint64_t steps[4] = {};
@@ -1408,14 +1434,18 @@ void Run(System* system, int n) {
           marks[0] = Clock::now();
           steps[k] += RunFrame(system);
           marks[1] = Clock::now();
-          if (k > 0)
+          if (k == 1)
             Save(system, &scratch);
+          else if (k > 1)
+            system->SaveMemoryState(&memory_scratch, k == 3);
           marks[2] = Clock::now();
           if (k > 0)
             steps[k] += RunFrame(system);
           marks[3] = Clock::now();
-          if (k > 0)
-            Load(system, &loader, scratch, k == 1, k != 3);
+          if (k == 1)
+            Load(system, &loader, scratch, true, true);
+          else if (k > 1)
+            system->LoadMemoryState(memory_scratch);
           marks[4] = Clock::now();
           ms[k] += Ms(marks[4] - marks[0]);
           for (int p = 0; p < 4; ++p)
@@ -1445,30 +1475,35 @@ void Run(System* system, int n) {
     const int kFrames = 120;
     auto hash_after = [&](int mode) {
       // 0: no load; 1: reopened; 2: kept open; 3: a save and load after every frame, as
-      // LoadState does them; 4: the same, the disc and the compiled code kept.
+      // LoadState does them; 4: the same, the disc and the compiled code kept; 5: a memory
+      // state saved and loaded after every frame.
       if (mode == 1 || mode == 2)
         Load(system, &loader, state, mode == 1, true);
       for (int i = 0; i < kFrames; ++i) {
         RunFrame(system);
-        if (mode >= 3) {
+        if (mode == 3 || mode == 4) {
           Save(system, &scratch);
           Load(system, &loader, scratch, mode == 3, mode == 3);
+        } else if (mode == 5) {
+          system->SaveMemoryState(&memory_scratch, true);
+          system->LoadMemoryState(memory_scratch);
         }
       }
       Save(system, &scratch);
       return emulation::psx::Fnv1a64(scratch.data(), scratch.size());
     };
-    const char* modes[5] = {"no load", "a load, the disc reopened", "a load, the disc kept open",
+    const char* modes[6] = {"no load", "a load, the disc reopened", "a load, the disc kept open",
                             "a save and load after every frame",
-                            "...that, compiled code kept"};
+                            "...that, compiled code kept",
+                            "a memory state after every frame"};
     Save(system, &state);
-    uint64_t hashes[5];
+    uint64_t hashes[6];
     hashes[0] = hash_after(0);
-    for (int mode = 1; mode < 5; ++mode) {
+    for (int mode = 1; mode < 6; ++mode) {
       Load(system, &loader, state, true, true);
       hashes[mode] = hash_after(mode);
     }
-    for (int mode = 0; mode < 5; ++mode)
+    for (int mode = 0; mode < 6; ++mode)
       printf("bench  %d frames after %-36s %016llx%s\n", kFrames, modes[mode],
              static_cast<unsigned long long>(hashes[mode]),
              hashes[mode] == hashes[0] ? "" : "  DIFFERS");
@@ -1923,6 +1958,11 @@ int main(int argc, char** argv) {
   // wall clock - which is what makes the harness deterministic.
   std::vector<int16_t> audio;
   uint64_t instructions = 0;
+  // --memory-state-every: the one state, its buffers reused, and what the round trips cost.
+  System::MemoryState memory_state;
+  uint64_t memory_states = 0;
+  double memory_state_save_ms = 0.0;
+  double memory_state_load_ms = 0.0;
   uint64_t last_frame = system->gpu().frame_count();
   // Frames this run produced. gpu().frame_count() is not it: a loaded save state
   // restores the counter the state was made with, so dividing by it understates a
@@ -2167,6 +2207,23 @@ int main(int argc, char** argv) {
       // switches them every n frames has to come out exactly as one that never does.
       if (options.gte_x64_toggle > 0 && (frames % options.gte_x64_toggle) == 0)
         system->config().gte_x64 = !system->config().gte_x64;
+      // --memory-state-every: a state kept in memory, cards and all, saved and loaded straight
+      // back - which must leave the run exactly the run without it
+      // (Docs/Rewind-and-Run-Ahead-Plan.md, phase 1).
+      if (options.memory_state_every > 0 && (frames % options.memory_state_every) == 0) {
+        const auto start = std::chrono::steady_clock::now();
+        system->SaveMemoryState(&memory_state, /*with_cards=*/true);
+        const auto saved = std::chrono::steady_clock::now();
+        const std::string error = system->LoadMemoryState(memory_state);
+        const auto loaded = std::chrono::steady_clock::now();
+        if (!error.empty()) {
+          fprintf(stderr, "memory state at frame %d: %s\n", frames, error.c_str());
+          return 1;
+        }
+        ++memory_states;
+        memory_state_save_ms += std::chrono::duration<double, std::milli>(saved - start).count();
+        memory_state_load_ms += std::chrono::duration<double, std::milli>(loaded - saved).count();
+      }
       // Put the disc in while the machine runs, which is how someone reaches
       // the CD player: the BIOS boots the game on any disc that is already
       // there, so the tray has to start empty.
@@ -2313,6 +2370,10 @@ int main(int argc, char** argv) {
            emulated, seconds, seconds > 0.0 ? emulated / seconds : 0.0,
            seconds > 0.0 ? frames / seconds : 0.0);
   }
+  if (memory_states > 0)
+    printf("memory states  %llu saved and loaded back, %.3f ms a save, %.3f ms a load\n",
+           static_cast<unsigned long long>(memory_states), memory_state_save_ms / memory_states,
+           memory_state_load_ms / memory_states);
   printf("resolution     %dx%d\n", width, height);
   printf("display        vram (%u,%u) %dx%d, %s\n",
          system->gpu().display_vram_x(), system->gpu().display_vram_y(),

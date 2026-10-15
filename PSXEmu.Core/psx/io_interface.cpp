@@ -224,7 +224,7 @@ uint32_t IOInterface::BusUnits(const BusCost& cost, uint32_t lane, uint32_t byte
 
 void IOInterface::Serialise(StateIO& state) {
   state.Plain(io);
-  state.Bytes(ram_buffer.u8, 0x200000);
+  state.Ram(ram_buffer.u8, 0x200000);
   state.Bytes(scratchpad.u8, 0x400);
   state.Bytes(parallel_port_buffer.u8, 64 * 1024);
   for (auto& counter : rootcounter_)
@@ -236,11 +236,29 @@ void IOInterface::Serialise(StateIO& state) {
   dma.Serialise(state);
   state.Plain(pending_cycles_);
   state.Plain(sysclk8_accum_);
-  // Derived from the registers just restored, like the GPU's framebuffer - not saved.
-  UpdateBusTiming();
-  // Likewise: with exact timing the very next cycle runs a batch, which works it out
-  // again from the devices just restored.
-  batch_threshold_ = exact_timing_ ? 1 : kBatchCycles;
+  // On a load only - a save that did these moved where the next device batch ended, and so
+  // changed the path a recompiled machine took from there (Docs/Rewind-and-Run-Ahead-Plan.md,
+  // phase 1).
+  if (!state.saving()) {
+    // Derived from the registers just restored, like the GPU's framebuffer - not saved.
+    UpdateBusTiming();
+    // Likewise: with exact timing the very next cycle runs a batch, which works it out
+    // again from the devices just restored. A state that carries the batch's end restores it
+    // after every component (SerialiseBatch).
+    batch_threshold_ = exact_timing_ ? 1 : kBatchCycles;
+  }
+}
+
+// Where the current device batch ends, saved after every component (System::
+// SerialiseAdditions) so states from before still load, working it out as Serialise does.
+// Under the recompiler a batch reaches to the next event, up to 1,024 cycles, and starting it
+// again at 32 on a load runs the devices at other moments from then on: the same machine at
+// the end of a frame, but by another path through it (Docs/Rewind-and-Run-Ahead-Plan.md,
+// phase 1).
+void IOInterface::SerialiseBatch(StateIO& state) {
+  if (!state.saving() && !state.more())
+    return;
+  state.Plain(batch_threshold_);
 }
 
 void IOInterface::SetInterrupt(InterruptCodes interrupt) {

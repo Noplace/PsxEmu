@@ -9696,3 +9696,47 @@ is what that address meant then.
 - FF7 and Wild Arms, 4,000 frames: bit-identical sound - their one-shots end on silent blocks.
   Ace Combat 3, with bug 157's controls left out to see these alone: six samples differ, by at
   most 2, at one place 13.7 seconds in - a last block now played out, nearly silent.
+
+## 159. A save state was not the machine exactly: a save moved the recompiler's path, and three things a load lost
+
+`psx/io_interface.cpp`, `psx/spu.cpp`, `psx/cpu.h`, `psx/system.cpp`, `tools/spu_test.cpp`
+
+Found by `boot_runner --memory-state-every 1`, which saves a state in memory after every frame and
+loads it straight back (Rewind-and-Run-Ahead-Plan.md, phase 1). That must leave a run exactly the
+run without it. It did not, in four ways:
+
+- **Saving moved where the next device batch ended.** The end of `IOInterface::Serialise` worked
+  out the bus timing again and restarted the batch at 32 cycles in both directions, so every save
+  did it. Under the recompiler a batch reaches to the next event, up to 1,024 cycles, so a save
+  ran the devices at other moments from then on. The machine came out the same at the end of the
+  frame, by another path through it: with a state every frame, Air Combat read I_STAT three times
+  fewer in 3,000 frames and logged a CD sector 0.03 ms later, and Ridge Racer made 82 more block
+  dispatches. Every F-key save in the front end did the same once. Those two lines now run on a
+  load only.
+- **A load restarted the batch at 32 cycles as well.** Where the batch ends is now saved after
+  every component (`IOInterface::SerialiseBatch`). A state from before ends where it would start
+  and works it out as before.
+- **The SPU's resampler histories were not saved**: the reverb's down- and upsampling filters and
+  the XA filter's ring, deliberately, to keep the state format. A loaded state started both from
+  silence, under a millisecond of sound once. After a load every frame, as run-ahead does, that is
+  sixty fresh starts a second: after 900 frames of it Ridge Racer's reverb work area in sound RAM
+  differed in some 8,000 bytes, under either CPU. They are now saved after every component
+  (`Spu::SerialiseResamplerHistory`, 908 bytes). A state from before keeps the silence.
+- **4 KB of the state was uninitialised memory.** The instruction cache's data buffer
+  (`ICache2::buffer`) is saved but never zeroed, and nothing has read it since fetches went to
+  RAM directly. Two identical runs saved states differing in a handful of bytes there. It is
+  zeroed when allocated.
+
+None of this needed a state version: the two additions go at the end, after bug 157's, under
+Save-States-Plan.md's rule.
+
+**Checked.**
+- The twelve-disc table, 3,000 frames, recompiled and interpreted, with and without
+  `--memory-state-every 1`: every report line the same, and each disc's final state the same
+  byte for byte. Before these, Ridge Racer's 900-frame runs ended with sound RAM differing under
+  either CPU, and the recompiled table differed in dispatches, compiled instructions and I_STAT reads.
+- Two identical plain runs now save identical states.
+- A plain run's report is unchanged by any of it: Ridge Racer recompiled, 3,000 frames, every line.
+- `spu_test` 197 -> 199 (`xaresample`): a state carrying the XA filter's history plays on exactly
+  as if no load had happened, and one without it does not. Leaving the ring out of the history
+  fails the first.

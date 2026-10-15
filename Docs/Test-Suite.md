@@ -279,7 +279,7 @@ Unit tests for the sound unit. No BIOS, no window, no audio device. Sample
 data is written into sound RAM, voices are keyed on through their real
 registers, and the frames that come out are checked.
 
-**Current: 197 checks, 0 failures.**
+**Current: 199 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -295,7 +295,7 @@ registers, and the frames that come out are checked.
 | `noiseirq` | the noise generator running, the IRQ address compare; and a voice whose sample has ended still running, silent, to a looping block at the IRQ address and raising the interrupt there - once until acknowledged, again once re-armed, never while disabled (bug 144; four of the six fail with off voices left standing) |
 | `cdvolume` | the CD input volume as a plain signed level, not a sweep register (bug 36) |
 | `xaparams` `xacounts` `xashift` `xastereo` `xafilter` `xasat` | XA-ADPCM: parameter offsets, frame counts, silence and shift, mono and stereo, the filter carrying across sectors, saturation |
-| `xaresample` | the CD-ROM decoder's resampler (bug 153): 37800 Hz XA through psx-spx's zigzag filter, frame for frame against psx-spx's pseudo-code and table transcribed here apart from spu.cpp's, over noise, a tone and a clipping square wave in uneven pieces; seven frames out for every six in, and for every three at 18900 Hz; a steady level out at the tables' gain of 0.906; mono out as mono; a 37800 Hz stream after an 18900 Hz one; 44100 Hz untouched; and a save state keeping the resampler's place |
+| `xaresample` | the CD-ROM decoder's resampler (bug 153): 37800 Hz XA through psx-spx's zigzag filter, frame for frame against psx-spx's pseudo-code and table transcribed here apart from spu.cpp's, over noise, a tone and a clipping square wave in uneven pieces; seven frames out for every six in, and for every three at 18900 Hz; a steady level out at the tables' gain of 0.906; mono out as mono; a 37800 Hz stream after an 18900 Hz one; 44100 Hz untouched; a save state keeping the resampler's place; and one carrying its history playing on exactly as if no load had happened, which one without it does not (rewind/run-ahead phase 1) |
 | `interp` | the Gaussian interpolation (bug 154): a constant sample keeping its level within 2% at the native rate, half way between samples and at an arbitrary pitch, moving under 1% from frame to frame - the old table's weights summed to 0.80-1.13 |
 | `noisefreq` | the noise generator's rate (bug 155), counted from the output's changes: every sample at the top shift, every fourth at shift 13 with step 4, 7/4 as often with step 7, and still moving at shift 4 |
 | `highpitch` | pitches of 4000h and over (bug 156), timed by a one-shot's ENDX bit: 4000h at four times the rate, 5000h clipped to 4000h rather than wrapped to 1000h, 2000h at half that, and modulation applied to the whole register before the clip |
@@ -322,7 +322,7 @@ operations, and the card file underneath (`psx/mc.h`). No BIOS, no window. With
 a card's path it lists that card instead - saves, blocks, titles, icons - and
 never writes it.
 
-**Current: 103 checks, 0 failures.**
+**Current: 112 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -332,6 +332,7 @@ never writes it.
 | `delete and undelete` | A1h/A2h/A3h with the links kept; undelete giving back the card byte for byte; undelete refused once a block has been reused |
 | `export everything, format, import it back` | the same saves, names, sizes, titles and bytes after a round trip through a formatted card, with a deleted save's hole in the middle |
 | `the card file` | a new card written formatted; a game's write staying in memory until a second passes with none, then flushed atomically; eject saving an unflushed write; the wipe - out of the slot and back in from disk - keeping both; inserting over a card saving the old one; a file that is not 128 KB refused without disturbing the card that is in; a save that cannot be written (a read-only file) counted, retried a second later rather than every frame, and saved once the file can be written (bug 118) |
+| `a snapshot for run-ahead` | a card snapshot, as a run-ahead state takes one: a write after it taken back, the flag with it, and the card due to be written again; a write that already reached the file taken back off it once written again; a snapshot of the card as it is changing nothing and writing nothing; a card swapped in since, and a slot that had none, left alone (Rewind-and-Run-Ahead-Plan.md, phase 1) |
 | `other tools' cards and saves` | a DexDrive `.gme`, a VGS `.mem` and a `.psx` each unwrapping to the same card as the raw one, a short `.gme` padded, and a file of no known kind, a too-short one and an unformatted card refused; a card's saves imported past a duplicate, which the report names, and onto a full card refused with the card unchanged; a raw headerless save named after its file and cut to 20 characters, a `.mcs` passed through, and blocks that do not open with "SC" refused (bug 106) |
 
 Mutation-tested when written: a flush that wrote nothing failed six of these,
@@ -552,6 +553,7 @@ What it does not measure:
 | `--cd-mednafen` | Time the drive as Mednafen's is (`EmuConfig::cdrom_mednafen_timing`, bug 151): its seeks, pauses and command delays, in place of either model above. What a BizHawk movie's loads were recorded under, so `--movie` turns it on by itself |
 | `--load-state <file>` | Resume from a save state instead of booting - skips `--disc`/`--boot-disc`/`--auto-boot`/`--exe` entirely |
 | `--save-state <file>` | Write a save state after the run finishes |
+| `--memory-state-every <n>` | Every n frames, save a state in memory, cards and all (`System::SaveMemoryState`), and load it straight back (`LoadMemoryState`). The run must be exactly the run without it: on the twelve discs, under either CPU, every report line and the final state byte for byte (Rewind-and-Run-Ahead-Plan.md, phase 1). Reports what the round trips cost |
 | `--bench-state <n>` | Last of all, time a save state kept in memory, each figure a mean over n tries: saves, loads, the frame after a load, run-ahead 1 four ways, whether loads change what the machine computes (a hash 120 frames on), and what a state a frame later has changed. Runs the machine on, so it changes nothing else the run reports. Wall-clock, so one scene at a time ([Rewind-and-Run-Ahead-Plan.md](Rewind-and-Run-Ahead-Plan.md)) |
 | `--hw-raster` | Draw with the Direct3D 11 hardware rasteriser rather than the software one (Docs/Hardware-Renderer-Plan.md). Everything the machine does is unchanged; the GPU's pixel, clip and texel counters read zero, since that rasteriser does not keep them, and the report says so. `--watch-vram` is refused with it: which command wrote each pixel is the software rasteriser's own accounting |
 | `--d3d12` | Draw with the Direct3D 12 hardware rasteriser instead - `--hw-raster` with the other API, and implying it; every option below that takes `--hw-raster` takes this too. The twelve-disc table at 4x with PGXP gives the Direct3D 11 one's reports and pictures (Docs/Hardware-Renderer-Plan.md) |
@@ -845,10 +847,10 @@ the most likely answer is the network share rather than the emulator.
 | `cpu_test` | 341 | | `gpu_test` | 106 |
 | `gte_test` | 197 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 555 |
-| `sio_test` | 203 | | `spu_test` | 197 |
-| `mc_test` | 103 | | `debug_test` | 174 |
+| `sio_test` | 203 | | `spu_test` | 199 |
+| `mc_test` | 112 | | `debug_test` | 174 |
 
-**2,041 checks, 0 failures**, all ten green. Each harness's own section above
+**2,052 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,

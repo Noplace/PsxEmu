@@ -232,8 +232,31 @@ class System {
   void SerialisePayload(StateIO& state);
   void FinishLoad(bool drop_compiled_code);
 
+  // A state kept in memory, for rewind and run-ahead (Docs/Rewind-and-Run-Ahead-Plan.md). It
+  // has no header, since it never leaves this process, this BIOS or this disc set. Its buffers
+  // are kept: taking another into the same MemoryState allocates nothing.
+  struct MemoryState {
+    std::vector<uint8_t> payload;
+    // Every slot's card, when taken with them: run-ahead has to take back what its speculative
+    // frames wrote. Rewind leaves the cards alone, as loading a save state does.
+    bool has_cards = false;
+    MC::Snapshot cards[2][kCardSlotsPerPort];
+  };
+  void SaveMemoryState(MemoryState* state, bool with_cards);
+  // The same machine as LoadState gives, more cheaply: no copy of the payload, the disc left
+  // open when it is the one the state was taken on, and only the compiled code from RAM words
+  // that changed thrown away - which is also what keeps a recompiled machine on the course it
+  // would take with no load. An empty string, or why not: a disc that can no longer be opened.
+  std::string LoadMemoryState(const MemoryState& state);
+
  private:
   void SerialiseAdditions(StateIO& state);
+  // StateIO::RamWatcher for LoadMemoryState: a run of RAM words that changed, whose compiled
+  // code goes.
+  static void RamWordsChanged(void* context, uint32_t offset, uint32_t bytes);
+  // The payload SaveState writes and LoadState reads, kept so neither allocates once both have
+  // run.
+  std::vector<uint8_t> state_buffer_;
   // StepInstruction and StepInstructionUnarmed: one body, with and without the debugger.
   template <bool kDebugger>
   bool StepImpl();
