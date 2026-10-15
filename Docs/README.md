@@ -29,6 +29,7 @@ Working notes for anything spanning more than one sitting. Status per document.
 | [GPU-SPU-Optimisation-Plan.md](GPU-SPU-Optimisation-Plan.md) | superseded | Whether the rasteriser or the SPU is the bottleneck. On the interpreter, 2026-09-16: neither, 4-13% and 3-4% of a run. With the recompiler that no longer holds - see Recompiler-Profile.md |
 | [Recompiler-Profile.md](Recompiler-Profile.md) | measured | Where the machine thread's time goes with the recompiler on, 2026-10-07: compiled code about 7% of it, the rest of the machine around it the bottleneck; what was sped up since, and by how much |
 | [Save-States-Plan.md](Save-States-Plan.md) | built | `StateIO`, a `Serialise` on every component, F1-F8 slots. Bug 44 |
+| [Rewind-and-Run-Ahead-Plan.md](Rewind-and-Run-Ahead-Plan.md) | plan | Rewind and run-ahead on a save state kept in memory. **Measured 2026-10-15, nothing built**: a save into a reused buffer is 0.13-0.29 ms; a load is 0.5-2.3 ms, most of it the disc reopened and every compiled block thrown away, neither needed within a session; run-ahead 1 then fits in every clean scene with the recompiler. Two phases of their own: the hardware rasteriser's VRAM snapshotted on the card, and a suspected disc read-ahead problem when the machine steps back a frame |
 The "built" plans above are kept as they were written, with a status line at the
 top; the investigation in each is still the record of how the answer was found.
 
