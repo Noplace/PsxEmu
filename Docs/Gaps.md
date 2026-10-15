@@ -4,7 +4,13 @@ Hardware and features still missing, ordered by how likely each is to stop a
 game working. See [Roadmap.md](Roadmap.md) for the phase each belongs to and
 [Bugs-Found.md](Bugs-Found.md) for what has already been fixed.
 
-Last audited 2026-09-21, after bug 82 (the mouse's three motion modes), with
+**Brought up to date 2026-10-14, after bug 153**, for what was checked that day: the harness
+counts, the sound (bug 153 replaced the linear XA resampler), the GPU's texture tint and dither
+(bug 152, and the flat-polygon dither noticed with it), the DMA entry's SPU uploads (bug 145), the
+settings, and a new section near the end - features other emulators have that this one does not,
+each looked for in the code. The rest stands as last audited.
+
+Last audited in full 2026-09-21, after bug 82 (the mouse's three motion modes), with
 the GP0 queue entry below, the harness counts and the speed-ceiling entry
 brought up to date after bugs 87 to 95 (the GPU's drawing cost, the interlaced
 field, the audio resample, phase 7's rasteriser thread, and the transfer and
@@ -53,9 +59,12 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 297, gte 106, timer 80, sio 203, spu 144, gpu 73, mdec 85, media 378, mc 103, debug 174 - 1,643
-checks, no failures, and 2,433 across all nineteen harnesses (re-run
-2026-09-27, after bugs 78-120 - with the rasteriser threaded, now the default).
+cpu 341, gte 197, timer 80, sio 203, spu 171, gpu 106, mdec 85, media 555, mc 103, debug 174 - 2,015
+checks, no failures (the ten Test-Suite.md counts, 2026-10-14). Of the rest, those run that day all
+pass too: rec_test 2,059, hle_test 81 (which had stopped compiling when HleBios moved into
+`psx::hle`), hw_raster_test 78 and 81 (Direct3D 11 and 12), gpu_test 106 through either hardware
+rasteriser, dlss_choice_test 42, fsr_choice_test 36, filter_chain_test 27. Earlier: 2,433 across
+all nineteen harnesses, 2026-09-27.
 `host_test`'s two real-speed checks fail now and then on a busy host, before a
 change as well as after it; see Test-Suite.md. The two that were failing when this document was last
 audited are bugs 58 (the CD peak meter's own test played silence) and 59 (the
@@ -180,18 +189,65 @@ transcription of DuckStation's code - every sweep register from eleven starting
 levels, and forty random reverb configurations of 20,000 samples - with no
 difference in any output, in sound RAM or in the reverb address. Both are in
 `spu_test`. What is still not done is hearing them against a console, or any
-measurement DuckStation did not already make. One difference is left on
+measurement DuckStation did not already make - and nothing here can do it without one: of
+JaCzekanski's SPU programs only `spu/memory-transfer` ships with a console's log, and it tests
+transfers, not the sound. One difference is left on
 purpose: a voice's volume sweep keeps stepping while the voice is silent, where
 DuckStation's stops unless the SPU interrupt is enabled. `boot_runner`'s `spu requests` and `spu modes` lines show
 whether a game uses either: all twelve regression discs use the reverb, and
 none uses a sweep in its first 3,000 frames.
 
-### CD audio is resampled linearly
+### XA-ADPCM's resampler - the decoder's own filter now, never heard against a console
 
-The voice path uses the hardware's Gaussian table (`kGauss`); the CD-audio
-path, which resamples 44,100 Hz to the output rate, interpolates linearly
-rather than with the hardware's seven-point filter. The code says so where it
-does it. A slight softening of the top end, not a wrong pitch or a click.
+Bug 153. CD-DA is 44,100 Hz and was never resampled; XA-ADPCM, at 37,800 or 18,900 Hz, was taken
+to 44,100 linearly. It now goes through the CD-ROM decoder's filter - psx-spx's zigzag tables at
+37,800 Hz, Mednafen's weights at 18,900 as DuckStation has them - and `spu_test` holds it to
+psx-spx's pseudo-code frame for frame. What is left:
+
+- **It is 0.9 dB quieter than before**, the tables' own gain (0.906), which DuckStation's and
+  Mednafen's share. Taken as the console's level; not compared with one.
+- **Nothing resets it, or the ADPCM decoder's history, when the drive pauses, seeks or starts
+  reading**, where DuckStation resets both. psx-spx does not say what the hardware does; here a new
+  stream's first frames are filtered with the end of the last one's.
+
+### The voice path, compared with DuckStation - three fixed, the rest listed
+
+A side-by-side reading on 2026-10-14 found three differences worth fixing at once, and fixed them:
+the Gaussian table was not the console's, so every voice's level wobbled with its pitch (bug 154);
+the noise generator ran 32-56 times too slowly and ignored the step bits (bug 155); and pitches of
+4000h and over were masked rather than clipped (bug 156). What it also found, smaller and not done:
+
+- **A block's end flags take effect when it is decoded, not after it plays.** A one-shot without a
+  loop goes silent at the start of its last block, losing up to 28 samples, and sets its ENDX bit a
+  block early. DuckStation acts on the flags as the voice leaves the block.
+- **End-without-repeat silences a noise voice.** DuckStation ignores it there, so a noise voice
+  plays on whatever its unused sample data says.
+- **The repeat address written in a voice's first block always wins over the block's loop flag.**
+  DuckStation, from hardware tests, lets the flag still set it until the first block finishes,
+  naming Tron Bonne, Valkyrie Profile and Re-Loaded as games that need this.
+- **SPUCNT bit 15 (the SPU enable) is ignored.** DuckStation turns every voice off the moment it is
+  cleared; here they keep sounding.
+- **The ADSR envelope is its own model**, not the counter that the sweeps share with DuckStation.
+  The slopes agree on average. They part at rate 7Fh (which drifts a step every 24 seconds here and
+  never moves there), in the exponential attack's 6000h knee (`>` against `>=`, and a longer wait
+  where DuckStation takes a smaller step), and in when the envelope steps relative to the sample it
+  scales.
+- **Key-on and key-off act the moment they are written.** DuckStation latches them to the next
+  sample, key-off before key-on.
+- **The capture buffers are not written.** CD left and right and voices 1 and 3 should go to sound
+  RAM 000h-FFFh every sample; nothing hears that, but a game reading them gets nothing.
+- **ADPCM prediction rounds**, `(old*f0 + older*f1 + 32) / 64`, as psx-spx gives it. DuckStation
+  floors each product separately. One unit either way, fed back through the filter.
+
+### Flat polygons are dithered; the console leaves them plain
+
+Noticed with bug 152, which made a textured draw's tint the console's (the texel shifted up, not
+widened by replication, before the multiply - Silent Hill's trail behind Harry had never faded)
+and moved a dithered textured polygon's dither to after the tint. What it left: a flat, untextured
+polygon is dithered here whenever the draw mode's dither bit is set, where on the console - by
+DuckStation's rule, `shading || (textured && !raw)` - only a shaded or texture-tinted one is. A
+flat polygon drawn with dithering on picks up the 4x4 pattern it should not have. One line in
+`Gpu`'s polygon setup, and the twelve-disc table to re-record after it.
 
 ### Cause's interrupt-pending bits - fixed
 
@@ -264,8 +320,10 @@ By default the CPU also runs on through the transfer's time, where a console
 stops it. Settings > Emulation > DMA Stops the CPU (bug 111) makes it wait
 the transfer out before its next instruction, the rest of the machine running
 through it. That leaves the eager data movement unobservable by the program,
-since it cannot run until the transfer is over. Other devices can still see it:
-the SPU gets a whole upload at once rather than word by word. Off by default,
+since it cannot run until the transfer is over. Other devices can still see it,
+though less than they could: since bug 145 an SPU upload in request mode goes a
+16-word block at a time, a block's SPU time apart, as channel 0 feeds the MDEC,
+but in burst mode it still arrives whole. Off by default,
 because it slows every game that moves a lot of data, as a console is slowed.
 
 Chopping - CHCR bit 8, which gives the CPU windows between slices of a burst -
@@ -583,17 +641,16 @@ BizHawk `.bk2` movies play into the ports (bug 151): File > Play Movie, `boot_ru
 
 ## Blocking use rather than correctness
 
-### Settings cover little
+### Settings - broad now; what other emulators offer that they do not is listed below
 
-`psxemu.ini` holds `audio_volume`, `audio_backend` (WASAPI or DirectSound),
-`graphics_backend` (D3D11, D3D12, OpenGL or Vulkan), `video_filter`, controller type and input
-source per port, the multitap player sources and types, `frame_limiter`,
-`cdrom_mechanical_timing`, `skip_bios_intro`, `recompiler`, `gpu_thread`,
-`gpu_transfer_timing`, `icache_timing`, `exact_event_timing`, `dma_stops_cpu`,
-`measured_bus_timing`, `write_queue_timing`, `bios_file`, `hle_bios`,
-`emulation_speed`, `pause_in_menus`, `show_timings`, `show_bios_console`,
-`sio1_to_console`, `mouse_motion` and `mouse_dpi` - twenty-five keys, which is
-every field `StoreConfig` writes.
+`psxemu.ini` holds every field of `EmuConfig` (`emu/settings.h`, `StoreConfig`): the audio
+backend and volume; the renderer (Direct3D 11 or 12, OpenGL, Vulkan), the graphics card, the
+filter or a chain of up to four, frame pacing and the limiter; the rasteriser (software, or the
+hardware one on Direct3D 11 or 12), its resolution scale and true colour, PGXP's three switches,
+NVIDIA DLSS's mode, preset and Frame Generation, AMD FSR's mode, version, sharpening and Frame
+Generation; the emulation switches - the recompiler, its GTE as x64, the GPU thread and every
+timing model; the BIOS file or the HLE BIOS; the speed; controller types, sources, the multitap's
+players and the mouse; and the front end's own few.
 Beside those, the front end keeps its own keys in the same file: the eight
 most recent discs (`recent_disc_1`..`8`, File > Recent Discs) and the controller
 bindings - Port 1's keys as `key_up`, `key_cross` and so on (bug 70), and every
@@ -768,6 +825,33 @@ shortfall is recognised: about 5,500 short frames once, then none.
   by a checkpoint - but no game in the table shows it. See
   [Recompiler-Plan.md](Recompiler-Plan.md).
 
+## Features other emulators have, absent here
+
+Not the machine - each of these is something a player of DuckStation, Mednafen or RetroArch would
+look for. Each was looked for in the code and settings on 2026-10-14 and is not there.
+
+- **Rewind and run-ahead.** Neither exists. Save states are the only way back.
+- **Turbo / autofire buttons.** Fast-forward exists (Tab); a held button repeating does not.
+- **Picture options beyond the filters:**
+  - no widescreen hack (the GTE's projection is the game's);
+  - no aspect ratio choice - the picture is shown at 4:3, letterboxed;
+  - no deinterlacing modes to choose between (bob, weave, blend) for 480-line games: a picture
+    is shown one way, as VRAM holds it;
+  - no texture filtering in the hardware rasteriser - "Bilinear" is a filter over the whole
+    picture, not over textures;
+  - no texture dumping or replacement.
+- **Overrides:** no region override (PAL or NTSC whatever the disc and BIOS say), no CPU
+  overclock.
+- **Recording:** no video recording, and sound only through `boot_runner --wav`. Input movies
+  play back but cannot be recorded (Input movies, above).
+- **Cheat search.** Codes are entered and imported; there is no RAM search to find new ones.
+- **Online:** no RetroAchievements, no netplay, and no link cable between two instances (SIO1,
+  above).
+- **Gamepads:** XInput, and DualShock 4 and DualSense over HID. A pad that is neither - a
+  DirectInput pad, an adapter for a console pad - is not read.
+- **Platforms:** Windows only. The project standards' `PSXEmu.Interop` DLL and `PSXEmu.WinUI`
+  front end (Emulator-Project-Standards.md) do not exist.
+
 ## Not gaps
 
 Things that look missing and are not, so they are not re-investigated:
@@ -790,9 +874,10 @@ Things that look missing and are not, so they are not re-investigated:
   image is more likely zeroed subheaders (disc images above).
 - **The MDEC.** Implemented, `mdec_test` 85 checks - including both DMA
   channels' behaviour, which is where bugs 55 and 56 landed; films play.
-- **The SPU voice path.** 24 ADPCM voices, ADSR, the Gaussian table, noise,
-  pitch modulation, CD input, and loop addresses surviving key-on (bug 39).
-  The quirks left are the entries above.
+- **The SPU voice path.** 24 ADPCM voices, ADSR, the Gaussian table (the
+  console's since bug 154), noise (at the right rate since bug 155), pitch
+  modulation, pitches clipped at 4000h (bug 156), CD input, and loop addresses
+  surviving key-on (bug 39). The quirks left are the entries above.
 - **Load delay slots.** Modelled, including a write in the slot beating the load
   and lwl/lwr forwarding (`cpu_test` `loaddelay`, bug 32).
 - **Ace Combat 3 input and Wild Arms after "press start".** Fixed (bug 46; bugs
@@ -805,5 +890,3 @@ Things that look missing and are not, so they are not re-investigated:
   own finds the `.ccd` beside it the way it already found a `.cue` or an
   `.mds`. The gap left is the track layout a bare image with no descriptor at
   all cannot know, above.
-- **`psx/emu.h`/`emu.cpp`** are superseded by `system.*` and built by nothing;
-  **`utilities/cdrom/cdrom.cpp`** is superseded by `media/disc.cpp`.

@@ -9483,3 +9483,127 @@ enhancement's own, and slower).
 
 **Not changed, and noticed on the way:** a flat, untextured polygon is dithered here when the draw
 mode says so; on the console (DuckStation's rule) only a shaded or texture-tinted one is.
+
+## 153. XA-ADPCM was resampled linearly, not through the CD-ROM decoder's filter
+
+`psx/spu.cpp`, `psx/spu.h`, `tools/spu_test.cpp`
+
+From Gaps.md ("CD audio is resampled linearly"). CD-DA is 44,100 Hz, the SPU's own rate, and was
+never resampled; XA-ADPCM - most games' speech, much of their music, the sound of their films -
+comes out of the drive's decoder at 37,800 Hz (or 18,900) and was taken to 44,100 by linear
+interpolation between neighbouring frames.
+
+**What the console does** (psx-spx, "25-point Zigzag Interpolation"): every six frames in, seven
+come out, each from its own 29-tap table over the last 29 frames - a low-pass "sinc" filter, which
+also leaves a little inaudible 22 kHz ripple and, being a filter, a delay of about 16 output frames.
+For 18,900 Hz psx-spx gives no table; DuckStation uses Mednafen's weights, seven frames out for
+every three in, having found that doubling each frame into the 37,800 Hz filter sounds worse.
+
+**Now** (`Spu::ResampleXa37800`, `ResampleXa18900`): both, with a 32-frame ring per channel carried
+from sector to sector. Two choices, both noted where they are made:
+- **The 37,800 Hz taps line up as psx-spx's pseudo-code says** - the first on the newest frame.
+  DuckStation's loop applies the same table one frame later, its first tap landing on the oldest
+  frame in its ring: a phase of one 37,800 Hz frame, 26 microseconds.
+- **The 18,900 Hz path is DuckStation's exactly**, there being nothing else to go by.
+
+**The filter is quieter than what goes in.** psx-spx's tables each add up to about 29,700 of
+32,768 - a gain of 0.906, 0.86 dB down - and so do DuckStation's (the same numbers) and Mednafen's
+18,900 Hz weights (the same centre taps). So XA now comes out about 9% quieter than it did through
+the linear resampler, which passed it through whole. That is taken as the console's own level, on
+the strength of two emulators that match it and a table measured from one; nothing here has
+compared it with a console's output.
+
+**Save states keep their format.** The ring is not saved - as the reverb's resampler's history
+is not - and where it is in its pattern goes into the twelve bytes the linear resampler kept,
+marked so that a state from before is read as a fresh start rather than misread. No new state
+version, so existing states still load; a loaded state's first XA frames are filtered from
+silence, under a millisecond.
+
+**Checked.**
+- `spu_test` 150 -> 159 (`xaresample`): 4,000 frames of noise, a tone and a clipping square wave,
+  fed in uneven pieces, come out frame for frame as psx-spx's pseudo-code gives them - its table
+  transcribed in the test as psx-spx prints it, a row per tap, apart from spu.cpp's, laid out the
+  other way. Seven out for six in, and for three at 18,900 Hz; a steady 10,000 out at 9,040-9,060;
+  mono out as mono; a 37,800 Hz stream after an 18,900 Hz one (whose pattern counts 0 to 9, which
+  would have stalled the other's countdown - caught in writing this); 44,100 Hz untouched; a save
+  state keeping the pattern's place.
+- The twelve-disc table on the interpreter: every picture, instruction, sector and GP0 count as
+  before. Five discs play XA in their first 3,000 frames - Ace Combat 3, Air Combat, Bomberman,
+  Vandal Hearts, Wild Arms - and only their sound lines move: CD audio peaks 8-10% lower, and a few
+  frames fewer mixed by the end, the filter giving its frames seven at a time.
+- Air Combat's 3,000 frames recorded both ways: overall level 0.934 of before - the SPU's own
+  voices unchanged, the XA in the mix at 0.906.
+
+**Not done.** Resetting the resampler and the ADPCM decoder's history when the drive pauses,
+seeks or starts reading, which DuckStation does (psx-spx does not say); here both carry on from
+whatever came before. And nothing here has been heard against a console.
+
+## 154. The Gaussian interpolation table was not the console's - every voice's level wobbled with its pitch
+
+`psx/spu.cpp`, `tools/spu_test.cpp`
+
+Found comparing the SPU with DuckStation's, after "some sounds are coming out different".
+`kGauss`, the 512-entry table the voices interpolate between ADPCM samples with, was a full,
+symmetric bell peaking at 4AEBh. psx-spx's table - DuckStation's too - is half a Gaussian rising
+steadily to 59B3h at the last entry. The values first part at entry 23.
+
+What that does: an index i picks four weights, 0FFh-i, 1FFh-i, 100h+i and i. On the console they
+add up to 0.996 at every index, so interpolating a constant leaves it alone. Here they added up to
+0.805 at i = 0, 1.018 at 40h and 1.126 at 80h. Any pitch but a multiple of 1000h sweeps i through
+those, so the voice's level rose and fell by a third at a rate set by its pitch - amplitude
+modulation laid over nearly every note, heard as a buzzy roughness. At the native rate, i stays
+at 0: the voice played at 80% and was spread over three samples in place of mostly one, muffled.
+
+**Now** the table is psx-spx's, generated from psx-spx.txt rather than retyped.
+
+**Checked.**
+- `spu_test` 159 -> 171 with bugs 155 and 156 (`interp`, four checks): a constant 7000h through a
+  quarter volume comes out within 2% of 1BFFh at pitch 1000h, at 1800h (i alternating 0 and 80h)
+  and at 1123h (every i in turn), moving less than 1% from frame to frame. All four fail on the
+  old table.
+- FF7, Wild Arms and Ace Combat 3, 4,000 frames each, recorded before and after: the same music,
+  with no time shift (correlation 0.995, 0.937, 0.922) and 0.5-3.5% lower in level. Picture
+  checksums are unchanged.
+
+## 155. The noise generator ran 32 to 56 times too slowly, and not at all at low shifts
+
+`psx/spu.cpp`, `psx/spu.h`, `tools/spu_test.cpp`
+
+Found in the same comparison. psx-spx's generator counts a timer down by the step (SPUCNT bits
+8-9, as 4..7) every sample. Each time the timer goes negative, the shift register moves once and
+the timer reloads with 20000h >> shift (bits 10-13), twice if once is not enough. So at shift 15,
+step 4 the register moves every sample.
+
+`Spu::StepNoise` added 8000h >> (20 - shift) and moved at 8000h: once every 2^(20 - shift)
+samples, at least 32. That is 32 times too slow at step 4 and 56 at step 7, the step bits being
+ignored. Noise - cymbals, hi-hats, wind, explosions - came out as a low crackle instead of a hiss.
+At shifts 0-4 the increment shifted to zero and the level never moved: a constant, not noise.
+
+**Now** psx-spx's timer. `noise_timer_` is signed for it, the same size, so save states keep their
+layout. A state from before carries a timer in the old scale, which is still a valid count.
+
+**Checked.** `spu_test` (`noisefreq`, four checks), counting the output's changes: at least 390
+in 400 frames at shift 15; 95-101 at shift 13, step 4; 170-177 at step 7; and 14-20 in 40,000
+frames at shift 4 (one move every 2,048 samples, the first few too small to survive the volumes).
+All four fail on the old generator. None of the three discs above uses noise in its first 4,000
+frames.
+
+## 156. Pitches of 4000h and over were masked to 3FFFh, not clipped
+
+`psx/spu.cpp`, `tools/spu_test.cpp`
+
+Found in the same comparison. `Spu::StepVoice` started from `pitch & 0x3FFF`. psx-spx takes the
+whole register, applies pitch modulation to it (sign-extended - the hardware's glitch above
+7FFFh), keeps the low 16 bits, and only then clips anything over 3FFFh to 4000h. Masked first:
+- pitch 4000h, four times the sample rate, became 0 and the voice stalled;
+- 5000h became 1000h and played at a fifth of its speed;
+- a modulated voice at 4000h-7FFFh, which psx-spx says works, was scaled from the wrong number.
+
+**Now** psx-spx's order, clipping at 4000h. DuckStation clips at 3FFFh, which differs by one step
+in 16,384.
+
+**Checked.** `spu_test` (`highpitch`, four checks), timing a four-block one-shot by its ENDX bit:
+reached within 30 frames at 4000h and at 5000h, not yet at 2000h; and at 6000h on voice 1,
+modulated by a silent voice 0 (a factor of exactly one), as fast as at 4000h. Three of the four
+fail on the old code; the 2000h check passes either way. `boot_runner`'s `spu requests` line counts
+writes over 3FFFh; the three discs above make none.

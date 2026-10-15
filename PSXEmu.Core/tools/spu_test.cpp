@@ -13,6 +13,7 @@
 
 #include "psx/psx.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -54,6 +55,7 @@ const uint32_t kMainVolR    = 0x1F801D82;
 const uint32_t kKeyOnLow    = 0x1F801D88;
 const uint32_t kKeyOnHigh   = 0x1F801D8A;
 const uint32_t kKeyOffLow   = 0x1F801D8C;
+const uint32_t kPitchModLow = 0x1F801D90;
 const uint32_t kNoiseLow    = 0x1F801D94;
 const uint32_t kEndxLow     = 0x1F801D9C;
 const uint32_t kIrqAddress  = 0x1F801DA4;
@@ -1333,6 +1335,307 @@ void TestXaSaturates(Machine&) {
 }
 
 
+// The CD-ROM decoder's XA resampler (Spu::QueueCdSamples). The reference below is psx-spx's
+// "25-point Zigzag Interpolation" pseudo-code, and its table is transcribed here as psx-spx prints
+// it - a row per tap, a column per output frame - independently of spu.cpp's, which is laid out
+// the other way round. A slip in either transcription is a mismatch here.
+const int16_t kPsxSpxZigzag[29][7] = {
+  { 0, 0, 0, 0, -0x0001, +0x0002, -0x0005 },
+  { 0, 0, 0, -0x0001, +0x0003, -0x0008, +0x0011 },
+  { 0, 0, -0x0001, +0x0003, -0x0008, +0x0010, -0x0023 },
+  { 0, -0x0002, +0x0003, -0x0008, +0x0011, -0x0023, +0x0046 },
+  { 0, 0, -0x0002, +0x0006, -0x0010, +0x002B, -0x0017 },
+  { -0x0002, +0x0003, -0x0005, +0x0005, +0x000A, +0x001A, -0x0044 },
+  { +0x000A, -0x0013, +0x001F, -0x001B, +0x006B, -0x00EB, +0x015B },
+  { -0x0022, +0x003C, -0x004A, +0x00A6, -0x016D, +0x027B, -0x0347 },
+  { +0x0041, -0x004B, +0x00B3, -0x01A8, +0x0350, -0x0548, +0x080E },
+  { -0x0054, +0x00A2, -0x0192, +0x0372, -0x0623, +0x0AFA, -0x1249 },
+  { +0x0034, -0x00E3, +0x02B1, -0x05BF, +0x0BCD, -0x16FA, +0x3C07 },
+  { +0x0009, +0x0132, -0x039E, +0x09B8, -0x1780, +0x53E0, +0x53E0 },
+  { -0x010A, -0x0043, +0x04F8, -0x11B4, +0x6794, +0x3C07, -0x16FA },
+  { +0x0400, -0x0267, -0x05A6, +0x74BB, +0x234C, -0x1249, +0x0AFA },
+  { -0x0A78, +0x0C9D, +0x7939, +0x0C9D, -0x0A78, +0x080E, -0x0548 },
+  { +0x234C, +0x74BB, -0x05A6, -0x0267, +0x0400, -0x0347, +0x027B },
+  { +0x6794, -0x11B4, +0x04F8, -0x0043, -0x010A, +0x015B, -0x00EB },
+  { -0x1780, +0x09B8, -0x039E, +0x0132, +0x0009, -0x0044, +0x001A },
+  { +0x0BCD, -0x05BF, +0x02B1, -0x00E3, +0x0034, -0x0017, +0x002B },
+  { -0x0623, +0x0372, -0x0192, +0x00A2, -0x0054, +0x0046, -0x0023 },
+  { +0x0350, -0x01A8, +0x00B3, -0x004B, +0x0041, -0x0023, +0x0010 },
+  { -0x016D, +0x00A6, -0x004A, +0x003C, -0x0022, +0x0011, -0x0008 },
+  { +0x006B, -0x001B, +0x001F, -0x0013, +0x000A, -0x0005, +0x0002 },
+  { +0x000A, +0x0005, -0x0005, +0x0003, -0x0001, 0, 0 },
+  { -0x0010, +0x0006, -0x0002, 0, 0, 0, 0 },
+  { +0x0011, -0x0008, +0x0003, -0x0002, +0x0001, 0, 0 },
+  { -0x0008, +0x0003, -0x0001, 0, 0, 0, 0 },
+  { +0x0003, -0x0001, 0, 0, 0, 0, 0 },
+  { -0x0001, 0, 0, 0, 0, 0, 0 },
+};
+
+// psx-spx's Output37800Hz, per channel, each tap's product divided by 8000h (as an arithmetic
+// shift - the rounding psx-spx leaves open).
+struct ZigzagReference {
+  int16_t ring[2][32] = {};
+  uint32_t p = 0;
+  int sixstep = 6;
+  void Feed(int16_t left, int16_t right, std::vector<int16_t>* out) {
+    ring[0][p & 31] = left;
+    ring[1][p & 31] = right;
+    p = p + 1;
+    if (--sixstep != 0)
+      return;
+    sixstep = 6;
+    for (int table = 0; table < 7; ++table) {
+      for (int channel = 0; channel < 2; ++channel) {
+        int32_t sum = 0;
+        for (int i = 1; i <= 29; ++i)
+          sum += (static_cast<int32_t>(ring[channel][(p - i) & 31]) * kPsxSpxZigzag[i - 1][table]) >> 15;
+        out->push_back(static_cast<int16_t>(sum < -0x8000 ? -0x8000 : (sum > 0x7FFF ? 0x7FFF : sum)));
+      }
+    }
+  }
+};
+
+std::vector<int16_t> QueuedCd(Machine& m) {
+  std::vector<int16_t> out(44100 * 2);
+  const int frames = m.spu().PeekCdFrames(out.data(), 44100);
+  out.resize(static_cast<size_t>(frames) * 2);
+  return out;
+}
+
+void TestXaResampler(Machine& m) {
+  BeginTest("xa resampler");
+
+  // A stream with something at every frequency and edges that clip: noise, a low tone, and a
+  // full-scale square wave now and then - in uneven pieces, as sectors and partial sectors.
+  std::vector<int16_t> stream;
+  uint32_t seed = 12345;
+  for (int i = 0; i < 4000; ++i) {
+    seed = seed * 1664525u + 1013904223u;
+    const int16_t noise = static_cast<int16_t>(static_cast<int32_t>(seed >> 16) - 0x8000);
+    const int16_t square = ((i / 37) & 1) ? 32000 : -32000;
+    const int16_t tone = static_cast<int16_t>(12000 * std::sin(i * 0.05));
+    stream.push_back(i % 900 < 300 ? square : static_cast<int16_t>(noise / 2));
+    stream.push_back(tone);
+  }
+  m.Reset();
+  ZigzagReference reference;
+  std::vector<int16_t> expected;
+  for (size_t i = 0; i < stream.size() / 2; ++i)
+    reference.Feed(stream[i * 2], stream[i * 2 + 1], &expected);
+  const int pieces[] = { 1008, 37, 1, 500, 1454, 1000 };
+  int at = 0;
+  for (int piece : pieces) {
+    m.spu().QueueCdSamples(&stream[static_cast<size_t>(at) * 2], piece, 37800);
+    at += piece;
+  }
+  const std::vector<int16_t> got = QueuedCd(m);
+  CheckEqual(static_cast<int32_t>(got.size() / 2), 4000 / 6 * 7, "37800 Hz: seven frames out for every six in");
+  int differing = 0;
+  for (size_t i = 0; i < got.size() && i < expected.size(); ++i)
+    differing += got[i] != expected[i];
+  CheckEqual(differing, 0, "and each is psx-spx's zigzag filter's, across sector joins");
+
+  // A steady level comes out steady, at the tables' own gain: each one's taps add up to about
+  // 29,700 of 32,768, 0.906 - the same in DuckStation and in Mednafen's 18900 Hz weights, so the
+  // XA path is about 0.9 dB quieter than what goes into it, where the linear resampler before
+  // this passed it through whole.
+  m.Reset();
+  std::vector<int16_t> steady(600 * 2, 10000);
+  m.spu().QueueCdSamples(steady.data(), 600, 37800);
+  const std::vector<int16_t> level = QueuedCd(m);
+  bool flat = true;
+  for (size_t i = 70 * 2; i < level.size(); ++i)
+    flat = flat && level[i] >= 9040 && level[i] <= 9060;
+  Check(flat, "a steady level of 10000 comes out at the tables' gain, 9040-9060, once the filter is full");
+
+  // Mono arrives in both channels and leaves in both.
+  bool same = true;
+  for (size_t i = 0; i < level.size(); i += 2)
+    same = same && level[i] == level[i + 1];
+  Check(same, "the same frame in both channels comes out the same in both");
+
+  // 18900 Hz: seven out for every three in, at the same level.
+  m.Reset();
+  std::vector<int16_t> half(300 * 2, -8000);
+  m.spu().QueueCdSamples(half.data(), 300, 18900);
+  const std::vector<int16_t> slow = QueuedCd(m);
+  const int slow_frames = static_cast<int>(slow.size() / 2);
+  Check(slow_frames >= 698 && slow_frames <= 702, "18900 Hz: seven frames out for every three in");
+  bool slow_flat = true;
+  for (size_t i = 60 * 2; i < slow.size(); ++i)
+    slow_flat = slow_flat && slow[i] >= -7270 && slow[i] <= -7220;
+  Check(slow_flat, "and a steady -8000 comes out at about the same gain, -7220 to -7270");
+
+  // A 37800 Hz stream after an 18900 Hz one still comes out - their patterns count differently.
+  const int before = slow_frames;
+  m.spu().QueueCdSamples(steady.data(), 600, 37800);
+  const int after = static_cast<int>(QueuedCd(m).size() / 2);
+  Check(after - before >= 693 && after - before <= 700, "a 37800 Hz stream follows an 18900 Hz one");
+
+  // 44100 Hz, CD-DA's rate, is not resampled at all.
+  m.Reset();
+  std::vector<int16_t> native = { 1, -2, 3, -4, 5, -6 };
+  m.spu().QueueCdSamples(native.data(), 3, 44100);
+  Check(QueuedCd(m) == native, "44100 Hz passes through as it is");
+
+  // A save state keeps where the resampler is in its pattern, so the frames after a load come
+  // out when they would have: 500 in leaves it two frames into a pattern of six.
+  m.Reset();
+  m.spu().QueueCdSamples(steady.data(), 500, 37800);
+  emulation::psx::StateIO save(true);
+  m.spu().Serialise(save);
+  const std::vector<uint8_t> bytes = save.bytes();
+  m.Reset();
+  emulation::psx::StateIO load(false);
+  load.BeginLoad(bytes.data(), bytes.size());
+  m.spu().Serialise(load);
+  m.spu().QueueCdSamples(steady.data(), 100, 37800);
+  CheckEqual(static_cast<int32_t>(QueuedCd(m).size() / 2), 600 / 6 * 7,
+             "after a save state, the pattern carries on where it was");
+}
+
+// ---------------------------------------------------------------------------
+// Interpolation, noise and pitch (bugs 154-156)
+
+// The lowest and highest of a channel's frames, from `from` on.
+void RangeOf(const std::vector<int16_t>& frames, int channel, size_t from,
+             int* low, int* high) {
+  *low = 32767;
+  *high = -32768;
+  for (size_t i = from * 2 + channel; i < frames.size(); i += 2) {
+    if (frames[i] < *low) *low = frames[i];
+    if (frames[i] > *high) *high = frames[i];
+  }
+}
+
+// How many times a channel's frames change from one to the next.
+int ChangesIn(const std::vector<int16_t>& frames, int channel) {
+  int changes = 0;
+  for (size_t i = channel + 2; i < frames.size(); i += 2)
+    if (frames[i] != frames[i - 2])
+      ++changes;
+  return changes;
+}
+
+void TestInterpolation(Machine& m) {
+  printf("gaussian interpolation\n");
+
+  // A constant sample, 7000h, looping on itself, through a voice volume of a
+  // quarter: the envelope and main volume at full leave about 1BFFh. A table
+  // whose four weights add up to one passes a constant straight through,
+  // wherever between samples the pitch counter is.
+  const int kExpected = 0x7000 / 4;
+
+  BeginTest("a constant sample keeps its level at the native rate");
+  m.Reset();
+  SteadyVoice(m, false);
+  int low, high;
+  RangeOf(m.Run(400), 0, 100, &low, &high);
+  Check(low > kExpected * 98 / 100 && high < kExpected * 102 / 100,
+        "within 2% of 1BFFh with the counter on whole samples");
+
+  BeginTest("and between samples, without a wobble");
+  m.Reset();
+  SteadyVoice(m, false);
+  m.WriteVoice(0, 0x4, 0x1800);        // the fraction alternates 0 and 80h
+  RangeOf(m.Run(400), 0, 100, &low, &high);
+  Check(low > kExpected * 98 / 100 && high < kExpected * 102 / 100,
+        "within 2% of 1BFFh with the counter half way");
+  Check(high - low < kExpected / 100, "under 1% from one frame to the next");
+
+  m.Reset();
+  SteadyVoice(m, false);
+  m.WriteVoice(0, 0x4, 0x1123);        // every fraction in turn
+  RangeOf(m.Run(2000), 0, 100, &low, &high);
+  Check(high - low < kExpected / 100, "nor at an arbitrary pitch");
+}
+
+// Voice 0 playing noise at full volume, with SPUCNT's noise bits as given.
+std::vector<int16_t> NoiseRun(Machine& m, int shift, int step, int frames) {
+  m.Reset();
+  m.WriteVoice(0, 0x6, 0x1000 / 8);
+  m.WriteVoice(0, 0x4, 0x1000);
+  m.WriteVoice(0, 0x0, 0x3FFF);
+  m.WriteVoice(0, 0x2, 0x3FFF);
+  m.WriteVoice(0, 0x8, 0x00FF);
+  m.Write(kControl, static_cast<uint16_t>(kControlEnable | kControlUnmute |
+                                          (shift << 10) | ((step - 4) << 8)));
+  m.Write(kNoiseLow, 0x0001);
+  m.Write(kKeyOnLow, 0x0001);
+  m.Run(16);                           // past the attack
+  return m.Run(frames);
+}
+
+void TestNoiseFrequency(Machine& m) {
+  printf("noise frequency\n");
+
+  // psx-spx: the level moves when a timer, counting down by the step, goes
+  // negative, and reloads with 20000h >> shift. So once every
+  // (20000h >> shift) / step samples, and never more than once a sample.
+  BeginTest("at the top rate the noise moves every sample");
+  const int top = ChangesIn(NoiseRun(m, 15, 4, 400), 0);
+  Check(top >= 390, "a new level nearly every frame");
+
+  BeginTest("shift 13, step 4: every fourth sample");
+  const int quarter = ChangesIn(NoiseRun(m, 13, 4, 400), 0);
+  Check(quarter >= 95 && quarter <= 101, "about 100 changes in 400 frames");
+
+  BeginTest("the step bits set the rate as well");
+  const int faster = ChangesIn(NoiseRun(m, 13, 7, 400), 0);
+  Check(faster >= 170 && faster <= 177, "step 7 is 7/4 as often");
+
+  BeginTest("low shifts are slow, not stopped");
+  // About 19 moves; the first two or three, levels 1 and 3, scale to nothing
+  // through the envelope and the two volumes.
+  const int slow = ChangesIn(NoiseRun(m, 4, 4, 40000), 0);
+  Check(slow >= 14 && slow <= 20, "shift 4 moves every 2048 samples");
+}
+
+// Voice `index` playing four blocks once, at a pitch, after which it sets its
+// ENDX bit. Four blocks are 112 samples: 28 frames at 4000h.
+void OneShot(Machine& m, int index, uint16_t pitch) {
+  m.Upload(0x1000, LoudBlock(0x00));
+  m.Upload(0x1010, LoudBlock(0x00));
+  m.Upload(0x1020, LoudBlock(0x00));
+  m.Upload(0x1030, LoudBlock(0x01));   // end, no repeat
+  m.WriteVoice(index, 0x6, 0x1000 / 8);
+  m.WriteVoice(index, 0x4, pitch);
+  m.WriteVoice(index, 0x0, 0x3FFF);
+  m.WriteVoice(index, 0x8, 0x00FF);
+  m.Write(kKeyOnLow, static_cast<uint16_t>(1u << index));
+}
+
+void TestHighPitch(Machine& m) {
+  printf("pitches of 4000h and over\n");
+
+  BeginTest("4000h plays at four times the rate");
+  m.Reset();
+  OneShot(m, 0, 0x4000);
+  m.Run(30);
+  CheckEqual(m.Read(kEndxLow) & 1, 1, "the last block is reached within 30 frames");
+
+  BeginTest("above 4000h is clipped to it, not wrapped");
+  m.Reset();
+  OneShot(m, 0, 0x5000);
+  m.Run(30);
+  CheckEqual(m.Read(kEndxLow) & 1, 1, "5000h runs as 4000h, not 1000h");
+
+  BeginTest("2000h is half as fast");
+  m.Reset();
+  OneShot(m, 0, 0x2000);
+  m.Run(30);
+  CheckEqual(m.Read(kEndxLow) & 1, 0, "not there yet after 30 frames");
+
+  BeginTest("modulation starts from the whole register");
+  // Voice 0 is silent, so voice 1's factor is exactly one: 6000h stays
+  // 6000h and clips to 4000h. Masked first, it was 2000h.
+  m.Reset();
+  OneShot(m, 1, 0x6000);
+  m.Write(kPitchModLow, 0x0002);
+  m.Run(30);
+  CheckEqual((m.Read(kEndxLow) >> 1) & 1, 1, "6000h modulated by silence runs as 4000h");
+}
+
 const Group kGroups[] = {
   { "registers", TestRegisters },
   { "keyonoff",  TestKeyOnOff },
@@ -1351,6 +1654,10 @@ const Group kGroups[] = {
   { "xastereo",  TestXaMonoAndStereo },
   { "xafilter",  TestXaFilterCarriesForward },
   { "xasat",     TestXaSaturates },
+  { "xaresample", TestXaResampler },
+  { "interp",    TestInterpolation },
+  { "noisefreq", TestNoiseFrequency },
+  { "highpitch", TestHighPitch },
 };
 
 }  // namespace

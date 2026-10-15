@@ -81,6 +81,9 @@ class Spu : public Component {
   // Interleaved stereo at some other rate - XA-ADPCM comes out at 37800 or
   // 18900 Hz and has to be resampled onto the mixer's own 44100.
   void QueueCdSamples(const int16_t* stereo, int frames, int sample_rate);
+  // For the harnesses: up to `max_frames` of the CD input waiting to be mixed, oldest first, as
+  // interleaved stereo, without taking them. Returns how many were copied.
+  int PeekCdFrames(int16_t* out, int max_frames) const;
 
   const uint8_t* ram() const { return ram_; }
 
@@ -223,7 +226,7 @@ class Spu : public Component {
   uint16_t reverb_registers_[32];
 
   // Noise generator.
-  uint32_t noise_timer_;
+  int32_t noise_timer_;      // counts down; the register moves when it goes negative
   int16_t noise_level_;
 
   // Reverb working state.
@@ -257,12 +260,16 @@ class Spu : public Component {
   int cd_audio_read_;
   int cd_audio_write_;
   int cd_audio_count_;
-  // Resampling state for QueueCdSamples, carried between sectors so the joins
-  // between them are not audible.
-  uint32_t cd_resample_fraction_;
-  int16_t cd_resample_last_[2];
-  int16_t cd_resample_scratch_[2];
+  // The CD-ROM decoder's XA-ADPCM resampler (QueueCdSamples), carried between sectors so the
+  // joins between them are not audible: the last 32 frames it was given, each channel, where the
+  // next goes, and how far it is through its pattern - seven frames out for every six in at
+  // 37800 Hz, seven for every three at 18900.
+  int16_t xa_ring_[2][32];
+  uint32_t xa_ring_position_;
+  uint32_t xa_sixstep_;
   void PushCdFrame(int16_t left, int16_t right);
+  void ResampleXa37800(const int16_t* stereo, int frames);
+  void ResampleXa18900(const int16_t* stereo, int frames);
 
   Stats stats_;
 

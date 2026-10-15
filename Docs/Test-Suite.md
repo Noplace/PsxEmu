@@ -279,7 +279,7 @@ Unit tests for the sound unit. No BIOS, no window, no audio device. Sample
 data is written into sound RAM, voices are keyed on through their real
 registers, and the frames that come out are checked.
 
-**Current: 150 checks, 0 failures.**
+**Current: 171 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -295,6 +295,10 @@ registers, and the frames that come out are checked.
 | `noiseirq` | the noise generator running, the IRQ address compare; and a voice whose sample has ended still running, silent, to a looping block at the IRQ address and raising the interrupt there - once until acknowledged, again once re-armed, never while disabled (bug 144; four of the six fail with off voices left standing) |
 | `cdvolume` | the CD input volume as a plain signed level, not a sweep register (bug 36) |
 | `xaparams` `xacounts` `xashift` `xastereo` `xafilter` `xasat` | XA-ADPCM: parameter offsets, frame counts, silence and shift, mono and stereo, the filter carrying across sectors, saturation |
+| `xaresample` | the CD-ROM decoder's resampler (bug 153): 37800 Hz XA through psx-spx's zigzag filter, frame for frame against psx-spx's pseudo-code and table transcribed here apart from spu.cpp's, over noise, a tone and a clipping square wave in uneven pieces; seven frames out for every six in, and for every three at 18900 Hz; a steady level out at the tables' gain of 0.906; mono out as mono; a 37800 Hz stream after an 18900 Hz one; 44100 Hz untouched; and a save state keeping the resampler's place |
+| `interp` | the Gaussian interpolation (bug 154): a constant sample keeping its level within 2% at the native rate, half way between samples and at an arbitrary pitch, moving under 1% from frame to frame - the old table's weights summed to 0.80-1.13 |
+| `noisefreq` | the noise generator's rate (bug 155), counted from the output's changes: every sample at the top shift, every fourth at shift 13 with step 4, 7/4 as often with step 7, and still moving at shift 4 |
+| `highpitch` | pitches of 4000h and over (bug 156), timed by a one-shot's ENDX bit: 4000h at four times the rate, 5000h clipped to 4000h rather than wrapped to 1000h, 2000h at half that, and modulation applied to the whole register before the clip |
 
 `loopaddr` is the one worth reading twice. Four of its eight checks fail
 against the implementation as it stood before bug 39 (measured, by putting the
@@ -836,10 +840,10 @@ the most likely answer is the network share rather than the emulator.
 | `cpu_test` | 341 | | `gpu_test` | 106 |
 | `gte_test` | 197 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 555 |
-| `sio_test` | 203 | | `spu_test` | 150 |
+| `sio_test` | 203 | | `spu_test` | 171 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**1,994 checks, 0 failures**, all ten green. Each harness's own section above
+**2,015 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -861,7 +865,8 @@ bug 149: the subchannel CRC against psx-spx's and against two of Final Fantasy V
 are not patches ignored, a .sub's failing sector, and a .sub with no CRCs believed as before. And
 fourteen are DMA channel 5, bug 150: no interrupt from a write that starts nothing, the DPCR enable
 and the trigger obeyed, busy for 20 cycles a word, RAM and MADR left alone, and a request that never
-comes.)
+comes. Nine are the XA resampler, bug 153; and twelve are the voices' Gaussian interpolation, the
+noise generator's rate and pitches of 4000h and over, bugs 154-156.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12
