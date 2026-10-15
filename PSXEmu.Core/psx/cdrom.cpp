@@ -232,6 +232,8 @@ void Cdrom::Serialise(StateIO& io) {
   // reading_/playing_/shell_open_/status_/seek_lba_/read_lba_ to their
   // freshly-mounted defaults) re-derives everything else about the disc
   // once every field below has already been restored from the state.
+  const bool keep_open = !io.saving() && !reopen_on_load_ && disc_.loaded();
+  const std::string open_path = keep_open ? disc_.path() : std::string();
   disc_.Serialise(io);
 
   io.Plain(index_);
@@ -265,6 +267,8 @@ void Cdrom::Serialise(StateIO& io) {
     const std::string path = disc_.path();
     if (path.empty()) {
       disc_.Close();
+    } else if (keep_open && path == open_path) {
+      // The disc this state was taken on, still open: nothing to do.
     } else if (!disc_.Open(path.c_str())) {
       io.SetError("save state: disc image not found: " + path);
     }

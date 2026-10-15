@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstring>
 #include <map>
 #include "media/ecm.h"
@@ -1530,9 +1531,16 @@ bool Disc::ReadFileSector(const Source& source, long long offset, uint32_t wante
   if (source.ahead.size() < block)
     source.ahead.resize(block);
 
+  if (source.ahead_offset >= 0 && offset < source.ahead_offset)
+    ++read_stats_.backward;
   source.ahead_offset = -1;
   source.ahead_size = 0;
+  const auto start = std::chrono::steady_clock::now();
   const size_t got = ReadImageBytes(source, offset, &source.ahead[0], block);
+  read_stats_.ms +=
+      std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  ++read_stats_.reads;
+  read_stats_.bytes += got;
   if (got < wanted)
     return false;
   source.ahead_offset = offset;
@@ -1553,11 +1561,20 @@ bool Disc::ReadChdSector(uint32_t lba, uint8_t* out) const {
     const uint32_t frames_per_hunk = source.chd_hunk_bytes / CD_FRAME_SIZE;
     const uint32_t hunk = frame / frames_per_hunk;
     if (hunk != source.chd_hunk_number) {
+      if (source.chd_hunk_number != 0xFFFFFFFFu && hunk < source.chd_hunk_number)
+        ++read_stats_.backward;
       source.chd_hunk.resize(source.chd_hunk_bytes);
       source.chd_hunk_number = 0xFFFFFFFFu;
-      if (chd_read(static_cast<chd_file*>(source.chd), hunk, source.chd_hunk.data()) !=
-          CHDERR_NONE)
+      const auto start = std::chrono::steady_clock::now();
+      const chd_error error =
+          chd_read(static_cast<chd_file*>(source.chd), hunk, source.chd_hunk.data());
+      read_stats_.ms +=
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+              .count();
+      ++read_stats_.reads;
+      if (error != CHDERR_NONE)
         return false;
+      read_stats_.bytes += source.chd_hunk_bytes;
       source.chd_hunk_number = hunk;
     }
     const uint8_t* in = &source.chd_hunk[(frame % frames_per_hunk) * CD_FRAME_SIZE];

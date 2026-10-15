@@ -153,6 +153,19 @@ class Disc {
   static uint8_t ToBcd(uint8_t value);
   static uint8_t FromBcd(uint8_t value);
 
+  // What reading images has cost since this Disc was made - a reopen does not reset it - for
+  // boot_runner --bench-state: reads that went to the file itself (a read-ahead block, a CHD
+  // hunk) and the wall-clock time they took. A sector served from the block already in memory
+  // is not one. `backward` counts the misses that wanted a sector before the start of the block
+  // held - the machine having gone back, as a save state loaded does.
+  struct ReadStats {
+    uint64_t reads = 0;
+    uint64_t backward = 0;
+    uint64_t bytes = 0;
+    double ms = 0.0;
+  };
+  const ReadStats& read_stats() const { return read_stats_; }
+
  private:
   // One backing file (or device) and how sectors are laid out inside it.
   struct Source {
@@ -204,6 +217,7 @@ class Disc {
   uint32_t total_sectors_;
   std::string path_;
   std::string open_error_;
+  mutable ReadStats read_stats_;
 
   // A CloneCD .sub: 96 bytes a sector, the eight subchannels one after
   // another (P, then Q, then R to W), 12 bytes each. Read a block at a time

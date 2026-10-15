@@ -62,6 +62,9 @@
 //     --load-state <f>   resume from a save state instead of booting - skips
 //                        --disc/--boot-disc/--auto-boot/--exe entirely
 //     --save-state <f>   write a save state after the run finishes
+//     --bench-state <n>  at the very end, time a save state kept in memory - saves, loads, the
+//                        frame after a load, run-ahead and what a state a frame later has
+//                        changed - each over n tries (Docs/Rewind-and-Run-Ahead-Plan.md)
 //     --hw-raster        draw with the Direct3D 11 hardware rasteriser rather than the software
 //                        one (Docs/Hardware-Renderer-Plan.md)
 //     --d3d12            ...the Direct3D 12 one instead; on its own it means --hw-raster too
@@ -122,10 +125,13 @@
 #include <wrl/client.h>
 #endif
 
+#include "zlib.h"
+
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <algorithm>
+#include <chrono>
 #include <ctime>
 #include <unordered_map>
 #include <vector>
@@ -316,6 +322,7 @@ struct Options {
   const char* load_state;
   // Applied once, after the frame loop finishes, alongside --ppm/--vram.
   const char* save_state;
+  int bench_state;   // --bench-state n: tries per measurement, 0 for none
   // --hw-raster: draw with the Direct3D 11 rasteriser the front end has (12 with --d3d12), on
   // the graphics card or, with --warp, on WARP - Windows' software Direct3D, which needs no card and gives the
   // same pictures every run. Only in a build that compiles it in (PSXEMU_HW_RASTER).
@@ -700,6 +707,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->volume = -1.0f;
   options->load_state = nullptr;
   options->save_state = nullptr;
+  options->bench_state = 0;
   options->hw_raster = false;
   options->warp = false;
   options->d3d12 = false;
@@ -730,6 +738,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->load_state = argv[++i];
     } else if (strcmp(arg, "--save-state") == 0 && i + 1 < argc) {
       options->save_state = argv[++i];
+    } else if (strcmp(arg, "--bench-state") == 0 && i + 1 < argc) {
+      options->bench_state = atoi(argv[++i]);
     } else if (strcmp(arg, "--frames") == 0 && i + 1 < argc) {
       options->frames = atoi(argv[++i]);
     } else if (strcmp(arg, "--insert") == 0 && i + 2 < argc) {
@@ -1229,6 +1239,288 @@ int RunRecompilerDiff(const Options& options) {
   delete interpreted;
   return 0;
 }
+
+// --bench-state <n>: how fast a save state is when it stays in memory, for
+// Docs/Rewind-and-Run-Ahead-Plan.md. Runs once the run is over, from wherever it ended, and
+// moves the machine on. Every figure is a mean over n tries. Where two ways of doing one thing
+// are compared they take turns within one loop, so the scene and the host's clock - which on a
+// laptop swings by tens of percent between batches - are the same for both.
+namespace bench {
+typedef std::chrono::steady_clock Clock;
+
+double Ms(Clock::duration d) { return std::chrono::duration<double, std::milli>(d).count(); }
+
+// One frame, and the steps it took: an instruction interpreted, or a run of compiled blocks.
+uint64_t RunFrame(System* system) {
+  const uint64_t target = system->gpu().frame_count() + 1;
+  uint64_t steps = 0;
+  while (system->gpu().frame_count() < target && steps < 8000000) {
+    system->StepInstructionUnarmed();
+    ++steps;
+  }
+  return steps;
+}
+
+// Into the buffer kept from the last time, which allocates nothing once it is big enough.
+void Save(System* system, std::vector<uint8_t>* buffer) {
+  emulation::psx::StateIO state(/*saving=*/true);
+  state.ReuseBuffer(buffer);
+  system->SerialisePayload(state);
+  state.TakeBytes(buffer);
+}
+
+// What LoadState does once the file is read, with `reopen` and `drop_code` as it has them;
+// either false is what a state kept in memory could do instead.
+void Load(System* system, emulation::psx::StateIO* state, const std::vector<uint8_t>& payload,
+          bool reopen, bool drop_code) {
+  system->cdrom().set_reopen_on_load(reopen);
+  state->BeginLoad(payload.data(), payload.size());
+  system->SerialisePayload(*state);
+  system->cdrom().set_reopen_on_load(true);
+  system->FinishLoad(drop_code);
+}
+
+// zlib at level 1. The vendored zlib has deflate but not compress.c.
+size_t Deflate1(const uint8_t* in, size_t size, std::vector<uint8_t>* out) {
+  out->resize(size + size / 8 + 4096);
+  z_stream z = {};
+  deflateInit(&z, 1);
+  z.next_in = const_cast<Bytef*>(in);
+  z.avail_in = static_cast<uInt>(size);
+  z.next_out = out->data();
+  z.avail_out = static_cast<uInt>(out->size());
+  deflate(&z, Z_FINISH);
+  const size_t written = z.total_out;
+  deflateEnd(&z);
+  return written;
+}
+
+void Line(const char* what, double total_ms, int n) {
+  printf("bench  %-48s %8.3f ms\n", what, n > 0 ? total_ms / n : 0.0);
+}
+
+// The disc reads a stretch made, per try: reads that went to the image, how many of them
+// stepped back, and the time they took.
+void ReadsLine(const char* what, const emulation::psx::Disc::ReadStats& total, int n) {
+  if (n <= 0)
+    return;
+  printf("bench    %-46s %6.2f reads (%.2f back) %7.3f ms\n", what,
+         static_cast<double>(total.reads) / n, static_cast<double>(total.backward) / n,
+         total.ms / n);
+}
+emulation::psx::Disc::ReadStats Since(const emulation::psx::Disc::ReadStats& now,
+                                      const emulation::psx::Disc::ReadStats& then) {
+  emulation::psx::Disc::ReadStats d;
+  d.reads = now.reads - then.reads;
+  d.backward = now.backward - then.backward;
+  d.bytes = now.bytes - then.bytes;
+  d.ms = now.ms - then.ms;
+  return d;
+}
+
+void Run(System* system, int n) {
+  const emulation::psx::Disc::ReadStats& disc = system->cdrom().disc().read_stats();
+  printf("bench  recompiler %s, rasteriser %s, %d tries each\n",
+         system->config().recompiler ? "on" : "off",
+         system->gpu().hardware_raster() ? "hardware" : "software", n);
+  for (int i = 0; i < 30; ++i)
+    RunFrame(system);
+
+  std::vector<uint8_t> state, scratch;
+  emulation::psx::StateIO loader(/*saving=*/false);
+  Save(system, &state);
+  printf("bench  payload                                          %10zu bytes\n", state.size());
+
+  Clock::time_point t;
+  emulation::psx::Disc::ReadStats before = disc;
+  t = Clock::now();
+  for (int i = 0; i < n; ++i)
+    RunFrame(system);
+  Line("a frame", Ms(Clock::now() - t), n);
+  ReadsLine("its disc reads", Since(disc, before), n);
+
+  // Saving: as SaveState builds its payload, a vector grown a field at a time, then into one
+  // kept from the last save.
+  t = Clock::now();
+  for (int i = 0; i < n; ++i) {
+    emulation::psx::StateIO fresh(/*saving=*/true);
+    system->SerialisePayload(fresh);
+  }
+  Line("save, a fresh vector (as SaveState)", Ms(Clock::now() - t), n);
+  t = Clock::now();
+  for (int i = 0; i < n; ++i)
+    Save(system, &scratch);
+  Line("save, a reused buffer", Ms(Clock::now() - t), n);
+  t = Clock::now();
+  for (int i = 0; i < n; ++i)
+    memcpy(scratch.data(), state.data(), std::min(scratch.size(), state.size()));
+  Line("memcpy of the payload (the floor)", Ms(Clock::now() - t), n);
+
+  // Loading, the disc reopened as LoadState does and kept open, taking turns.
+  Save(system, &state);
+  {
+    double ms[2] = {};
+    for (int i = 0; i < 2 * n; ++i) {
+      t = Clock::now();
+      Load(system, &loader, state, (i & 1) == 0, true);
+      ms[i & 1] += Ms(Clock::now() - t);
+    }
+    Line("load, the disc reopened (as LoadState)", ms[0], n);
+    Line("load, the disc kept open", ms[1], n);
+  }
+
+  // The frame after a load, from the same state each time: compiled code thrown away as
+  // LoadState does, or kept. The difference is recompiling.
+  {
+    double ms[2] = {};
+    for (int i = 0; i < 2 * n; ++i) {
+      Load(system, &loader, state, false, (i & 1) == 0);
+      t = Clock::now();
+      RunFrame(system);
+      ms[i & 1] += Ms(Clock::now() - t);
+    }
+    Line("the frame after a load, compiled code dropped", ms[0], n);
+    Line("the frame after a load, compiled code kept", ms[1], n);
+  }
+
+  // Run-ahead of one frame, per frame shown: the frame the input is for runs, a state is kept,
+  // one more frame runs and would be shown, and the state is loaded back - two frames, a save
+  // and a load. Against no run-ahead, one frame per frame shown. Every way runs the same 30
+  // frames shown from one starting state, taking turns, so each pays for the same scenes.
+  {
+    const int kStretch = 30;
+    const int stretches = std::max(1, n / kStretch);
+    const char* names[4] = {"no run-ahead", "run-ahead 1, a load as LoadState does",
+                            "run-ahead 1, the disc kept open",
+                            "run-ahead 1, disc kept, compiled code kept"};
+    double ms[4] = {};
+    double part[4][4] = {};   // the first frame, the save, the second frame, the load
+    uint64_t steps[4] = {};
+    emulation::psx::Disc::ReadStats reads[4];
+    std::vector<uint8_t> start;
+    Save(system, &start);
+    for (int s = 0; s < stretches; ++s) {
+      for (int k = 0; k < 4; ++k) {
+        Load(system, &loader, start, true, true);
+        before = disc;
+        for (int f = 0; f < kStretch; ++f) {
+          Clock::time_point marks[5];
+          marks[0] = Clock::now();
+          steps[k] += RunFrame(system);
+          marks[1] = Clock::now();
+          if (k > 0)
+            Save(system, &scratch);
+          marks[2] = Clock::now();
+          if (k > 0)
+            steps[k] += RunFrame(system);
+          marks[3] = Clock::now();
+          if (k > 0)
+            Load(system, &loader, scratch, k == 1, k != 3);
+          marks[4] = Clock::now();
+          ms[k] += Ms(marks[4] - marks[0]);
+          for (int p = 0; p < 4; ++p)
+            part[k][p] += Ms(marks[p + 1] - marks[p]);
+        }
+        const emulation::psx::Disc::ReadStats d = Since(disc, before);
+        reads[k].reads += d.reads;
+        reads[k].backward += d.backward;
+        reads[k].ms += d.ms;
+      }
+    }
+    const int shown = stretches * kStretch;
+    for (int k = 0; k < 4; ++k) {
+      Line(names[k], ms[k], shown);
+      printf("bench    frame %.3f, save %.3f, frame %.3f, load %.3f ms; %.0f steps\n",
+             part[k][0] / shown, part[k][1] / shown, part[k][2] / shown, part[k][3] / shown,
+             static_cast<double>(steps[k]) / shown);
+      ReadsLine("its disc reads", reads[k], shown);
+    }
+  }
+
+  // Whether a load changes what the machine computes. From one state, 120 frames on: straight
+  // on with no load at all, after a load that reopens the disc, after one that keeps it open,
+  // and with a save and a load (disc reopened) after every frame, as run-ahead would. Each
+  // ends hashed whole; a load that is invisible gives the same hash as no load.
+  {
+    const int kFrames = 120;
+    auto hash_after = [&](int mode) {
+      // 0: no load; 1: reopened; 2: kept open; 3: a save and load after every frame, as
+      // LoadState does them; 4: the same, the disc and the compiled code kept.
+      if (mode == 1 || mode == 2)
+        Load(system, &loader, state, mode == 1, true);
+      for (int i = 0; i < kFrames; ++i) {
+        RunFrame(system);
+        if (mode >= 3) {
+          Save(system, &scratch);
+          Load(system, &loader, scratch, mode == 3, mode == 3);
+        }
+      }
+      Save(system, &scratch);
+      return emulation::psx::Fnv1a64(scratch.data(), scratch.size());
+    };
+    const char* modes[5] = {"no load", "a load, the disc reopened", "a load, the disc kept open",
+                            "a save and load after every frame",
+                            "...that, compiled code kept"};
+    Save(system, &state);
+    uint64_t hashes[5];
+    hashes[0] = hash_after(0);
+    for (int mode = 1; mode < 5; ++mode) {
+      Load(system, &loader, state, true, true);
+      hashes[mode] = hash_after(mode);
+    }
+    for (int mode = 0; mode < 5; ++mode)
+      printf("bench  %d frames after %-36s %016llx%s\n", kFrames, modes[mode],
+             static_cast<unsigned long long>(hashes[mode]),
+             hashes[mode] == hashes[0] ? "" : "  DIFFERS");
+  }
+
+  // Rewind's storage: what changes from one frame's state to the next.
+  std::vector<uint8_t> last, now, changed, packed;
+  Save(system, &last);
+  double save_ms = 0.0, pages_ms = 0.0, whole_ms = 0.0;
+  uint64_t bytes_differing = 0, pages_differing = 0, packed_bytes = 0;
+  int samples = 0;
+  for (int i = 0; i < n; ++i) {
+    RunFrame(system);
+    t = Clock::now();
+    Save(system, &now);
+    save_ms += Ms(Clock::now() - t);
+    if (now.size() == last.size()) {
+      changed.clear();
+      for (size_t at = 0; at < now.size(); at += 4096) {
+        const size_t length = std::min<size_t>(4096, now.size() - at);
+        if (memcmp(&now[at], &last[at], length) == 0)
+          continue;
+        ++pages_differing;
+        for (size_t k = 0; k < length; ++k)
+          bytes_differing += now[at + k] != last[at + k];
+        changed.insert(changed.end(), now.begin() + at, now.begin() + at + length);
+      }
+      t = Clock::now();
+      packed_bytes += Deflate1(changed.data(), changed.size(), &packed);
+      pages_ms += Ms(Clock::now() - t);
+      ++samples;
+    }
+    last.swap(now);
+  }
+  t = Clock::now();
+  const size_t whole = Deflate1(last.data(), last.size(), &packed);
+  whole_ms = Ms(Clock::now() - t);
+  printf("bench  frame to frame, %d states\n", samples);
+  Line("  a save", save_ms, n);
+  if (samples > 0) {
+    printf("bench    bytes that differ                              %10.0f\n",
+           static_cast<double>(bytes_differing) / samples);
+    printf("bench    4 KB pages that differ                         %10.1f of %zu\n",
+           static_cast<double>(pages_differing) / samples, (last.size() + 4095) / 4096);
+    printf("bench    those pages, zlib-1                            %10.0f bytes\n",
+           static_cast<double>(packed_bytes) / samples);
+    Line("  ...taking", pages_ms, samples);
+  }
+  printf("bench    a whole state, zlib-1                          %10zu bytes\n", whole);
+  Line("  ...taking", whole_ms, 1);
+}
+}  // namespace bench
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -2710,6 +3002,10 @@ int main(int argc, char** argv) {
       fprintf(stderr, "could not write %s\n", options.spu_ram);
     }
   }
+
+  // Last, since it runs the machine on from where the run left it.
+  if (options.bench_state > 0)
+    bench::Run(system, options.bench_state);
 
   system->Deinitialize();
   delete system;

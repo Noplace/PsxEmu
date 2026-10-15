@@ -138,6 +138,16 @@ class StateIO {
   // after the header.
   const std::vector<uint8_t>& bytes() const { return buffer_; }
 
+  // Saving only: write into `buffer`'s storage, keeping its capacity, so a state taken again and
+  // again allocates nothing after the first - and give it back, filled, with TakeBytes. A fresh
+  // vector grown a field at a time costs ten times the serialising (Docs/Rewind-and-Run-Ahead-
+  // Plan.md: 1.7-3.3 ms against 0.13-0.29 ms).
+  void ReuseBuffer(std::vector<uint8_t>* buffer) {
+    buffer_.swap(*buffer);
+    buffer_.clear();
+  }
+  void TakeBytes(std::vector<uint8_t>* out) { out->swap(buffer_); }
+
   // Set if a load ran past the end of the buffer - a truncated or foreign
   // file. Callers must check this after driving a whole Serialise chain;
   // reading garbage past the end is not an option to report, but is

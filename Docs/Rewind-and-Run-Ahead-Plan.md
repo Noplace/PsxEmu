@@ -1,9 +1,11 @@
 # Rewind and run-ahead
 
-> **Status: plan, 2026-10-15. Nothing is built.** The measurements below were taken on master
-> at `2618cdd` with a scratch copy of `boot_runner` (how, and how to repeat it, is under
-> "How it was measured"). Every phase ends with a harness check that a person does not have to
-> watch.
+> **Status: phase 0 done, 2026-10-15; nothing a player can use is built.** `boot_runner
+> --bench-state <n>` makes every measurement here (see "How it was measured"). Phase 0 found
+> that the suspected CD problem was the first benchmark's own fault, and that throwing compiled
+> code away on a load changes what the machine computes. Phase 1 has to keep it for that
+> reason, not only for speed. Every phase ends with a harness check that a person does not have
+> to watch.
 
 Two features built on one thing: a save state that stays in memory, fast enough to take and
 restore every frame.
@@ -35,7 +37,10 @@ load within one session does not need:
    full read-through for an `.ecm`, whose format has no index.
 2. **Every compiled block is thrown away** (`NoteBulkWrite(0, kRamSize)`), so the next frame
    recompiles everything it runs. That adds **0.8-1.7 ms** to the frame after a load. A state
-   from one frame earlier has, almost always, exactly the same code bytes.
+   from one frame earlier has, almost always, exactly the same code bytes. **It also changes
+   what the machine computes**: a save and a load after every frame, recompiled, ends 120
+   frames later somewhere else. Keep the compiled code and it ends exactly where no load
+   would (phase 0, below). The interpreter is exact either way.
 3. **The payload is copied** into `StateIO` before it is read (0.13-0.38 ms).
 
 With those three fixed, a save and a load cost about **0.6-1.2 ms together**, recompiled. On
@@ -43,17 +48,19 @@ that budget, run-ahead of one or two frames fits easily in every scene measured.
 capture costs only the save plus storage, and the storage is the real design question: what
 changes between consecutive states compresses to **19-116 KB** a frame.
 
-**Two things are not cheap yet, and get phases of their own:**
+With the disc kept open and the compiled code kept, run-ahead 1 costs **5.6-6.2 ms per frame
+shown** in Ridge Racer and Wild Arms, against 2.2-2.4 ms with none. That is two frames, a
+save and a load, with nothing left over (phase 0).
 
-- **The hardware rasteriser.** A state is native VRAM, so a save reads it back from the card
-  and a load uploads it and marks every upscaled pixel stale. At 4x on the Radeon 780M a load
-  costs 4.9 ms, and the upscaled detail is lost each time. Run-ahead needs snapshots of the
-  card's own VRAM, kept on the card.
-- **Reading the CD across a load.** Ridge Racer and Wild Arms both read the disc as they run.
-  Under the run-ahead pattern, even their plain frames slowed by 2-4x. This was not seen in
-  FF7's field scene or the BIOS shell. The disc's read-ahead is one 32-sector block, which a
-  jump back of one frame can miss over and over. That is the leading suspect, unconfirmed.
-  Phase 0 settles it before anything is built on it.
+**The hardware rasteriser is not cheap yet, and gets a phase of its own.** A state is native
+VRAM, so a save reads it back from the card and a load uploads it and marks every upscaled
+pixel stale. At 4x on the Radeon 780M a load costs 4.9 ms, and the upscaled detail is lost each
+time. Run-ahead needs snapshots of the card's own VRAM, kept on the card.
+
+**The disc is not a problem.** The first measurement made it look like one: Ridge Racer and
+Wild Arms, which read the disc as they run, slowed by 2-4x under run-ahead. Phase 0 found that
+loop was at fault, not the disc. Measured fairly, the disc reads cost 0.04-0.16 ms per frame
+shown, from the network share as from a local copy.
 
 **Run-ahead needs the recompiler.** Interpreted, Ridge Racer's frame alone was 24 ms in this
 batch, so even run-ahead 1 (two frames per frame shown) cannot keep up. The setting should
@@ -94,33 +101,76 @@ for the SPU, and nothing measurable for the CPU and GTE.
 frame after a load cost 17.76 ms with the flush and 17.92 ms without: the same, because there
 is nothing compiled to lose. So the recompiled difference is recompiling, not the load.
 
-### Run-ahead of one frame, as it would run today
+### Run-ahead of one frame (phase 0)
 
-One frame, a save, a second frame, a load: the cost of each frame shown with run-ahead 1. The
-four variants were alternated within one loop.
+Per frame shown: one frame, a save, a second frame, a load. Every variant runs the same 30
+frames shown from one starting state, the variants taking turns, four times over: 120 frames
+shown each. Ridge Racer and Wild Arms at frame 3000, recompiled, from a local copy of the
+disc and from the share.
 
-| | FF7 | BIOS shell | Ridge Racer | Wild Arms |
+| | Ridge Racer, local | Ridge Racer, share | Wild Arms, local | Wild Arms, share |
 |---|---|---|---|---|
-| Two plain frames (no run-ahead costs half this) | 3.87 ms | 7.10 ms | 13.89 ms | 15.85 ms |
-| Run-ahead 1, a load as today | 6.43 ms | 8.67 ms | 12.33 ms | 13.39 ms |
-| ...the disc not reopened | 6.98 ms | 9.67 ms | 25.58 ms | 25.82 ms |
-| ...nor the compiled code thrown away | 6.29 ms | 9.18 ms | 20.34 ms | 22.74 ms |
+| No run-ahead | 2.43 ms | 3.74 ms | 2.29 ms | 2.18 ms |
+| Run-ahead 1, a load as `LoadState` does | 9.43 ms | 16.35 ms | 9.07 ms | 9.11 ms |
+| ...the disc kept open | 8.90 ms | 15.02 ms | 8.32 ms | 7.63 ms |
+| ...and the compiled code kept | **6.17 ms** | **9.52 ms** | **5.96 ms** | **5.60 ms** |
+| Disc reads per frame shown, and their time | 2.00, 0.05 ms | 2.00, 0.09-0.16 ms | 2.00, 0.05-0.07 ms | 2.00, 0.04-0.11 ms |
+| Steps per frame shown, code dropped / kept | 9,541 / 8,856 | the same | 21,017 / 20,714 | the same |
 
-FF7 and the shell are the clean result. Run-ahead 1 costs about 1.5-2.6 ms over two plain
-frames. The shell has no disc, so its first two run-ahead rows do the same work, and the
-1 ms between them is this batch's noise.
+(The Ridge Racer share column ran in a slower moment of the laptop. Its no-run-ahead frame is
+3.74 ms against 2.43 ms locally, and the ratios match the local column.)
 
-**Ridge Racer and Wild Arms are the CD problem.** Their two plain frames cost 13.9 and 15.9
-ms in this loop, against 6.9 and 4.5 ms for the same frames run in a plain block. The plain
-frames are slow because they follow a load. Both games read the disc continuously at that
-point, from the network share. Not reopening the disc made it *worse*, which rules out the
-reopen's own cost as the cause.
+With the disc kept open and the code kept, run-ahead 1 costs what its parts add up to: two
+frames, a 0.3-0.4 ms save and a 0.8-1.1 ms load. Dropping the compiled code costs 2.4-3.4 ms
+more per frame shown, mostly in the first frame after each load. The extra steps are the
+recompiler compiling, and running instructions one at a time until it has. The reopen costs
+0.5-0.8 ms of the load.
 
-`Disc` caches exactly one 32-sector block (`Source::ahead`, `media/disc.h`). A read before the
-block's start drops it and reads a new block from that sector over the network. A machine
-that keeps stepping back a frame across a block boundary would miss over and over. That is
-the suspect, and it is not proven: phase 0 measures it on a local copy of the disc and with a
-cache of several blocks.
+**The disc reads are not the problem.** There are two per frame shown, because `Disc`
+caches one 32-sector block (`Source::ahead`) and a load steps back out of it. But each is
+served from the operating system's cache in 0.02-0.08 ms, from the share as from local disk.
+
+**Why the first measurement blamed the disc.** The first loop ran its four variants one after
+another on a single timeline that kept moving. Each variant's frames were a different stretch
+of the game from the last one's. Each "plain" pair also ran straight after another variant's
+load had thrown the compiled code away, so it paid for the recompiling. The run-ahead
+variants also changed the timeline itself, as below. The per-variant breakdown made this
+visible: the variants ran 4,622 to 5,037 steps a frame for what should have been the same
+frames.
+
+One thing in that first loop was the share's own: some of its reads took 1.8-4.3 ms each,
+where the fair loop's took 0.02-0.08 ms. The share's speed varies from one moment to the next,
+and two block reads per frame shown are an exposure to it. Phase 1 keeps the last few blocks, so a
+step back of a frame or three reads nothing.
+
+### Does a load change what the machine computes? (phase 0)
+
+From one saved state, 120 frames run on five ways, then the whole state is hashed. A load that
+is invisible ends with the same hash as no load at all.
+
+| 120 frames after... | Ridge Racer, recompiled | Ridge Racer, interpreted | BIOS shell, recompiled | BIOS shell, interpreted |
+|---|---|---|---|---|
+| no load | `26df14101bea0edb` | `c79bcb891a6d9caf` | `60f5f355a6b08f18` | `742db76e20526553` |
+| a load, the disc reopened | the same | the same | the same | the same |
+| a load, the disc kept open | the same | the same | the same | the same |
+| a save and load after every frame, as `LoadState` | **`efeffc07052bb49b`** | the same | **`ea804d37339be28c`** | the same |
+| ...that, the compiled code kept | the same | the same | the same | the same |
+
+Wild Arms, recompiled, behaves the same way: one load is invisible, and a load after every
+frame is not.
+
+So the state is complete, and keeping the disc open is exact. What changes the course is
+**throwing the compiled code away** while the recompiler is on. The likely mechanism, not yet
+traced instruction by instruction: an interrupt can be taken only at a block boundary
+(Recompiler-Plan.md). Blocks compiled afresh from wherever the machine stands after a load can
+have different boundaries from the ones they replaced, so an interrupt lands a few
+instructions earlier or later. One load did not show it in these 120 frames. A load every
+frame drifts.
+
+For run-ahead that is the difference between a game that plays as it would without it and
+one that does not. It also means `boot_runner --run-ahead` could never pass phase 2's test.
+Phase 1's "only code that changed is thrown away" is a correctness requirement, not an
+optimisation.
 
 ### The hardware rasteriser
 
@@ -156,9 +206,13 @@ zlib at level 1 (the vendored zlib; there is no LZ4 or zstd in the tree).
 
 At 60 states a second, 256 MB holds about **68 s of Ridge Racer, 37 s of Wild Arms, 150 s of
 FF7's field and 220 s of the shell**. Compressing the whole XOR, 10-14 ms a frame, is too slow
-for the machine's thread, and wasteful: only 2-8% of the pages changed. Compressing only the
-changed pages, on a thread of its own, is the design below. How fast that runs is phase 5's
-first measurement.
+for the machine's thread, and wasteful: only 2-8% of the pages changed.
+
+Phase 0's `--bench-state` compresses only the changed pages instead, as they are, not XORed.
+In Ridge Racer that is 105.6 KB in 4.9 ms a frame, and in Wild Arms 128.9 KB in 3.7 ms: three
+times faster than the whole XOR, but up to 1.7 times bigger. XORing just those pages before
+compressing them should keep the speed and win back the size. That, on a thread of its own, is
+the design below, and phase 5's first measurement.
 
 ## The design
 
@@ -192,7 +246,11 @@ What differs:
   `StateIO::Ram` that, on load, compares each 4 KB page with the page it is about to replace.
   It only does that for pages the block cache has compiled code from (`IsCodePage`, a bitmap
   lookup), and calls `NoteBulkWrite` for those that differ before copying. On FF7 that is
-  1.7 ms a load back. The file load can use it too.
+  1.7 ms a load back. More importantly, it is what keeps a recompiled machine on the course it
+  would take with no load, which a load every frame needs (phase 0's determinism table). The
+  file load can use it too.
+- **A few read-ahead blocks, not one.** `Disc` keeps the last four blocks it read, so a load
+  that steps back a frame or three reads nothing. That is about 300 KB.
 - **The debugger is not reset.** Rewind and run-ahead are off while the debugger is armed, so
   a memory load never lands under a halt.
 - **What a load forgets on the GPU is kept for run-ahead.** `Gpu::Serialise` drops the sprite
@@ -315,8 +373,8 @@ states to carry the movie's position, is the TAS work in Gaps.md, and builds on 
 
 | Phase | What | Done when |
 |---|---|---|
-| 0 | `boot_runner --bench-state <n>`: this document's measurement, committed properly (a test hook on `System`, not the scratch build's `#define private public`). The CD across loads: the same runs from a local copy of Ridge Racer, and with a cache of several read-ahead blocks | The numbers above repeat; Ridge Racer and Wild Arms either cost what FF7 does or the reason is known |
-| 1 | `SaveMemoryState`/`LoadMemoryState`: reused buffers, no copy in, no reopen, only changed code thrown away, cards in run-ahead states; `SaveState`/`LoadState` on the same paths | `boot_runner --memory-state-every 1`, saving and loading after every frame, gives the plain run's checksums and instruction counts on the twelve discs; a save, load, save gives identical bytes; a load costs under 0.6 ms recompiled |
+| 0 | **Done 2026-10-15.** `boot_runner --bench-state <n>`, on `System::SerialisePayload`/`FinishLoad` and `StateIO::ReuseBuffer`; `Cdrom::set_reopen_on_load`; `Disc::read_stats`. The CD across loads, from the share and a local copy | The numbers repeat; Ridge Racer and Wild Arms cost what their parts add up to, and the reason they seemed not to is known (the first loop). Found on the way: a dropped-code load every frame changes the machine's course |
+| 1 | `SaveMemoryState`/`LoadMemoryState`: reused buffers, no copy in, no reopen, only changed code thrown away, a few read-ahead blocks, cards in run-ahead states; `SaveState`/`LoadState` on the same paths | `boot_runner --memory-state-every 1`, saving and loading after every frame, gives the plain run's checksums and instruction counts on the twelve discs, recompiled as well as interpreted; a save, load, save gives identical bytes; a load costs under 0.6 ms recompiled |
 | 2 | Run-ahead in `boot_runner --run-ahead <n>` | The twelve discs with `--press` input give the same checksums at every checkpoint as without it, the machine's timeline being untouched; with a press at frame F, the first changed picture comes N frames earlier |
 | 3 | Run-ahead in the front end: the hook split, the sound, the setting, per game | `host_test` runs a machine with run-ahead to `boot_runner`'s instruction count; then an hour of play |
 | 4 | Hardware rasteriser snapshots on the card | A run-ahead load at 4x costs what it does at 1x, and `hw_raster_test`'s scenes are identical with run-ahead on |
@@ -356,16 +414,32 @@ at once, on every disc.
 
 ## How it was measured
 
-A copy of `boot_runner.cpp` that includes a benchmark (`BenchState`, run when `BENCH_STATE=<n>`
-is set, after the run and before `--save-state`). Every core file was compiled with a forced
-header that makes private members public; MSVC puts access into a member function's
-decorated name, so all of them must be built that way. A copy of `cdrom.cpp` can skip the
-disc reopen on load. The benchmark was built with `boot_runner`'s own sources, flags and
-`Temp\tools\thirdparty.lib`, plus `/MP`, then run on one scene at a time, never in parallel:
+`boot_runner --bench-state <n>` (phase 0). Once the run is over, and after everything else
+the run writes, it runs the machine on from where it stopped and prints `bench` lines:
+
+- a frame;
+- a save into a fresh vector and into a reused one;
+- a load with the disc reopened and kept open;
+- the frame after a load with the compiled code dropped and kept;
+- run-ahead 1 four ways, each split into its frame, save, frame and load, with its steps;
+- the determinism table;
+- what changes from one frame's state to the next.
+
+Disc reads are counted by `Disc::read_stats` (reads that went to the image, how many stepped
+back, their time). Run one scene at a time, never in parallel:
 
 ```
-BENCH_STATE=120 boot_runner_bench.exe bios/SCPH1001.BIN --quiet --frames 3000 --recompiler --disc "<Ridge Racer .cue>"
+boot_runner bios/SCPH1001.BIN --quiet --frames 3000 --recompiler --disc "<Ridge Racer .cue>" --bench-state 120
 ```
 
-with `--d3d12 --gpu Radeon --scale 1|4 --shown-only` for the hardware rows. None of it is
-committed; phase 0 is putting it in properly.
+with `--d3d12 --gpu Radeon --scale 1|4 --shown-only` for the hardware rows.
+
+The first tables (saving and loading, the hardware rasteriser, frame to frame) came from a
+scratch build before phase 0. That build forced private members public in every core file
+(MSVC puts access into a member function's decorated name, so one file alone does not link)
+and patched `cdrom.cpp` to skip the reopen. `--bench-state` repeats them through public calls
+instead.
+
+Its first run-ahead loop is described under "Why the first measurement blamed the disc".
+Don't build another like it: compare ways of doing a thing over the same frames, from one
+saved state.

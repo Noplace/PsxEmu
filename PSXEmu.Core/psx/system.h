@@ -224,6 +224,14 @@ class System {
   std::string SaveState(const std::string& path);
   std::string LoadState(const std::string& path);
 
+  // The two halves of a state without its file: the payload - every component's Serialise in
+  // the fixed order, either direction - and, once one has been read, what a load does to the
+  // machine around it. `drop_compiled_code` false keeps the recompiler's blocks, which is
+  // right only when RAM's code is the same bytes as before the load; boot_runner --bench-state
+  // uses it to measure what throwing them away costs (Docs/Rewind-and-Run-Ahead-Plan.md).
+  void SerialisePayload(StateIO& state);
+  void FinishLoad(bool drop_compiled_code);
+
  private:
   void SerialiseAdditions(StateIO& state);
   // StepInstruction and StepInstructionUnarmed: one body, with and without the debugger.

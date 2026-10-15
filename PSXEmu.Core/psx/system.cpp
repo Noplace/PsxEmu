@@ -593,10 +593,9 @@ void System::SerialiseAdditions(StateIO& state) {
 // See Docs/Save-States-Plan.md. Fixed serialisation order, both directions:
 // cpu_context_, cpu_, gte_, io_ (which cascades into its own sub-components,
 // see IOInterface::Serialise), gpu_, spu_, then SerialiseAdditions.
-std::string System::SaveState(const std::string& path) {
+void System::SerialisePayload(StateIO& state) {
   if (bios_pending_)
     SettleBios();
-  StateIO state(/*saving=*/true);
   cpu_context_.Serialise(state);
   cpu_.Serialise(state);
   gte_.Serialise(state);
@@ -604,6 +603,32 @@ std::string System::SaveState(const std::string& path) {
   gpu_.Serialise(state);
   spu_.Serialise(state);
   SerialiseAdditions(state);
+}
+
+void System::FinishLoad(bool drop_compiled_code) {
+  // Every byte of RAM has just been replaced, so nothing compiled from the
+  // old contents means anything. Save states do not carry compiled code and
+  // never will - it is derived, like the GPU's framebuffer.
+  if (drop_compiled_code)
+    cpu_.NoteBulkWrite(0, kRamSize);
+
+  // Iso9660 is derived from the disc, not saved (the same reasoning as the
+  // GPU's framebuffer) - reopen it the way BootDisc does, if the disc
+  // Cdrom::Serialise just reopened actually has a filesystem. Some discs
+  // (pure CD-DA) legitimately don't; that is not a load failure.
+  if (io_.cdrom.disc_loaded())
+    iso_.Open(&io_.cdrom.disc());
+  else
+    iso_.Close();
+
+  // The machine is somewhere else now: a halt, or a step half taken, was about the old one. The
+  // breakpoints stay, as they do across a reset.
+  debugger_.Reset();
+}
+
+std::string System::SaveState(const std::string& path) {
+  StateIO state(/*saving=*/true);
+  SerialisePayload(state);
 
   FILE* fp = fopen(path.c_str(), "wb");
   if (fp == nullptr)
@@ -673,37 +698,14 @@ std::string System::LoadState(const std::string& path) {
 
   StateIO state(/*saving=*/false);
   state.BeginLoad(payload.data(), payload.size());
-  cpu_context_.Serialise(state);
-  cpu_.Serialise(state);
-  gte_.Serialise(state);
-  io_.Serialise(state);
-  gpu_.Serialise(state);
-  spu_.Serialise(state);
-  SerialiseAdditions(state);
+  SerialisePayload(state);
 
   if (state.truncated())
     return path + " is truncated or corrupt";
   if (!state.error().empty())
     return state.error();
 
-  // Every byte of RAM has just been replaced, so nothing compiled from the
-  // old contents means anything. Save states do not carry compiled code and
-  // never will - it is derived, like the GPU's framebuffer.
-  cpu_.NoteBulkWrite(0, kRamSize);
-
-  // Iso9660 is derived from the disc, not saved (the same reasoning as the
-  // GPU's framebuffer) - reopen it the way BootDisc does, if the disc
-  // Cdrom::Serialise just reopened actually has a filesystem. Some discs
-  // (pure CD-DA) legitimately don't; that is not a load failure.
-  if (io_.cdrom.disc_loaded())
-    iso_.Open(&io_.cdrom.disc());
-  else
-    iso_.Close();
-
-  // The machine is somewhere else now: a halt, or a step half taken, was about the old one. The
-  // breakpoints stay, as they do across a reset.
-  debugger_.Reset();
-
+  FinishLoad(/*drop_compiled_code=*/true);
   return "";
 }
 

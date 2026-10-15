@@ -157,6 +157,12 @@ class Cdrom : public Component {
   // needs no conversion.
   void Serialise(StateIO& io);
 
+  // With this off, a load whose saved path is the disc already open keeps it open instead of
+  // reopening it: what a state kept in memory wants (Docs/Rewind-and-Run-Ahead-Plan.md), since
+  // nothing about the image can have changed within the session. On by default - a state read
+  // from a file always reopens, as the image may have changed on disk since.
+  void set_reopen_on_load(bool on) { reopen_on_load_ = on; }
+
   // The drive's audio controls, saved after every component (System::
   // SerialiseAdditions) so that states from before they existed still load:
   // one of those leaves them as a reset does - unmuted, straight through.
@@ -246,6 +252,7 @@ class Cdrom : public Component {
   // once something has paid the spin-up, and it is only ever *charged* for
   // when EmuConfig::cdrom_mechanical_timing is on.
   bool spun_up_ = false;
+  bool reopen_on_load_ = true;
 
   // Fast-forward and rewind during CD-DA play, set by the Forward and Backward
   // commands. Zero is ordinary play; positive skips forward, negative back,
