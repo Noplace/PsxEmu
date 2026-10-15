@@ -96,6 +96,7 @@ class Machine {
   }
 
   Spu& spu() { return system_->spu(); }
+  emulation::psx::Cdrom& cdrom() { return system_->cdrom(); }
 
   // A clean SPU with the output unmuted and both main volumes at full.
   void Reset() {
@@ -1636,6 +1637,196 @@ void TestHighPitch(Machine& m) {
   CheckEqual((m.Read(kEndxLow) >> 1) & 1, 1, "6000h modulated by silence runs as 4000h");
 }
 
+// ---------------------------------------------------------------------------
+// Block ends, the first block, the enable bit (bug 158) and the drive's audio
+// controls (bug 157)
+
+// A ramp of `blocks` loud blocks at 1000h - one sample a frame, 28 frames a
+// block - the last carrying `last_flags`, everything else at full.
+void PlayBlocks(Machine& m, int blocks, uint8_t last_flags) {
+  for (int i = 0; i < blocks; ++i)
+    m.Upload(0x1000 + i * 16, LoudBlock(i == blocks - 1 ? last_flags : 0x00));
+  m.WriteVoice(0, 0x6, 0x1000 / 8);
+  m.WriteVoice(0, 0x4, 0x1000);
+  m.WriteVoice(0, 0x0, 0x3FFF);
+  m.WriteVoice(0, 0x2, 0x3FFF);
+  m.WriteVoice(0, 0x8, 0x00FF);
+  m.WriteVoice(0, 0xA, 0x0000);
+  m.Write(kKeyOnLow, 0x0001);
+}
+
+void TestBlockEnd(Machine& m) {
+  printf("block ends\n");
+
+  // Two blocks, the second ending without a repeat: 56 samples. The second
+  // is decoded at frame 29 and left at frame 57.
+  BeginTest("the last block of a one-shot plays");
+  m.Reset();
+  PlayBlocks(m, 2, 0x01);
+  const std::vector<int16_t> first = m.Run(40);
+  CheckEqual(m.Read(kEndxLow) & 1, 0, "ENDX is clear while the last block plays");
+  std::vector<int16_t> tail(first.begin() + 30 * 2, first.end());
+  Check(PeakOf(tail, 0) > 1000, "and it is heard");
+
+  BeginTest("and then the voice stops");
+  const std::vector<int16_t> after = m.Run(30);
+  CheckEqual(m.Read(kEndxLow) & 1, 1, "ENDX once it has been left");
+  std::vector<int16_t> silence(after.begin() + 20 * 2, after.end());
+  CheckEqual(PeakOf(silence, 0), 0, "silent after");
+  CheckEqual(m.ReadVoice(0, 0xC), 0, "its envelope at zero");
+
+  BeginTest("an end does not stop a noise voice");
+  m.Reset();
+  m.Write(kControl, kControlEnable | kControlUnmute | 0x3C00);   // noise every sample
+  m.Write(kNoiseLow, 0x0001);
+  PlayBlocks(m, 1, 0x01);
+  m.Run(100);
+  CheckEqual(m.Read(kEndxLow) & 1, 1, "ENDX is still set");
+  Check(PeakOf(m.Run(100), 0) > 0, "the noise plays on");
+}
+
+void TestFirstBlock(Machine& m) {
+  printf("repeat address in the first block\n");
+
+  // Two silent blocks, then one with loop-start, end and repeat: the voice
+  // reaches its flag at frame 57.
+  auto Lay = [&]() {
+    m.Reset();
+    m.Upload(0x1000, SilentBlock(0x00));
+    m.Upload(0x1010, SilentBlock(0x00));
+    m.Upload(0x1020, LoudBlock(0x07));
+    m.Upload(0x3000, LoudBlock(0x07));
+    m.WriteVoice(0, 0x6, 0x1000 / 8);
+    m.WriteVoice(0, 0x4, 0x1000);
+    m.WriteVoice(0, 0x8, 0x00FF);
+  };
+
+  BeginTest("written in the first block, the loop-start flag still wins");
+  Lay();
+  m.Write(kKeyOnLow, 0x0001);
+  m.Run(5);
+  m.WriteVoice(0, 0xE, 0x3000 / 8);
+  m.Run(70);
+  CheckEqual(m.ReadVoice(0, 0xE), 0x1020 / 8, "the flag set the repeat address");
+
+  BeginTest("written after it, the write wins");
+  Lay();
+  m.Write(kKeyOnLow, 0x0001);
+  m.Run(35);
+  m.WriteVoice(0, 0xE, 0x3000 / 8);
+  m.Run(40);
+  CheckEqual(m.ReadVoice(0, 0xE), 0x3000 / 8, "the flag left it alone");
+}
+
+void TestSpuEnable(Machine& m) {
+  printf("the spu enable bit\n");
+
+  BeginTest("clearing the enable bit stops every voice");
+  m.Reset();
+  SteadyVoice(m, false);
+  Check(PeakOf(m.Run(50), 0) > 1000, "playing first");
+  m.Write(kControl, kControlUnmute);
+  CheckEqual(m.ReadVoice(0, 0xC), 0, "its envelope is zero at once");
+  CheckEqual(PeakOf(m.Run(50), 0), 0, "and it is silent");
+  m.Write(kControl, kControlEnable | kControlUnmute);
+  CheckEqual(PeakOf(m.Run(50), 0), 0, "still silent once enabled again");
+}
+
+// The drive's registers: 1F801800 selects the index, the other three are
+// read through it.
+void WriteCd(Machine& m, int index, uint32_t address, uint8_t value) {
+  m.cdrom().Write(0x1F801800, static_cast<uint8_t>(index));
+  m.cdrom().Write(address, value);
+}
+
+void SetCdMatrix(Machine& m, uint8_t ll, uint8_t lr, uint8_t rr, uint8_t rl,
+                 uint8_t adpctl) {
+  WriteCd(m, 2, 0x1F801802, ll);     // ATV0
+  WriteCd(m, 2, 0x1F801803, lr);     // ATV1
+  WriteCd(m, 3, 0x1F801801, rr);     // ATV2
+  WriteCd(m, 3, 0x1F801802, rl);     // ATV3
+  WriteCd(m, 3, 0x1F801803, adpctl);
+}
+
+void TestCdAudioControls(Machine& m) {
+  printf("the drive's audio controls\n");
+
+  // CD-DA with left at 8000 and right at -4000, through unity everywhere
+  // else; the averages of the frames after the first few say where each went.
+  auto Play = [&]() {
+    m.Reset();
+    m.Write(kControl, kControlEnable | kControlUnmute | kControlCd);
+    m.Write(kCdVolL, 0x7FFF);
+    m.Write(kCdVolR, 0x7FFF);
+    std::vector<uint8_t> sector(2352, 0);
+    for (int i = 0; i < 588; ++i) {
+      const int16_t l = 8000, r = -4000;
+      sector[i * 4 + 0] = static_cast<uint8_t>(l & 0xFF);
+      sector[i * 4 + 1] = static_cast<uint8_t>((l >> 8) & 0xFF);
+      sector[i * 4 + 2] = static_cast<uint8_t>(r & 0xFF);
+      sector[i * 4 + 3] = static_cast<uint8_t>((r >> 8) & 0xFF);
+    }
+    m.spu().QueueCdAudio(sector.data());
+    std::vector<int16_t> out = m.Run(300);
+    return std::vector<int16_t>(out.begin() + 100 * 2, out.end());
+  };
+  auto Near = [](double value, double expected) {
+    return value > expected - 120 && value < expected + 120;
+  };
+
+  BeginTest("straight through by default");
+  std::vector<int16_t> out = Play();
+  Check(Near(AverageOf(out, 0), 8000) && Near(AverageOf(out, 1), -4000), "left left, right right");
+
+  BeginTest("the matrix swaps the sides");
+  SetCdMatrix(m, 0x00, 0x80, 0x00, 0x80, 0x20);
+  out = Play();
+  Check(Near(AverageOf(out, 0), -4000) && Near(AverageOf(out, 1), 8000), "left right, right left");
+
+  BeginTest("and mixes to mono");
+  SetCdMatrix(m, 0x40, 0x40, 0x40, 0x40, 0x20);
+  out = Play();
+  Check(Near(AverageOf(out, 0), 2000) && Near(AverageOf(out, 1), 2000), "both the average");
+
+  BeginTest("volumes wait for the apply bit");
+  SetCdMatrix(m, 0x80, 0x00, 0x80, 0x00, 0x00);
+  out = Play();
+  Check(Near(AverageOf(out, 0), 2000), "still mono without bit 5");
+  WriteCd(m, 3, 0x1F801803, 0x20);
+  out = Play();
+  Check(Near(AverageOf(out, 0), 8000) && Near(AverageOf(out, 1), -4000), "straight once applied");
+
+  BeginTest("Mute, Demute, the XA mute and Init");
+  WriteCd(m, 0, 0x1F801801, 0x0B);
+  Check(m.cdrom().audio_muted(), "Mute mutes");
+  WriteCd(m, 0, 0x1F801801, 0x0C);
+  Check(!m.cdrom().audio_muted(), "Demute demutes");
+  WriteCd(m, 3, 0x1F801803, 0x01);
+  Check(m.cdrom().xa_muted(), "ADPCTL bit 0 mutes XA");
+  WriteCd(m, 0, 0x1F801801, 0x0B);
+  WriteCd(m, 0, 0x1F801801, 0x0A);
+  Check(!m.cdrom().audio_muted() && !m.cdrom().xa_muted(), "Init demutes both");
+
+  BeginTest("a save state without them leaves them as reset");
+  SetCdMatrix(m, 0x00, 0x80, 0x00, 0x80, 0x21);
+  emulation::psx::StateIO save(true);
+  m.cdrom().SerialiseAudioControls(save);
+  const std::vector<uint8_t> bytes = save.bytes();
+  SetCdMatrix(m, 0x80, 0x00, 0x80, 0x00, 0x20);
+  emulation::psx::StateIO load(false);
+  load.BeginLoad(bytes.data(), bytes.size());
+  m.cdrom().SerialiseAudioControls(load);
+  Check(m.cdrom().xa_muted(), "a state with them restores them");
+  out = Play();
+  Check(Near(AverageOf(out, 0), -4000), "the swap included");
+  emulation::psx::StateIO old(false);
+  old.BeginLoad(bytes.data(), 0);
+  m.cdrom().SerialiseAudioControls(old);
+  Check(!m.cdrom().xa_muted() && !old.truncated(), "one from before resets them");
+  out = Play();
+  Check(Near(AverageOf(out, 0), 8000), "straight through again");
+}
+
 const Group kGroups[] = {
   { "registers", TestRegisters },
   { "keyonoff",  TestKeyOnOff },
@@ -1658,6 +1849,10 @@ const Group kGroups[] = {
   { "interp",    TestInterpolation },
   { "noisefreq", TestNoiseFrequency },
   { "highpitch", TestHighPitch },
+  { "blockend",  TestBlockEnd },
+  { "firstblock", TestFirstBlock },
+  { "spuenable", TestSpuEnable },
+  { "cdcontrol", TestCdAudioControls },
 };
 
 }  // namespace

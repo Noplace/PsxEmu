@@ -9607,3 +9607,92 @@ reached within 30 frames at 4000h and at 5000h, not yet at 2000h; and at 6000h o
 modulated by a silent voice 0 (a factor of exactly one), as fast as at 4000h. Three of the four
 fail on the old code; the 2000h check passes either way. `boot_runner`'s `spu requests` line counts
 writes over 3FFFh; the three discs above make none.
+
+## 157. The CD-ROM's audio controls were acknowledged and ignored
+
+`psx/cdrom.cpp`, `psx/cdrom.h`, `psx/spu.cpp`, `psx/system.cpp`, `psx/system.h`, `emu/state.h`,
+`tools/spu_test.cpp`
+
+Found reading what was left after bugs 154-156. The drive has its own audio controls, between
+the disc and the SPU's CD input (psx-spx, "CDROM Audio"):
+- **Mute and Demute** (commands 0Bh, 0Ch) stop and restart all of it, CD-DA and XA.
+- **ADPCTL bit 0** (1F801803h, index 3) stops XA alone.
+- **A volume matrix**, four 8-bit volumes at 80h = 100%: left to left (ATV0), left to right
+  (ATV1), right to right (ATV2) and right to left (ATV3). Each output side is the sum of both input
+  sides. Writes wait until ADPCTL is written with bit 5 set, so all four change at once.
+
+Mute and Demute were acknowledged and did nothing. The four volume registers and ADPCTL were
+"the sound map registers, which nothing needs yet", and writes to them were dropped. So a game
+that muted a stream heard it anyway, and one that turned its CD audio up, down, to mono or
+swapped the sides got it straight through.
+
+**Now**, as psx-spx describes and DuckStation does:
+- While muted, the drive sends the SPU nothing. XA is still decoded, so its filter history is
+  current when it is unmuted.
+- The matrix is applied to each frame as the SPU takes it from the CD queue, not as the drive
+  queues it. A change therefore takes effect at once, not after the tenth of a second of XA
+  already waiting.
+- Init demutes both mutes and leaves the matrix alone. A reset restores straight through.
+
+**Save states keep loading.** The new state is saved after every component, in a new
+`System::SerialiseAdditions`. `StateIO::more()` says whether a file holds anything there, and
+one made before ends where these would start, so the controls keep their reset values (unmuted,
+straight through). Save-States-Plan.md has the rule.
+
+**Checked.**
+- `spu_test` 171 -> 197 with bug 158 (`cdcontrol`, thirteen checks): CD-DA of 8,000 left and
+  -4,000 right comes out straight by default, swapped, and mixed to mono. Volumes wait for the
+  apply bit. Mute, Demute, the XA mute and Init each do their part, and a saved state restores
+  the controls while an empty one resets them.
+- The checks fail with the register writes and commands undone.
+- Ace Combat 3, 4,000 frames: it writes 96h and FFh to the matrix (117% and 199%) at points in
+  that run, so its XA comes out louder than before - 6% overall, its CD peak up 10% - and is
+  otherwise the same audio (correlation 0.997). FF7 and Wild Arms write only 80h and come out
+  bit-identical. Pictures are unchanged on all three.
+- A state Ace Combat 3 saved with the build before this loads, with the matrix at 100%. One
+  saved after it, ten bytes longer, comes back with the game's boost. Both run on to the same
+  picture.
+- `media_test` 555, `sio_test` 203 and `debug_test` 174 still pass.
+
+**Not done.** DuckStation's drive sends only half of each CD-DA sector's samples at double speed
+(it names 360 Three Sixty's menu); here every sample goes.
+
+## 158. Voices: block ends acted on early, noise stopped by data it does not play, the first block, and the enable bit
+
+`psx/spu.cpp`, `psx/spu.h`, `tools/spu_test.cpp`
+
+Four of the differences the comparison behind bug 154 found, fixed together because they all
+concern when a voice moves between blocks or stops:
+
+- **A block's end and repeat flags acted as it was decoded, before it played.** A sample that
+  ends without looping went silent at the start of its last block, losing up to 28 samples, and
+  set its ENDX bit a block early. The flags are now kept with the decoded block and acted on in
+  `Spu::LeaveBlock`, as the voice moves past its last sample - where DuckStation acts on them.
+- **An end without repeat stopped a voice playing noise.** Its sample data plays no part in
+  what it sounds, and DuckStation leaves it running. It still sets ENDX and moves to the repeat
+  address; it no longer stops.
+- **A repeat address written in the first block after a key-on outranked the loop-start flag.**
+  DuckStation found on hardware that a block carrying the flag still sets the address until the
+  voice leaves its first block, naming The Misadventures of Tron Bonne, Valkyrie Profile and
+  Re-Loaded. A write to a voice that is off, or past its first block, still outranks it.
+- **Clearing SPUCNT bit 15, the SPU enable, did nothing**, so voices played on with the SPU
+  disabled. It now turns every voice off at once, envelope and all.
+
+**Save states keep their format.** The decoded block's flags, and whether it is the first, go in
+one byte where a `bool ended` was. It was written and never read, and kept the same size and
+place. A state from before reads as no block loaded: decode the one at `current_address`, which
+is what that address meant then.
+
+**Checked.**
+- `spu_test` (`blockend`, `firstblock`, `spuenable`, thirteen checks):
+  - Two blocks ending without a repeat keep ENDX clear and are audible through the second, then
+    stop, with the envelope at zero.
+  - A noise voice plays past an end.
+  - A repeat address written five frames after key-on gives way to the flag, and one written
+    after 35 frames does not.
+  - Clearing the enable bit silences a playing voice and zeroes its envelope at once; it stays
+    off when the SPU is enabled again.
+- Each fails with its change undone.
+- FF7 and Wild Arms, 4,000 frames: bit-identical sound - their one-shots end on silent blocks.
+  Ace Combat 3, with bug 157's controls left out to see these alone: six samples differ, by at
+  most 2, at one place 13.7 seconds in - a last block now played out, nearly silent.

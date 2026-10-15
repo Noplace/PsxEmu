@@ -148,3 +148,12 @@ The harness is the test, as it is for everything else:
   pointers are aliases of one allocation.
 - **Bump the version on every change to any `Serialise`.** A state that loads
   and is subtly wrong is worse than one that refuses.
+- **Or add the new state last, in `System::SerialiseAdditions`** (since
+  2026-10-15, bug 157), when its reset value is a correct reading of a file
+  that lacks it: everything there is saved after every component, in the
+  order it was added, and a file from before an addition ends where it would
+  start (`StateIO::more()`), so that addition keeps its reset value and older
+  states still load. The CD-ROM's mute and volume matrix were the first: a
+  state from before them plays CD audio straight through and unmuted, which is
+  what nearly every game sets anyway. Something whose absence would leave the
+  machine subtly wrong still needs the bump.

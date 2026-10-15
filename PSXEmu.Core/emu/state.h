@@ -144,6 +144,11 @@ class StateIO {
   // silently answered with zeroed output. Only meaningful while loading.
   bool truncated() const { return truncated_; }
 
+  // Loading only: whether the payload holds anything past what has been read.
+  // For the additions System saves after every component: a file from before
+  // one was added ends where it starts, and the addition keeps its reset value.
+  bool more() const { return !saving_ && !truncated_ && cursor_ < buffer_.size(); }
+
   // A component's Serialise can have a real side effect that fails on load -
   // Cdrom reopening its Disc from a saved path being the one case in this
   // codebase. Every Serialise still returns void and moves bytes

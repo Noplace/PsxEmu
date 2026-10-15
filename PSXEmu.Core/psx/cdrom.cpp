@@ -111,6 +111,36 @@ const uint8_t kSubmodeForm2    = 0x20;
 Cdrom::Cdrom() {
 }
 
+// Unmuted, and each side straight through to its own side at 100%.
+void Cdrom::ResetAudioControls() {
+  audio_muted_ = false;
+  xa_muted_ = false;
+  const uint8_t straight[4] = { 0x80, 0x00, 0x80, 0x00 };
+  memcpy(audio_matrix_, straight, sizeof(audio_matrix_));
+  memcpy(next_audio_matrix_, straight, sizeof(next_audio_matrix_));
+}
+
+void Cdrom::SerialiseAudioControls(StateIO& io) {
+  if (!io.saving() && !io.more()) {
+    ResetAudioControls();
+    return;
+  }
+  io.Plain(audio_muted_);
+  io.Plain(xa_muted_);
+  io.Plain(audio_matrix_);
+  io.Plain(next_audio_matrix_);
+}
+
+void Cdrom::MixAudioFrame(int16_t* left, int16_t* right) const {
+  const int32_t l = *left, r = *right;
+  const int32_t out_l = ((l * audio_matrix_[kLeftToLeft]) >> 7) +
+                        ((r * audio_matrix_[kRightToLeft]) >> 7);
+  const int32_t out_r = ((l * audio_matrix_[kLeftToRight]) >> 7) +
+                        ((r * audio_matrix_[kRightToRight]) >> 7);
+  *left = static_cast<int16_t>(std::min(std::max(out_l, -0x8000), 0x7FFF));
+  *right = static_cast<int16_t>(std::min(std::max(out_r, -0x8000), 0x7FFF));
+}
+
 Cdrom::~Cdrom() {
 }
 
@@ -132,6 +162,7 @@ int Cdrom::Initialize() {
   data_size_ = 0;
   data_read_ = 0;
   data_fifo_loaded_ = false;
+  ResetAudioControls();
   filter_file_ = 0;
   filter_channel_ = 0;
   xa_.Reset();
@@ -457,8 +488,10 @@ void Cdrom::Write(uint32_t address, uint8_t data) {
     case 1:
       if (index_ == 0) {
         ExecuteCommand(data);
+      } else if (index_ == 3) {
+        next_audio_matrix_[kRightToRight] = data;     // ATV2
       }
-      // Index 1-3 are the sound map registers, which nothing needs yet.
+      // Index 1 and 2 are the sound map registers, which nothing needs yet.
       return;
 
     case 2:
@@ -473,6 +506,10 @@ void Cdrom::Write(uint32_t address, uint8_t data) {
             system().io().SetInterrupt(kInterruptCDROM);
           }
         }
+      } else if (index_ == 2) {
+        next_audio_matrix_[kLeftToLeft] = data;       // ATV0
+      } else {
+        next_audio_matrix_[kRightToLeft] = data;      // ATV3
       }
       return;
 
@@ -512,6 +549,13 @@ void Cdrom::Write(uint32_t address, uint8_t data) {
         }
         if (data & 0x40)
           ClearParameters();
+      } else if (index_ == 2) {
+        next_audio_matrix_[kLeftToRight] = data;      // ATV1
+      } else {
+        // ADPCTL: bit 0 mutes XA, bit 5 applies the four volumes written.
+        xa_muted_ = (data & 0x01) != 0;
+        if (data & 0x20)
+          memcpy(audio_matrix_, next_audio_matrix_, sizeof(audio_matrix_));
       }
       return;
   }
@@ -1006,8 +1050,11 @@ void Cdrom::LoadSector() {
     if (wanted) {
       const uint8_t coding = sector_[19];
       static int16_t decoded[kXaFramesPerSector * 2];
+      // Decoded even when muted, so the filter history is current when it is
+      // not, and sent only when neither mute is on.
       const int frames = DecodeXaAdpcm(sector_ + 24, coding, &xa_, decoded);
-      system().spu().QueueCdSamples(decoded, frames, XaSampleRate(coding));
+      if (!audio_muted_ && !xa_muted_)
+        system().spu().QueueCdSamples(decoded, frames, XaSampleRate(coding));
       ++stats_.xa_sectors;
     } else {
       ++stats_.xa_filtered;
@@ -1068,7 +1115,8 @@ void Cdrom::StepRead(uint32_t cycles) {
       return;
     }
     ++stats_.cdda_sectors;
-    system().spu().QueueCdAudio(sector_);
+    if (!audio_muted_)
+      system().spu().QueueCdAudio(sector_);
 
     // Track the audio peak from this sector's PCM samples. The hardware signal
     // processor maintains a running peak register (unsigned 15-bit) that the
@@ -1388,6 +1436,9 @@ void Cdrom::ExecuteCommand(uint8_t command) {
 
     case 0x0A:    // Init
       mode_ = 0;
+      // Init demutes, both ways; the volume matrix is left as it was.
+      audio_muted_ = false;
+      xa_muted_ = false;
       reading_ = false;
       playing_ = false;
       scan_rate_ = 0;
@@ -1406,6 +1457,10 @@ void Cdrom::ExecuteCommand(uint8_t command) {
 
     case 0x0B:    // Mute
     case 0x0C:    // Demute
+      // Stop or restart the audio going to the SPU, CD-DA and XA alike. These
+      // used to be acknowledged and ignored, so a game muting a stream heard it
+      // anyway (bug 157).
+      audio_muted_ = (command == 0x0B);
       QueueStatus(kIntAcknowledge, acknowledge);
       break;
 

@@ -204,8 +204,20 @@ class Spu : public Component {
     // While it is set, a block carrying the loop-start flag does not get to
     // overwrite what software asked for.
     bool ignore_loop_start;
-    bool ended;                  // reached a block with the end flag
+    // The block `decoded` holds: kBlockLoaded once one is, with its end and
+    // repeat flags in the low bits, acted on as the voice leaves it; and
+    // kBlockFirst until the voice leaves the first block after a key-on. One
+    // byte where a bool `ended` was, so states saved before still load: theirs
+    // reads as nothing loaded - a block to decode at current_address, which is
+    // what current_address meant then.
+    uint8_t block;
   };
+  static const uint8_t kBlockEnd = 0x01;
+  static const uint8_t kBlockRepeat = 0x02;
+  static const uint8_t kBlockFirst = 0x40;
+  static const uint8_t kBlockLoaded = 0x80;
+  void LeaveBlock(Voice& voice, int index);
+  void ForceOff(Voice& voice);
 
   Voice voices_[kVoices];
   uint8_t* ram_;

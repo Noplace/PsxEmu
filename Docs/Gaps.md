@@ -59,7 +59,7 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 341, gte 197, timer 80, sio 203, spu 171, gpu 106, mdec 85, media 555, mc 103, debug 174 - 2,015
+cpu 341, gte 197, timer 80, sio 203, spu 197, gpu 106, mdec 85, media 555, mc 103, debug 174 - 2,041
 checks, no failures (the ten Test-Suite.md counts, 2026-10-14). Of the rest, those run that day all
 pass too: rec_test 2,059, hle_test 81 (which had stopped compiling when HleBios moved into
 `psx::hle`), hw_raster_test 78 and 81 (Direct3D 11 and 12), gpu_test 106 through either hardware
@@ -210,23 +210,25 @@ psx-spx's pseudo-code frame for frame. What is left:
   reading**, where DuckStation resets both. psx-spx does not say what the hardware does; here a new
   stream's first frames are filtered with the end of the last one's.
 
-### The voice path, compared with DuckStation - three fixed, the rest listed
+### The voice path, compared with DuckStation - the audible differences fixed, the rest listed
 
-A side-by-side reading on 2026-10-14 found three differences worth fixing at once, and fixed them:
-the Gaussian table was not the console's, so every voice's level wobbled with its pitch (bug 154);
-the noise generator ran 32-56 times too slowly and ignored the step bits (bug 155); and pitches of
-4000h and over were masked rather than clipped (bug 156). What it also found, smaller and not done:
+A side-by-side reading on 2026-10-14 found these, now fixed:
+- The Gaussian table was not the console's, so every voice's level wobbled with its pitch (bug 154).
+- The noise generator ran 32-56 times too slowly and ignored the step bits (bug 155).
+- Pitches of 4000h and over were masked rather than clipped (bug 156).
+- The drive's Mute, Demute, XA mute and volume matrix were ignored (bug 157).
+- On 2026-10-15 (bug 158): a block's end flags acted before it played, cutting a one-shot's last
+  block; an end stopped a noise voice; a repeat address written in the first block outranked the
+  loop-start flag; and clearing the SPU enable bit left voices playing.
 
-- **A block's end flags take effect when it is decoded, not after it plays.** A one-shot without a
-  loop goes silent at the start of its last block, losing up to 28 samples, and sets its ENDX bit a
-  block early. DuckStation acts on the flags as the voice leaves the block.
-- **End-without-repeat silences a noise voice.** DuckStation ignores it there, so a noise voice
-  plays on whatever its unused sample data says.
-- **The repeat address written in a voice's first block always wins over the block's loop flag.**
-  DuckStation, from hardware tests, lets the flag still set it until the first block finishes,
-  naming Tron Bonne, Valkyrie Profile and Re-Loaded as games that need this.
-- **SPUCNT bit 15 (the SPU enable) is ignored.** DuckStation turns every voice off the moment it is
-  cleared; here they keep sounding.
+What is left, smaller:
+
+- **The SPU interrupt** fires only when a voice reads a block, compared a 16-byte block at a time.
+  DuckStation also raises it when a transfer, a capture-buffer write or a write to the transfer
+  address reaches the IRQ address, and compares exact addresses. A sound driver that paces a stream
+  by it could stutter or wait.
+- **CD-DA at double speed:** DuckStation sends only half of each CD-DA sector's samples when the
+  drive is at double speed (360 Three Sixty's menu); here every sample goes.
 - **The ADSR envelope is its own model**, not the counter that the sweeps share with DuckStation.
   The slopes agree on average. They part at rate 7Fh (which drifts a step every 24 seconds here and
   never moves there), in the exponential attack's 6000h knee (`>` against `>=`, and a longer wait
@@ -876,8 +878,9 @@ Things that look missing and are not, so they are not re-investigated:
   channels' behaviour, which is where bugs 55 and 56 landed; films play.
 - **The SPU voice path.** 24 ADPCM voices, ADSR, the Gaussian table (the
   console's since bug 154), noise (at the right rate since bug 155), pitch
-  modulation, pitches clipped at 4000h (bug 156), CD input, and loop addresses
-  surviving key-on (bug 39). The quirks left are the entries above.
+  modulation, pitches clipped at 4000h (bug 156), CD input through the drive's
+  mute and volume matrix (bug 157), block ends and the enable bit (bug 158), and
+  loop addresses surviving key-on (bug 39). The quirks left are the entries above.
 - **Load delay slots.** Modelled, including a write in the slot beating the load
   and lwl/lwr forwarding (`cpu_test` `loaddelay`, bug 32).
 - **Ace Combat 3 input and Wild Arms after "press start".** Fixed (bug 46; bugs

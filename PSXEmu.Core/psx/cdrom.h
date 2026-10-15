@@ -157,7 +157,25 @@ class Cdrom : public Component {
   // needs no conversion.
   void Serialise(StateIO& io);
 
+  // The drive's audio controls, saved after every component (System::
+  // SerialiseAdditions) so that states from before they existed still load:
+  // one of those leaves them as a reset does - unmuted, straight through.
+  void SerialiseAudioControls(StateIO& io);
+
+  // A frame of CD audio - CD-DA or XA - on its way into the SPU, through the
+  // drive's volume matrix: each output side is the sum of both input sides,
+  // each scaled by its own 8-bit volume, 80h being 100%. Saturated, since two
+  // full inputs at 100% sum to twice full scale.
+  void MixAudioFrame(int16_t* left, int16_t* right) const;
+
+  bool audio_muted() const { return audio_muted_; }
+  bool xa_muted() const { return xa_muted_; }
+
  private:
+  // The matrix's four volumes, in the order psx-spx names them ATV0-ATV3.
+  enum { kLeftToLeft, kLeftToRight, kRightToRight, kRightToLeft };
+  void ResetAudioControls();
+
   // A response waiting to be handed over once software is ready for it.
   struct PendingResponse {
     int32_t delay;                  // in CPU cycles
@@ -197,6 +215,17 @@ class Cdrom : public Component {
   uint8_t filter_file_;
   uint8_t filter_channel_;
   XaState xa_;
+
+  // Audio into the SPU. Mute and Demute (commands 0Bh, 0Ch) stop and restart
+  // all of it, CD-DA and XA; ADPCTL bit 0 stops XA alone. Muted, nothing is
+  // sent at all - XA is still decoded, so its filter history stays current.
+  // The volume matrix is written to `next_audio_matrix_` and only takes effect
+  // when ADPCTL is written with bit 5 set, so a game can change all four at
+  // once without a frame of the half-changed mix in between.
+  bool audio_muted_;
+  bool xa_muted_;
+  uint8_t audio_matrix_[4];
+  uint8_t next_audio_matrix_[4];
 
   // Drive state.
   uint32_t seek_lba_;               // set by Setloc, applied by a seek or read

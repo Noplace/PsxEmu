@@ -348,21 +348,47 @@ void Spu::DecodeBlock(Voice& voice) {
   }
   ++stats_.blocks_decoded;
 
-  // Bit 0 ends the sample; bit 1 says whether to loop back or stop.
-  if (flags & 0x01) {
-    voice.ended = true;
-    endx_ |= (1u << (&voice - voices_));
-    if (flags & 0x02) {
-      voice.current_address = static_cast<uint32_t>(voice.repeat_address) * 8;
-    } else {
-      // No loop: release immediately and silence the voice.
-      voice.phase = kRelease;
-      voice.level = 0;
-      voice.current_address = static_cast<uint32_t>(voice.repeat_address) * 8;
-    }
-  } else {
-    voice.current_address = address + 16;
+  // The end and repeat flags wait until the block has played: LeaveBlock.
+  voice.block = static_cast<uint8_t>((voice.block & kBlockFirst) | kBlockLoaded |
+                                     (flags & (kBlockEnd | kBlockRepeat)));
+}
+
+// Off at once, envelope and all - what an end without repeat does, and what
+// clearing the SPU's enable bit does to every voice.
+void Spu::ForceOff(Voice& voice) {
+  voice.phase = kOff;
+  voice.level = 0;
+  voice.adsr_volume = 0;
+  voice.active = false;
+}
+
+// The voice has played the 28 samples of the block it holds and needs the
+// next. Bit 0 of the block's flags ends the sample - ENDX, and back to the
+// repeat address - and bit 1 says whether it loops there or stops, unless the
+// voice is playing noise, whose sample data plays no part and which an end
+// does not stop. Otherwise the next block is the one after.
+//
+// The flags used to act as the block was decoded, before it played: a sample
+// that ends without looping lost its whole last block, up to 28 samples, and
+// ENDX said it was over a block early. And a noise voice was stopped by flags
+// in data it was not playing (bug 158).
+void Spu::LeaveBlock(Voice& voice, int index) {
+  const uint8_t block = voice.block;
+  voice.block = 0;                     // not loaded, and no longer the first
+  if ((block & kBlockLoaded) == 0) {
+    // Nothing played yet since a key-on (or a state saved before blocks were
+    // kept): current_address is already the block to decode.
+    voice.block = block & kBlockFirst;
+    return;
   }
+  if ((block & kBlockEnd) == 0) {
+    voice.current_address = (voice.current_address & (kRamSize - 1)) + 16;
+    return;
+  }
+  endx_ |= 1u << index;
+  voice.current_address = static_cast<uint32_t>(voice.repeat_address) * 8;
+  if ((block & kBlockRepeat) == 0 && (noise_mode_ & (1u << index)) == 0)
+    ForceOff(voice);
 }
 
 // ---------------------------------------------------------------------------
@@ -568,7 +594,7 @@ void Spu::KeyOn(int index) {
   voice.envelope_counter = 0;
   voice.adsr_volume = 0;
   voice.active = true;
-  voice.ended = false;
+  voice.block = kBlockFirst;         // nothing loaded; the start is next
   endx_ &= ~(1u << index);
   ++stats_.key_ons;
 
@@ -657,6 +683,7 @@ int16_t Spu::StepVoice(Voice& voice, int index, int16_t previous_output) {
   while (voice.counter >= 0x1000) {
     voice.counter -= 0x1000;
     if (voice.decoded_index >= 28) {
+      LeaveBlock(voice, index);
       DecodeBlock(voice);
       voice.decoded_index = 0;
     }
@@ -1135,6 +1162,11 @@ void Spu::GenerateFrame() {
     int16_t cd_right = cd_audio_buffer_[cd_audio_read_ + 1];
     cd_audio_read_ = (cd_audio_read_ + 2) % (kSampleRate * 2);
     cd_audio_count_ -= 2;
+    // Through the drive's own volume matrix first, as it comes out of the
+    // drive: left and right each a mix of both (bug 157). Here rather than as
+    // the drive queues it, so a change takes effect on the next frame, not
+    // after the tenth of a second of XA already queued has played.
+    system().cdrom().MixAudioFrame(&cd_left, &cd_right);
 
     if (control_ & 0x0001) { // CD Audio Enable
       ++stats_.cd_samples_out;
@@ -1356,8 +1388,16 @@ void Spu::Write(uint32_t address, uint16_t data) {
       case 0xA: voice.adsr_high = data; return;
       case 0xC: voice.adsr_volume = data;
                 voice.level = data & 0x7FFF; return;
+      // A repeat address written while a voice is still in the first block
+      // after its key-on does not outrank the loop-start flag: a block
+      // carrying it can still set the address over what was written. Written
+      // to a voice that is off, or once it is past its first block, it does.
+      // DuckStation found this on hardware, naming The Misadventures of Tron
+      // Bonne, Valkyrie Profile and Re-Loaded; it used to outrank the flag
+      // always (bug 158).
       default:  voice.repeat_address = data;
-                voice.ignore_loop_start = true;
+                if (voice.phase == kOff || (voice.block & kBlockFirst) == 0)
+                  voice.ignore_loop_start = true;
                 if (trace_voices_ && voice_event_count_ < kMaxVoiceEvents) {
                   VoiceEvent& event = voice_events_[voice_event_count_++];
                   memset(&event, 0, sizeof(event));
@@ -1444,6 +1484,12 @@ void Spu::Write(uint32_t address, uint16_t data) {
       transfer_cursor_ = (transfer_cursor_ + 2) & (kRamSize - 1);
       return;
     case 0x1AA:
+      // Clearing the enable bit (15) stops every voice there and then, as
+      // DuckStation measured - not at the next sample. It used to change
+      // nothing, so voices played on with the SPU disabled (bug 158).
+      if ((control_ & 0x8000) != 0 && (data & 0x8000) == 0)
+        for (int i = 0; i < kVoices; ++i)
+          ForceOff(voices_[i]);
       control_ = data;
       stats_.control_seen |= data;
       // Acknowledging the interrupt is done by clearing the enable bit.

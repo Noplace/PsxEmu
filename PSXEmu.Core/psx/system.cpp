@@ -582,9 +582,17 @@ bool System::BootDisc(DiscBootInfo* info) {
   return true;
 }
 
+// State added since version 8, after every component, in the order it was
+// added - so a file from before an addition loads, the payload ending where
+// the addition would start, and the addition keeps its reset value, without a
+// version bump turning every existing state away. Each new thing goes last.
+void System::SerialiseAdditions(StateIO& state) {
+  io_.cdrom.SerialiseAudioControls(state);   // bug 157: the drive's mute and volume matrix
+}
+
 // See Docs/Save-States-Plan.md. Fixed serialisation order, both directions:
 // cpu_context_, cpu_, gte_, io_ (which cascades into its own sub-components,
-// see IOInterface::Serialise), gpu_, spu_.
+// see IOInterface::Serialise), gpu_, spu_, then SerialiseAdditions.
 std::string System::SaveState(const std::string& path) {
   if (bios_pending_)
     SettleBios();
@@ -595,6 +603,7 @@ std::string System::SaveState(const std::string& path) {
   io_.Serialise(state);
   gpu_.Serialise(state);
   spu_.Serialise(state);
+  SerialiseAdditions(state);
 
   FILE* fp = fopen(path.c_str(), "wb");
   if (fp == nullptr)
@@ -670,6 +679,7 @@ std::string System::LoadState(const std::string& path) {
   io_.Serialise(state);
   gpu_.Serialise(state);
   spu_.Serialise(state);
+  SerialiseAdditions(state);
 
   if (state.truncated())
     return path + " is truncated or corrupt";

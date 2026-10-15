@@ -279,7 +279,7 @@ Unit tests for the sound unit. No BIOS, no window, no audio device. Sample
 data is written into sound RAM, voices are keyed on through their real
 registers, and the frames that come out are checked.
 
-**Current: 171 checks, 0 failures.**
+**Current: 197 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -299,6 +299,10 @@ registers, and the frames that come out are checked.
 | `interp` | the Gaussian interpolation (bug 154): a constant sample keeping its level within 2% at the native rate, half way between samples and at an arbitrary pitch, moving under 1% from frame to frame - the old table's weights summed to 0.80-1.13 |
 | `noisefreq` | the noise generator's rate (bug 155), counted from the output's changes: every sample at the top shift, every fourth at shift 13 with step 4, 7/4 as often with step 7, and still moving at shift 4 |
 | `highpitch` | pitches of 4000h and over (bug 156), timed by a one-shot's ENDX bit: 4000h at four times the rate, 5000h clipped to 4000h rather than wrapped to 1000h, 2000h at half that, and modulation applied to the whole register before the clip |
+| `blockend` | a block's end and repeat flags acting as the voice leaves it, not as it is decoded (bug 158): a one-shot's last block heard with ENDX still clear, then the voice off with its envelope at zero; and an end not stopping a voice that plays noise |
+| `firstblock` | a repeat address written in the first block after a key-on giving way to the loop-start flag, and one written after it not (bug 158) |
+| `spuenable` | clearing SPUCNT's enable bit turning every voice off at once, envelope and all, and their staying off once it is set again (bug 158) |
+| `cdcontrol` | the drive's audio controls (bug 157): its volume matrix straight through by default, swapping the sides, mixing to mono, and waiting for ADPCTL's apply bit; Mute, Demute, the XA mute and Init; and a save state with the controls restoring them, one without resetting them |
 
 `loopaddr` is the one worth reading twice. Four of its eight checks fail
 against the implementation as it stood before bug 39 (measured, by putting the
@@ -840,10 +844,10 @@ the most likely answer is the network share rather than the emulator.
 | `cpu_test` | 341 | | `gpu_test` | 106 |
 | `gte_test` | 197 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 555 |
-| `sio_test` | 203 | | `spu_test` | 171 |
+| `sio_test` | 203 | | `spu_test` | 197 |
 | `mc_test` | 103 | | `debug_test` | 174 |
 
-**2,015 checks, 0 failures**, all ten green. Each harness's own section above
+**2,041 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -866,7 +870,9 @@ are not patches ignored, a .sub's failing sector, and a .sub with no CRCs believ
 fourteen are DMA channel 5, bug 150: no interrupt from a write that starts nothing, the DPCR enable
 and the trigger obeyed, busy for 20 cycles a word, RAM and MADR left alone, and a request that never
 comes. Nine are the XA resampler, bug 153; and twelve are the voices' Gaussian interpolation, the
-noise generator's rate and pitches of 4000h and over, bugs 154-156.)
+noise generator's rate and pitches of 4000h and over, bugs 154-156. Thirteen are the voices'
+block ends, first block and the SPU enable bit, bug 158, and thirteen the drive's mute and
+volume matrix, bug 157.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12

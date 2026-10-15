@@ -225,6 +225,7 @@ class System {
   std::string LoadState(const std::string& path);
 
  private:
+  void SerialiseAdditions(StateIO& state);
   // StepInstruction and StepInstructionUnarmed: one body, with and without the debugger.
   template <bool kDebugger>
   bool StepImpl();
