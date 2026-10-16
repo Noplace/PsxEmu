@@ -9776,6 +9776,7 @@ now only make a chain faster.
 
 **Not this.** Ace Combat 3's frame-3000 picture differs recompiled from interpreted, on master
 as well as here (`8787981dfb94e189` against `2e6db11119920d31`); frames 1000 and 2000 agree.
+Bug 163 was the cause.
 
 ## 161. The GP0 queue and the drawing still owed were not in a save state
 
@@ -9891,5 +9892,52 @@ the one below; aimed about 20 rows above a bar, it picks that bar, and the menus
   `--run-ahead 2` and with `--rewind-test 30`, on each CPU.
 
 **Not done** (Gaps.md): the sensor needs no lit spot here; a second Justifier, which plugs into
-the first, is not reached; Area 51's menu offset is unexplained; and on the recompiler, without
-exact event timing, Area 51 gives up on most polls of the gun before its acknowledge arrives.
+the first, is not reached; and Area 51's menu offset is unexplained. (On the recompiler, without
+exact event timing, Area 51 gave up on most polls of the gun before its acknowledge arrived:
+bug 163.)
+
+## 163. On the recompiler, a register write started its device's clock up to a batch early
+
+`psx/io_interface.h`
+
+Gaps.md: "Area 51's gun mostly goes unread on the recompiler, unless Exact event timing is on."
+It was not the gun, and not only Area 51.
+
+**What Area 51 does.** Its gun driver writes 42h to JOY_DATA, acknowledges JOY_CTRL and I_STAT
+for the byte before, and only then polls I_STAT for the pad's IRQ7, at most 81 times. Sio raises
+IRQ7 500 cycles after a byte. On the interpreter it came 500 cycles after the 42h, after the
+driver had cleared I_STAT, and the loop saw it. On the recompiler it came after 354, before the
+clear, so the driver's own acknowledge wiped it and the loop ran out. From the main menu, 60
+frames on the recompiler fired no IRQ10 at all, against the interpreter's 472.
+
+**Why it came early.** Without exact event timing the recompiler lets a device batch run long -
+to the next event, up to 1,024 cycles - where the interpreter's is always 32. When 42h was
+written, the batch already held 317 cycles from before the write. The write set Sio's timer to
+500, and the batch then ran all 317 of those cycles through it, as if they came after.
+`IOInterface::SettleBeforeWrite` only shortened the batch. Exact event timing ran the batch
+first, which is why it hid the problem. The two CPUs had run in step until then, cycle for
+cycle: a timeline of the exchange, the device clock against each access, showed them identical
+up to the write.
+
+**The fix.** Before a write, without exact timing, the batch is run when it holds 32 cycles or
+more. Only the recompiler's longer batches can, so the interpreter is untouched. With 32 or
+fewer, the devices are behind by no more than the interpreter's own batch, as they always were.
+
+**Ace Combat 3 too.** Its frame-3000 picture had come out `8787981dfb94e189` compiled against
+the interpreter's `2e6db11119920d31` (Gaps.md; noted at bug 160, not looked into). It is
+`2e6db11119920d31` now, so the twelve discs give the interpreter's picture at all 36
+checkpoints again.
+
+**Checked.**
+- Area 51 from its main menu, 60 frames: 472 IRQ10s on the recompiler, as on the interpreter
+  (0 before). From a cold boot to its options screen, 4,000 frames with the gun: 24,392 on each
+  CPU, and the same instructions, picture and state plain, with a memory state every frame, with
+  `--run-ahead 2` and with `--rewind-test 30` (the recompiler fired 592 before).
+- The twelve discs, 3,000 frames: interpreted, identical to the instruction. Compiled, every
+  picture as before but Ace Combat 3's, which now matches the interpreter's; instruction counts
+  moved by up to 1%, as chains now end in other places.
+- `rec_test` 2,059, `psxtest_cpu` 3,000 frames the same picture both ways, `host_test` with the
+  same four stale-baseline failures as before.
+- Speed, Ridge Racer and Wild Arms on the recompiler, alternated with the build before four
+  times: the same within 0.5% once settled (Ridge Racer 4.21 s and 4.22 s, Wild Arms 3.35 s and
+  3.34 s on the last pair).

@@ -149,11 +149,21 @@ class IOInterface : public Component {
   // up to date first and the next cycle works the batch out again; without it the batch
   // is shortened to the ordinary 32 cycles, so what the write started lands as soon as
   // it always did.
+  //
+  // Without exact timing the devices are still brought up to date when more than an
+  // ordinary batch has piled up, which only the recompiler's longer batches let happen:
+  // otherwise the cycles from before the write are counted after it, and what it starts
+  // lands early by them - by as much as a whole batch, 1,024 cycles. A pad's acknowledge
+  // came 146 early that way, before Area 51's gun driver had cleared I_STAT for it, so the
+  // driver never saw it (bug 163).
+  // The interpreter's batches never hold 32, so it is left exactly as it was.
   void SettleBeforeWrite() {
     if (exact_timing_) [[unlikely]] {
       RunPending();
       batch_threshold_ = 1;
     } else if (batch_threshold_ > kBatchCycles) {
+      if (pending_cycles_ >= kBatchCycles)
+        RunPending();
       batch_threshold_ = kBatchCycles;
     }
   }

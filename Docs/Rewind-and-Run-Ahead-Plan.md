@@ -568,8 +568,8 @@ Found on the way and older than this work, each with a task waiting:
 
 - `host_test`'s 400-frame baseline went stale on master: the picture is now
   `4a65781bfb98db5a`, so four of its checks fail (Test-Suite.md, host_test).
-- Ace Combat 3's frame-3000 picture differs recompiled from interpreted, on master too
-  (Gaps.md, "Never run against the reference").
+- ~~Ace Combat 3's frame-3000 picture differs recompiled from interpreted~~ - fixed by bug 163,
+  a register write mid-batch on the recompiler.
 
 ## Traps
 

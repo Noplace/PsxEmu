@@ -595,15 +595,6 @@ and 162. Missing or unproven:
   its Y offset to 0 for the menus, though its own calibration starts at -30; its
   gun test lands within ten pixels and its calibration brings it within one.
   Whether a console's menu is off the same way is unknown without one to compare.
-- **Area 51's gun mostly goes unread on the recompiler**, unless Exact event
-  timing is on. After sending 42h its driver polls I_STAT for the pad's IRQ7 at
-  most 81 times, and the interrupt is due 500 cycles after the byte. From its main
-  menu, 10 frames on the recompiler finished 2 polls of 10 (all 10 with
-  `--exact-timing`, and on the interpreter), and 3,600 frames from a cold boot
-  fired 392 IRQ10s against the interpreter's 21,192. A chain of compiled blocks
-  runs on the budget it was given before the byte was written, and the devices
-  only move with its loads, so the interrupt comes too late for the loop. Any
-  game that polls with a short count like this would see the same. Not yet fixed.
 - **One Justifier per console.** The second (blue) gun plugs into the first
   and is reached through it, which is not done; a two-player game sees one gun.
 - **The ANALOG button leaves out DuckStation's 00h status byte**, which tells a
@@ -843,10 +834,11 @@ shortfall is recognised: about 5,500 short frames once, then none.
   and compiled code charges its cycles more coarsely, so it runs 14-19% more
   instructions in the same frames and three discs read a CD sector more or fewer
   by a checkpoint - but no game in the table shows it. See
-  [Recompiler-Plan.md](Recompiler-Plan.md). **No longer quite true, 2026-10-16:** Ace Combat 3's
-  frame-3000 picture differs compiled from interpreted (`8787981dfb94e189` against
-  `2e6db11119920d31`), on master as well; 1000 and 2000 agree. Not looked into yet. A compiled
-  machine's course no longer depends on what it compiled before, at least (bug 160).
+  [Recompiler-Plan.md](Recompiler-Plan.md). For a while Ace Combat 3's frame-3000 picture
+  differed compiled from interpreted (`8787981dfb94e189` against `2e6db11119920d31`). Bug 163
+  found why - a register write in the middle of a long compiled batch started its device's
+  clock early - and all 36 checkpoints agree again, 2026-10-16. A compiled machine's course no
+  longer depends on what it compiled before, either (bug 160).
 
 ## Features other emulators have, absent here
 

@@ -1346,6 +1346,12 @@ Re-checked after bugs 101-103 (the SPU's sweeps, reverb and mute bit): all
 twelve identical to the instruction, sectors included. Those changes reach only
 what is heard.
 
+**Re-checked after bug 163, 2026-10-16: identical at all 36 checkpoints again.**
+Ace Combat 3's frame 3000 had come out `8787981dfb94e189` compiled; a register
+write in the middle of a long compiled batch started its device's clock early, and
+with that fixed it is the interpreter's `2e6db11119920d31`. Every other compiled
+picture is as it was. The interpreted table is unchanged to the instruction.
+
 Ace Combat 3's frame 2000 re-recorded after bug 96 (the pad's capability
 replies): libpad now completes its DualShock setup, which shifts the title
 screen's pulsing marker to another point in its pulse. Ace Combat 3, Bomberman,
