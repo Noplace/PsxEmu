@@ -187,6 +187,11 @@
     <ClCompile Include="psx\dma.cpp" />
     <ClCompile Include="psx\gpu.cpp" />
     <ClCompile Include="render\software_raster.cpp" />
+    <ClCompile Include="render\texture_tracker.cpp" />
+    <!-- Texture dumps are PNGs, deflated with the same zlib CHD images bring. -->
+    <ClCompile Include="render\png_file.cpp">
+      <AdditionalIncludeDirectories>$(ProjectDir)lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="psx\gte.cpp" />
     <ClCompile Include="psx\io_interface.cpp" />
     <ClCompile Include="media\iso9660.cpp" />
@@ -252,6 +257,8 @@
     <ClInclude Include="render\raster.h" />
     <ClInclude Include="render\shared_picture.h" />
     <ClInclude Include="render\software_raster.h" />
+    <ClInclude Include="render\texture_tracker.h" />
+    <ClInclude Include="render\png_file.h" />
     <ClInclude Include="psx\gte.h" />
     <ClInclude Include="enhance\pgxp.h" />
     <ClInclude Include="enhance\vertex_motion.h" />

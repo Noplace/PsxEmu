@@ -34,7 +34,8 @@ lib /nologo /OUT:Temp\tools\thirdparty.lib Temp\tools\obj_thirdparty\*.obj
 if errorlevel 1 exit /b 1
 
 set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp ^
- PSXEmu.Core\render\software_raster.cpp ^
+ PSXEmu.Core\render\software_raster.cpp PSXEmu.Core\render\texture_tracker.cpp ^
+ PSXEmu.Core\render\png_file.cpp ^
  PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\bios\kernel.cpp ^
  PSXEmu.Core\psx\mc.cpp PSXEmu.Core\media\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
  PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\media\disc.cpp PSXEmu.Core\psx\sio.cpp PSXEmu.Core\psx\sio1.cpp ^
@@ -242,6 +243,14 @@ rem the settings that hold the chain.
 if not exist Temp\tools\obj_filterchain mkdir Temp\tools\obj_filterchain
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_filterchain\ /Fe:Temp\tools\filter_chain_test.exe ^
    PSXEmu.Core\tools\filter_chain_test.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
+rem The texture tracker's rules - render\texture_tracker.h, Docs/Texture-Upscaling-Plan.md, phase 1 -
+rem on a VRAM of its own, and its dumps read back.
+if not exist Temp\tools\obj_ttracker mkdir Temp\tools\obj_ttracker
+cl %FLAGS% /Fo:Temp\tools\obj_ttracker\ /Fe:Temp\tools\texture_tracker_test.exe ^
+   PSXEmu.Core\tools\texture_tracker_test.cpp PSXEmu.Core\render\texture_tracker.cpp ^
+   PSXEmu.Core\render\png_file.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem What AMD's FidelityFX runtime says about each card - Docs/FSR-Plan.md, phase 0. Needs

@@ -384,6 +384,8 @@ namespace emulation {
                     motion_fresh_ = true;
                 }
                 backend_->Reloaded();
+                if (observer_ != nullptr)
+                    observer_->Reloaded();
                 PushWatch();
                 ResolveFramebuffer();
             }
@@ -830,6 +832,8 @@ namespace emulation {
                         // The whole rectangle is in native VRAM now; a rasteriser drawing
                         // somewhere else takes it from there.
                         backend_->Written(transfer_.x, transfer_.y, transfer_.w, transfer_.h);
+                        if (observer_ != nullptr)
+                            observer_->Written(transfer_.x, transfer_.y, transfer_.w, transfer_.h);
                         return;
                     }
                 }
@@ -839,8 +843,11 @@ namespace emulation {
         // A reset ends a transfer where it is. An upload cut short has still written the pixels
         // it got to, so the rasteriser hears about its rectangle as if it had finished.
         void Gpu::AbandonTransfer() {
-            if (transfer_mode_ == kTransferToVram)
+            if (transfer_mode_ == kTransferToVram) {
                 backend_->Written(transfer_.x, transfer_.y, transfer_.w, transfer_.h);
+                if (observer_ != nullptr)
+                    observer_->Written(transfer_.x, transfer_.y, transfer_.w, transfer_.h);
+            }
             transfer_mode_ = kTransferNone;
         }
 
@@ -1483,7 +1490,7 @@ namespace emulation {
             if (!threaded_) {
                 DrawJob now = job;
                 now.command = static_cast<uint8_t>(current_command_);
-                backend_->Apply(now);
+                ApplyJob(now);
                 return;
             }
             std::unique_lock<std::mutex> lock(jobs_mutex_);
@@ -1498,6 +1505,19 @@ namespace emulation {
             ++jobs_count_;
             ++stats_.raster_jobs;
             jobs_added_.notify_one();
+        }
+
+        // The pixels a job put down are the backend's own count across it: its counters are only
+        // merged and cleared at a barrier, with nothing being drawn.
+        void Gpu::ApplyJob(const DrawJob& job) {
+            if (observer_ == nullptr) {
+                backend_->Apply(job);
+                return;
+            }
+            observer_->Drawing(job);
+            const uint64_t before = backend_->counters().pixels;
+            backend_->Apply(job);
+            observer_->Drawn(job, backend_->counters().pixels - before);
         }
 
         void Gpu::StartRasterThread() {
@@ -1534,7 +1554,7 @@ namespace emulation {
                 raster_busy_ = true;
                 lock.unlock();
                 const auto began = std::chrono::steady_clock::now();
-                backend_->Apply(job);
+                ApplyJob(job);
                 const auto took = std::chrono::steady_clock::now() - began;
                 lock.lock();
                 stats_.raster_busy_ns += static_cast<uint64_t>(

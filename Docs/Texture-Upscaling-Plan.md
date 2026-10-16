@@ -1,6 +1,9 @@
 # Texture upscaling: a texture cache, replacement packs, and an AI upscaler
 
-**Status: phase 0 done 2026-10-16.** ONNX Runtime and DirectML load and run here, and `.pth`
+**Status: phases 0 and 1 done 2026-10-16.** Every textured draw is named by the texture it reads,
+the same name every run, on any rasteriser: 95.2% of textured pixels on the 26 discs, 22 of them
+at 100%, the rest textures the GPU drew. `boot_runner --texture-dump` writes them as PNGs
+([Phase 1, as built](#phase-1-as-built-2026-10-16)). ONNX Runtime and DirectML load and run here, and `.pth`
 models convert to ONNX, matching their authors' own exports. Real-ESRGAN's animevideo-v3 (BSD-3)
 is the default model: 22-58 ms for a 256x256 texture at 4x. RTX Video Super Resolution runs on
 the RTX 4060 at 5.5 ms for the same, and looks as good, but only on RTX cards; phase 4 settles
@@ -114,44 +117,57 @@ DLSS was the first idea, and it cannot do this; the first section says why.
 
 ## The design
 
-### Uploads: what a texture is
+### Records: what a texture is
 
-A game loads a texture the way it was authored: one CPU-to-VRAM transfer of a TIM image's pixels,
-and one of its CLUT. That transfer is the unit here.
+A game loads a texture the way it was authored: CPU-to-VRAM transfers of a TIM image's pixels and
+of its CLUT. Those transfers are the unit here: *records*, rectangles of VRAM that hold what a
+game uploaded, each with a hash of its pixels. Records never overlap. Phase 1 started from "one
+transfer, one record"; the 26 discs showed that is too simple, and the rules became
+(`render/texture_tracker.h`, phase 1 below):
 
-- **At `Written(x, y, w, h)`**, on the machine thread while the rasteriser is idle, the rectangle
-  is recorded with a hash of its pixels (XXH3-64 or similar: about 10 us for 128 KB). It replaces
-  any record it overlaps. This happens only while a texture feature is on.
-- **A draw into a recorded rectangle** - any triangle, rectangle, fill or copy whose destination
-  overlaps it, as the rasteriser's dirty rectangles already track - retires the record. A texture
-  the GPU drew (render-to-texture, a blurred copy of the screen) is never named, and is sampled as
-  it is today.
-- **Films are uploads too.** Each MDEC frame is recorded and replaced at the next frame's upload.
-  Nothing is decoded or hashed further unless a draw samples it.
-- **Save states** do not record the cache. After a state is loaded (`Reloaded`), nothing is named
-  until the game uploads again, and pictures are native until then. Phase 1 measures how often that
-  matters; if it does, the record list goes into the rasteriser's own side of the state, never the
-  machine's.
+- **Joined strips.** A transfer that carries straight on from the last one recorded - the same
+  columns from the row it ended or began at, or the same rows from the column - joins it. Ridge
+  Racer loads images 32 rows at a time, and one a row at a time from the bottom up; Gran Turismo 2
+  loads all of VRAM in 1024x16 strips.
+- **Patches.** A transfer inside a live record patches it, and the record's hash is taken again: a
+  font sheet with a few glyphs changed. Films, uploaded strip by strip over the last frame, are
+  patches too.
+- **Cut, not retired.** Anything written over part of a record - an upload, or a draw: any job
+  whose destination overlaps it - cuts that rectangle out, and what is left stays as up to four
+  records. Gran Turismo 2 and Vagrant Story upload half or all of VRAM, then draw the framebuffer
+  into it; retiring the whole record would lose every texture beside the framebuffer. Written over
+  whole, a record is gone.
+- **Copies carry records.** A VRAM-to-VRAM copy of uploaded texels makes a record of what it
+  copied: Silent Hill copies its palettes into a corner of the framebuffer.
+- **Not machine state.** After a state is loaded (`Reloaded`) nothing is named until the game
+  uploads again. None of the 26 discs needed more; if a game does, the records go into the
+  rasteriser's own side of a state, never the machine's.
 
-### Sources: an upload seen through a CLUT
+### Sources: what a draw reads
 
-- **The key**: the upload's hash, the colour mode, the CLUT's hash (16 or 256 entries, read from
-  native VRAM at draw time), and where the texture page puts the upload's left edge in texels.
-  The same image drawn with two palettes is two sources.
-- **The name on disk**: `<upload hash>-<CLUT hash>-<mode>`, 16-bit hex words. Only the image and
-  its palette go into it, never the image's place in VRAM, so a pack works wherever the game puts
-  the image.
-- **Per draw**, on the rasteriser thread, when a textured job is batched:
-  - Work out the job's UV bounds, after the texture window.
-  - Look up the upload under its texture page (a 16x2 grid of page lists).
-  - The source applies only if one upload holds the whole bounds and the CLUT is not dirty.
-  - The job then carries the source's slot (a sixth vertex word, or an index into a table of
-    slots: chosen in phase 2 by what `PsDraw`'s inputs have room for).
-  - A job that spans two uploads, samples a dirty page, or has no replacement draws exactly as
-    today.
-- **Counted**: textured pixels drawn from a replacement, from native because the draw spanned two
-  uploads, because it sampled a drawn page, and because it had no replacement. `boot_runner
-  --textures` reports these counts.
+- **A textured job names a source** when the texels it can sample lie:
+  - inside one live record
+  - or are tiled exactly by several, a *composite*: Castlevania uploads its backdrops as 64x128
+    tiles a row of them at a time, and Wipeout one 15-bit picture as two uploads side by side
+  - with whatever no record covers all zeros, the clear texel: Einhander's planes read whole
+    pages around quarter-page images, the rest VRAM nothing wrote or a long-gone scrap of the
+    BIOS's logo
+
+  For 4- and 8-bit textures its CLUT must lie the same way - in one record, or tiled -
+  read only as far as VRAM's right edge (Metal Gear Solid's 8-bit palettes start at x 928).
+- **A triangle's far edges are a texel short.** Its furthest texture coordinates are usually not
+  read - the fill rule leaves its right and bottom edges out - so one that names nothing is tried
+  again a texel short, which also lets that edge alone run off VRAM (Xenogears).
+- **The name**: `<image hash>-<CLUT hash>-<mode>`, 16-digit hex. The image hash is the record's,
+  or a composite's (its records' hashes and where each lies from their corner). Never the image's
+  place in VRAM, so a pack works wherever the game puts the image. The same image with two
+  palettes is two sources.
+- **Per draw in phase 2**, on the rasteriser thread, as the job is batched: the same lookup, and
+  the job carries the source's slot (a sixth vertex word, or an index into a table of slots,
+  chosen by what `PsDraw`'s inputs have room for). Anything else draws exactly as today.
+- **Counted**: `boot_runner --textures` reports the textured pixels named and, for the rest,
+  why: texels or palette drawn by the GPU, only partly uploaded, never seen uploaded, wrapping,
+  outside the drawing area.
 - **The shader**: with a slot, `PsDraw` samples the slot's image at the texel's fine position -
   `t` before `floor`, the interpolated UV it already has - times the image's scale. This uses the
   same texture window, wrapping and sprite flips. Without a slot, nothing changes.
@@ -175,13 +191,21 @@ and one of its CLUT. That transfer is the unit here.
 
 ### Dumping
 
-- **Each source the first time it is drawn**, decoded to RGBA8 with the alpha rule above. The PNG
-  is written by a background thread to `textures\<serial>\dump\<name>.png` beside psxemu.ini (the
-  serial is the per-game settings' key, as `cheats\<serial>.cht` uses).
-- **The whole upload is dumped, not just the part the draw sampled**, so a tile sheet is dumped as
-  one image and upscaled as one image.
+- **Each source as its records' extent in texels**, decoded to RGBA8 with the alpha rule above,
+  with **only the 8x8-texel cells that draws read through that palette filled in** and the rest
+  left clear. Dumping whole uploads was the first idea and fails at once: Ridge Racer reads one
+  1536x256-texel sheet through 91 palettes, a corner each, which was 91 copies of the whole sheet,
+  each mostly colour noise.
+- **Written when the source is complete**: once one of its records stops being what it was
+  (written over, patched, joined), at a state load, or at the end. A copy of each record is taken
+  while it is still whole, so what is written is what was read.
+- **Where**: in the app, a background thread into `textures\<serial>\dump\<name>.png` beside
+  psxemu.ini (the serial is the per-game settings' key, as `cheats\<serial>.cht` uses); in phase 1,
+  `boot_runner --texture-dump <folder>`.
 - **Skipped** if the file is already there, and for any source smaller than 8x8 (configurable).
-  This keeps out single-colour fills and font glyphs uploaded one at a time.
+- **Sparse canvases.** Where a game uploads half or all of VRAM as one image (Spyro 3), a source
+  is a 2048x512 canvas with a few cells filled. Small on disk, but awkward to edit; phase 2 decides
+  whether a replacement may cover just the part it fills, with its place in the name.
 
 ### Replacement packs
 
@@ -287,7 +311,7 @@ Independent of everything above: a filter over the texels `PsDraw` already decod
 | # | What | Done when | Card | Rough size |
 |---|---|---|---|---|
 | 0 (**done**) | The SDKs read and licences settled: ONNX Runtime, the DirectML redistributable, the RTX Video SDK, and two or three candidate models. `ai_probe`: each backend's sizes, factors and cost on one 256x256 texture, one device per run | a model chosen and every file's licence allowing what we do with it - done for ONNX Runtime, DirectML, RTX Video and seven models | Radeon; 4060 once | 1 |
-| 1 | Uploads and sources, with no drawing changed: records at `Written`, retired by draws, keys, `boot_runner --textures` counts, dumping | the share of textured pixels nameable measured on the 26 discs; the twelve-disc table's instruction and sector counts identical with dumping on; dumps reviewed on five discs | Radeon, WARP | 2-3 |
+| 1 (**done**) | Uploads and sources, with no drawing changed: records at `Written`, retired by draws, keys, `boot_runner --textures` counts, dumping | the share of textured pixels nameable measured on the 26 discs; the twelve-disc table's instruction and sector counts identical with dumping on; dumps reviewed on five discs | Radeon, WARP | 2-3 |
 | 2 | Replacement: the slot in `PsDraw`, atlas pages, the loader thread, `pack.ini`, the menus | **the identity check**: a dump loaded back as its own pack at 1x, and nearest-upscaled at 2x-8x, draws every picture of the table bit for bit as without it on WARP (with the replacement cut to 15 bits and the console's colour path, a debug switch); a hand-edited texture seen in game | Radeon, WARP | 2-3 |
 | 3 | The AI upscaler on ONNX Runtime and DirectML: thread, device, queue, dilation, padding, atlases, alpha, cache folder, Upscale All | full speed with the queue running on Ridge Racer and two 2D discs, on both cards; reviewed on the 26 discs' dumps; no halo on cut-out sprites | Radeon, then 4060 for a few long runs | 2-3 |
 | 4 | RTX Video as the second backend, and the comparison | the side-by-side reviewed; RTX Video either on the menu or left in psxemu.ini only, and this plan says why | 4060 | 1-2 |
@@ -459,6 +483,75 @@ updated by the driver's NGX runtime, so what ships is a floor, not a fixed versi
 - **Alpha through a real cut-out sprite.** The path is built - dilation, then coverage through the
   model and a threshold - but no frame had a transparent texel. It waits for phase 1's dumps.
 
+### Phase 1, as built (2026-10-16)
+
+**What was built:**
+
+- **`render/texture_tracker.h/.cpp`**, in the core: records, sources, the reasons a draw names
+  nothing, and dumping, by the rules under [Records](#records-what-a-texture-is) and
+  [Sources](#sources-what-a-draw-reads). It is a `RasterObserver` (`render/raster.h`, new): `Gpu`
+  tells it of each job just before and after its rasteriser draws it, with the pixels it put down,
+  and of uploads and state loads. Any rasteriser, and nothing the machine sees changes.
+- **`render/png_file.h/.cpp`**: PNGs written with the core's own zlib, since the core knows no
+  operating system.
+- **`boot_runner --textures`** reports the share of textured pixels named and why the rest are
+  not; `--texture-dump <folder>` writes the sources; `--texture-log <n>` prints the first n draws
+  of each reason with what they read and the records there; `--texture-trace x,y,w,h` prints
+  everything that happens to the records in a rectangle. The last two found every rule below.
+- **`tools/texture_tracker_test.cpp`**: 45 checks, every rule on a VRAM of its own, and a dumped
+  PNG read back texel by texel.
+
+**How the rules were found** - the share named as each rule went in (Ridge Racer's first five over
+3,000 frames, the rest on the 26 discs at 6,000 each):
+
+| Rule | What it fixed | Where |
+|---|---|---|
+| one transfer, one record | 46% of Ridge Racer | - |
+| strips joined, down and right | Ridge Racer 97.5% | its 64x32 strips |
+| ...up and left too | Ridge Racer 99.4% | an image a row at a time from the bottom |
+| patches inside a record | Ridge Racer 99.2%, no more spans | font glyphs changed one at a time |
+| a partial upload keeps what it leaves | Ridge Racer 100% | a new image over a sheet's last rows |
+| records cut, not retired | Captain Tsubasa 37% to 100%, Xenogears 13% to 98%, Gran Turismo 2 49% to 100%, Vagrant Story 91% to 100% | VRAM uploaded whole, then the framebuffer drawn into it |
+| composites | Castlevania 4% to 100% (with tiled palettes), Wipeout 53% to 100% | backdrops in 64x128 tiles |
+| a triangle a texel short | Wipeout's last spans, Xenogears 100% | the fill rule's far edges |
+| palettes to VRAM's edge | Metal Gear Solid's "wraps" gone | 8-bit palettes at x 928 |
+| zeros count as clear | Einhander 83% to 100% | planes reading whole pages |
+| copies carry records | Silent Hill 57% to 100%, Area 51 92% to 100% | palettes copied into the framebuffer |
+
+**The 26 discs, at the end:**
+
+- **100%**: Ace Combat 3, Air Combat, Area 51, Bomberman, Captain Tsubasa J, Castlevania SOTN,
+  Chrono Cross, Driver 2, Einhander, Final Fantasy VII, Final Fantasy VIII, Gran Turismo 2,
+  Legend of Mana, Ridge Racer, Silent Hill, Spyro 3, Tekken 3, Vagrant Story, Valkyrie Profile,
+  Wild Arms, Wild Arms 2, Wipeout, Xenogears.
+- **Crash 3 95.8%, Vandal Hearts 93.8%, Metal Gear Solid 63.5%**: the rest textures the GPU drew
+  - Metal Gear Solid reading its own framebuffer for screen effects, Crash and Vandal Hearts
+  textures drawn into VRAM. These stay native by design.
+- **All 26: 95.2% of 3.69 billion textured pixels.** The 6,000 frames are mostly intros, logos and
+  first scenes; phase 2's review plays further.
+- **Dumped**: 4,313 PNGs, 17.7 MB. Spyro's and Valkyrie Profile's are canvases of half or all of
+  VRAM with a few cells filled (0.1% and 3%); most others are 30-100% filled.
+
+**The dumps reviewed** (Valkyrie Profile, Castlevania SOTN, Crash 3, Spyro 3, Final Fantasy VII):
+the right images in the right colours - Spyro's tiles, Castlevania's composite backdrops and
+logo whole, Crash's textures, Valkyrie Profile's character sprites, Final Fantasy VII's credits.
+Two things to know:
+- Valkyrie Profile's backgrounds come out in bands, the cells its draws read.
+- Many of Crash's texels have bit 15 set, so they dump at alpha 128 and look faded. The bit
+  only matters to semi-transparent polygons, but a dump cannot tell which those will be.
+
+**The machine unchanged**: the twelve-disc set, 3,000 frames on the interpreter, without the
+tracker and with `--texture-dump`. Every line of every report is the same - instructions, CD
+sectors, checksums, every count - except two that are the host's, not the machine's:
+- the barriers the machine thread found the rasteriser busy at, 1-2 more on most discs and 17 to
+  32 on Ridge Racer
+- the rasteriser thread's own time
+
+**Cost**: on the rasteriser's thread, where the tracker runs. Ridge Racer's 1.28 million jobs took
+it 3.30 s without the tracker and 4.51 s with it - about 1 µs a job, most of it the lookups;
+Wild Arms 2's 0.88 million, 5.35 s and 6.24 s. Phase 2 puts the lookup on the app's path and
+measures it there; the composite and zero checks run only for jobs nothing simpler names.
+
 ---
 
 ## How it will be verified
@@ -481,11 +574,11 @@ updated by the driver's NGX runtime, so what ships is a floor, not a fixed versi
 
 ## Risks, and the decisions taken
 
-- **Coverage may be low in 3D games.** Many 3D games stream textures into shared pages piece by
-  piece, and a polygon's UVs may cross two uploads. Phase 1 measures this first. If it is low, a
-  second identity - the texture page and CLUT, hashed together - is the fallback (it is less stable
-  across runs, but it covers everything). That fallback is a decision for after phase 1, not
-  before.
+- **Coverage, measured in phase 1: 95.2% of textured pixels on the 26 discs.** The first rules
+  named 3.8% of Castlevania's and 13% of Xenogears'; strips joined, records cut rather than
+  retired, composites, zeros and copies brought 22 of the 26 to 100%. What is left is textures the
+  GPU drew itself (Metal Gear Solid's screen effects most of it), which the design leaves native.
+  The fallback identity - texture page and CLUT hashed together - is not needed.
 - **AI output on tiled 2D.** A tile map upscaled as one sheet can still show seams where two tiles
   that sit side by side on screen are far apart on the sheet. `pack.ini` can exclude a sheet, and
   the binary-alpha filter is the alternative for it.

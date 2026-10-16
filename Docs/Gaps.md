@@ -862,8 +862,9 @@ look for. Each was looked for in the code and settings on 2026-10-14 and is not 
   - no texture dumping or replacement.
 
   Both are planned, with an AI texture upscaler on top, in
-  [Texture-Upscaling-Plan.md](Texture-Upscaling-Plan.md) (2026-10-16; phase 0, the models and
-  their runtime, done, nothing in the emulator yet).
+  [Texture-Upscaling-Plan.md](Texture-Upscaling-Plan.md) (2026-10-16). Phase 0, the models and
+  their runtime, and phase 1, naming every texture a draw reads and dumping them, are done -
+  `boot_runner --texture-dump` writes a game's textures as PNGs. Nothing in the app yet.
 - **Overrides:** no region override (PAL or NTSC whatever the disc and BIOS say), no CPU
   overclock.
 - **Recording:** no video recording, and sound only through `boot_runner --wav`. Input movies

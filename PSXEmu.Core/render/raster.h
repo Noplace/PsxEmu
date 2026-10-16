@@ -213,6 +213,22 @@ namespace psx {
     virtual void NoteWatchWrite(uint32_t x, uint32_t y) = 0;
   };
 
+  // Something that watches what is drawn without drawing anything: the texture tracker
+  // (render/texture_tracker.h, Docs/Texture-Upscaling-Plan.md). `Gpu` tells it of each job just
+  // before its rasteriser draws it and just after, with the pixels it put down - on whichever
+  // thread is rasterising - and of uploads and reloads on the machine thread, with nothing being
+  // drawn. Never two at once. It sees native VRAM as the rasteriser left it, and changes nothing.
+  class RasterObserver {
+   public:
+    virtual ~RasterObserver() {}
+    virtual void Drawing(const DrawJob& job) = 0;
+    virtual void Drawn(const DrawJob& job, uint64_t pixels) = 0;
+    // A CPU-to-VRAM transfer has written this rectangle (RasterBackend::Written).
+    virtual void Written(uint32_t x, uint32_t y, uint32_t w, uint32_t h) = 0;
+    // All of native VRAM has just been replaced (RasterBackend::Reloaded).
+    virtual void Reloaded() = 0;
+  };
+
   // How a hardware rasteriser is asked to draw: EmuConfig's resolution_scale and true_color,
   // and - from the front end, which knows what shows the picture - where.
   struct RasterOptions {

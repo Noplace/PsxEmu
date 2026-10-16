@@ -50,8 +50,12 @@ PsxEmu/
       root_counter.h/.cpp      timers
       mc.h/.cpp                a memory card slot: the card in memory, written to its file whole
     render/                    how the GPU's draws become pixels
-      raster.h                 DrawJob and RasterBackend - what puts a draw's pixels down
+      raster.h                 DrawJob and RasterBackend - what puts a draw's pixels down - and
+                               RasterObserver, what watches it
       software_raster.h/.cpp   the software rasteriser: every DrawJob into native VRAM
+      texture_tracker.h/.cpp   which texture each draw reads, by a name the same every run, and
+                               the textures dumped (Docs/Texture-Upscaling-Plan.md, phase 1)
+      png_file.h/.cpp          a PNG written with the core's own zlib
       shared_picture.h         a picture left on the graphics card, for a renderer to open there
     enhance/                   opt-in enhancements on top of the machine
       pgxp.h                   PGXP's shadows: each register's and RAM word's unrounded vertex
@@ -120,6 +124,7 @@ PsxEmu/
       ai_probe.cpp             the AI texture upscaler's models: .pth to ONNX, checked against
                                an author's export, timed on a card, run over pictures
                                (Docs/Texture-Upscaling-Plan.md)
+      texture_tracker_test.cpp the texture tracker's rules, and a dump read back
       wav_pitch.cpp            the note in a WAV boot_runner wrote
       make_test_disc.cpp       writes a synthetic disc image
       make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format

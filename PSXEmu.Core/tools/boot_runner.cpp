@@ -109,6 +109,15 @@
 //     --jitter n         ...with the plane kept, triangles jittered through n offsets of a
 //                        Halton sequence, a new one each new picture (Docs/DLSS-Plan.md,
 //                        phase 3); the report's pictures and checksums are then jittered too
+//     --textures         which texture each textured draw used, by a name that is the same
+//                        every run - the CPU-to-VRAM upload it reads and its palette - and
+//                        why for the rest; the share of textured pixels named
+//                        (render/texture_tracker.h, Docs/Texture-Upscaling-Plan.md, phase 1)
+//     --texture-dump <dir>  ...writing each texture named the first time as a PNG there
+//     --texture-log <n>  ...a line for the first n draws of each reason a texture is not named:
+//                        what it reads, and the uploads there
+//     --texture-trace x,y,w,h  ...a line for everything that happens to an upload touching
+//                        that rectangle of VRAM: recorded, joined, patched, uploaded over, drawn over
 //     --gpu <name>       ...drawing on the graphics card with <name> in its name (any case),
 //                        as Settings > Video > Graphics Card does; the report names the card
 //     --list-gpus        list the graphics cards and their LUIDs, and exit
@@ -131,6 +140,7 @@
 #include "debug/disasm.h"
 #include "emu/movie.h"
 #include "emu/rewind_buffer.h"
+#include "render/texture_tracker.h"
 #ifdef PSXEMU_HW_RASTER
 #include "graphics/adapters.h"
 #include "graphics/hw_raster/hardware_raster.h"
@@ -372,6 +382,12 @@ struct Options {
   emulation::psx::Gte::MotionKey motion_key;
   float motion_reach;   // --motion-reach: VertexMotion's, in screen pixels; 0 leaves it
   int jitter;           // --jitter: the sequence's length, 0 for none
+  // --textures: which texture each draw used (render/texture_tracker.h); --texture-dump: each
+  // new one written as a PNG into this folder.
+  bool textures;
+  const char* texture_dump;
+  int texture_log;   // --texture-log: lines for the first n of each reason a texture is not named
+  int texture_trace[4];   // --texture-trace x,y,w,h: what happens to uploads there; w 0 for none
 };
 
 // FNV-1a over the visible framebuffer. Small, order-sensitive, and good enough
@@ -754,6 +770,10 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->motion_key = emulation::psx::Gte::MotionKey::kModel;
   options->motion_reach = 0.0f;
   options->jitter = 0;
+  options->textures = false;
+  options->texture_dump = nullptr;
+  options->texture_log = 0;
+  memset(options->texture_trace, 0, sizeof(options->texture_trace));
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -903,6 +923,21 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->shared_picture = true;
     } else if (strcmp(arg, "--planes") == 0) {
       options->planes = true;
+    } else if (strcmp(arg, "--textures") == 0) {
+      options->textures = true;
+    } else if (strcmp(arg, "--texture-dump") == 0 && i + 1 < argc) {
+      options->textures = true;
+      options->texture_dump = argv[++i];
+    } else if (strcmp(arg, "--texture-log") == 0 && i + 1 < argc) {
+      options->textures = true;
+      options->texture_log = atoi(argv[++i]);
+    } else if (strcmp(arg, "--texture-trace") == 0 && i + 1 < argc) {
+      options->textures = true;
+      int* t = options->texture_trace;
+      if (sscanf(argv[++i], "%d,%d,%d,%d", &t[0], &t[1], &t[2], &t[3]) != 4) {
+        fprintf(stderr, "--texture-trace wants x,y,w,h\n");
+        return false;
+      }
     } else if (strcmp(arg, "--motion") == 0) {
       options->motion = true;
       options->planes = true;
@@ -1837,6 +1872,23 @@ int main(int argc, char** argv) {
   } else if (options.planes || options.view != emulation::psx::PlaneView::kPicture) {
     fprintf(stderr, "--planes and --view are the hardware rasteriser's (--hw-raster)\n");
     return 2;
+  }
+
+  // --textures: watching every draw from the first, so every upload is seen.
+  std::unique_ptr<emulation::psx::TextureTracker> textures;
+  if (options.textures) {
+    textures = std::make_unique<emulation::psx::TextureTracker>(system->gpu().vram());
+    if (options.texture_dump != nullptr) {
+      textures->set_dump_folder(options.texture_dump);
+      printf("textures       named, and each new one written into %s\n", options.texture_dump);
+    } else {
+      printf("textures       named\n");
+    }
+    if (options.texture_log > 0 || options.texture_trace[2] > 0)
+      textures->set_log(stdout, options.texture_log);
+    const int* t = options.texture_trace;
+    textures->set_trace(t[0], t[1], t[2], t[3]);
+    system->gpu().set_raster_observer(textures.get());
   }
 
   // Before the machine executes a single instruction, so the whole run is one
@@ -2890,6 +2942,44 @@ int main(int argc, char** argv) {
   if (options.shared_picture && options.planes)
     printf("planes         %llu of them with the plane beside\n",
            static_cast<unsigned long long>(shared_planes));
+  if (textures) {
+    using emulation::psx::TextureTracker;
+    system->gpu().vram();   // waits for the rasteriser: every job counted
+    textures->Flush();      // every source not yet written, written
+    const TextureTracker::Counts& t = textures->counts();
+    auto share = [&](uint64_t part) {
+      return t.textured_pixels == 0
+                 ? 0.0
+                 : 100.0 * static_cast<double>(part) / static_cast<double>(t.textured_pixels);
+    };
+    printf("textures       %llu uploads, %llu more joined to them, %llu patching them; records "
+           "%llu drawn over, %llu uploaded over, %llu cut, %llu copied, %llu live; %llu textures "
+           "named, %llu written\n",
+           static_cast<unsigned long long>(t.uploads),
+           static_cast<unsigned long long>(t.uploads_joined),
+           static_cast<unsigned long long>(t.uploads_patched),
+           static_cast<unsigned long long>(t.records_retired),
+           static_cast<unsigned long long>(t.records_replaced),
+           static_cast<unsigned long long>(t.records_cut),
+           static_cast<unsigned long long>(t.records_copied),
+           static_cast<unsigned long long>(t.records_live),
+           static_cast<unsigned long long>(t.sources), static_cast<unsigned long long>(t.dumped));
+    printf("               %llu textured pixels in %llu jobs (%llu named by several records):\n",
+           static_cast<unsigned long long>(t.textured_pixels),
+           static_cast<unsigned long long>(t.textured_jobs),
+           static_cast<unsigned long long>(t.composite_jobs));
+    for (int r = 0; r < TextureTracker::kReasons; ++r)
+      printf("                 %5.1f%%  %-28s (%llu jobs)\n", share(t.pixels[r]),
+             TextureTracker::ReasonName(static_cast<TextureTracker::Reason>(r)),
+             static_cast<unsigned long long>(t.jobs[r]));
+    if (t.dumped > 0)
+      printf("               written: %.1f megatexels, %.1f%% of them read and filled in\n",
+             static_cast<double>(t.dumped_texels) / 1e6,
+             100.0 * static_cast<double>(t.dumped_used) / static_cast<double>(t.dumped_texels));
+    if (t.dump_failures > 0)
+      printf("               %llu could not be written\n",
+             static_cast<unsigned long long>(t.dump_failures));
+  }
   if (options.planes) {
     auto percent = [](uint64_t part, uint64_t whole) {
       return whole == 0 ? 0.0 : 100.0 * static_cast<double>(part) / static_cast<double>(whole);

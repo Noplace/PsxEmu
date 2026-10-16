@@ -140,6 +140,13 @@ class Gpu : public GpuCore {
   // The graphics card the hardware rasteriser draws on; empty for the software one.
   std::string raster_device() const { return backend_ ? backend_->device() : std::string(); }
 
+  // Something watching what is drawn (render/raster.h's RasterObserver: the texture tracker),
+  // or null. Not owned. Set it with nothing being drawn - before the machine runs.
+  void set_raster_observer(RasterObserver* observer) {
+    SyncRaster();
+    observer_ = observer;
+  }
+
   // Incremented once per completed frame; a cheap way for a harness to wait
   // for a specific frame without knowing anything about timing.
   uint64_t frame_count() const { return frame_count_; }
@@ -569,6 +576,7 @@ class Gpu : public GpuCore {
   // thread when there is one; everything else about it is called here, on the
   // machine thread, with nothing being drawn.
   std::unique_ptr<RasterBackend> backend_;
+  RasterObserver* observer_ = nullptr;
   bool hardware_raster_ = false;
   std::string raster_error_;
   // The display area as a higher-resolution rasteriser drew it, and at what scale; 1 when
@@ -626,6 +634,8 @@ class Gpu : public GpuCore {
   DrawEnv CaptureDrawEnv() const;
   // Hands one piece of rasterising over. Machine thread.
   void SubmitJob(const DrawJob& job);
+  // The backend draws `job` - with the observer told before and after, if there is one.
+  void ApplyJob(const DrawJob& job);
   // The backend's watch rectangle, from watch_x_ and the rest.
   void PushWatch() {
     if (backend_) {

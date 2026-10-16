@@ -982,6 +982,27 @@ through the same tests on an RTX card - only in a build that found NVIDIA's SDK 
 `Temp\rtxvideo\`, which cannot be fetched by a script (it is behind NVIDIA's sign-in) and is
 never committed; build_tools.bat then copies its `rel` `nvngx_vsr.dll` into `Temp\tools`.
 
+`texture_tracker_test` (45 checks) is the texture tracker's rules
+(`render/texture_tracker.h`, Docs/Texture-Upscaling-Plan.md, phase 1), on a VRAM of its own:
+
+- the name a draw gives a texture, the same wherever in VRAM the image and its palette are,
+  another with another palette
+- strips joined top-down and bottom-up; kept apart when another upload came between, and then
+  named together as a composite
+- a patch and a partial upload over a texture; all of VRAM uploaded and the framebuffer drawn
+  into it, cutting it
+- zeros counting as clear, a triangle's far edge a texel short, a palette to VRAM's edge, a
+  palette copied by the GPU
+- each reason a draw names nothing
+- the texture window narrowing what a sprite reads
+- a dumped PNG read back texel by texel: alpha 0, 128 and 255, cells no draw read left clear,
+  a file already there left alone
+
+`boot_runner --textures` runs the tracker over a disc and reports the share of textured pixels
+named, and why the rest are not. `--texture-dump <dir>` writes the textures, `--texture-log <n>`
+prints the first n draws of each reason a texture is not named, and `--texture-trace x,y,w,h`
+prints everything that happens to the uploads in a rectangle of VRAM.
+
 `rec_test` (2059 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
