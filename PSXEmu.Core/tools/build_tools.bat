@@ -252,8 +252,31 @@ cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_ffxprobe\ /Fe:Temp\tools\ffx_probe
    PSXEmu.Core\tools\ffx_probe.cpp PSXEmu.Win32\graphics\upscale\fsr\fidelityfx.cpp ^
    PSXEmu.Win32\graphics\upscale\dlss\streamline.cpp %LIBS%
 if errorlevel 1 exit /b 1
-if exist Temp\fidelityfx\v2.3.0\amd_fidelityfx_loader_dx12.dll ^
+rem A block, not a caret: a caret at a line's end escapes the next line's first character too, and
+rem after "if exist x ^" that escaped space is taken for the command, so the copy never ran.
+if exist Temp\fidelityfx\v2.3.0\amd_fidelityfx_loader_dx12.dll (
    xcopy /y /d /q Temp\fidelityfx\v2.3.0\*.dll Temp\tools\ >nul
+)
+
+rem The AI texture upscaler's models, converted, checked and timed - Docs/Texture-Upscaling-Plan.md,
+rem phase 0. Needs PSXEmu.Win32\graphics\upscale\texture\fetch_onnxruntime.ps1 run first to load
+rem anything, but builds without; DirectML must be beside ONNX Runtime, so both are copied here.
+rem NVIDIA's RTX Video SDK cannot be fetched (it is behind NVIDIA's sign-in) or committed: with it
+rem unpacked by hand into Temp\rtxvideo\ the RTX Video backend is built in, and its release DLL copied.
+set RTXVIDEO=
+if exist Temp\rtxvideo\include\nvsdk_ngx.h set RTXVIDEO=/DPSXEMU_RTX_VIDEO=1 /I Temp\rtxvideo\include
+if not exist Temp\tools\obj_aiprobe mkdir Temp\tools\obj_aiprobe
+cl %FLAGS% /I PSXEmu.Win32 %RTXVIDEO% /Fo:Temp\tools\obj_aiprobe\ /Fe:Temp\tools\ai_probe.exe ^
+   PSXEmu.Core\tools\ai_probe.cpp PSXEmu.Win32\graphics\upscale\texture\onnx_runtime.cpp ^
+   PSXEmu.Win32\graphics\upscale\texture\torch_model.cpp ^
+   PSXEmu.Win32\graphics\upscale\texture\rtx_video.cpp %LIBS% /LIBPATH:Temp\rtxvideo\lib\Windows\x64
+if errorlevel 1 exit /b 1
+if exist Temp\onnxruntime\1.24.4\onnxruntime.dll (
+   xcopy /y /d /q Temp\onnxruntime\1.24.4\*.dll Temp\tools\ >nul
+)
+if exist Temp\rtxvideo\bin\Windows\x64\rel\nvngx_vsr.dll (
+   xcopy /y /d /q Temp\rtxvideo\bin\Windows\x64\rel\nvngx_vsr.dll Temp\tools\ >nul
+)
 
 echo.
 echo Built Temp\tools\boot_runner.exe

@@ -117,6 +117,9 @@ PsxEmu/
       fsr_choice_test.cpp      the sizes around FSR: the rasteriser's scale, the jitter, the output
       ffx_probe.cpp            what AMD's FidelityFX runtime offers on each card; the signs of
                                FSR's jitter and motion, and its cost (Docs/FSR-Plan.md)
+      ai_probe.cpp             the AI texture upscaler's models: .pth to ONNX, checked against
+                               an author's export, timed on a card, run over pictures
+                               (Docs/Texture-Upscaling-Plan.md)
       wav_pitch.cpp            the note in a WAV boot_runner wrote
       make_test_disc.cpp       writes a synthetic disc image
       make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format
@@ -158,7 +161,7 @@ PsxEmu/
         vulkan/vulkan_engine.h/.cpp  the same again in Vulkan 1.0, on a child window of its own
         vulkan/vk_functions.h  the Vulkan the engine uses, declared here; vulkan-1.dll is loaded
                                at run time, nothing is linked
-      upscale/                 DLSS and FSR, apart from any one engine
+      upscale/                 DLSS, FSR and the texture upscaler, apart from any one engine
       upscale/dlss/            NVIDIA DLSS (Docs/DLSS-Plan.md)
         streamline.h/.cpp      Streamline's DLL loaded, its signature checked, started and stopped
         reflex_markers.h/.cpp  the machine's Reflex markers passed to whichever renderer runs
@@ -178,6 +181,16 @@ PsxEmu/
         fetch_fidelityfx.ps1   downloads AMD's three signed DLLs into Temp\fidelityfx\ - MIT, but
                                69 MB, so never committed; the build copies them beside the exe,
                                with the licence
+      upscale/texture/         the AI texture upscaler (Docs/Texture-Upscaling-Plan.md)
+        onnx_runtime.h/.cpp    ONNX Runtime and DirectML loaded once, Microsoft's signature checked
+                               on each DLL; an ONNX upscaler run on a Direct3D 12 device we give it
+        torch_model.h/.cpp     a PyTorch .pth upscaler read as data, never run, and written out
+                               as ONNX: ESRGAN and Real-ESRGAN's compact model
+        texture_upscaler.h     what a backend is: RGB in, a whole number of times larger out
+        rtx_video.h/.cpp       NVIDIA RTX Video Super Resolution as a backend, through NGX; built
+                               only where NVIDIA's SDK is unpacked in Temp\rtxvideo\ (never committed)
+        fetch_onnxruntime.ps1  downloads ONNX Runtime and DirectML from nuget.org into
+                               Temp\onnxruntime\ - 36 MB, never committed
       filters/                 the picture filters (Settings > Video > Filter)
         filter_chain.h         the custom chain's arithmetic: up to four filters, one after another
         shader_pass.h          one stage of a chain, apart from any engine so it can be tested
@@ -190,6 +203,7 @@ PsxEmu/
         d3dx12.h               Microsoft's D3D12 helpers
         streamline/            NVIDIA Streamline's headers, MIT, as they come in the SDK
         fidelityfx/            AMD FidelityFX's API headers, MIT, as they come in the SDK
+        onnxruntime/           ONNX Runtime's C API headers and DirectML provider header, MIT
       hw_raster/               the hardware rasteriser (Docs/Hardware-Renderer-Plan.md)
         hardware_raster.h/.cpp HardwareRaster: what both APIs' rasterisers offer beyond
                                RasterBackend, and the one place either is made

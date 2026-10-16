@@ -1,6 +1,11 @@
 # Texture upscaling: a texture cache, replacement packs, and an AI upscaler
 
-**Status: planned 2026-10-16, nothing built.** The hardware rasteriser draws polygons at up to 8x,
+**Status: phase 0 done 2026-10-16.** ONNX Runtime and DirectML load and run here, and `.pth`
+models convert to ONNX, matching their authors' own exports. Real-ESRGAN's animevideo-v3 (BSD-3)
+is the default model: 22-58 ms for a 256x256 texture at 4x. RTX Video Super Resolution runs on
+the RTX 4060 at 5.5 ms for the same, and looks as good, but only on RTX cards; phase 4 settles
+it on real textures ([Phase 0, as built](#phase-0-as-built-2026-10-16)). Nothing in the
+emulator itself has changed yet. The hardware rasteriser draws polygons at up to 8x,
 but the game's textures are still the console's 4-, 8- and 15-bit images, point-sampled. Each
 texel becomes a block of 8x8 pixels at 8x. This plan gets better textures in four ways, all opt-in
 and all built on one texture cache:
@@ -226,11 +231,11 @@ and one of its CLUT. That transfer is the unit here.
 
 - **The same interface, on an RTX card**, through the RTX Video SDK's Direct3D 12 path on the
   upscaler's own device.
-- **Phase 0 reads the SDK for**:
-  - the sizes and scale factors it accepts (the page gives none)
-  - its quality levels
-  - whether it takes a 16x16 image, or only atlases
-  - its redistribution terms
+- **What phase 0 found:**
+  - It takes any size to any size, 16x16 included.
+  - Quality runs from 0 (bicubic) to 4.
+  - It may ship inside the emulator, but none of its SDK may be committed.
+
   It has no alpha, so the same dilation, padding and separate alpha as the ONNX backend apply.
 - **Offered only if it wins** (phase 4): on the dumped textures of the 2D and 3D discs below,
   side by side with the best ONNX model, at the same scale, and judged by eye, since nothing
@@ -281,7 +286,7 @@ Independent of everything above: a filter over the texels `PsDraw` already decod
 
 | # | What | Done when | Card | Rough size |
 |---|---|---|---|---|
-| 0 | The SDKs read and licences settled: ONNX Runtime, the DirectML redistributable, the RTX Video SDK, and two or three candidate models. `ai_probe`: each backend's sizes, factors and cost on one 256x256 texture, one device per run | a model chosen and every file's licence allowing what we do with it | Radeon; 4060 once | 1 |
+| 0 (**done**) | The SDKs read and licences settled: ONNX Runtime, the DirectML redistributable, the RTX Video SDK, and two or three candidate models. `ai_probe`: each backend's sizes, factors and cost on one 256x256 texture, one device per run | a model chosen and every file's licence allowing what we do with it - done for ONNX Runtime, DirectML, RTX Video and seven models | Radeon; 4060 once | 1 |
 | 1 | Uploads and sources, with no drawing changed: records at `Written`, retired by draws, keys, `boot_runner --textures` counts, dumping | the share of textured pixels nameable measured on the 26 discs; the twelve-disc table's instruction and sector counts identical with dumping on; dumps reviewed on five discs | Radeon, WARP | 2-3 |
 | 2 | Replacement: the slot in `PsDraw`, atlas pages, the loader thread, `pack.ini`, the menus | **the identity check**: a dump loaded back as its own pack at 1x, and nearest-upscaled at 2x-8x, draws every picture of the table bit for bit as without it on WARP (with the replacement cut to 15 bits and the console's colour path, a debug switch); a hand-edited texture seen in game | Radeon, WARP | 2-3 |
 | 3 | The AI upscaler on ONNX Runtime and DirectML: thread, device, queue, dilation, padding, atlases, alpha, cache folder, Upscale All | full speed with the queue running on Ridge Racer and two 2D discs, on both cards; reviewed on the 26 discs' dumps; no halo on cut-out sprites | Radeon, then 4060 for a few long runs | 2-3 |
@@ -290,6 +295,169 @@ Independent of everything above: a filter over the texels `PsDraw` already decod
 
 Phase F can come at any point. If it comes before phase 2, it adds the UV-bounds word that phase
 2's slot then shares.
+
+### Phase 0, as built (2026-10-16)
+
+**What was built:**
+
+- **`graphics/upscale/texture/fetch_onnxruntime.ps1`** fetches two NuGet packages from nuget.org:
+  `Microsoft.ML.OnnxRuntime.DirectML` 1.24.4 (12.5 MB) and `Microsoft.AI.DirectML` 1.15.4
+  (202 MB, every platform's builds). Each package is checked against the SHA-256 it had that day.
+  It keeps three DLLs - `onnxruntime.dll` 17.3 MB, `onnxruntime_providers_shared.dll`,
+  `DirectML.dll` 18.5 MB - and the licences, in `Temp\onnxruntime\1.24.4`. Run again, it does
+  nothing.
+- **`graphics/third_party/onnxruntime/`**: ONNX Runtime's C API headers, MIT. DirectML.h is the
+  Windows SDK's.
+- **`graphics/upscale/texture/onnx_runtime.h/.cpp`** loads the DLLs:
+  - It checks Microsoft's Authenticode signature on all three DLLs, by the certificate's
+    organisation: ONNX Runtime is signed "Microsoft Corporation", DirectML "Microsoft Windows
+    Publisher".
+  - It loads DirectML first, by full path. Windows has its own DirectML 1.15.5 in System32, which
+    ONNX Runtime would otherwise find.
+  - `OnnxUpscaler` runs a model on a Direct3D 12 device it is given, through
+    `SessionOptionsAppendExecutionProvider_DML1` with a compute queue of its own. It takes float
+    or half models and pictures of any size, or the one size a model insists on.
+- **`graphics/upscale/texture/torch_model.h/.cpp`** reads a PyTorch `.pth` file:
+  - It reads both layouts - the zip PyTorch has saved since 1.6, and the older single stream of
+    pickles (PixelPerfect is one).
+  - It reads the pickle as data. Nothing in the file is ever called; anything other than
+    tensors, dicts and tuples stays an inert placeholder.
+  - It writes ESRGAN (both namings, 1x-8x, pixel-unshuffled inputs too) and Real-ESRGAN's compact
+    model as ONNX: opset 17, height and width left free, by a small protobuf writer.
+- **`graphics/upscale/texture/texture_upscaler.h`**: what a backend is (RGB in, a whole number of
+  times larger out), so both backends go through the same tests.
+- **`graphics/upscale/texture/rtx_video.h/.cpp`**: RTX Video Super Resolution as the second
+  backend, through NGX on a Direct3D 12 device it is given, with a queue of its own. It checks
+  NVIDIA's signature on `nvngx_vsr.dll` before NGX loads it. It is built only where the SDK is
+  unpacked in `Temp\rtxvideo\` (below); anywhere else it compiles to a backend that says it is
+  not there.
+- **`tools/ai_probe.cpp`** (built by `build_tools.bat`; Test-Suite.md says what each option does).
+- **`build_tools.bat`**: its `if exist ... ^` copies had never run. A caret at the end of a line
+  escapes the next line's first character too, so the escaped space was taken for the command
+  (`' ' is not recognized`). They are blocks now - FSR's DLL copy too.
+
+**Checked:**
+
+- **The conversion matches the authors' own exports.** Two models are published as both `.pth`
+  and ONNX by their authors:
+  - StarSample (a compact model): the largest difference over a 64x48 picture is 0.000000.
+  - Nomos WebPhoto (an ESRGAN, its weights stored as half floats): 0.000003, a thousandth of an
+    8-bit step.
+
+  The old ESRGAN naming is the same graph under other names. The two models that use it came
+  out at ESRGAN's 16.70M parameters and drew the pictures below.
+
+**The candidates**, chosen from OpenModelDB's 600-odd for a licence that allows shipping them or
+fetching them for the user:
+
+| Model | Licence | Kind | Published as |
+|---|---|---|---|
+| Real-ESRGAN animevideo-v3 | BSD-3 | compact, 4x, 0.62M | `.pth`, xinntao's GitHub release |
+| Real-ESRGAN general-x4v3 | BSD-3 | compact, 4x, 1.21M | `.pth`, the same |
+| PixelPerfect V4 | WTFPL | ESRGAN, 4x, 16.7M, pixel art | `.pth`, Google Drive |
+| HDCube | CC0 | ESRGAN, 4x, 16.7M, GameCube textures | `.pth`, GitHub |
+| StarSample V1 | CC0 | compact, 2x | `.pth` and ONNX |
+| ModernSpanimation V1 | MIT | SPAN, 2x | ONNX, fp32 and fp16 |
+| AoMR | CC-BY-4.0 | MoSR, 2x, game textures | ONNX, 256x256 only |
+
+Every pixel-art model on OpenModelDB with an ONNX file is non-commercial (CC-BY-NC-SA). Every
+permissive pixel-art model is `.pth` only. That is why the converter exists. It also means the
+emulator can fetch a model from its author's own release and convert it in place, so we never host
+a model ourselves.
+
+**What each costs** - milliseconds a call from floats in to floats out, median of 10 after the
+first:
+
+| Model | 64x64, Radeon | 128x128, Radeon | 256x256, Radeon | 256x256, RTX 4060 |
+|---|---|---|---|---|
+| Real-ESRGAN animevideo-v3, 4x | 10.7 | 21.7 | 58.0 | 21.5 |
+| Real-ESRGAN general-x4v3, 4x | 19.1 | 37.1 | 104.6 | 30.7 |
+| StarSample, 2x | 10.2 | 21.8 | 53.0 | |
+| ModernSpanimation fp16, 2x | 14.2 | 25.2 | 56.2 | |
+| PixelPerfect / HDCube, 4x | 245 | 960 | resets the card | 492 |
+| AoMR, 2x | | | 1,960 | |
+| RTX Video Super Resolution, quality 4, 4x | | | not an RTX card | 5.5 |
+
+- **A call under 64x64 costs 2-14 ms whatever its size**, so small textures go through packed
+  together, as the design says.
+- **The first call at each new size compiles the graph**: 13 ms to 1 s on the Radeon, once
+  909 ms on the 4060. A run that always calls with the same few sizes (64, 128 and 256, padded up
+  to them) pays this once a size, not once per texture.
+- **An ESRGAN on 256x256 kept the Radeon busy past Windows' two seconds, and Windows reset it**
+  (887A0006, twice; the screen hangs off the Radeon). A heavy model goes through in tiles no
+  larger than the card can finish well inside that: 64x64 on the Radeon, about 400 ms each.
+- **The 4060 is only about 3.5 times the Radeon on PixelPerfect**, which suggests DirectML's float
+  path is not reaching its tensor cores. A half-float export is the thing to try in phase 3.
+- **RTX Video takes any size** - 16x16 to 512x512 were all accepted - and costs next to nothing:
+  0.6 ms for 16x16, 1.7 ms for 128x128, 5.5 ms for 256x256, 19.7 ms for 512x512, about four
+  times as fast as the anime model on the same card. The first call at a size costs 4-60 ms; the
+  feature takes 1.1 s to make, once.
+
+**How they look**: five frames at native size (Breath of Fire III's sprites over painted
+backgrounds; Legend of Mana's painted backgrounds; Ridge Racer's road and buildings) were upscaled
+by each model - the ESRGANs in 64x64 tiles, the rest whole - and compared at 4x. Comparison
+sheets are in `Temp\texup\cmp_*.png`.
+
+- **Real-ESRGAN animevideo-v3 is the best default.** It is clean on all three games: dithering
+  gone, edges and text crisp, a slightly painted look. It is also the cheapest of the 4x models.
+- **Real-ESRGAN general-x4v3** is a little sharper and keeps more texture, at 1.4-1.8 times the
+  cost. It is the "quality" choice.
+- **PixelPerfect** gives a smooth, vector-like look that suits sprites, but costs 20-45 times as
+  much. It is an option for a discrete card, not a default.
+- **HDCube and StarSample** turn the PlayStation's dither into noise and pattern. They are out.
+- **ModernSpanimation** is soft, and 2x only.
+- **RTX Video at quality 4** is as good as the best of them:
+  - On Ridge Racer it is the crispest 4x result: clean window frames, and no painted look.
+  - On Breath of Fire III it keeps more of the wood's grain than the anime model, with the dither
+    gone; its sprites' outlines are a little less clean than the anime model's.
+  - On Legend of Mana it smooths less than the ESRGANs, and looks the most natural.
+
+  Its model is made for video, and that has not hurt it here, even on hard pixel edges.
+
+The frames carry the GPU's dither and Gouraud shading, which real textures do not, so phase 1's
+dumps are the real test. The choice is reviewed again there.
+
+**Decided by phase 0:**
+
+- **The default model:** Real-ESRGAN animevideo-v3. **The quality model:** general-x4v3. Both are
+  BSD-3, fetched from xinntao's GitHub release (SHA-256 `b8a83768...` and `8dc7edb9...`) and
+  converted on the user's machine, with the licence beside them.
+- **PixelPerfect** is offered on cards with dedicated memory, in tiles. It is fetched from its
+  author's Google Drive link, which may need a fallback.
+- **What ships with the emulator, fetched on first use:** ONNX Runtime and DirectML, 36 MB. MIT,
+  and Microsoft's DirectML licence, which lets an application or game redistribute it. The data
+  clause in DirectML's licence is to be noted in the About box.
+- **RTX Video stays the second backend, and is not ruled out.** It is the fastest by far and
+  looks as good as the best, but it runs only on RTX cards, and its SDK cannot be fetched for
+  the user. Phase 4 compares it with the ONNX models on real texture dumps rather than frames.
+- **How RTX Video can ship** (the RTX SDK licence, the one DLSS ships under):
+  - `nvngx_vsr.dll` (19 MB, the SDK's `rel` build, signed by NVIDIA, version 1.6) and the
+    linked NGX library may be shipped inside the emulator as object code.
+  - None of the SDK may be committed: its headers and libraries are NVIDIA's own, not open
+    like Streamline's MIT headers. The guide is marked confidential, so this plan only
+    summarises it.
+  - A release build is made on a machine that has the SDK, and ships the DLL beside the
+    executable.
+  - NVIDIA's marks go in the About box.
+  - NGX asks for notice to NVIDIA before a *commercial* release, which this is not.
+
+**The RTX Video SDK** (1.1.0) comes from NVIDIA's developer site, behind its sign-in, and is
+unpacked by hand into `Temp\rtxvideo\`. It holds:
+
+- headers and the NGX static library (`nvsdk_ngx_d.lib` for /MD)
+- `nvngx_vsr.dll` and `nvngx_truehdr.dll`, each in a `dev` build and a `rel` build. The `dev` ones
+  draw a watermark into their output, so only `rel` is ever measured or shipped.
+
+VSR takes RGBA8 in and gives RGBA8 into a UAV texture out, any size to any size, at quality 0
+(bicubic) to 4. It needs driver 550.58 or later and an RTX 20 card or newer. Its feature DLL is
+updated by the driver's NGX runtime, so what ships is a floor, not a fixed version.
+
+**Not done:**
+
+- **RTX Video's quality levels 1-3**, and any texture-sized comparison: the one 4060 run measured
+  quality 4 only.
+- **Alpha through a real cut-out sprite.** The path is built - dilation, then coverage through the
+  model and a threshold - but no frame had a transparent texel. It waits for phase 1's dumps.
 
 ---
 

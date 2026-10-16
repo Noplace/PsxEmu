@@ -862,7 +862,8 @@ look for. Each was looked for in the code and settings on 2026-10-14 and is not 
   - no texture dumping or replacement.
 
   Both are planned, with an AI texture upscaler on top, in
-  [Texture-Upscaling-Plan.md](Texture-Upscaling-Plan.md) (2026-10-16, nothing built yet).
+  [Texture-Upscaling-Plan.md](Texture-Upscaling-Plan.md) (2026-10-16; phase 0, the models and
+  their runtime, done, nothing in the emulator yet).
 - **Overrides:** no region override (PAL or NTSC whatever the disc and BIOS say), no CPU
   overclock.
 - **Recording:** no video recording, and sound only through `boot_runner --wav`. Input movies

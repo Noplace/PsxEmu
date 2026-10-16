@@ -966,6 +966,22 @@ negated 0.054, motion as given 0.094 on the Radeon, every other sign 0.08-0.22);
 time. AMD's loader finds its effect DLLs only beside the running executable, so
 `build_tools.bat` copies them into `Temp\tools`.
 
+`ai_probe` is the AI texture upscaler's (Docs/Texture-Upscaling-Plan.md, phase 0). It needs
+ONNX Runtime and DirectML fetched (`PSXEmu.Win32\graphics\upscale\texture\fetch_onnxruntime.ps1`);
+with no options it lists the cards and makes no device. `--convert in.pth out.onnx` reads a
+PyTorch upscaler as data and writes it as ONNX, no card needed. `--model m.onnx` (as many as
+wanted, all on one device) loads models onto the integrated card, the NVIDIA one only with
+`--card` or `--all`; `--compare other.onnx` runs a second model on the same picture and passes
+within half an 8-bit step - a converted .pth against its author's own export, 0.000000 for
+StarSample and 0.000003 for Nomos's ESRGAN on 2026-10-16; `--cost` times the sizes `--sizes`
+names; `--image` (as many as wanted) upscales pictures in `--tile`-sized tiles into `--out`,
+with a nearest-neighbour copy beside each, in a folder per backend. One call that keeps a card
+busy past Windows' two seconds resets it: an ESRGAN on 256x256 did on the Radeon, so heavy models
+there take `--tile 64`. `--rtx-video q [--scale n]` puts NVIDIA's RTX Video Super Resolution
+through the same tests on an RTX card - only in a build that found NVIDIA's SDK unpacked in
+`Temp\rtxvideo\`, which cannot be fetched by a script (it is behind NVIDIA's sign-in) and is
+never committed; build_tools.bat then copies its `rel` `nvngx_vsr.dll` into `Temp\tools`.
+
 `rec_test` (2059 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and
