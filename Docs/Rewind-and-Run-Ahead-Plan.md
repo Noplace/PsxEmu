@@ -543,6 +543,34 @@ at once, on every disc. Run it with the final states compared byte for byte, not
 checksums: in phase 1 every picture matched while the states, and the recompiler's path,
 did not.
 
+## Not done yet (2026-10-16)
+
+Left for later, in no particular order. All of it is on the `rewind-run-ahead` branch, which is
+not merged into master.
+
+1. **Phase 4: the hardware rasteriser's VRAM snapshotted on the card.** Above 1x, run-ahead's
+   load costs about 5 ms more a frame and loses the upscaled detail every frame. A rewound
+   picture is native resolution until the game redraws it. At 1x, or on the software
+   rasteriser, neither applies.
+2. **Played, watched and listened to.** Nothing here has had an hour of play. Nobody has looked
+   at a rewind on screen, listened for a click when Backspace is let go, or judged how run-ahead
+   feels.
+3. **DLSS and FSR motion under run-ahead, scored.** The motion tracker is kept over run-ahead's
+   load as designed, but not measured with `boot_runner --motion`.
+4. **Run-ahead's cheaper second step.** When this frame's input equals the last, keep the frame
+   computed ahead instead of loading and running it again. A frame with no change in input
+   would then cost about one frame, not N + 1. Its sound must be held back, not dropped, until
+   the next input shows whether it was real (see "Run-ahead" above).
+5. **Backspace and Tab bindable**, in Settings > Input, rather than fixed keys of the window.
+6. **Merging the branch** into master.
+
+Found on the way and older than this work, each with a task waiting:
+
+- `host_test`'s 400-frame baseline went stale on master: the picture is now
+  `4a65781bfb98db5a`, so four of its checks fail (Test-Suite.md, host_test).
+- Ace Combat 3's frame-3000 picture differs recompiled from interpreted, on master too
+  (Gaps.md, "Never run against the reference").
+
 ## Traps
 
 - **Do not reuse the file header.** A memory state has no magic, version or BIOS hash. It
