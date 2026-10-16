@@ -647,15 +647,17 @@ void System::RamWordsChanged(void* context, uint32_t offset, uint32_t bytes) {
   static_cast<System*>(context)->cpu_.NoteBulkWrite(offset, bytes);
 }
 
-std::string System::LoadMemoryState(const MemoryState& state) {
+std::string System::LoadMemoryState(const MemoryState& state, bool continuing) {
   StateIO io(/*saving=*/false);
   io.BeginLoadView(state.payload.data(), state.payload.size());
   // Without the recompiler there is no compiled code to keep, and nothing to compare for.
   if (recompiler_ != nullptr)
     io.WatchRam(&System::RamWordsChanged, this);
   io_.cdrom.set_reopen_on_load(false);
+  gpu_.set_keep_motion_on_load(continuing);
   SerialisePayload(io);
   io_.cdrom.set_reopen_on_load(true);
+  gpu_.set_keep_motion_on_load(false);
   if (io.truncated())
     return "the state in memory is truncated";
   if (!io.error().empty())

@@ -180,7 +180,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 555 checks, 0 failures.**
+**Current: 559 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -693,7 +693,7 @@ enough that only a real regression should cross them.
 
     host_test [bios]
 
-Thirty-three checks on `PSXEmu.Core/host/` - the channels the front end's threads
+Thirty-seven checks on `PSXEmu.Core/host/` - the channels the front end's threads
 talk through, and the threads themselves (Docs/Threading-Plan.md). Every other
 harness here is single-threaded by construction, and a checksum cannot see a
 race: a lost sample, a frame read while it was being written, a request run out
@@ -718,6 +718,16 @@ side, with a sequence number in every item.
   100, the machine halting mid-frame 60 times (31 at the breakpoint, the rest
   single steps), each halt let go by a request from another thread - same
   numbers.
+- **Run-ahead** (EmuConfig::run_ahead, Rewind-and-Run-Ahead-Plan.md, phase 3). A recompiled boot
+  with two frames ahead of every one shown lands on the same instructions and picture as one
+  without (1,102,874 steps), with the hook for every frame emulated called 1,200 times for 400
+  frames shown. Under the interpreter run-ahead is held off, and the boot is the plain one.
+
+**The baseline above is stale on master since mid-October** (found 2026-10-16): the 400-frame boot
+now ends on `4a65781bfb98db5a`, the same 92,822,656 instructions, so the four checks against
+those two constants fail on master and on the rewind-run-ahead branch alike. The run-ahead
+checks compare runs with each other and do not depend on it. Which commit moved the picture is
+not yet looked into.
 - **Stopping.** Forty machines stopped mid-frame, mid-pace and paused; the
   slowest came back in 17 ms. A paused machine answers a request in under a
   millisecond, because it waits on its doorbell rather than polling.
@@ -848,11 +858,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 341 | | `gpu_test` | 106 |
 | `gte_test` | 197 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 555 |
+| `timer_test` | 80 | | `media_test` | 559 |
 | `sio_test` | 203 | | `spu_test` | 199 |
 | `mc_test` | 112 | | `debug_test` | 174 |
 
-**2,052 checks, 0 failures**, all ten green. Each harness's own section above
+**2,056 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -877,7 +887,8 @@ and the trigger obeyed, busy for 20 cycles a word, RAM and MADR left alone, and 
 comes. Nine are the XA resampler, bug 153; and twelve are the voices' Gaussian interpolation, the
 noise generator's rate and pitches of 4000h and over, bugs 154-156. Thirteen are the voices'
 block ends, first block and the SPU enable bit, bug 158, and thirteen the drive's mute and
-volume matrix, bug 157.)
+volume matrix, bug 157. The last four are run-ahead's setting, Rewind-and-Run-Ahead-Plan.md:
+off by default, the round trip, more frames than offered ignored, and a game's own key.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12

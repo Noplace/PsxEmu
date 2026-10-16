@@ -43,6 +43,8 @@ namespace psxemu {
             std::function<void(bool emulation::psx::EmuConfig::*setting, bool on)> set;
             // A preset button.
             std::function<void(emulation::psx::EmulationPreset preset)> apply_preset;
+            // Run-ahead's frames, 0-3, from its list (EmuConfig::run_ahead).
+            std::function<void(int frames)> set_run_ahead;
             // Whose settings these are, and the check box that changes it.
             std::function<GameScope()> game;
             std::function<void(bool separate)> set_separate;
@@ -78,6 +80,8 @@ namespace psxemu {
         HWND preset_name_ = nullptr;
         HWND preset_text_ = nullptr;
         HWND game_box_ = nullptr;
+        HWND run_ahead_ = nullptr;        // the list of frames
+        HWND run_ahead_hint_ = nullptr;
         HWND note_ = nullptr;
         HFONT font_ = nullptr;
         HFONT bold_font_ = nullptr;

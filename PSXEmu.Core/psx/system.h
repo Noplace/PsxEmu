@@ -247,7 +247,12 @@ class System {
   // open when it is the one the state was taken on, and only the compiled code from RAM words
   // that changed thrown away - which is also what keeps a recompiled machine on the course it
   // would take with no load. An empty string, or why not: a disc that can no longer be opened.
-  std::string LoadMemoryState(const MemoryState& state);
+  //
+  // `continuing`: the state is where this machine stood a frame or few ago, and what is drawn
+  // next carries on from what was drawn last - run-ahead's load, after the frames ahead. The
+  // GPU's motion tracker is kept then, so DLSS and FSR keep their 2D motion. Rewind is not
+  // that; nor is any other load.
+  std::string LoadMemoryState(const MemoryState& state, bool continuing = false);
 
  private:
   void SerialiseAdditions(StateIO& state);

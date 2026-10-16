@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <string>
 #include <functional>
+#include <memory>
 #include <thread>
 #include <vector>
 
@@ -61,7 +62,10 @@ struct MachineReport {
   uint64_t audio_short_frames = 0;     // silence the audio thread had to make up, ever
   uint64_t audio_dropped_frames = 0;   // samples the ring had no room for, ever
   uint64_t frames_dropped = 0;         // frames the video thread never showed, ever
-  uint64_t instructions = 0;           // stepped since the thread started
+  uint64_t instructions = 0;           // stepped since the thread started, real frames only
+  // Frames run ahead of each one shown (EmuConfig::run_ahead) - 0 when it is off, or held off:
+  // the interpreter, the debugger armed, a movie playing.
+  int run_ahead = 0;
   // Which rasteriser is drawing, and if the hardware one was asked for and is not - it could
   // not be made, or its graphics card went - why.
   bool hardware_raster = false;
@@ -99,8 +103,18 @@ class Machine {
     std::function<void(psx::System&, const HostInput&)> apply_input;
 
     // After each frame, with the machine itself - a harness uses it to stop at
-    // an exact frame; the front end has no need of it.
+    // an exact frame; the front end has no need of it. Once a frame shown: with run-ahead
+    // (EmuConfig::run_ahead), after the real frame and before any frame ahead, so what it reads
+    // - the BIOS console's text, a card's writes - is the real frame's, once.
     std::function<void(class Machine&)> after_frame;
+
+    // After every frame emulated, real or run ahead: what belongs to the game's own frames,
+    // which the frames ahead must have too - cheats.
+    std::function<void(class Machine&)> after_each_frame;
+
+    // Asked once a frame on the machine's thread: false holds run-ahead off - while a movie
+    // plays, whose input is by frame number. Unset, it may.
+    std::function<bool()> may_run_ahead;
 
     // About once a second while running, and once on pausing.
     std::function<void(const MachineReport&)> report;
@@ -190,6 +204,11 @@ class Machine {
 
   void Run();
   void RunOneFrame();
+  // Run-ahead (EmuConfig::run_ahead, Docs/Rewind-and-Run-Ahead-Plan.md): how many frames to run
+  // ahead of this one, 0 when it is off or held off; and running them - the state kept, the
+  // frames run on the same input, the last one's picture published, the state loaded back.
+  int RunAheadFrames();
+  void RunAhead(int frames);
   void PublishFrame();
   void PumpAudio();
   void Pace();
@@ -251,6 +270,14 @@ class Machine {
   // Instructions into the frame being run. Kept across a debugger halt, which returns from
   // RunOneFrame mid-frame: restarting it would reset the per-frame guard on every step.
   uint64_t frame_instructions_ = 0;
+
+  // Run-ahead's state, kept and reused frame to frame (defined in machine.cpp: a nested type of
+  // System's cannot be named here without the whole of the core). Made on first use.
+  struct Ahead;
+  std::unique_ptr<Ahead> ahead_;
+  double ahead_ms_ = 0.0;      // the last frame's frames ahead, emulating them
+  int run_ahead_now_ = 0;      // frames run ahead of the last frame shown
+  bool run_ahead_failed_ = false;   // a load back failed once: held off from then on
 
   Clock::time_point report_since_;
   int report_frames_ = 0;

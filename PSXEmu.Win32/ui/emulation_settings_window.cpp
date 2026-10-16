@@ -39,6 +39,8 @@ namespace psxemu {
         const int kIdDefaults = 202;
         const int kIdClose = 203;
         const int kIdGame = 204;
+        const int kIdRunAhead = 205;
+        const int kIdRunAheadHint = 206;
         const int kIdHintFirst = 300;     // the grey line under each switch
 
         // The layout, in pixels at 96 DPI: the presets across the top, then two columns of
@@ -245,7 +247,19 @@ namespace psxemu {
             bottom = std::max(bottom, y);
         }
 
-        const int buttons_top = bottom + 4;
+        // Run-ahead, under both columns: a number of frames rather than a switch
+        // (Docs/Rewind-and-Run-Ahead-Plan.md).
+        const int run_ahead_top = bottom + 2;
+        make(L"STATIC", L"&Run-ahead:", SS_LEFT, 0, kMargin, run_ahead_top + 4, 80, 20, font_);
+        run_ahead_ = make(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                          kIdRunAhead, kMargin + 84, run_ahead_top, 110, 160, font_);
+        for (const wchar_t* item : { L"Off", L"1 frame", L"2 frames", L"3 frames" })
+            SendMessageW(run_ahead_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item));
+        run_ahead_hint_ = make(L"STATIC", L"", SS_LEFT, kIdRunAheadHint, kMargin + 206,
+                               run_ahead_top, kClientWidth - kMargin * 2 - 206, kHintHeight,
+                               small_font_);
+
+        const int buttons_top = run_ahead_top + kHintHeight + 8;
         note_ = make(L"STATIC", L"", SS_LEFT, 0, kMargin, buttons_top + 6, 620, 20, small_font_);
         make(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, kIdClose,
              kClientWidth - kMargin - 100, buttons_top, 100, 28, font_);
@@ -283,6 +297,15 @@ namespace psxemu {
             SendMessageW(switches_[i], BM_SETCHECK,
                          config.*(kSwitches[i].setting) ? BST_CHECKED : BST_UNCHECKED, 0);
         }
+        SendMessageW(run_ahead_, CB_SETCURSEL, static_cast<WPARAM>(config.run_ahead), 0);
+        SetWindowTextW(run_ahead_hint_,
+                       config.recompiler
+                           ? L"Shows the game this many frames ahead of itself, taking away that "
+                             L"much of its own lag. The game runs exactly as without. Costs a frame "
+                             L"of emulation each. Not changed by the presets."
+                           : L"Needs the Recompiler, which is off: held off until it is on. Shows "
+                             L"the game this many frames ahead of itself, taking away that much "
+                             L"of its own lag.");
         const EmulationPreset preset = emulation::psx::MatchingEmulationPreset(config);
         SetWindowTextW(preset_name_, PresetName(preset));
         SetWindowTextW(preset_text_, PresetText(preset));
@@ -323,7 +346,8 @@ namespace psxemu {
                 // The hints in grey, so the switches read first.
                 HDC dc = reinterpret_cast<HDC>(wparam);
                 const int id = GetDlgCtrlID(reinterpret_cast<HWND>(lparam));
-                if (id >= kIdHintFirst && id < kIdHintFirst + kSwitchCount)
+                if ((id >= kIdHintFirst && id < kIdHintFirst + kSwitchCount) ||
+                    id == kIdRunAheadHint)
                     SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
                 else
                     SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
@@ -341,6 +365,14 @@ namespace psxemu {
                                         BST_CHECKED;
                         // The App's setter calls OnConfigChanged, which refreshes the preset.
                         self->host_.set(kSwitches[i].setting, on);
+                    }
+                    return 0;
+                }
+                if (id == kIdRunAhead) {
+                    if (code == CBN_SELCHANGE && self->host_.set_run_ahead) {
+                        const LRESULT frames = SendMessageW(self->run_ahead_, CB_GETCURSEL, 0, 0);
+                        if (frames != CB_ERR)
+                            self->host_.set_run_ahead(static_cast<int>(frames));
                     }
                     return 0;
                 }

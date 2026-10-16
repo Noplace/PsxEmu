@@ -20,6 +20,10 @@ double Ms(std::chrono::steady_clock::duration d) {
 
 }  // namespace
 
+struct Machine::Ahead {
+  psx::System::MemoryState state;
+};
+
 Machine::Machine(psx::System* system, FrameMailbox* video, SampleRing* audio, Hooks hooks)
     : system_(system), video_(video), audio_(audio), hooks_(std::move(hooks)) {
   scratch_.resize(static_cast<size_t>(kScratchFrames) * SampleRing::kChannels);
@@ -146,14 +150,26 @@ void Machine::Run() {
     // longer and the next is on time (Pace).
     if (display_match_.locked && limiter_.has_deadline() && Clock::now() > limiter_.deadline())
       video_->RequestSkip();
-    PublishFrame();
+    // Run-ahead: the frame just run is the real one. Its sound goes out and its hooks run; then
+    // the frames ahead run, the last one's picture is the one published, and the machine goes
+    // back to the end of the real frame. Without, the real frame's picture is published.
+    const int ahead = RunAheadFrames();
+    run_ahead_now_ = ahead;
+    ahead_ms_ = 0.0;
+    if (ahead == 0)
+      PublishFrame();
     PumpAudio();
-    // Memory cards go to disk a second after the game stops writing them (psx/mc.h).
+    if (hooks_.after_each_frame)
+      hooks_.after_each_frame(*this);
+    if (hooks_.after_frame)
+      hooks_.after_frame(*this);
+    if (ahead > 0)
+      RunAhead(ahead);
+    // Memory cards go to disk a second after the game stops writing them (psx/mc.h) - on the
+    // real frames' account: after run-ahead's load back, never with a frame ahead's write in.
     for (int port = 0; port < 2; ++port)
       for (int slot = 0; slot < psx::System::kCardSlotsPerPort; ++slot)
         system_->mc(port, slot).OnFrame();
-    if (hooks_.after_frame)
-      hooks_.after_frame(*this);
     const Clock::time_point handed_over = Clock::now();
     Pace();
     const Clock::time_point paced = Clock::now();
@@ -194,16 +210,18 @@ void Machine::Run() {
     else if (falling_behind_ && ahead_frames_ >= kBehindFrames)
       falling_behind_ = false;
 
-    report_emulate_ms_ += Ms(emulated - input_taken);
+    // The frames run ahead count as emulating, not as handing over, though they ran after it.
+    const double emulate_ms = Ms(emulated - input_taken) + ahead_ms_;
+    const double handoff_ms = Ms(input_taken - start) + Ms(handed_over - emulated) - ahead_ms_;
+    report_emulate_ms_ += emulate_ms;
 
-    report_handoff_ms_ += Ms(input_taken - start) + Ms(handed_over - emulated);
+    report_handoff_ms_ += handoff_ms;
     report_idle_ms_ += Ms(paced - handed_over);
     if (hooks_.frame_done) {
       FrameSample sample;
       sample.frame_ms = static_cast<float>(Ms(paced - start));
-      sample.emulate_ms = static_cast<float>(Ms(emulated - input_taken));
-      sample.handoff_ms =
-          static_cast<float>(Ms(input_taken - start) + Ms(handed_over - emulated));
+      sample.emulate_ms = static_cast<float>(emulate_ms);
+      sample.handoff_ms = static_cast<float>(handoff_ms);
       sample.idle_ms = static_cast<float>(Ms(paced - handed_over));
       sample.refresh_hz = static_cast<float>(refresh);
       sample.audio_queued_frames = static_cast<uint32_t>(audio_->Available());
@@ -244,6 +262,54 @@ void Machine::RunOneFrame() {
     ++instructions_;
   }
   frame_instructions_ = 0;
+}
+
+int Machine::RunAheadFrames() {
+  const psx::EmuConfig& config = system_->config();
+  int frames = config.run_ahead;
+  if (frames <= 0 || run_ahead_failed_)
+    return 0;
+  if (frames > psx::EmuConfig::kMaxRunAhead)
+    frames = psx::EmuConfig::kMaxRunAhead;
+  // Interpreted, even one frame ahead does not fit in a frame (Docs/Rewind-and-Run-Ahead-Plan.md:
+  // Ridge Racer's frame alone was 24 ms) - and with PGXP on the interpreter is what runs. An
+  // armed debugger could halt in a frame that never happens.
+  if (!system_->recompiler_enabled() || system_->debugger().armed())
+    return 0;
+  if (hooks_.may_run_ahead && !hooks_.may_run_ahead())
+    return 0;
+  return frames;
+}
+
+// The frame just run is the real one, and the machine is kept as it stands - cards and all,
+// since a save the frames ahead write was made on input the player has not given yet. They run
+// on the input the real frame had, their sound is thrown away, the last one's picture is the
+// one shown, and the machine goes back. Nothing in the real frames changes for it:
+// boot_runner --run-ahead, which does the same, leaves the twelve-disc table exactly as it was.
+void Machine::RunAhead(int frames) {
+  if (ahead_ == nullptr)
+    ahead_.reset(new Ahead());
+  system_->SaveMemoryState(&ahead_->state, /*with_cards=*/true);
+  const Clock::time_point start = Clock::now();
+  for (int i = 0; i < frames; ++i) {
+    // As RunOneFrame does it, unarmed (RunAheadFrames), and not counted as the machine's.
+    const uint64_t target = system_->gpu().frame_count() + 1;
+    uint64_t steps = 0;
+    while (system_->gpu().frame_count() < target && steps < kMaxInstructionsPerFrame) {
+      system_->StepInstructionUnarmed();
+      ++steps;
+    }
+    if (hooks_.after_each_frame)
+      hooks_.after_each_frame(*this);
+    while (system_->spu().ReadSamples(scratch_.data(), kScratchFrames) > 0) {
+    }
+  }
+  ahead_ms_ = Ms(Clock::now() - start);
+  PublishFrame();
+  // Only a disc that has gone could fail this, and then the machine is wherever the load
+  // stopped: run-ahead stays off from then on rather than doing it again every frame.
+  if (!system_->LoadMemoryState(ahead_->state, /*continuing=*/true).empty())
+    run_ahead_failed_ = true;
 }
 
 void Machine::set_plane_view(psx::PlaneView view) {
@@ -463,6 +529,7 @@ void Machine::Report(bool paused) {
   report.audio_dropped_frames = audio_->dropped_frames();
   report.frames_dropped = video_->dropped();
   report.instructions = instructions_;
+  report.run_ahead = run_ahead_now_;
   report.hardware_raster = system_->gpu().hardware_raster();
   report.raster_error = system_->gpu().raster_error();
   report.shared_picture = published_shared_;

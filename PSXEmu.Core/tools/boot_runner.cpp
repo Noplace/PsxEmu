@@ -2347,7 +2347,7 @@ int main(int argc, char** argv) {
           while (system->spu().ReadSamples(discard, static_cast<int>(sizeof(discard) / 2 / 2)) > 0) {
           }
           const auto start = std::chrono::steady_clock::now();
-          const std::string error = system->LoadMemoryState(ahead_state);
+          const std::string error = system->LoadMemoryState(ahead_state, /*continuing=*/true);
           ahead_load_ms += std::chrono::duration<double, std::milli>(
                                std::chrono::steady_clock::now() - start).count();
           if (!error.empty()) {

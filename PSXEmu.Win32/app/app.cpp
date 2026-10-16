@@ -268,6 +268,7 @@ namespace psxemu {
             host.apply_preset = [this](emulation::psx::EmulationPreset preset) {
                 SetEmulationPreset(preset);
             };
+            host.set_run_ahead = [this](int frames) { SetRunAhead(frames); };
             host.game = [this] { return CurrentGame(); };
             host.set_separate = [this](bool separate) { SetGameSettingsSeparate(separate); };
             emulation_settings_.Create(instance, window_, std::move(host));
@@ -695,11 +696,15 @@ namespace psxemu {
         hooks.frame_done = [this](const emulation::host::FrameSample& sample) {
             frame_stats_.Push(sample);
         };
+        // Once a frame shown, on the real frame: what it printed and wrote. Cheats after every
+        // frame emulated, so the frames run ahead have them too (EmuConfig::run_ahead).
         hooks.after_frame = [this](Machine& machine) {
             CollectConsoleText(machine.system());
             WatchMemoryCardWrites(machine.system());
-            ApplyCheats(machine.system());
         };
+        hooks.after_each_frame = [this](Machine& machine) { ApplyCheats(machine.system()); };
+        // A movie's input is by frame number: run-ahead waits until it is over.
+        hooks.may_run_ahead = [this] { return !movie_.playing(); };
         hooks.halted = [this](Machine& machine) {
             SendDebuggerSnapshot(machine, DebuggerWindow::kAtPc, true);
         };
@@ -2275,6 +2280,25 @@ namespace psxemu {
         if (name != nullptr)
             Notify(OverlayIcon::kInfo, ToastKind::kInfo,
                    std::wstring(name) + (on ? L" on" : L" off"));
+    }
+
+    // Settings > Emulation > Run-ahead (Docs/Rewind-and-Run-Ahead-Plan.md). The machine takes it
+    // up at its next frame; it holds it off itself under the interpreter, an armed debugger or
+    // a movie, so this only says so.
+    void App::SetRunAhead(int frames) {
+        if (frames < 0 || frames > EmuConfig::kMaxRunAhead || frames == config_.run_ahead)
+            return;
+        config_.run_ahead = frames;
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+        emulation_settings_.OnConfigChanged();
+        const std::wstring what = frames == 0   ? std::wstring(L"Run-ahead off")
+                                  : frames == 1 ? std::wstring(L"Run-ahead: 1 frame")
+                                                : L"Run-ahead: " + std::to_wstring(frames) +
+                                                      L" frames";
+        Notify(OverlayIcon::kInfo, ToastKind::kInfo, what,
+               frames > 0 && !config_.recompiler ? L"Needs the Recompiler, which is off"
+                                                 : L"");
     }
 
     void App::SetEmulationPreset(emulation::psx::EmulationPreset preset) {

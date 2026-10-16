@@ -2848,6 +2848,26 @@ void TestSettingsFile(const std::string& directory) {
           "a game can keep its own GTE commands as x64");
   }
 
+  // Run-ahead (Docs/Rewind-and-Run-Ahead-Plan.md): off by default, a number of frames kept, one
+  // the setting does not offer ignored, and a game's own.
+  {
+    EmuConfig config;
+    Check(config.run_ahead == 0, "run-ahead is off by default");
+    config.run_ahead = 2;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.run_ahead == 2, "two frames of run-ahead survive the round trip");
+    out.SetInt("run_ahead", EmuConfig::kMaxRunAhead + 1);
+    EmuConfig rejected;
+    emulation::psx::LoadConfig(out, rejected);
+    Check(rejected.run_ahead == 0, "more run-ahead than the setting offers is ignored");
+    const std::vector<std::string> keys = emulation::psx::GameSettingKeys();
+    Check(std::find(keys.begin(), keys.end(), "run_ahead") != keys.end(),
+          "a game can keep its own run-ahead");
+  }
+
   // The graphics card (Settings > Video > Graphics Card): automatic by default, and a name -
   // spaces, brackets and all - kept as it is. A saved name for a card that is not here is
   // kept too: it is the front end that treats it as automatic, so that the choice comes back

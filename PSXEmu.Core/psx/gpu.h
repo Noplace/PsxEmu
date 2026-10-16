@@ -91,6 +91,9 @@ class Gpu : public GpuCore {
   // only shows picture() says otherwise, since keeping it waits for the hardware rasteriser to
   // finish each frame.
   void set_native_picture(bool wanted) { native_picture_ = wanted; }
+  // For the load in progress: what is drawn next carries on from what was drawn last, so the
+  // motion tracker is kept rather than forgotten (System::LoadMemoryState, `continuing`).
+  void set_keep_motion_on_load(bool keep) { keep_motion_on_load_ = keep; }
 
   // Watches a VRAM rectangle and records which GP0 command wrote each pixel
   // into it. "What is this region and who made it" is otherwise a question
@@ -546,6 +549,7 @@ class Gpu : public GpuCore {
   SharedPicture shared_picture_;
   int picture_scale_ = 1;
   bool native_picture_ = true;
+  bool keep_motion_on_load_ = false;
   // SetPlanes', handed to each rasteriser as it is made.
   bool planes_keep_ = false;
   PlaneView plane_view_ = PlaneView::kPicture;

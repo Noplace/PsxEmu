@@ -510,7 +510,8 @@ MachineRun RunBios(const std::string& bios, int frames,
                    const std::function<void(Machine&)>& at_frame = nullptr,
                    const std::function<void(Machine&)>& during = nullptr,
                    const std::string& load_state_first = std::string(),
-                   const std::function<void(Machine&)>& on_halt = nullptr) {
+                   const std::function<void(Machine&)>& on_halt = nullptr,
+                   bool recompiler = false, int run_ahead = 0, int* each_frames = nullptr) {
   MachineRun result;
   // On the heap: a System is far too big for a thread's stack.
   std::unique_ptr<System> system_owner = std::make_unique<System>();
@@ -518,6 +519,8 @@ MachineRun RunBios(const std::string& bios, int frames,
   if (system.Initialize(bios.c_str()) != 0)
     return result;
   system.config().frame_limiter = false;
+  system.config().recompiler = recompiler;
+  system.config().run_ahead = run_ahead;
   FrameMailbox mailbox;
   SampleRing ring(8192);
   std::atomic<bool> reached{false};
@@ -533,6 +536,8 @@ MachineRun RunBios(const std::string& bios, int frames,
     }
   };
   hooks.halted = on_halt;
+  if (each_frames != nullptr)
+    hooks.after_each_frame = [each_frames](Machine&) { ++*each_frames; };
   Machine machine(&system, &mailbox, &ring, hooks);
   if (!load_state_first.empty()) {
     machine.Post([load_state_first](Machine& m) {
@@ -655,6 +660,34 @@ void MachineChecks(const std::string& bios) {
     Check(saved.ok && save_error.empty() && resumed.ok && resumed.checksum == saved.checksum &&
               saved.checksum == kBaselineChecksum,
           "a state saved on the machine's thread and loaded by request plays on identically");
+  }
+
+  // Run-ahead (EmuConfig::run_ahead, Docs/Rewind-and-Run-Ahead-Plan.md): two frames ahead of
+  // every one shown, recompiled, must leave the real frames exactly as without - the same
+  // instructions and the same picture at the end - with the hooks for every frame emulated
+  // called for the frames ahead too, and the hook for a frame shown only once a frame. And
+  // interpreted it is held off, which changes nothing either.
+  {
+    int plain_each = 0;
+    int ahead_each = 0;
+    const MachineRun plain_rec =
+        RunBios(bios, 400, nullptr, nullptr, std::string(), nullptr, true, 0, &plain_each);
+    const MachineRun ahead_rec =
+        RunBios(bios, 400, nullptr, nullptr, std::string(), nullptr, true, 2, &ahead_each);
+    printf("    400 frames recompiled: %llu instructions, %llu with run-ahead 2; %d and %d frames "
+           "emulated\n",
+           static_cast<unsigned long long>(plain_rec.instructions),
+           static_cast<unsigned long long>(ahead_rec.instructions), plain_each, ahead_each);
+    Check(plain_rec.ok && ahead_rec.ok && ahead_rec.instructions == plain_rec.instructions &&
+              ahead_rec.checksum == plain_rec.checksum,
+          "two frames of run-ahead leave a recompiled boot's frames exactly as they were");
+    Check(plain_each == 400 && ahead_each == 400 * 3,
+          "the hook for every frame runs for the frames ahead too");
+    const MachineRun held =
+        RunBios(bios, 400, nullptr, nullptr, std::string(), nullptr, false, 2, nullptr);
+    Check(held.ok && plain.ok && held.instructions == plain.instructions &&
+              held.checksum == plain.checksum,
+          "run-ahead asked for under the interpreter is held off");
   }
 
   // Stopped at any moment - mid-frame, mid-pace, paused - it comes back

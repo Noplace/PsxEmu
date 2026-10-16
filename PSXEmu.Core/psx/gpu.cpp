@@ -376,9 +376,13 @@ namespace emulation {
                     precise.valid = false;
                 for (PreciseVertex& precise : queue_precise_)
                     precise.valid = false;
-                // Nor is motion: nothing drawn before the load is anything drawn after it.
-                sprite_motion_.Forget();
-                motion_fresh_ = true;
+                // Nor is motion: nothing drawn before the load is anything drawn after it -
+                // unless the load is run-ahead's, whose next frame does carry on from the last
+                // one drawn (set_keep_motion_on_load).
+                if (!keep_motion_on_load_) {
+                    sprite_motion_.Forget();
+                    motion_fresh_ = true;
+                }
                 backend_->Reloaded();
                 PushWatch();
                 ResolveFramebuffer();

@@ -242,6 +242,16 @@ struct EmuConfig {
   // Safe to change while running: the compiled blocks are thrown away and compiled again.
   bool gte_x64 = true;
 
+  // Run-ahead: frames the picture is shown ahead of the machine, 0-3, to take away that many
+  // frames of a game's own lag between a button and what it does about it
+  // (Docs/Rewind-and-Run-Ahead-Plan.md). After each frame host::Machine runs this many more on
+  // the same input, shows the last, and goes back to a state kept in memory; the game itself
+  // runs exactly as without. Only with the recompiler: interpreted, even one frame ahead does
+  // not fit in a frame. Off while the debugger is armed or a movie plays. A game's own, since
+  // how much lag a game has is the game's.
+  int run_ahead = 0;
+  static const int kMaxRunAhead = 3;
+
   // Rasterise on a thread of its own, behind a queue of parsed primitives
   // (phase 7 of Docs/Threading-Plan.md). The GPU's timing stays on the machine
   // thread either way - only the pixels move - and every read of VRAM waits

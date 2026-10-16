@@ -185,6 +185,7 @@ namespace psxemu {
         // Both apply at once - every one of them is safe to change under a running game.
         void SetEmulationSetting(bool emulation::psx::EmuConfig::*setting, bool on);
         void SetEmulationPreset(emulation::psx::EmulationPreset preset);
+        void SetRunAhead(int frames);
         void PressAnalogButton(int port);
         void SetAudioBackend(const std::string& key);
         void SetShowTimings(bool on);

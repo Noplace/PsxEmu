@@ -256,6 +256,7 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("skip_bios_intro", c.skip_bios_intro);
   f.SetBool("recompiler", c.recompiler);
   f.SetBool("gte_x64", c.gte_x64);
+  f.SetInt("run_ahead", c.run_ahead);
   f.SetString("bios_file", c.bios_file);
   f.SetBool("hle_bios", c.hle_bios);
   f.SetFloat("emulation_speed", c.emulation_speed);
@@ -388,6 +389,9 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   c.skip_bios_intro = f.GetBool("skip_bios_intro", c.skip_bios_intro);
   c.recompiler = f.GetBool("recompiler", c.recompiler);
   c.gte_x64 = f.GetBool("gte_x64", c.gte_x64);
+  const int run_ahead = f.GetInt("run_ahead", c.run_ahead);
+  if (run_ahead >= 0 && run_ahead <= EmuConfig::kMaxRunAhead)
+    c.run_ahead = run_ahead;
   // No list to validate against - what is valid is whatever is in the folder,
   // which only the front end can see. It checks before using it.
   c.bios_file = f.GetString("bios_file", c.bios_file);
@@ -435,6 +439,9 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
 inline std::vector<std::string> GameSettingKeys() {
   std::vector<std::string> keys = {
       "recompiler",         "gte_x64",             "icache_timing",       "exact_event_timing",
+      // How much of a game's lag run-ahead takes away is the game's (Docs/Rewind-and-Run-Ahead-
+      // Plan.md).
+      "run_ahead",
       "dma_stops_cpu",      "measured_bus_timing", "write_queue_timing",
       "gpu_thread",         "gpu_transfer_timing", "cdrom_mechanical_timing",
       "skip_bios_intro",    "controller_type_port1", "controller_type_port2",

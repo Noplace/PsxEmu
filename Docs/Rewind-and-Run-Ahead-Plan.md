@@ -1,8 +1,9 @@
 # Rewind and run-ahead
 
-> **Status: phases 0-2 done, 2026-10-16; nothing a player can use is built yet.**
-> `System::SaveMemoryState`/`LoadMemoryState` exist, and `boot_runner --run-ahead <n>` runs on
-> them as the front end will. With buttons pressed, run-ahead 2 leaves the twelve-disc table
+> **Status: phases 0-2 done and phase 3 built, 2026-10-16: run-ahead is in the app**
+> (Settings > Emulation > Run-ahead, with the recompiler), not yet played for long or listened
+> to. Rewind is not built. `System::SaveMemoryState`/`LoadMemoryState` exist, and
+> `boot_runner --run-ahead <n>` runs on them as the front end does. With buttons pressed, run-ahead 2 leaves the twelve-disc table
 > exactly as without it under either CPU: every checkpoint picture, every instruction count and
 > each final state byte for byte. Every press shows up 2 frames earlier, or 1 where the game
 > itself reacts within a frame. Run-ahead 1 costs two frames plus 0.7-0.9 ms. Getting there found
@@ -381,18 +382,40 @@ Run-ahead 2 still runs over three times faster than real time in both. These ave
 the boot and its loading, where the frames are cheap; the scenes measured above are the ones to
 budget by.
 
-What has to split in `host::Machine`:
+**Built in the front end (phase 3).** `host::Machine` does it each frame, after the real frame:
+it publishes nothing yet, pumps the real frame's sound, and runs the hooks. Then `RunAhead` keeps
+the state, cards and all, runs the frames ahead unarmed, throws their sound away, publishes the
+last one's picture and loads back with `continuing` set. The cards go to disk (`MC::OnFrame`)
+only after that load, so never with a frame ahead's write in them.
 
-- **Hooks per emulated frame and per frame shown.** Cheats run after every emulated frame.
-  The BIOS console's text, the card-write watcher and `frame_done` run once per frame shown,
-  after the real frame. Text a speculative frame printed would otherwise print twice: once
-  speculatively, and once again for real.
-- **Sound**: `Spu::ReadSamples` after a speculative frame goes to a scratch buffer that is
-  thrown away. The SPU's output ring is not in a state, so nothing else is needed.
-- **Pacing and the readout**: emulate time includes every frame run, and the instruction count
-  is the real timeline's. The speed the machine is "managing" is frames shown per second.
-- **Off while** the debugger is armed, a movie plays (a movie's input is by frame number, and
-  states stop it anyway), and the interpreter is on, unless the user insists.
+- **Hooks per emulated frame and per frame shown.** `after_each_frame` runs after every frame,
+  real or ahead: the front end's cheats. `after_frame` runs once per frame shown, after the real
+  frame: the BIOS console's text and the card-write watcher, which would otherwise see a frame
+  ahead's text or writes and then the real frame's again. `frame_done` is once per frame shown.
+- **Sound**: the real frame's goes to the device as always, then what the frames ahead make is
+  drained and dropped. The SPU's output ring is not in a state, so nothing else is needed.
+- **The readout**: emulate time includes the frames ahead, and the instruction count is the real
+  frames' alone. `MachineReport::run_ahead` says how many frames ahead it is running, 0 when held off.
+- **Held off** (`RunAheadFrames`) without the recompiler (with PGXP the interpreter runs, so that
+  too), while the debugger is armed, and while a movie plays (the `may_run_ahead` hook, which
+  the front end answers from the movie player). The machine checks each frame, so it goes back on
+  by itself.
+- **Motion**: a run-ahead load (`LoadMemoryState(state, continuing)`) keeps the GPU's sprite
+  motion tracker, which any other load forgets. The picture published, the last frame ahead,
+  then has its motion against the frame emulated just before it, the one shown a frame earlier,
+  as DLSS and FSR want. Not yet scored with `boot_runner --motion`.
+- **The setting**: Settings > Emulation > Run-ahead, Off or 1-3 frames (`EmuConfig::run_ahead`,
+  `run_ahead` in `psxemu.ini`), a game's own when it has separate settings, not changed by the
+  presets. Its hint says when the recompiler is off and run-ahead is waiting for it.
+
+Checked: `host_test` runs a recompiled BIOS boot with run-ahead 2 on the machine's thread to the
+same instructions and picture as without, the per-frame hook called 1,200 times for 400 frames
+shown, and finds it held off under the interpreter. The app, Ridge Racer from a scratch copy with
+its own `psxemu.ini`, kept 100% speed with run-ahead 2. Emulating took 2.5-5.3 ms a frame against
+1.0-2.0 ms with it off, and handing over 2.3-2.7 ms against 0.15 ms: the save and the load, and
+with the rasteriser on its own thread, likely its catching up at each (`Gpu::Serialise` waits
+for it). Not measured apart. The sound buffer held at the same level either way. Not yet done:
+an hour of play, or anything listened to.
 
 **A cheaper second step**, once the plain version is proven. If this frame's input equals the
 last frame's, the speculative frame computed last time *is* the real frame now. Keep it
@@ -466,7 +489,7 @@ states to carry the movie's position, is the TAS work in Gaps.md, and builds on 
 | 0 | **Done 2026-10-15.** `boot_runner --bench-state <n>`, on `System::SerialisePayload`/`FinishLoad` and `StateIO::ReuseBuffer`; `Cdrom::set_reopen_on_load`; `Disc::read_stats`. The CD across loads, from the share and a local copy | The numbers repeat; Ridge Racer and Wild Arms cost what their parts add up to, and the reason they seemed not to is known (the first loop). Found on the way: a dropped-code load every frame changes the machine's course |
 | 1 | **Done 2026-10-15.** `SaveMemoryState`/`LoadMemoryState`: reused buffers, no copy in, no reopen, only code from changed words thrown away, four read-ahead blocks, cards in run-ahead states (`MC::Snapshot`); `SaveState`/`LoadState` on the same buffer. Bug 159 on the way: a save moved the recompiler's path, and the SPU's resampler histories and the device batch's end were not saved | `boot_runner --memory-state-every 1` on the twelve discs, recompiled and interpreted: every report line as without it, and each final state the same byte for byte. Two identical runs save identical states. A memory-state load costs 0.46-0.59 ms recompiled. `mc_test` 112, `spu_test` 199 |
 | 2 | **Done 2026-10-16.** Run-ahead in `boot_runner --run-ahead <n>`, and `--shown-log` for the picture shown. Bug 160 on the way (a recompiled chain ended where its links did, so its course depended on what was compiled before) and bug 161 (the GP0 queue and drawing debt not in a state) | Twelve discs, both CPUs, four presses each, `--run-ahead 2` against none: every checkpoint picture, instruction count and final state the same. Each press shows 2 frames earlier in 22 runs of 24, 1 earlier in the two where the game reacts within one frame. Every shown picture is the plain run's 2 frames on, except 0-2 frames a run where the frames ahead ran on the input before a press |
-| 3 | Run-ahead in the front end: the hook split, the sound, the setting, per game | `host_test` runs a machine with run-ahead to `boot_runner`'s instruction count; then an hour of play |
+| 3 | **Built 2026-10-16, not yet played.** Run-ahead in the front end: the hook split (`after_each_frame`, `may_run_ahead`), the sound, the cards flushed after the load, the motion tracker kept, Settings > Emulation > Run-ahead, per game | `host_test`: a recompiled boot with run-ahead 2 on the machine's thread lands where one without does, and the interpreter holds it off. The app at 100% speed with run-ahead 2 in Ridge Racer. Still to do: an hour of play, and listening |
 | 4 | Hardware rasteriser snapshots on the card | A run-ahead load at 4x costs what it does at 1x, and `hw_raster_test`'s scenes are identical with run-ahead on |
 | 5 | Rewind's store: reverse deltas on a thread, the budget | Record 600 frames, step back to frame 300, compare with a state saved at frame 300: byte-identical. Changed-page compression measured |
 | 6 | Rewind in the front end: the binding, playback, the badge | Rewind to a point, release, and the run from there matches a run loaded from a state saved at that point |
