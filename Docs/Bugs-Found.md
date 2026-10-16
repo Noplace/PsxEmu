@@ -9883,5 +9883,13 @@ the one below; aimed about 20 rows above a bar, it picks that bar, and the menus
   items, and the gun test and calibration behave as above.
 - Twelve discs, 3,000 frames, against master (2618cdd): the same instructions and pictures on all twelve. Air Combat and Vandal Hearts differed in the three-at-a-time table - Vandal never read its disc - and matched on two reruns alone, so the share is the suspect. States are two bytes longer, the switch.
 
+- Merged after rewind and run-ahead (159-161), the Justifier's state addition after theirs:
+  `sio_test` 224, `media_test` 564, `spu_test` 199, `mc_test` 112, and `host_test` with the
+  same four stale-baseline failures as without it. Twelve discs match that branch's build.
+  Area 51 with the gun from a cold boot to its options screen, 4,000 frames, ends on the same
+  instructions, picture and state plain, with a memory state every frame, with
+  `--run-ahead 2` and with `--rewind-test 30`, on each CPU.
+
 **Not done** (Gaps.md): the sensor needs no lit spot here; a second Justifier, which plugs into
-the first, is not reached; and Area 51's menu offset is unexplained.
+the first, is not reached; Area 51's menu offset is unexplained; and on the recompiler, without
+exact event timing, Area 51 gives up on most polls of the gun before its acknowledge arrives.
