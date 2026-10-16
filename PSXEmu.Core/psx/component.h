@@ -28,9 +28,11 @@ class Component {
     system_ = system;
   }
  protected:
-  System* system_;
-  Cpu* cpu_;
-  IOInterface* io_;
+  // Null until set_system: what a component reaches for before the machine has wired it up
+  // can be told apart from a machine that has.
+  System* system_ = nullptr;
+  Cpu* cpu_ = nullptr;
+  IOInterface* io_ = nullptr;
 };
 
 }

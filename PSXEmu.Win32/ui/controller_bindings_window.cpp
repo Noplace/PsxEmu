@@ -118,6 +118,7 @@ namespace psxemu {
         const int kButtonR3 = 16;
         const int kButtonCross = 4;
         const int kButtonCircle = 6;
+        const int kButtonStart = 12;
 
         // The palette. Light, like the rest of the front end's windows.
         const COLORREF kCanvasBack = RGB(248, 249, 251);
@@ -152,6 +153,7 @@ namespace psxemu {
                 case Sio::kMouse: return L"a mouse";
                 case Sio::kMultitap: return L"a multitap";
                 case Sio::kGunCon: return L"a GunCon";
+                case Sio::kJustifier: return L"a Justifier";
                 default: return L"nothing";
             }
         }
@@ -360,6 +362,7 @@ namespace psxemu {
             case Sio::kDualAnalog:
             case Sio::kDualShock:
             case Sio::kGunCon:
+            case Sio::kJustifier:
                 return true;
             default:
                 return false;
@@ -373,6 +376,9 @@ namespace psxemu {
         // A GunCon's A and B are its source's Cross and Circle; nothing else reaches it.
         if (type == Sio::kGunCon)
             return button == kButtonCross || button == kButtonCircle;
+        // A Justifier's Start and Back are its source's Start and Cross.
+        if (type == Sio::kJustifier)
+            return button == kButtonStart || button == kButtonCross;
         if (button == kButtonAnalog || button == kButtonL3 || button == kButtonR3)
             return type == Sio::kDualAnalog || type == Sio::kDualShock;
         return true;
@@ -500,6 +506,9 @@ namespace psxemu {
             if (type == Sio::kGunCon)
                 text += L" It aims and fires with the Windows mouse; Cross and Circle below are "
                         L"the gun's A and B buttons.";
+            if (type == Sio::kJustifier)
+                text += L" It aims and fires with the Windows mouse; Start and Cross below are "
+                        L"the gun's Start and Back buttons.";
             if (device_ != in_use) {
                 text += L" These are the bindings for " + DevicePhrase(device_) +
                         L", which it is not using: Use for This Port switches to them.";

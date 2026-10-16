@@ -9805,3 +9805,83 @@ mechanical timing), and how long the BIOS bootstrap's Init has left
 **Checked.** The five runs that differed, then the whole table: twelve discs, both CPUs,
 buttons pressed, with and without `--run-ahead 2`. Every checkpoint picture, every instruction
 count and every final state now matches.
+
+## 162. A Konami Justifier light gun
+
+Gaps.md: "No Konami Justifier (Hyper Blaster)."
+
+`psx/sio.cpp`, `psx/sio.h`, `psx/gpu.cpp`, `psx/gpu.h`, `psx/system.cpp`, `emu/emuconfig.h`, the
+front end's controller choices, `tools/boot_runner.cpp`, `tools/sio_test.cpp`,
+`tools/media_test.cpp`
+
+Controllers > Controller > Justifier (Konami light gun), `controller_type_portN = justifier`. This
+is Konami's Justifier (ID 5A31h), the gun Area 51 takes.
+
+**The protocol** (psx-spx). The gun answers 42h with 31h 5Ah and a 16-bit active-low button word:
+trigger bit 15, Start bit 3, Back bit 14. That is the whole reply - four bytes, and nothing about
+where it is aimed. The byte the game sends with the button word's low half turns the gun's IRQ10
+on (10h) or off (00h).
+
+**Where it is aimed reaches the game as IRQ10.** The GPU raises it as the beam passes the aimed
+point, and again at the same dot on each of the next seven lines. The game's handler reads timer 0
+(dot clocks since the line's hblank) and timer 1 (hblanks) to learn where. `Gpu::BeamPositionAt`
+gives the dot and line, with bug 100's arithmetic. `CyclesToNextEvent` ends a tick at the spot
+while the beam is on one of the gun's lines, so the handler reads the timers within a cycle of
+where the beam is. `Tick` raises the interrupt when the beam crosses it, including into the next
+field. How many lines a real gun fires on is not documented; psx-spx says "the next some
+scanlines". Eight is a choice (`Gpu::kLightgunLines`).
+
+**Sio tells the GPU** (`Sio::UpdateLightgun`) whenever the gun's aim, its switch, its connection or
+the port's type changes. A port changed to another controller, or unplugged, stops it firing. A
+reconnected gun starts switched off until the game's next poll.
+
+**The switch is in a save state**, through `System::SerialiseAdditions`, so a loaded state fires
+the way the run it came from did. A state from before loads with it off, and the game's next poll
+turns it on. Where the gun is aimed and what is held come from the front end every frame, as the
+GunCon's do.
+
+**The front end aims it the way it aims the GunCon**: the Windows cursor over the picture, shown as
+a crosshair. Left button is the trigger, and the right one fires off the screen. The middle button
+is Start and the back side button is Back; the port's own source gives them too, its Start and
+Cross. The Controllers window shows only those two for a Justifier.
+
+**`boot_runner --justifier x,y`** plugs one into port 1, aimed at a fraction of the picture.
+`--press` works it: square is the trigger, start is Start, cross is Back. The summary counts the
+IRQ10s, and the `crtc` line now gives the vertical display range as well.
+
+### How Area 51 reads it
+
+Traced with watchpoints on a state at its main menu:
+
+- The game's IRQ10 handler (80042D18h) acknowledges the interrupt, then reads timer 0 until two
+  reads agree within one, and timer 1 until two agree. It stores up to eight pairs a frame.
+- Its vblank handler turns each pair into a line count, timer 1 minus timer 1 at the previous
+  vblank, and a dot count, timer 0.
+- The game takes the first pair's line, and the dot from the two pairs whose dots agree best. It
+  adds a per-gun offset to each: X = (dot + offX) x 5/4 and Y = line + offY.
+- The offsets start at (-23, -30), from a settings block. The menus set (-23, 0).
+
+**The gun test** (Options > Player Select > Configure 1P > Test) with the starting offsets put a
+shot aimed at the bullseye 8 pixels left and 10 up. Calibrate, and one shot at the same spot,
+changed the offsets to (-16, -21). That puts the same shot within a pixel of where it was aimed:
+line 148 - 21 = 127 for row 128, and (151 - 16) x 5/4 = 168.75 for column 168.
+
+**The main menu reads about 20 lines low**, because of its 0. Aimed at a bar, the game highlights
+the one below; aimed about 20 rows above a bar, it picks that bar, and the menus work. Whether a console's menu is as far off is unknown without one to compare (Gaps.md).
+
+**Checked.**
+- `sio_test` 203 -> 224 (`justifier`, twenty-one checks): the reply's four bytes and each button
+  bit. No IRQ10 in a field until a poll's fourth byte is 10h, then eight. The first is on line
+  136 and within a CPU cycle of dot 1888, the middle of a 320x240 picture. A save state keeps it
+  armed. None aimed off the picture, switched off, unplugged, or with the port a pad again.
+- `media_test` 555 -> 556 (563 -> 564 once merged with rewind and run-ahead): a Justifier port
+  survives the settings file.
+- The front end, built: `controller_type_port1 = justifier` in a fresh `psxemu.ini` opened the
+  Controllers window on "Port 1 is a Justifier", with only Start and Cross shown, and the key
+  survived the app closing.
+- Area 51 with `boot_runner --justifier`: Start reaches the main menu, the trigger picks menu
+  items, and the gun test and calibration behave as above.
+- Twelve discs, 3,000 frames, against master (2618cdd): the same instructions and pictures on all twelve. Air Combat and Vandal Hearts differed in the three-at-a-time table - Vandal never read its disc - and matched on two reruns alone, so the share is the suspect. States are two bytes longer, the switch.
+
+**Not done** (Gaps.md): the sensor needs no lit spot here; a second Justifier, which plugs into
+the first, is not reached; and Area 51's menu offset is unexplained.

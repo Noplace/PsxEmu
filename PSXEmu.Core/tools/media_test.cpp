@@ -2639,6 +2639,13 @@ void TestSettingsFile(const std::string& directory) {
               loaded.multitap_player_type[0][0] == "dualshock",
           "each multitap player's type survives the round trip, and only its own");
     Check(loaded.controller_type[1] == "guncon", "a GunCon port survives the round trip");
+    config.controller_type[0] = "justifier";
+    SettingsFile justifier;
+    emulation::psx::StoreConfig(justifier, config);
+    EmuConfig loaded_justifier;
+    emulation::psx::LoadConfig(justifier, loaded_justifier);
+    Check(loaded_justifier.controller_type[0] == "justifier",
+          "a Justifier port survives the round trip");
 
     out.SetString("multitap_port1_player_c_type", "light_saber");
     EmuConfig rejected;

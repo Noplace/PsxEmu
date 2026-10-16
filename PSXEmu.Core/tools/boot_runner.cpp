@@ -36,6 +36,9 @@
 //                        game's own frames (flips), MDEC blocks, CD sectors and GP0 words
 //     --dis <hex>:<n>    disassemble n instructions of RAM from an address
 //     --watch-vram x,y,w,h   report which GP0 command wrote into a VRAM area
+//     --justifier x,y    port 1 holds a Konami Justifier aimed at x,y (fractions of the
+//                        picture); --press then pulls its trigger with square, Back with
+//                        cross and Start with start, the pad buttons psx-spx gives them
 //     --press b@f[+h]    press a button at frame f, holding h frames
 //                        e.g. --press start@1800 --press down+cross@2000+8
 //     --movie <file.bk2> play a BizHawk input movie into the ports from the first frame
@@ -318,6 +321,11 @@ struct Options {
   int ppm_every;   // --ppm-every: a picture every this many frames, beside --ppm's
   float volume;
   std::vector<Press> presses;
+  // --justifier x,y: port 1 holds a Konami Justifier aimed there (fractions of the picture);
+  // negative for none.
+  float justifier_x = -1.0f;
+  float justifier_y = -1.0f;
+  bool justifier = false;
   // --movie: a BizHawk .bk2 played into the ports (emu/movie.h), --movie-offset frames late,
   // with --movie-disc naming the discs after --disc for a movie that changes them.
   const char* movie;
@@ -804,6 +812,13 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->frame_log = atoi(argv[++i]);
     } else if (strcmp(arg, "--ppm-every") == 0 && i + 1 < argc) {
       options->ppm_every = atoi(argv[++i]);
+    } else if (strcmp(arg, "--justifier") == 0 && i + 1 < argc) {
+      if (sscanf(argv[++i], "%f,%f", &options->justifier_x, &options->justifier_y) != 2) {
+        fprintf(stderr, "bad --justifier: %s (expected x,y as fractions, e.g. 0.5,0.5)\n",
+                argv[i]);
+        return false;
+      }
+      options->justifier = true;
     } else if (strcmp(arg, "--press") == 0 && i + 1 < argc) {
       Press press;
       if (!ParsePress(argv[++i], &press)) {
@@ -1679,6 +1694,13 @@ int main(int argc, char** argv) {
   }
   if (system->hle_active())
     printf("bios           HLE (psx/hle_bios.h)\n");
+  if (options.justifier) {
+    system->sio().set_controller_type(0, emulation::psx::Sio::kJustifier);
+    system->sio().set_connected(0, true);
+    system->sio().set_guncon(0, false, false, false, options.justifier_x, options.justifier_y);
+    printf("port 1         Konami Justifier, aimed at %.3f,%.3f\n", options.justifier_x,
+           options.justifier_y);
+  }
   // --movie: read before anything is mounted, since it says which disc the machine boots on and
   // which slots have a card - new ones, in the temporary folder, so a run starts as the
   // recording did and writes to nothing of anyone's.
@@ -2384,7 +2406,14 @@ int main(int argc, char** argv) {
       if (!options.presses.empty()) {
         const uint16_t buttons = ButtonsOnFrame(options.presses, frames);
         if (buttons != last_buttons) {
-          system->sio().set_buttons(0, buttons);
+          if (options.justifier) {
+            using emulation::psx::Sio;
+            system->sio().set_guncon(0, (buttons & Sio::kSquare) != 0,
+                                     (buttons & Sio::kStart) != 0, (buttons & Sio::kCross) != 0,
+                                     options.justifier_x, options.justifier_y);
+          } else {
+            system->sio().set_buttons(0, buttons);
+          }
           last_buttons = buttons;
         }
       }
@@ -2493,9 +2522,11 @@ int main(int argc, char** argv) {
          system->gpu().display_vram_x(), system->gpu().display_vram_y(),
          width, height,
          system->gpu().display_disabled() ? "DISABLED" : "enabled");
-  printf("crtc           hdisp %u-%u gpu clocks, GPUSTAT=%08x\n",
+  printf("crtc           hdisp %u-%u gpu clocks, vdisp %u-%u lines, GPUSTAT=%08x\n",
          system->gpu().horizontal_display_start(),
          system->gpu().horizontal_display_end(),
+         system->gpu().vertical_display_start(),
+         system->gpu().vertical_display_end(),
          system->gpu().status_raw());
   printf("checksum       %016llx\n",
          static_cast<unsigned long long>(Checksum(pixels, width * height)));
@@ -2521,6 +2552,9 @@ int main(int argc, char** argv) {
          static_cast<unsigned long long>(system->interrupts_taken()),
          static_cast<unsigned long long>(system->interrupts_blocked()),
          static_cast<unsigned long long>(system->instructions_with_ie()));
+  if (options.justifier)
+    printf("justifier      %llu IRQ10s fired as the beam passed its spot\n",
+           static_cast<unsigned long long>(system->gpu().lightgun_irqs()));
   printf("               I_STAT=%08X I_MASK=%08X SR=%08X\n",
          system->io().io.interrupt_stat, system->io().io.interrupt_mask,
          ctx->ctrl.SR.raw);

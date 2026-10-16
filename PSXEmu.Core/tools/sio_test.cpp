@@ -16,6 +16,7 @@ using emulation::psx::Sio;
 using emulation::psx::Sio1;
 using emulation::psx::System;
 using emulation::psx::kInterruptSIO1;
+using emulation::psx::kInterruptPIO;
 
 namespace {
 
@@ -1398,6 +1399,100 @@ void TestGunConSurvivesSaveState(System* system) {
   FreshPad(system, 0);
 }
 
+// A Konami Justifier (5A31h): answers 42h with its ID and three buttons, and nothing about where
+// it is aimed - the byte after the command's 00h turns its IRQ10 on (10h) or off.
+void TestJustifierReply(System* system) {
+  printf("justifier: id and buttons come back, and the fourth byte arms IRQ10\n");
+  system->sio().set_controller_type(0, Sio::kJustifier);
+  system->sio().set_connected(0, true);
+  PadHarness pad(system);
+  uint8_t reply[16] = {};
+  const uint8_t irq_on[1] = { 0x10 };
+  const uint8_t irq_off[1] = { 0x00 };
+
+  system->sio().set_guncon(0, false, false, false, 0.5f, 0.5f);
+  int n = pad.Command(0, 0x42, irq_off, 1, reply, sizeof(reply));
+  CheckEqual(n, 4, "a Justifier's reply is four bytes");
+  CheckEqual(reply[0], 0x31, "id low byte");
+  CheckEqual(reply[1], 0x5A, "id high byte");
+  CheckEqual(reply[2], 0xFF, "nothing held: buttons low byte all ones");
+  CheckEqual(reply[3], 0xFF, "and the high byte");
+
+  system->sio().set_guncon(0, true, false, false, 0.5f, 0.5f);
+  pad.Command(0, 0x42, irq_off, 1, reply, sizeof(reply));
+  CheckEqual(reply[3], 0x7F, "the trigger is bit 15, active low");
+  system->sio().set_guncon(0, false, true, false, 0.5f, 0.5f);
+  pad.Command(0, 0x42, irq_off, 1, reply, sizeof(reply));
+  CheckEqual(reply[2], 0xF7, "Start is bit 3");
+  system->sio().set_guncon(0, false, false, true, 0.5f, 0.5f);
+  pad.Command(0, 0x42, irq_off, 1, reply, sizeof(reply));
+  CheckEqual(reply[3], 0xBF, "Back is bit 14");
+
+  // Where it is aimed only reaches the game through IRQ10, so nothing fires until it is asked.
+  emulation::psx::Gpu& gpu = system->gpu();
+  gpu.WriteStatus(0x08000001);
+  gpu.WriteStatus(0x06000000 | (3168u << 12) | 608u);
+  gpu.WriteStatus(0x07000000 | (256u << 10) | 16u);
+  // From the top of one field to the top of the next.
+  auto frame_of_irqs = [&]() {
+    while (gpu.scanline() != 0)
+      gpu.Tick(gpu.CyclesToNextEvent());
+    const uint64_t before = gpu.lightgun_irqs();
+    while (gpu.scanline() == 0)
+      gpu.Tick(gpu.CyclesToNextEvent());
+    while (gpu.scanline() != 0)
+      gpu.Tick(gpu.CyclesToNextEvent());
+    return gpu.lightgun_irqs() - before;
+  };
+  system->sio().set_guncon(0, false, false, false, 0.5f, 0.5f);
+  CheckEqual(static_cast<int>(frame_of_irqs()), 0, "not armed: no IRQ10 in a frame");
+  pad.Command(0, 0x42, irq_on, 1, reply, sizeof(reply));
+  CheckEqual(static_cast<int>(frame_of_irqs()), static_cast<int>(emulation::psx::Gpu::kLightgunLines),
+             "armed: an IRQ10 on each of the lines the sensor sees the spot");
+
+  // The first comes as the beam reaches the spot, and the tick that gets there ends there, so
+  // the game's handler reads the timers in the right place. The middle of a 320-wide picture is
+  // dot 608 + 160 x 8 = 1888 of line 16 + 120 = 136.
+  while (gpu.scanline() != 0)
+    gpu.Tick(gpu.CyclesToNextEvent());
+  system->io().io.interrupt_stat = 0;
+  while ((system->io().io.interrupt_stat & kInterruptPIO) == 0)
+    gpu.Tick(gpu.CyclesToNextEvent());
+  CheckEqual(static_cast<int>(gpu.scanline()), 136, "the first IRQ10 is on the line aimed at");
+  const uint32_t dot = gpu.dot_in_scanline();
+  Check(dot >= 1888 && dot < 1890, "and within a CPU cycle of the dot aimed at");
+
+  // A state keeps it armed: a load fires the way the run it came from did, not from the next poll.
+  const std::string path = "Temp\\tools\\justifier_state_test.sav";
+  Check(system->SaveState(path).empty(), "save succeeds");
+  pad.Command(0, 0x42, irq_off, 1, reply, sizeof(reply));
+  Check(system->LoadState(path).empty(), "load succeeds");
+  CheckEqual(system->sio().controller_type(0), Sio::kJustifier, "port 0 is a Justifier again");
+  system->sio().set_guncon(0, false, false, false, 0.5f, 0.5f);
+  CheckEqual(static_cast<int>(frame_of_irqs()), static_cast<int>(emulation::psx::Gpu::kLightgunLines),
+             "and still fires, as armed when it was saved");
+
+  // Off the picture the sensor sees nothing.
+  system->sio().set_guncon(0, false, false, false, -1.0f, -1.0f);
+  CheckEqual(static_cast<int>(frame_of_irqs()), 0, "aimed off the screen: no IRQ10");
+
+  // Turned off again by the game, nothing.
+  system->sio().set_guncon(0, false, false, false, 0.5f, 0.5f);
+  pad.Command(0, 0x42, irq_off, 1, reply, sizeof(reply));
+  CheckEqual(static_cast<int>(frame_of_irqs()), 0, "disarmed: no IRQ10");
+
+  // Unplugged, nothing answers and nothing fires.
+  pad.Command(0, 0x42, irq_on, 1, reply, sizeof(reply));
+  system->sio().set_connected(0, false);
+  CheckEqual(pad.Command(0, 0x42, nullptr, 0, reply, sizeof(reply)), 0,
+             "an unplugged Justifier gives no /ACK");
+  CheckEqual(static_cast<int>(frame_of_irqs()), 0, "and fires no IRQ10");
+  system->sio().set_controller_type(0, Sio::kDualShock);
+  CheckEqual(static_cast<int>(frame_of_irqs()), 0, "nor once the port is a pad again");
+  system->sio().set_connected(0, true);
+  FreshPad(system, 0);
+}
+
 int main() {
   System* system = new System();
   system->InitializeWithoutBios();
@@ -1437,6 +1532,7 @@ int main() {
   TestDualShockRefusesConfigCommandsOutsideConfigMode(system);
   TestGunConReply(system);
   TestGunConSurvivesSaveState(system);
+  TestJustifierReply(system);
 
   TestSio1ResetState(system);
   TestSio1EmptyReceiveFifoReadsOnes(system);

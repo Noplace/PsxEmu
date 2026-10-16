@@ -1814,8 +1814,17 @@ namespace emulation {
             // is eleven of them.
             const uint64_t position = dot_accumulator_;
             uint64_t soonest = static_cast<uint64_t>(kDotsPerScanline) * kGpuClockDenominator;
-            const uint32_t edges[2] = { horizontal_display_start_,
-                                        HblankStart(horizontal_display_end_, kDotsPerScanline) };
+            // The Justifier's spot, when the beam is on one of its lines and not yet past it:
+            // IRQ10 is due there, and a batch that ended later would let the game read the
+            // timers late (set_lightgun).
+            uint32_t gun_dot = 0, gun_line = 0;
+            uint32_t gun_edge = kDotsPerScanline;
+            if (LightgunTarget(&gun_dot, &gun_line) && scanline_ >= gun_line &&
+                scanline_ < gun_line + kLightgunLines)
+                gun_edge = gun_dot;
+            const uint32_t edges[3] = { horizontal_display_start_,
+                                        HblankStart(horizontal_display_end_, kDotsPerScanline),
+                                        gun_edge };
             for (uint32_t edge : edges) {
                 const uint64_t at = static_cast<uint64_t>(edge) * kGpuClockDenominator;
                 if (at > position && at < soonest)
@@ -1840,6 +1849,12 @@ namespace emulation {
             // Where the beam was, in GPU clocks into the line, for counting hblanks as
             // it enters them (exact_hblank_).
             const uint32_t line_start_position = dot_accumulator_ / kGpuClockDenominator;
+            // ...and in sevenths of a GPU clock into the field, for the Justifier's spot.
+            const uint64_t field_line = static_cast<uint64_t>(kDotsPerScanline) *
+                                        kGpuClockDenominator;
+            const uint64_t beam_before = scanline_ * field_line + dot_accumulator_;
+            const uint64_t beam_after =
+                beam_before + static_cast<uint64_t>(cycles) * kGpuClockNumerator;
             dot_accumulator_ += cycles * kGpuClockNumerator;
             const uint32_t dots = dot_accumulator_ / kGpuClockDenominator;
             dot_accumulator_ -= dots * kGpuClockDenominator;
@@ -1936,6 +1951,26 @@ namespace emulation {
                 DrainQueue();
 
             dot_accumulator_ += remaining * kGpuClockDenominator;
+
+            // The Justifier: did the beam pass its spot, on any of its lines, in this tick? Once
+            // past the field's last line the count starts again, so the spot in the next field
+            // is looked for too. Ticks end at the spot (CyclesToNextEvent), so the game's
+            // handler reads the timers where the beam is.
+            uint32_t gun_dot = 0, gun_line = 0;
+            if (LightgunTarget(&gun_dot, &gun_line)) {
+                const uint64_t field = static_cast<uint64_t>(total_lines) * field_line;
+                bool hit = false;
+                for (uint32_t i = 0; i < kLightgunLines && !hit; ++i) {
+                    const uint64_t spot = (gun_line + i) * field_line +
+                                          static_cast<uint64_t>(gun_dot) * kGpuClockDenominator;
+                    hit = (spot > beam_before && spot <= beam_after) ||
+                          (spot + field > beam_before && spot + field <= beam_after);
+                }
+                if (hit) {
+                    system().io().SetInterrupt(kInterruptPIO);
+                    ++lightgun_irqs_;
+                }
+            }
             return frame_completed;
         }
 

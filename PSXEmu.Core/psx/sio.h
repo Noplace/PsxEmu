@@ -107,9 +107,15 @@ class Sio : public Component {
   //   kGunCon     - Namco's GunCon light gun (NPC-103, ID 5A63h): a trigger,
   //                 A and B, and where on the screen it points - see struct
   //                 GunCon and ExchangeGunCon.
+  //   kJustifier  - Konami's Justifier / Hyperblaster (ID 5A31h): a trigger,
+  //                 Start and Back, and no position in its reply at all - it
+  //                 raises IRQ10 as the beam passes where it is aimed, and the
+  //                 game reads the timers then (psx-spx, "Konami Justifier/
+  //                 Hyperblaster (IRQ10)"). See ExchangeJustifier and
+  //                 Gpu::set_lightgun. Aimed through set_guncon, as a GunCon is.
   // Saved in a state as its number, so a new kind only ever goes on the end.
   enum ControllerType { kDigital, kDualAnalog, kDualShock, kMouse, kNone,
-                        kMultitap, kGunCon };
+                        kMultitap, kGunCon, kJustifier };
 
   Sio();
   ~Sio();
@@ -184,10 +190,12 @@ class Sio : public Component {
   // A light gun's buttons, and where it is aimed: `x` and `y` are fractions
   // of the picture's width and height (0,0 its top left corner), anything
   // outside 0-1 off the edge of the screen - which is how a GunCon game is
-  // told to reload. Harmless on a port not holding a GunCon.
+  // told to reload. Harmless on a port holding neither gun. On a Justifier
+  // `a` is Start and `b` is Back.
   void set_guncon(int port, bool trigger, bool a, bool b, float x, float y) {
     if (port < 0 || port >= 2) return;
     guncon_[port] = GunCon{ trigger, a, b, x, y };
+    UpdateLightgun();
   }
 
   // A pad that is freshly connected forgets whatever a previous one had
@@ -265,6 +273,9 @@ class Sio : public Component {
   int ExchangeDirect(int port, const uint8_t* out, uint8_t* in, int count);
 
   void Serialise(StateIO& io);
+  // Whether each Justifier's IRQ10 is on - added after version 8, so it goes in
+  // System::SerialiseAdditions, and a state from before it loads with both off.
+  void SerialiseJustifiers(StateIO& io);
 
  private:
 
@@ -410,7 +421,7 @@ class Sio : public Component {
   // kTargetMultitapAll is set only once it has committed to the long
   // all-players response - see ExchangeMultitap.
   enum Target { kTargetNone, kTargetPad, kTargetMemoryCard, kTargetMouse,
-               kTargetMultitap, kTargetMultitapAll, kTargetGunCon };
+               kTargetMultitap, kTargetMultitapAll, kTargetGunCon, kTargetJustifier };
 
   // What a GunCon is doing, from the front end every frame. Not saved in a
   // state: like a pad's buttons it is whatever the player is doing now, and
@@ -431,6 +442,11 @@ class Sio : public Component {
   std::unique_ptr<Pad> pad_[2];
   Mouse mouse_[2];
   GunCon guncon_[2];
+  // Whether a Justifier's IRQ10 is on: the fourth byte of each poll says, 10h on and 00h off
+  // (psx-spx), so a game with two guns can let one fire a frame. In a state
+  // (SerialiseJustifiers): every poll says it again, but until the next one a loaded state
+  // would fire differently from the run it was saved from.
+  bool justifier_irq_[2] = { false, false };
   ControllerType controller_type_[2] = { kDualShock, kDualShock };
   ControllerType multitap_type_[2][4] = {
       { kDualShock, kDualShock, kDualShock, kDualShock },
@@ -509,6 +525,10 @@ class Sio : public Component {
   // byte ever changes it, see ExchangeMouse.
   uint8_t ExchangeMouse(uint8_t data, int slot);
   uint8_t ExchangeGunCon(uint8_t data, int port);
+  uint8_t ExchangeJustifier(uint8_t data, int port);
+  // Tells the GPU where a Justifier is aimed while its IRQ10 is on, or that none is: after the
+  // aim, the port's type or the IRQ10 byte changes.
+  void UpdateLightgun();
   // The gun's two position fields, X and Y, as it would count them now.
   void GunConPosition(int port, uint16_t* x, uint16_t* y);
   uint8_t MouseSwitchesByte(const Mouse& mouse) const;

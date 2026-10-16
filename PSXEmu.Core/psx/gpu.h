@@ -256,6 +256,8 @@ class Gpu : public GpuCore {
   // paints, which is what decides the visible width.
   uint32_t horizontal_display_start() const { return horizontal_display_start_; }
   uint32_t horizontal_display_end() const { return horizontal_display_end_; }
+  uint32_t vertical_display_start() const { return vertical_display_start_; }
+  uint32_t vertical_display_end() const { return vertical_display_end_; }
 
   // Where the beam is when it paints a point of the picture - `x` and `y` as
   // fractions of the frame's width and height, the frame framebuffer() hands
@@ -265,6 +267,23 @@ class Gpu : public GpuCore {
   // is aimed at, and a game turns that back into a place on the screen. False
   // for a point off the picture, where a gun sees no beam at all.
   bool BeamPositionAt(float x, float y, uint32_t* dot, uint32_t* line) const;
+
+  // A Konami Justifier (Sio::kJustifier) with its IRQ10 on, aimed at `x`,`y` as BeamPositionAt
+  // takes them: IRQ10 as the beam passes that point, and again at the same point on each of the
+  // kLightgunLines - 1 lines after, as the gun's sensor goes on seeing the spot it is aimed at.
+  // A game reads timers 0 and 1 in its handler to learn where (psx-spx, "Konami IRQ10 Notes").
+  // How many lines a real gun fires on is not documented - psx-spx says "the next some
+  // scanlines", and Sporting Clays makes room for 20 - so 8 is a choice. Off the picture, or
+  // not armed, nothing.
+  void set_lightgun(bool armed, float x, float y) {
+    lightgun_armed_ = armed;
+    lightgun_x_ = x;
+    lightgun_y_ = y;
+  }
+  static const uint32_t kLightgunLines = 8;
+  // IRQ10s the light gun has fired, for a harness.
+  uint64_t lightgun_irqs() const { return lightgun_irqs_; }
+
   uint32_t status_raw() const { return status_.raw; }
 
   // The GPU runs at 11/7 of the CPU clock, and a scanline is this many GPU
@@ -444,6 +463,16 @@ class Gpu : public GpuCore {
   uint32_t dot_clock_accum_;
   uint32_t pending_dot_clocks_;
   uint32_t pending_hblanks_;
+  // The Justifier (set_lightgun): whether it may fire, and where it is aimed. Set by Sio every
+  // frame and every poll, so not saved in a state.
+  bool lightgun_armed_ = false;
+  float lightgun_x_ = -1.0f;
+  float lightgun_y_ = -1.0f;
+  uint64_t lightgun_irqs_ = 0;
+  // Where the beam passes the aimed point, when armed and on the picture.
+  bool LightgunTarget(uint32_t* dot, uint32_t* line) const {
+    return lightgun_armed_ && BeamPositionAt(lightgun_x_, lightgun_y_, dot, line);
+  }
   // EmuConfig::exact_event_timing: an hblank is counted as the beam leaves the display
   // window, where counter 1 sees it on a console, rather than at the end of the line.
   // Set by IOInterface; not saved, since the setting is not part of a state.

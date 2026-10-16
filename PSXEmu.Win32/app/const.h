@@ -338,6 +338,7 @@ namespace psxemu {
         { "none",        L"&None (Disconnected)" },
         { "multitap",    L"Multi&tap (4 players)" },
         { "guncon",      L"&GunCon (light gun)" },
+        { "justifier",   L"&Justifier (Konami light gun)" },
     };
 
     // The sources a PSX port - or, for a Multitap, one of its four players - can be mapped to, in

@@ -1084,6 +1084,24 @@ namespace psxemu {
                 continue;
             }
 
+            // A Justifier aims and fires the same way. Its other two buttons are Start - the
+            // middle button, or the port's own Start - and the side button Konami calls Back, the
+            // mouse's back button or the port's Cross.
+            if (controller_type[port] == Sio::kJustifier) {
+                const SourceReading r = read_source(ParseInputSource(config.input_source[port]),
+                                                    BindingSlotFor(port, -1));
+                const bool focused = input.focused;
+                const bool offscreen = focused && input.mouse_right;
+                const bool trigger = focused && (input.mouse_left || input.mouse_right);
+                const bool start = (focused && input.mouse_middle) || (r.buttons & Sio::kStart) != 0;
+                const bool back = (focused && input.mouse_back) || (r.buttons & Sio::kCross) != 0;
+                system.sio().set_connected(port, true);
+                system.sio().set_guncon(port, trigger, start, back,
+                                        offscreen ? -1.0f : input.pointer_x,
+                                        offscreen ? -1.0f : input.pointer_y);
+                continue;
+            }
+
             // A Multitap sources each of its four players independently; otherwise this is exactly
             // the single-pad path below, run four times.
             if (controller_type[port] == Sio::kMultitap) {
@@ -3250,7 +3268,7 @@ namespace psxemu {
                 return OverlayIcon::kPadAnalog;
             if (type == "mouse")
                 return OverlayIcon::kMouse;
-            if (type == "guncon")
+            if (type == "guncon" || type == "justifier")
                 return OverlayIcon::kGunCon;
             if (type == "multitap")
                 return OverlayIcon::kMultitap;
@@ -3263,6 +3281,7 @@ namespace psxemu {
             if (type == "dualshock") return L"DualShock";
             if (type == "mouse") return L"Mouse";
             if (type == "guncon") return L"GunCon";
+            if (type == "justifier") return L"Justifier";
             if (type == "multitap") return L"Multitap";
             return L"Nothing plugged in";
         }
@@ -3421,7 +3440,7 @@ namespace psxemu {
                 }
                 continue;
             }
-            if (type == "mouse" || type == "guncon")
+            if (type == "mouse" || type == "guncon" || type == "justifier")
                 main.source = L"Mouse";
             else if (type == "none")
                 main.source = L"";
@@ -3456,7 +3475,8 @@ namespace psxemu {
                 }
             } else if (config_.input_source[port] == source && config_.controller_type[port] != "none" &&
                        config_.controller_type[port] != "mouse" &&
-                       config_.controller_type[port] != "guncon") {
+                       config_.controller_type[port] != "guncon" &&
+                       config_.controller_type[port] != "justifier") {
                 where = L"Port " + std::to_wstring(port + 1) + L" \x00B7 " +
                         NameForType(config_.controller_type[port]);
             }
@@ -3697,7 +3717,9 @@ namespace psxemu {
                 // A light gun aims with the cursor, so over the picture it is a crosshair.
                 if (app != nullptr && LOWORD(lparam) == HTCLIENT &&
                     (app->config_.controller_type[0] == "guncon" ||
-                     app->config_.controller_type[1] == "guncon")) {
+                     app->config_.controller_type[1] == "guncon" ||
+                     app->config_.controller_type[0] == "justifier" ||
+                     app->config_.controller_type[1] == "justifier")) {
                     SetCursor(LoadCursorW(nullptr, IDC_CROSS));
                     return TRUE;
                 }

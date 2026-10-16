@@ -531,6 +531,7 @@ exchanged is acknowledged with an interrupt.
   - mouse;
   - multitap (four players, four card slots a port);
   - GunCon (the beam position, from the GPU's timing);
+  - Konami Justifier (IRQ10 from the GPU as the beam passes where it is aimed);
   - nothing.
 - **Memory cards:**
   - Each slot holds a 128 KB card in memory and answers read, write and ID commands.

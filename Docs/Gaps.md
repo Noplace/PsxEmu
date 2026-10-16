@@ -59,8 +59,9 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 341, gte 197, timer 80, sio 203, spu 197, gpu 106, mdec 85, media 555, mc 103, debug 174 - 2,041
-checks, no failures (the ten Test-Suite.md counts, 2026-10-14). Of the rest, those run that day all
+cpu 341, gte 197, timer 80, sio 224, spu 199, gpu 106, mdec 85, media 564, mc 112, debug 174 - 2,082
+checks, no failures (the ten Test-Suite.md counts, 2026-10-14; sio, spu, media and mc 2026-10-16, with
+rewind, run-ahead and the Justifier). Of the rest, those run that day all
 pass too: rec_test 2,059, hle_test 81 (which had stopped compiling when HleBios moved into
 `psx::hle`), hw_raster_test 78 and 81 (Direct3D 11 and 12), gpu_test 106 through either hardware
 rasteriser, dlss_choice_test 42, fsr_choice_test 36, filter_chain_test 27. Earlier: 2,433 across
@@ -578,16 +579,24 @@ tool: raw, DexDrive `.gme`, VGS `.mem`/`.vgs` or `.psx` (bug 106). What is left:
 
 Digital pad, Dual Analog, DualShock (with the real analog/rumble negotiation,
 its capability replies, and an ANALOG button), mouse, multitap (a type per
-player, and four memory card slots), GunCon and "nothing plugged in" are
-implemented and covered by `sio_test` - see Bugs-Found 96-100. Missing or
-unproven:
+player, and four memory card slots), GunCon, Konami Justifier and "nothing
+plugged in" are implemented and covered by `sio_test` - see Bugs-Found 96-100
+and 162. Missing or unproven:
 
 - **The GunCon has never met a GunCon game.** Its reply is DuckStation's byte
   for byte, and where it says the beam is uses DuckStation's arithmetic, but no
   disc on the share supports it. Point Blank or Time Crisis would settle it.
-- **No Konami Justifier** (Hyper Blaster). It works differently - the GPU raises
-  IRQ10 as the beam passes the gun. Area 51, the one light-gun disc on the
-  share, is a Justifier game, though it also takes the mouse.
+- **The Justifier fires whatever is drawn where it points** (bug 162). A real
+  gun's sensor needs a lit spot; this one raises IRQ10 on eight lines from the
+  aimed point down even over black, and eight is a guess - psx-spx says only
+  "the next some scanlines". A game that tells a dark target from a lit one by
+  whether IRQ10 comes would see a hit a console would not.
+- **Area 51's main menu reads the Justifier about 20 lines low.** The game sets
+  its Y offset to 0 for the menus, though its own calibration starts at -30; its
+  gun test lands within ten pixels and its calibration brings it within one.
+  Whether a console's menu is off the same way is unknown without one to compare.
+- **One Justifier per console.** The second (blue) gun plugs into the first
+  and is reached through it, which is not done; a two-player game sees one gun.
 - **The ANALOG button leaves out DuckStation's 00h status byte**, which tells a
   game its mode changed behind its back and needs a game database to be safe
   (bug 97). A game that only notices through that byte will not notice.

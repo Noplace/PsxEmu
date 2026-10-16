@@ -498,6 +498,8 @@ namespace psxemu {
             return Sio::kMultitap;
         if (key == "guncon")
             return Sio::kGunCon;
+        if (key == "justifier")
+            return Sio::kJustifier;
         return Sio::kDualShock;
     }
 

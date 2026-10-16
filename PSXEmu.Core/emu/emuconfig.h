@@ -123,12 +123,12 @@ struct EmuConfig {
 
   // --- Input --------------------------------------------------------------
   // What is plugged into each SIO0 port - one of the three real PS1
-  // controllers, a mouse, a multitap, a GunCon, or nothing at all. See
+  // controllers, a mouse, a multitap, a GunCon, a Justifier, or nothing at all. See
   // Sio::ControllerType. "dualshock" for both, so an existing game that
   // already negotiates analog input keeps working exactly as it did before
   // this was choosable.
   std::array<std::string, 2> controller_type = { "dualshock", "dualshock" };
-  static const std::array<const char*, 7> kValidControllerTypes;
+  static const std::array<const char*, 8> kValidControllerTypes;
 
   // Which physical source drives each PSX port - the keyboard, or one of the
   // four XInput slots the Input menu labels "Gamepad 1".."Gamepad 4" (XInput
@@ -591,8 +591,8 @@ inline const std::array<int, 4> EmuConfig::kValidMouseDpis = {
 // Order matches PSXEmu.Win32's Input > Controller Port menus and
 // Sio::ControllerType (kDigital, kDualAnalog, kDualShock, kMouse, kNone,
 // kMultitap).
-inline const std::array<const char*, 7> EmuConfig::kValidControllerTypes = {
-    "digital", "dual_analog", "dualshock", "mouse", "none", "multitap", "guncon" };
+inline const std::array<const char*, 8> EmuConfig::kValidControllerTypes = {
+    "digital", "dual_analog", "dualshock", "mouse", "none", "multitap", "guncon", "justifier" };
 
 // Order matches PSXEmu.Win32's Input > Port Source menus. Four gamepad
 // slots, not two, because a single multitap wants up to four independently

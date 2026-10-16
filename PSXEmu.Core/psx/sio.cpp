@@ -300,8 +300,25 @@ void Sio::set_connected(int port, bool connected, int player) {
     // something this call owns to replace wholesale.
     *pad = Pad();
     pad->connected = true;
+    // Nor does a Justifier keep its IRQ10 on: the game turns it on again with its next poll.
+    if (controller_type_[port] == kJustifier)
+      justifier_irq_[port] = false;
   }
   pad->connected = connected;
+  // An unplugged gun sees nothing; a plugged-in one may again.
+  if (controller_type_[port] == kJustifier)
+    UpdateLightgun();
+}
+
+void Sio::SerialiseJustifiers(StateIO& io) {
+  if (!io.saving() && !io.more()) {
+    justifier_irq_[0] = justifier_irq_[1] = false;
+  } else {
+    io.Plain(justifier_irq_[0]);
+    io.Plain(justifier_irq_[1]);
+  }
+  if (!io.saving())
+    UpdateLightgun();
 }
 
 void Sio::set_controller_type(int port, ControllerType type) {
@@ -335,6 +352,9 @@ void Sio::set_controller_type(int port, ControllerType type) {
     else if (type != kNone)
       pad_[port]->connected = was_connected;
   }
+  // A Justifier plugged in waits for a poll to turn its IRQ10 on; one unplugged stops firing it.
+  justifier_irq_[port] = false;
+  UpdateLightgun();
 }
 
 void Sio::Tick(uint32_t cycles) {
@@ -388,6 +408,9 @@ uint8_t Sio::Exchange(uint8_t data) {
       } else if (controller_type_[port] == kGunCon) {
         if (pad_[port]->connected)
           target_ = kTargetGunCon;
+      } else if (controller_type_[port] == kJustifier) {
+        if (pad_[port]->connected)
+          target_ = kTargetJustifier;
       } else if (pad_[port]->connected) {
         if (pad_[port]->is_multitap()) {
           if (MultitapAnswers(port, 0)) {
@@ -435,6 +458,9 @@ uint8_t Sio::Exchange(uint8_t data) {
     return ExchangeMouse(data, port);
   }
 
+  if (target_ == kTargetJustifier) {
+    return ExchangeJustifier(data, port);
+  }
   if (target_ == kTargetGunCon) {
     return ExchangeGunCon(data, port);
   }
@@ -1000,6 +1026,67 @@ void Sio::GunConPosition(int port, uint16_t* x, uint16_t* y) {
                            Gpu::kGpuClockDenominator;
   *x = static_cast<uint16_t>(static_cast<double>(dot) * 8000000.0 / gpu_clock);
   *y = static_cast<uint16_t>(line);
+}
+
+// The Justifier's side of an exchange, from the second byte on (psx-spx, "Konami Justifier/
+// Hyperblaster (IRQ10)"): it answers 42h with its ID, 5A31h, and two button bytes - and nothing
+// about where it is aimed, which the game learns from IRQ10 (UpdateLightgun). The fourth byte the
+// console sends, x0h, turns that IRQ10 on (10h) or off (00h). The buttons are a pad's active-low
+// halfword: Start in bit 3, Back in bit 14, the trigger in bit 15, every other bit 1.
+uint8_t Sio::ExchangeJustifier(uint8_t data, int port) {
+  const GunCon& gun = guncon_[port];
+  const int step = transfer_step_;
+  const int kTotalLength = 4;
+
+  if (step == 1) {
+    const bool poll = (data == 0x42);
+    acknowledge_ = poll;
+    ++transfer_step_;
+    return poll ? 0x31 : 0xFF;   // ID low - 5A31h says "Konami lightgun"
+  }
+  if (step > kTotalLength) {
+    acknowledge_ = false;
+    return 0xFF;
+  }
+  // The byte that switches IRQ10 arrives as the buttons go out.
+  if (step == 3) {
+    const bool on = (data & 0x10) != 0;
+    if (on != justifier_irq_[port]) {
+      justifier_irq_[port] = on;
+      UpdateLightgun();
+    }
+  }
+
+  uint16_t buttons = 0xFFFF;
+  if (gun.a) buttons &= ~(1u << 3);         // Start
+  if (gun.b) buttons &= ~(1u << 14);        // Back
+  if (gun.trigger) buttons &= ~(1u << 15);  // Trigger
+
+  uint8_t out = 0xFF;
+  switch (step) {
+    case 2: out = 0x5A; break;   // ID high
+    case 3: out = static_cast<uint8_t>(buttons); break;
+    case 4: out = static_cast<uint8_t>(buttons >> 8); break;
+    default: break;
+  }
+  ++transfer_step_;
+  acknowledge_ = (transfer_step_ <= kTotalLength);
+  return out;
+}
+
+// A Justifier with its IRQ10 on and aimed at the picture is what the GPU fires IRQ10 for, as its
+// beam passes (Gpu::set_lightgun). Port 1's first if both are: one IRQ10 line serves both ports,
+// and a game with two guns turns them on a frame each (psx-spx).
+void Sio::UpdateLightgun() {
+  if (system_ == nullptr)
+    return;
+  for (int port = 0; port < 2; ++port) {
+    if (controller_type_[port] == kJustifier && pad_[port]->connected && justifier_irq_[port]) {
+      system().gpu().set_lightgun(true, guncon_[port].x, guncon_[port].y);
+      return;
+    }
+  }
+  system().gpu().set_lightgun(false, -1.0f, -1.0f);
 }
 
 uint8_t Sio::Read08(uint32_t address) {

@@ -180,7 +180,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 563 checks, 0 failures.**
+**Current: 564 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -350,7 +350,7 @@ interface written for the test: SIO0 (`psx/sio.h`), which is the controller and
 memory card port, and SIO1 (`psx/sio1.h`), the serial socket on the back. No
 BIOS, no window.
 
-**Current: 203 checks, 0 failures.**
+**Current: 224 checks, 0 failures.**
 
 | Group | Covers |
 |---|---|
@@ -359,6 +359,7 @@ BIOS, no window.
 | the mouse | its id, switches and axes, and movement draining across as many polls as it takes |
 | the multitap | both addressing methods, per-player state, the escalation rules, and a round trip through a save state; each player a different type, and an empty socket giving no /ACK (bug 98); 81h-84h reaching four different cards, an empty card socket silent, and 82h reaching nothing without a multitap (bug 99) |
 | the GunCon | its eight-byte reply, each button bit, X and Y at the middle and corner of a 320x240 picture and the middle of an interlaced one, the off-screen reply, refusing 43h, an unplugged gun silent, and a save state keeping the port a GunCon (bug 100) |
+| the Justifier | its four-byte reply and each button bit; no IRQ10 until a poll's fourth byte is 10h, then one on each of `Gpu::kLightgunLines` lines a field; the first on the line aimed at and within a CPU cycle of the dot; a save state keeping it armed; none off the screen, disarmed, unplugged, or once the port is a pad again (bug 162) |
 | `sio1` | the serial port with nothing plugged into it: the reset state, an empty receive FIFO reading as the idle line, the registers keeping what is written, the status being read-only, the two strobes not sticking, byte/halfword/word access reaching the right halves, transmitting only when enabled and raising IRQ8 when armed, acknowledging clearing the latch, the baud-rate timer counting down and reloading, the console redirect on and off, and a save-state round trip |
 
 ## movie_test
@@ -546,6 +547,7 @@ What it does not measure:
 | `--watch-vram x,y,w,h` | Report which GP0 command wrote each pixel into a VRAM area |
 | `--wav <file>` | Write everything the SPU produced as a 44100 Hz stereo WAV |
 | `--press b@f[+h]` | Press a button at frame f, holding h frames |
+| `--justifier x,y` | Plug a Konami Justifier into port 1, aimed at x,y as fractions of the picture (bug 162). `--press` works its buttons: square is the trigger, start is Start and cross is Back. The summary counts the IRQ10s it fired |
 | `--movie <file.bk2>` | Play a BizHawk input movie into the ports from the first frame (`emu/movie.h`, bug 151): the pads it names plugged in, a new formatted memory card in each slot it has one in (in the temporary folder, unless `--card1`/`--card2` gives one), and its resets and disc changes carried out. In place of `--press`. The run reports the movie, its players, any column it did not understand, and where it had got to. Frame n of the movie is held while the run's frame n+1 is emulated, which is `--press b@n` |
 | `--movie-offset <n>` | ...waiting n frames before the movie's first; negative, leaving that many of its frames out |
 | `--movie-disc <path>` | ...the game's next disc, for a movie that changes discs; repeatable, in order, with `--disc` the first |
@@ -864,14 +866,14 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 341 | | `gpu_test` | 106 |
 | `gte_test` | 197 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 563 |
-| `sio_test` | 203 | | `spu_test` | 199 |
+| `timer_test` | 80 | | `media_test` | 564 |
+| `sio_test` | 224 | | `spu_test` | 199 |
 | `mc_test` | 112 | | `debug_test` | 174 |
 
-**2,060 checks, 0 failures**, all ten green. Each harness's own section above
+**2,082 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
-multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
+multitap players' types and the GunCon (and one later with the Justifier, bug 162), six with the rasteriser, its resolution and true colour,
 two with PGXP's three options, and three with the graphics card's name:
 every setting in `EmuConfig` round-trips through the file, and those are
 settings. It gained twenty-three more with the pregaps of a music track that

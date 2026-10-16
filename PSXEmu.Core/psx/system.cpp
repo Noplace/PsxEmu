@@ -592,6 +592,7 @@ void System::SerialiseAdditions(StateIO& state) {
   io_.SerialiseBatch(state);                  // rewind/run-ahead phase 1: the device batch
   gpu_.SerialiseDrawing(state);               // rewind/run-ahead phase 2: the GP0 queue
   io_.cdrom.SerialiseCommandTiming(state);    // rewind/run-ahead phase 2: the command in hand
+  io_.sio.SerialiseJustifiers(state);        // a Justifier's IRQ10 switch
 }
 
 // See Docs/Save-States-Plan.md. Fixed serialisation order, both directions:
