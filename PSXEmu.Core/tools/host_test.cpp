@@ -433,6 +433,12 @@ uint64_t Checksum(const uint32_t* pixels, int count) {
   return hash;
 }
 
+uint64_t StateHash(System& system) {
+  System::MemoryState state;
+  system.SaveMemoryState(&state, false);
+  return emulation::psx::Fnv1a64(state.payload.data(), state.payload.size());
+}
+
 uint64_t FramebufferChecksum(System& system) {
   int width = 0;
   int height = 0;
@@ -501,6 +507,7 @@ struct MachineRun {
   bool ok = false;
   uint64_t checksum = 0;
   uint64_t instructions = 0;
+  uint64_t state = 0;   // the whole machine, hashed: what a picture alone may not tell apart
 };
 
 // Boots the BIOS on a machine thread with the limiter off and stops at exactly
@@ -555,6 +562,7 @@ MachineRun RunBios(const std::string& bios, int frames,
   machine.Stop();
   result.ok = reached.load();
   result.checksum = FramebufferChecksum(system);
+  result.state = StateHash(system);
   result.instructions = machine.instructions();
   system.Deinitialize();
   return result;
@@ -679,15 +687,65 @@ void MachineChecks(const std::string& bios) {
            static_cast<unsigned long long>(plain_rec.instructions),
            static_cast<unsigned long long>(ahead_rec.instructions), plain_each, ahead_each);
     Check(plain_rec.ok && ahead_rec.ok && ahead_rec.instructions == plain_rec.instructions &&
-              ahead_rec.checksum == plain_rec.checksum,
+              ahead_rec.checksum == plain_rec.checksum && ahead_rec.state == plain_rec.state,
           "two frames of run-ahead leave a recompiled boot's frames exactly as they were");
     Check(plain_each == 400 && ahead_each == 400 * 3,
           "the hook for every frame runs for the frames ahead too");
     const MachineRun held =
         RunBios(bios, 400, nullptr, nullptr, std::string(), nullptr, false, 2, nullptr);
     Check(held.ok && plain.ok && held.instructions == plain.instructions &&
-              held.checksum == plain.checksum,
+              held.checksum == plain.checksum && held.state == plain.state,
           "run-ahead asked for under the interpreter is held off");
+  }
+
+  // Rewind (EmuConfig::rewind_interval): a state kept every frame; at frame 300 Backspace is
+  // held, and let go after exactly 50 steps back (counted by the rewound hook, so the test does
+  // not depend on timing). The steps show frames 300, 299 ... 251, so the machine plays on from
+  // 251, and 100 frames shown later is at frame 351 - where a run that never rewound must be.
+  {
+    const int kBack = 50;
+    std::unique_ptr<System> system_owner = std::make_unique<System>();
+    System& system = *system_owner;
+    if (system.Initialize(bios.c_str()) == 0) {
+      system.config().frame_limiter = false;
+      system.config().rewind_interval = 1;
+      FrameMailbox mailbox;
+      SampleRing ring(8192);
+      std::atomic<bool> reached{false};
+      int shown = 0;
+      int steps = 0;
+      Machine::Hooks hooks;
+      hooks.after_frame = [&](Machine& machine) {
+        if (++shown == 300)
+          machine.set_rewinding(true);
+        if (shown == 400) {
+          machine.SetPaused(emulation::host::kPausedByUser, true);
+          reached = true;
+        }
+      };
+      hooks.rewound = [&](Machine& machine) {
+        if (++steps == kBack)
+          machine.set_rewinding(false);
+      };
+      Machine machine(&system, &mailbox, &ring, hooks);
+      machine.Start(0);
+      const Clock::time_point start = Clock::now();
+      while (!reached.load() && MsSince(start) < 120000.0)
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      machine.Stop();
+      const uint64_t rewound = StateHash(system);
+      system.Deinitialize();
+      const MachineRun straight = RunBios(bios, 400 - kBack + 1);
+      const MachineRun past = RunBios(bios, 400);
+      printf("    rewound %d frames at frame 300 and played on: state %016llx; straight to frame "
+             "%d %016llx, to 400 %016llx\n",
+             steps, static_cast<unsigned long long>(rewound), 400 - kBack + 1,
+             static_cast<unsigned long long>(straight.state),
+             static_cast<unsigned long long>(past.state));
+      Check(reached.load() && steps == kBack && straight.ok && rewound == straight.state &&
+                past.state != straight.state,
+            "rewinding 50 frames and letting go plays on exactly as if from that frame");
+    }
   }
 
   // Stopped at any moment - mid-frame, mid-pace, paused - it comes back

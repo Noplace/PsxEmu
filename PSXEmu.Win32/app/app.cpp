@@ -269,6 +269,9 @@ namespace psxemu {
                 SetEmulationPreset(preset);
             };
             host.set_run_ahead = [this](int frames) { SetRunAhead(frames); };
+            host.set_rewind_interval = [this](int frames) { SetRewindInterval(frames); };
+            host.set_rewind_budget = [this](int megabytes) { SetRewindBudget(megabytes); };
+            host.rewind_seconds = [this] { return have_report_ ? report_.rewind_seconds : 0.0; };
             host.game = [this] { return CurrentGame(); };
             host.set_separate = [this](bool separate) { SetGameSettingsSeparate(separate); };
             emulation_settings_.Create(instance, window_, std::move(host));
@@ -703,8 +706,9 @@ namespace psxemu {
             WatchMemoryCardWrites(machine.system());
         };
         hooks.after_each_frame = [this](Machine& machine) { ApplyCheats(machine.system()); };
-        // A movie's input is by frame number: run-ahead waits until it is over.
+        // A movie's input is by frame number: run-ahead and rewind wait until it is over.
         hooks.may_run_ahead = [this] { return !movie_.playing(); };
+        hooks.may_rewind = [this] { return !movie_.playing(); };
         hooks.halted = [this](Machine& machine) {
             SendDebuggerSnapshot(machine, DebuggerWindow::kAtPc, true);
         };
@@ -2301,6 +2305,32 @@ namespace psxemu {
                                                  : L"");
     }
 
+    // Settings > Emulation > Rewind: how often a state is kept (0 turns it off and frees its
+    // memory at the next frame), and the memory its states may use.
+    void App::SetRewindInterval(int frames) {
+        if (frames == config_.rewind_interval)
+            return;
+        config_.rewind_interval = frames;
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+        emulation_settings_.OnConfigChanged();
+        Notify(OverlayIcon::kInfo, ToastKind::kInfo,
+               frames == 0 ? std::wstring(L"Rewind off") : std::wstring(L"Rewind on"),
+               frames == 0   ? L""
+               : frames == 1 ? L"Hold Backspace to go back; a state every frame"
+                             : L"Hold Backspace to go back; a state every " +
+                                   std::to_wstring(frames) + L" frames");
+    }
+
+    void App::SetRewindBudget(int megabytes) {
+        if (megabytes == config_.rewind_budget_mb)
+            return;
+        config_.rewind_budget_mb = megabytes;
+        SaveSettingsIfChanged();
+        SendConfigToMachine();
+        emulation_settings_.OnConfigChanged();
+    }
+
     void App::SetEmulationPreset(emulation::psx::EmulationPreset preset) {
         using emulation::psx::EmulationPreset;
         if (preset == EmulationPreset::kCustom)
@@ -2675,6 +2705,7 @@ namespace psxemu {
             }
             system.set_auto_boot(false);
             machine.ResetPacing();
+            machine.ForgetHistory();
             RefreshDebuggerIfOpen(machine);
             PostToUi([this] { Notify(OverlayIcon::kInfo, ToastKind::kInfo, L"Reset"); });
         });
@@ -2725,6 +2756,7 @@ namespace psxemu {
             LoadOrCreateMemoryCardsForDisc(system, path);
 
             machine.ResetPacing();
+            machine.ForgetHistory();
             RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
             std::wstring serial = SerialOfDisc(system);
@@ -2772,6 +2804,7 @@ namespace psxemu {
             system.set_auto_boot(false);
             system.EjectDisc();
             machine.ResetPacing();
+            machine.ForgetHistory();
             RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
             const bool hle = system.hle_active();
@@ -2815,6 +2848,7 @@ namespace psxemu {
             system.EjectDisc();
             system.set_auto_boot_exe(true, path);
             machine.ResetPacing();
+            machine.ForgetHistory();
             RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
             PostToUi([this, path] {
@@ -2963,6 +2997,7 @@ namespace psxemu {
             movie_length_.store(movie_.movie().frames(), std::memory_order_relaxed);
 
             machine.ResetPacing();
+            machine.ForgetHistory();
             RefreshDebuggerIfOpen(machine);
             machine.SetPaused(emulation::host::kPausedByUser, false);
             const std::wstring summary = Wide(movie_.movie().Summary()) + bios_note +
@@ -3022,6 +3057,7 @@ namespace psxemu {
                 return;
             }
             machine_->ResetPacing();
+            machine_->ForgetHistory();
         }
         if (step.eject)
             system.EjectDisc();
@@ -3451,6 +3487,7 @@ namespace psxemu {
                                            : machine.system().LoadState(path);
             if (!save) {
                 machine.ResetPacing();
+                machine.ForgetHistory();
                 RefreshDebuggerIfOpen(machine);
                 // The state is some other frame than the one the movie had reached, and nothing
                 // in it says which of the movie's: the movie stops here.
@@ -3701,8 +3738,10 @@ namespace psxemu {
             // Tab's release goes to whichever window has the focus by then, so a fast forward
             // held while switching away would never end.
             case WM_KILLFOCUS:
-                if (app != nullptr)
+                if (app != nullptr) {
                     app->SetFastForward(false);
+                    app->SetRewinding(false);
+                }
                 break;
 
             // Alt+Enter: the full-screen key almost every PC game and emulator uses. It arrives
@@ -4152,6 +4191,10 @@ namespace psxemu {
         // Tab: fast forward for as long as it is held.
         if (key == VK_TAB)
             SetFastForward(true);
+        // Backspace: rewind for as long as it is held - or, with it off, say where it is turned
+        // on, once a press rather than once an auto-repeat.
+        if (key == VK_BACK && (!repeat || config_.rewind_interval > 0))
+            SetRewinding(true);
         // F12: a screenshot - one per press, not one per auto-repeat.
         if (key == VK_F12 && !repeat)
             TakeScreenshot();
@@ -4181,6 +4224,8 @@ namespace psxemu {
     void App::OnKeyUp(WPARAM key) {
         if (key == VK_TAB)
             SetFastForward(false);
+        if (key == VK_BACK)
+            SetRewinding(false);
     }
 
     // The frame is copied on the video thread, which owns it, and written out on this one: a
@@ -4460,6 +4505,7 @@ namespace psxemu {
         picker_open_ = true;
         picker_selected_ = (std::min)((std::max)(last_slot_ - 1, 0), 7);
         SetFastForward(false);
+        SetRewinding(false);
         // The machine knows which disc is in, which is what names the slots' files; the rest -
         // reading eight PNGs - is done here, while the game waits.
         PostToMachine([this](Machine& machine) {
@@ -4541,6 +4587,22 @@ namespace psxemu {
         fast_forward_ = on;
         SendConfigToMachine();
         PostToOverlay([on](Overlay& overlay) { overlay.SetFastForward(on); });
+    }
+
+    // Backspace held (Docs/Rewind-and-Run-Ahead-Plan.md): the machine steps back a kept state each
+    // frame until it is let go. With rewind off there is nothing kept, so this says where it is
+    // turned on instead.
+    void App::SetRewinding(bool on) {
+        if (on == rewinding_ || stopping_)
+            return;
+        if (on && config_.rewind_interval <= 0) {
+            Notify(OverlayIcon::kInfo, ToastKind::kInfo, L"Rewind is off",
+                   L"Settings > Emulation > Rewind");
+            return;
+        }
+        rewinding_ = on;
+        PostToMachine([on](Machine& machine) { machine.set_rewinding(on); });
+        PostToOverlay([on](Overlay& overlay) { overlay.SetRewinding(on); });
     }
 
     void App::OnCommand(int command) {

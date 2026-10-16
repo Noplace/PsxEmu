@@ -41,6 +41,9 @@ namespace psxemu {
         const int kIdGame = 204;
         const int kIdRunAhead = 205;
         const int kIdRunAheadHint = 206;
+        const int kIdRewind = 207;
+        const int kIdRewindBudget = 208;
+        const int kIdRewindHint = 209;
         const int kIdHintFirst = 300;     // the grey line under each switch
 
         // The layout, in pixels at 96 DPI: the presets across the top, then two columns of
@@ -259,7 +262,28 @@ namespace psxemu {
                                run_ahead_top, kClientWidth - kMargin * 2 - 206, kHintHeight,
                                small_font_);
 
-        const int buttons_top = run_ahead_top + kHintHeight + 8;
+        // Rewind: how often a state is kept, and the memory they may use.
+        const int rewind_top = run_ahead_top + kHintHeight + 6;
+        make(L"STATIC", L"Re&wind:", SS_LEFT, 0, kMargin, rewind_top + 4, 80, 20, font_);
+        rewind_ = make(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, kIdRewind,
+                       kMargin + 84, rewind_top, 110, 200, font_);
+        for (int frames : EmuConfig::kValidRewindIntervals) {
+            const std::wstring item = frames == 0   ? std::wstring(L"Off")
+                                      : frames == 1 ? std::wstring(L"Every frame")
+                                                    : L"Every " + std::to_wstring(frames) +
+                                                          L" frames";
+            SendMessageW(rewind_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
+        }
+        rewind_budget_ = make(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                              kIdRewindBudget, kMargin + 206, rewind_top, 90, 160, font_);
+        for (int megabytes : EmuConfig::kValidRewindBudgets) {
+            const std::wstring item = std::to_wstring(megabytes) + L" MB";
+            SendMessageW(rewind_budget_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
+        }
+        rewind_hint_ = make(L"STATIC", L"", SS_LEFT, kIdRewindHint, kMargin + 308, rewind_top,
+                            kClientWidth - kMargin * 2 - 308, kHintHeight, small_font_);
+
+        const int buttons_top = rewind_top + kHintHeight + 8;
         note_ = make(L"STATIC", L"", SS_LEFT, 0, kMargin, buttons_top + 6, 620, 20, small_font_);
         make(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, kIdClose,
              kClientWidth - kMargin - 100, buttons_top, 100, 28, font_);
@@ -306,6 +330,21 @@ namespace psxemu {
                            : L"Needs the Recompiler, which is off: held off until it is on. Shows "
                              L"the game this many frames ahead of itself, taking away that much "
                              L"of its own lag.");
+        for (size_t i = 0; i < EmuConfig::kValidRewindIntervals.size(); ++i)
+            if (EmuConfig::kValidRewindIntervals[i] == config.rewind_interval)
+                SendMessageW(rewind_, CB_SETCURSEL, i, 0);
+        for (size_t i = 0; i < EmuConfig::kValidRewindBudgets.size(); ++i)
+            if (EmuConfig::kValidRewindBudgets[i] == config.rewind_budget_mb)
+                SendMessageW(rewind_budget_, CB_SETCURSEL, i, 0);
+        EnableWindow(rewind_budget_, config.rewind_interval > 0);
+        std::wstring rewind_hint =
+            L"Hold Backspace to step back through what was just played, then let go to play on "
+            L"from there. Memory cards are left as they are.";
+        const double seconds = host_.rewind_seconds ? host_.rewind_seconds() : 0.0;
+        if (config.rewind_interval > 0 && seconds >= 1.0)
+            rewind_hint += L" Holds " + std::to_wstring(static_cast<int>(seconds)) +
+                           L" s of this game so far.";
+        SetWindowTextW(rewind_hint_, rewind_hint.c_str());
         const EmulationPreset preset = emulation::psx::MatchingEmulationPreset(config);
         SetWindowTextW(preset_name_, PresetName(preset));
         SetWindowTextW(preset_text_, PresetText(preset));
@@ -347,7 +386,7 @@ namespace psxemu {
                 HDC dc = reinterpret_cast<HDC>(wparam);
                 const int id = GetDlgCtrlID(reinterpret_cast<HWND>(lparam));
                 if ((id >= kIdHintFirst && id < kIdHintFirst + kSwitchCount) ||
-                    id == kIdRunAheadHint)
+                    id == kIdRunAheadHint || id == kIdRewindHint)
                     SetTextColor(dc, GetSysColor(COLOR_GRAYTEXT));
                 else
                     SetTextColor(dc, GetSysColor(COLOR_BTNTEXT));
@@ -366,6 +405,15 @@ namespace psxemu {
                         // The App's setter calls OnConfigChanged, which refreshes the preset.
                         self->host_.set(kSwitches[i].setting, on);
                     }
+                    return 0;
+                }
+                if ((id == kIdRewind || id == kIdRewindBudget) && code == CBN_SELCHANGE) {
+                    const HWND list = id == kIdRewind ? self->rewind_ : self->rewind_budget_;
+                    const LRESULT i = SendMessageW(list, CB_GETCURSEL, 0, 0);
+                    if (i != CB_ERR && id == kIdRewind && self->host_.set_rewind_interval)
+                        self->host_.set_rewind_interval(EmuConfig::kValidRewindIntervals[i]);
+                    if (i != CB_ERR && id == kIdRewindBudget && self->host_.set_rewind_budget)
+                        self->host_.set_rewind_budget(EmuConfig::kValidRewindBudgets[i]);
                     return 0;
                 }
                 if (id == kIdRunAhead) {

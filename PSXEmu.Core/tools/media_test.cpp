@@ -2868,6 +2868,31 @@ void TestSettingsFile(const std::string& directory) {
           "a game can keep its own run-ahead");
   }
 
+  // Rewind (Docs/Rewind-and-Run-Ahead-Plan.md): off by default with 256 MB, how often and how
+  // much kept, values the setting does not offer ignored, and the person's rather than a game's.
+  {
+    EmuConfig config;
+    Check(config.rewind_interval == 0 && config.rewind_budget_mb == 256,
+          "rewind is off by default, with 256 MB");
+    config.rewind_interval = 2;
+    config.rewind_budget_mb = 512;
+    SettingsFile out;
+    emulation::psx::StoreConfig(out, config);
+    EmuConfig loaded;
+    emulation::psx::LoadConfig(out, loaded);
+    Check(loaded.rewind_interval == 2 && loaded.rewind_budget_mb == 512,
+          "a state every two frames in 512 MB survives the round trip");
+    out.SetInt("rewind_interval", 4);
+    out.SetInt("rewind_budget_mb", 300);
+    EmuConfig rejected;
+    emulation::psx::LoadConfig(out, rejected);
+    Check(rejected.rewind_interval == 0 && rejected.rewind_budget_mb == 256,
+          "an interval or a budget the setting does not offer is ignored");
+    const std::vector<std::string> keys = emulation::psx::GameSettingKeys();
+    Check(std::find(keys.begin(), keys.end(), "rewind_interval") == keys.end(),
+          "rewind is the person's, not a game's");
+  }
+
   // The graphics card (Settings > Video > Graphics Card): automatic by default, and a name -
   // spaces, brackets and all - kept as it is. A saved name for a card that is not here is
   // kept too: it is the front end that treats it as automatic, so that the choice comes back

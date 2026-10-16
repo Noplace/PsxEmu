@@ -257,6 +257,8 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("recompiler", c.recompiler);
   f.SetBool("gte_x64", c.gte_x64);
   f.SetInt("run_ahead", c.run_ahead);
+  f.SetInt("rewind_interval", c.rewind_interval);
+  f.SetInt("rewind_budget_mb", c.rewind_budget_mb);
   f.SetString("bios_file", c.bios_file);
   f.SetBool("hle_bios", c.hle_bios);
   f.SetFloat("emulation_speed", c.emulation_speed);
@@ -392,6 +394,14 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   const int run_ahead = f.GetInt("run_ahead", c.run_ahead);
   if (run_ahead >= 0 && run_ahead <= EmuConfig::kMaxRunAhead)
     c.run_ahead = run_ahead;
+  const int rewind_interval = f.GetInt("rewind_interval", c.rewind_interval);
+  for (int valid : EmuConfig::kValidRewindIntervals)
+    if (rewind_interval == valid)
+      c.rewind_interval = rewind_interval;
+  const int rewind_budget = f.GetInt("rewind_budget_mb", c.rewind_budget_mb);
+  for (int valid : EmuConfig::kValidRewindBudgets)
+    if (rewind_budget == valid)
+      c.rewind_budget_mb = rewind_budget;
   // No list to validate against - what is valid is whatever is in the folder,
   // which only the front end can see. It checks before using it.
   c.bios_file = f.GetString("bios_file", c.bios_file);

@@ -180,7 +180,7 @@ Protocol-level tests for the disc layer and the CD-ROM controller. No BIOS, no
 window, no disc of its own - it writes the images it needs into the work
 directory and deletes them afterwards. Exit code 0 if everything passed.
 
-**Current: 559 checks, 0 failures.**
+**Current: 563 checks, 0 failures.**
 
 A second argument of `keep` leaves the generated images behind, which is how
 `boot_runner --boot-disc` gets a disc to point at without a game.
@@ -553,6 +553,7 @@ What it does not measure:
 | `--cd-mednafen` | Time the drive as Mednafen's is (`EmuConfig::cdrom_mednafen_timing`, bug 151): its seeks, pauses and command delays, in place of either model above. What a BizHawk movie's loads were recorded under, so `--movie` turns it on by itself |
 | `--load-state <file>` | Resume from a save state instead of booting - skips `--disc`/`--boot-disc`/`--auto-boot`/`--exe` entirely |
 | `--save-state <file>` | Write a save state after the run finishes |
+| `--rewind-test <n>` | Rewind's store (`emu/rewind_buffer.h`, Rewind-and-Run-Ahead-Plan.md): a state every frame of the run, each made the newest before the next; at the end, n steps back must give the frame n before the end, byte for byte, and n frames played on from it the run's own end. Reports the states held, their megabytes, a delta's mean size and time on the worker, and a step back's time |
 | `--run-ahead <n>` | Run-ahead, as the front end will (Rewind-and-Run-Ahead-Plan.md, phase 2): after each frame, n more run on its input and their last picture is the one shown, then the machine goes back. Everything the run reports is the real frames' - frame-log pictures, instructions, final state - and must be exactly the run without it; the frame log's counters and the recompiler's statistics count the frames ahead too. Refused with `--movie`, the debugger's options and `--shared-picture` |
 | `--shown-log <file>` | A line per frame: the frame, and the checksum and non-black pixels of the picture shown - with `--run-ahead`, the one n frames ahead. Against a plain run's, every line should be that run's n frames on, except where a button changed inside those n frames |
 | `--memory-state-every <n>` | Every n frames, save a state in memory, cards and all (`System::SaveMemoryState`), and load it straight back (`LoadMemoryState`). The run must be exactly the run without it: on the twelve discs, under either CPU, every report line and the final state byte for byte (Rewind-and-Run-Ahead-Plan.md, phase 1). Reports what the round trips cost |
@@ -693,7 +694,7 @@ enough that only a real regression should cross them.
 
     host_test [bios]
 
-Thirty-seven checks on `PSXEmu.Core/host/` - the channels the front end's threads
+Thirty-eight checks on `PSXEmu.Core/host/` - the channels the front end's threads
 talk through, and the threads themselves (Docs/Threading-Plan.md). Every other
 harness here is single-threaded by construction, and a checksum cannot see a
 race: a lost sample, a frame read while it was being written, a request run out
@@ -722,6 +723,11 @@ side, with a sequence number in every item.
   with two frames ahead of every one shown lands on the same instructions and picture as one
   without (1,102,874 steps), with the hook for every frame emulated called 1,200 times for 400
   frames shown. Under the interpreter run-ahead is held off, and the boot is the plain one.
+  Both compare the whole machine state, hashed, not only the picture.
+- **Rewind** (EmuConfig::rewind_interval, phase 6). A state every frame. Backspace is held at
+  frame 300 and let go after exactly 50 steps back, counted by the `rewound` hook so timing does
+  not matter. 100 frames shown later the whole machine is as a straight run to frame 351 has it,
+  and not as at 400. The picture alone could not tell: the BIOS shows the same screen at both.
 
 **The baseline above is stale on master since mid-October** (found 2026-10-16): the 400-frame boot
 now ends on `4a65781bfb98db5a`, the same 92,822,656 instructions, so the four checks against
@@ -858,11 +864,11 @@ the most likely answer is the network share rather than the emulator.
 |---|---|---|---|---|
 | `cpu_test` | 341 | | `gpu_test` | 106 |
 | `gte_test` | 197 | | `mdec_test` | 85 |
-| `timer_test` | 80 | | `media_test` | 559 |
+| `timer_test` | 80 | | `media_test` | 563 |
 | `sio_test` | 203 | | `spu_test` | 199 |
 | `mc_test` | 112 | | `debug_test` | 174 |
 
-**2,056 checks, 0 failures**, all ten green. Each harness's own section above
+**2,060 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon, six with the rasteriser, its resolution and true colour,
@@ -887,8 +893,10 @@ and the trigger obeyed, busy for 20 cycles a word, RAM and MADR left alone, and 
 comes. Nine are the XA resampler, bug 153; and twelve are the voices' Gaussian interpolation, the
 noise generator's rate and pitches of 4000h and over, bugs 154-156. Thirteen are the voices'
 block ends, first block and the SPU enable bit, bug 158, and thirteen the drive's mute and
-volume matrix, bug 157. The last four are run-ahead's setting, Rewind-and-Run-Ahead-Plan.md:
-off by default, the round trip, more frames than offered ignored, and a game's own key.)
+volume matrix, bug 157. Of the last eight, Rewind-and-Run-Ahead-Plan.md, four are run-ahead's setting:
+off by default, the round trip, more frames than offered ignored, and a game's own key; and
+the other four rewind's: off by default with 256 MB, the round trip, values not offered ignored, and
+not a game's key.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation: `letterbox_test` (12

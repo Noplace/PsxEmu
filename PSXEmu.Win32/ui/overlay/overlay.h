@@ -101,6 +101,8 @@ namespace psxemu {
         void SetPaused(bool paused);
         // Tab held: a badge at the top middle for as long as the machine runs unpaced.
         void SetFastForward(bool on);
+        // Backspace held: "Rewind" in the same place, in fast forward's stead while it shows.
+        void SetRewinding(bool on);
         void SetCounters(uint64_t frames_dropped, uint64_t audio_short, uint64_t audio_dropped);
         void SetRendererInfo(const std::string& renderer, const std::string& filter);
         // The window's DPI: everything is sized as it would be at 100% scaling (96), then drawn
@@ -199,6 +201,7 @@ namespace psxemu {
         StatsMode stats_mode_ = StatsMode::kOff;
         bool paused_ = false;
         bool fast_forward_ = false;
+        bool rewinding_ = false;
         bool picker_open_ = false;
         int picker_selected_ = 0;
         std::vector<StatePickerSlot> picker_slots_;

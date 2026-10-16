@@ -41,7 +41,7 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  PSXEmu.Core\media\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
  PSXEmu.Core\emu\state.cpp PSXEmu.Core\debug\debug_assist.cpp PSXEmu.Core\debug\debugger.cpp ^
  PSXEmu.Core\bios\bios_calls.cpp PSXEmu.Core\bios\hle\hle_bios.cpp PSXEmu.Core\bios\hle\hle_bios_libc.cpp ^
- PSXEmu.Core\bios\hle\hle_bios_io.cpp PSXEmu.Core\bios\hle\hle_bios_timing.cpp PSXEmu.Core\bios\hle\hle_shell.cpp PSXEmu.Core\bios\hle\hle_font_data.cpp PSXEmu.Core\media\ecm.cpp PSXEmu.Core\emu\movie.cpp
+ PSXEmu.Core\bios\hle\hle_bios_io.cpp PSXEmu.Core\bios\hle\hle_bios_timing.cpp PSXEmu.Core\bios\hle\hle_shell.cpp PSXEmu.Core\bios\hle\hle_font_data.cpp PSXEmu.Core\media\ecm.cpp PSXEmu.Core\emu\movie.cpp PSXEmu.Core\emu\rewind_buffer.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
  /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I PSXEmu.Core\lib\libchdr\include ^

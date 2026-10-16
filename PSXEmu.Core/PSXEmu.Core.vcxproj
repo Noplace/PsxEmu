@@ -207,6 +207,10 @@
     <ClCompile Include="emu\movie.cpp">
       <AdditionalIncludeDirectories>$(ProjectDir)lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <!-- Rewind's store compresses its deltas with the same zlib. -->
+    <ClCompile Include="emu\rewind_buffer.cpp">
+      <AdditionalIncludeDirectories>$(ProjectDir)lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
     <ClCompile Include="psx\root_counter.cpp" />
     <ClCompile Include="psx\sio.cpp" />
     <ClCompile Include="psx\sio1.cpp" />
@@ -261,6 +265,7 @@
     <ClInclude Include="psx\mc.h" />
     <ClInclude Include="media\mc_directory.h" />
     <ClInclude Include="emu\movie.h" />
+    <ClInclude Include="emu\rewind_buffer.h" />
     <ClInclude Include="debug\debugger.h" />
     <ClInclude Include="debug\disasm.h" />
     <ClInclude Include="bios\bios_calls.h" />

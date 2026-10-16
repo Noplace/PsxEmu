@@ -186,6 +186,8 @@ namespace psxemu {
         void SetEmulationSetting(bool emulation::psx::EmuConfig::*setting, bool on);
         void SetEmulationPreset(emulation::psx::EmulationPreset preset);
         void SetRunAhead(int frames);
+        void SetRewindInterval(int frames);
+        void SetRewindBudget(int megabytes);
         void PressAnalogButton(int port);
         void SetAudioBackend(const std::string& key);
         void SetShowTimings(bool on);
@@ -221,6 +223,7 @@ namespace psxemu {
         // Tab held: the frame limiter is off for as long as it is, whatever the setting says -
         // which is left as it was. Let go, or the window loses the focus, and it is back.
         void SetFastForward(bool on);
+        void SetRewinding(bool on);
         void OnKeyUp(WPARAM key);
         // F12, or Emulation > Take Screenshot: the picture as the machine made it, stretched to
         // 4:3, as a PNG in Documents\My Games\PSXEmu\screenshots.
@@ -550,6 +553,8 @@ namespace psxemu {
         bool paused_by_user_ = true;
         // Tab is held (SetFastForward). The UI thread's; SendConfigToMachine applies it.
         bool fast_forward_ = false;
+        // Backspace is held (SetRewinding). The UI thread's; the machine is told by request.
+        bool rewinding_ = false;
         // The save-state picker (OpenStatePicker): whether it is up, and the slot it has chosen,
         // 0-7. The UI thread's.
         bool picker_open_ = false;

@@ -161,13 +161,20 @@ namespace psxemu {
         fast_forward_ = on;
     }
 
+    void Overlay::SetRewinding(bool on) {
+        if (on != rewinding_)
+            dirty_ = true;
+        rewinding_ = on;
+    }
+
     // A pill at the top middle, clear of the performance panel at the left and the controllers
-    // at the right: the speed icon and "Fast forward".
+    // at the right: the speed icon and "Fast forward" - or, while Backspace is held, the load
+    // icon and "Rewind", which is what the picture is doing then.
     void Overlay::DrawFastForward(float width) {
-        if (!fast_forward_)
+        if (!fast_forward_ && !rewinding_)
             return;
         const OverlayAtlas::Font& bold = atlas_.font(OverlayFont::kBold);
-        const std::wstring label = L"Fast forward";
+        const std::wstring label = rewinding_ ? L"Rewind" : L"Fast forward";
         const float pad = 10.0f * s_;
         const float icon = 20.0f * s_;
         const float h = (std::max)(bold.line_height, icon) + 2.0f * 7.0f * s_;
@@ -175,7 +182,8 @@ namespace psxemu {
         const float x = (width - w) * 0.5f;
         const float y = 16.0f * s_;
         Panel(x, y, w, h, h * 0.5f, 1.0f);
-        Icon(OverlayIcon::kSpeed, x + pad, y + (h - icon) * 0.5f, icon, AccentOf(ToastKind::kInfo));
+        Icon(rewinding_ ? OverlayIcon::kLoad : OverlayIcon::kSpeed, x + pad, y + (h - icon) * 0.5f,
+             icon, AccentOf(ToastKind::kInfo));
         Text(OverlayFont::kBold, x + pad + icon + 8.0f * s_, y + (h - bold.line_height) * 0.5f,
              label, kTextMain);
     }

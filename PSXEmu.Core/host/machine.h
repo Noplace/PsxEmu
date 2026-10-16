@@ -37,6 +37,7 @@ namespace emulation {
 namespace psx {
 class System;
 struct EmuConfig;
+class RewindBuffer;
 }  // namespace psx
 
 namespace host {
@@ -66,6 +67,10 @@ struct MachineReport {
   // Frames run ahead of each one shown (EmuConfig::run_ahead) - 0 when it is off, or held off:
   // the interpreter, the debugger armed, a movie playing.
   int run_ahead = 0;
+  // Rewind (EmuConfig::rewind_interval): whether Backspace has it stepping back now, and how many
+  // seconds of play its store holds.
+  bool rewinding = false;
+  double rewind_seconds = 0.0;
   // Which rasteriser is drawing, and if the hardware one was asked for and is not - it could
   // not be made, or its graphics card went - why.
   bool hardware_raster = false;
@@ -115,6 +120,10 @@ class Machine {
     // Asked once a frame on the machine's thread: false holds run-ahead off - while a movie
     // plays, whose input is by frame number. Unset, it may.
     std::function<bool()> may_run_ahead;
+    // The same for rewind: false holds it off, keeping no states and stepping back through none.
+    std::function<bool()> may_rewind;
+    // After each step back while rewinding, the state it loaded shown. A harness counts them.
+    std::function<void(class Machine&)> rewound;
 
     // About once a second while running, and once on pausing.
     std::function<void(const MachineReport&)> report;
@@ -174,6 +183,14 @@ class Machine {
   // View > VRAM: ship the whole of VRAM instead of the display.
   void set_view_vram(bool on) { view_vram_ = on; }
 
+  // Rewind (EmuConfig::rewind_interval, Docs/Rewind-and-Run-Ahead-Plan.md): while on, each frame
+  // shown is a step back - the state kept before the last one loaded and shown, the sound muted -
+  // instead of a frame run. Off, the machine plays on from wherever that left it.
+  void set_rewinding(bool on) { rewinding_ = on; }
+  // The machine has jumped somewhere a step back would not lead - a reset, a boot, a state loaded
+  // from a file, a movie started: the states kept so far are thrown away.
+  void ForgetHistory();
+
   // View > Depth and Motion: the plane beside VRAM that DLSS will use, shown in
   // place of the picture (Docs/DLSS-Plan.md) - by the hardware rasteriser, above 1x.
   void set_plane_view(psx::PlaneView view);
@@ -209,6 +226,12 @@ class Machine {
   // frames run on the same input, the last one's picture published, the state loaded back.
   int RunAheadFrames();
   void RunAhead(int frames);
+  // Rewind: whether it is on and may keep states now; keeping one at the end of a real frame,
+  // every rewind_interval; and a step back while Backspace is held - false when there is nothing
+  // to step back to, and the machine runs the frame instead.
+  bool RewindAllowed() const;
+  void KeepForRewind();
+  bool StepBack();
   void PublishFrame();
   void PumpAudio();
   void Pace();
@@ -275,6 +298,12 @@ class Machine {
   // System's cannot be named here without the whole of the core). Made on first use.
   struct Ahead;
   std::unique_ptr<Ahead> ahead_;
+  // Rewind's store, made when rewind is turned on and freed when it is turned off, and where the
+  // machine is in its interval.
+  std::unique_ptr<psx::RewindBuffer> rewind_;
+  int rewind_countdown_ = 0;
+  bool rewinding_ = false;
+  bool was_rewinding_ = false;
   double ahead_ms_ = 0.0;      // the last frame's frames ahead, emulating them
   int run_ahead_now_ = 0;      // frames run ahead of the last frame shown
   bool run_ahead_failed_ = false;   // a load back failed once: held off from then on

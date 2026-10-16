@@ -1,9 +1,10 @@
 # Rewind and run-ahead
 
-> **Status: phases 0-2 done and phase 3 built, 2026-10-16: run-ahead is in the app**
-> (Settings > Emulation > Run-ahead, with the recompiler), not yet played for long or listened
-> to. Rewind is not built. `System::SaveMemoryState`/`LoadMemoryState` exist, and
-> `boot_runner --run-ahead <n>` runs on them as the front end does. With buttons pressed, run-ahead 2 leaves the twelve-disc table
+> **Status: both are in the app, 2026-10-16: run-ahead** (Settings > Emulation > Run-ahead, with
+> the recompiler) **and rewind** (Settings > Emulation > Rewind, then hold Backspace). Neither
+> has been played for long, watched or listened to yet. Phase 4, the hardware rasteriser's VRAM
+> snapshotted on the card, is not built. `System::SaveMemoryState`/`LoadMemoryState` exist, and
+> `boot_runner --run-ahead <n>` and `--rewind-test <n>` run on them as the front end does. With buttons pressed, run-ahead 2 leaves the twelve-disc table
 > exactly as without it under either CPU: every checkpoint picture, every instruction count and
 > each final state byte for byte. Every press shows up 2 frames earlier, or 1 where the game
 > itself reacts within a frame. Run-ahead 1 costs two frames plus 0.7-0.9 ms. Getting there found
@@ -448,39 +449,80 @@ run-ahead save would still read it back, about 1 ms at 1x and 2 ms at 4x. Either
 backend's dirty tracking (`dirty_`/`stale_`) lets a save skip the readback when the snapshot
 covers it, or that millisecond stays in the budget.
 
-### Rewind
+### Rewind (phases 5 and 6, built)
 
-**Capture**: a memory state every K frames (Settings: every frame to every 10th), taken at
-the end of a frame on the machine's thread. That costs the save, 0.13-0.29 ms. Everything
-after is on a thread of its own.
+**Capture.** `host::Machine::KeepForRewind` takes a memory state at the end of every
+`rewind_interval`th real frame, without the cards, and hands it to the store. It runs after
+run-ahead's load back, so never on a frame ahead. That costs the machine the save, 0.13-0.29 ms;
+the rest is the store's worker thread's.
 
-**Storage, as reverse deltas.** The newest state is kept whole. When a new one arrives, the
-previous newest is replaced by its difference *from the new one*. Only the pages that changed
-are kept, each compressed with zlib-1. Stepping back one state is applying one delta to the
-newest, never a walk forward from a keyframe. Dropping the oldest state when the budget fills
-is freeing the oldest delta, since nothing depends on it. The budget is in megabytes (default
-256), and the seconds it holds are shown beside it for the game running.
+**The store, as reverse deltas** (`emu/rewind_buffer.h`). The newest state is kept whole. When a
+new one arrives, the worker replaces the previous newest with its difference from the new one:
+the 4 KB pages that changed, XORed against the new state's and compressed with zlib at level 1. A
+state that changed size (the CD-ROM's queues, a port's device) is kept whole instead. Stepping
+back one state is applying one delta to the newest, never a walk forward from a keyframe.
+Dropping the oldest when the budget is full frees one delta, which nothing depends on. If the
+machine pushes again before the worker has finished the last push, the one waiting is replaced:
+the store keeps fewer states, never a broken chain.
 
-**Playing back**: while the Rewind key is held, the machine loads one state back per frame
-shown and presents it. Each state is 1-10 frames back, so rewinding runs at 1-10x. `Gpu`
-already resolves the picture from VRAM on a load, so no frame needs running to show it. The
-sound is muted while rewinding. On release the machine runs on from the state shown, and the
-states newer than it are dropped.
+Measured with `boot_runner --rewind-test`, a state every frame, recompiled, from local copies:
 
-**The movie**: a rewind stops a movie, as a state load does. Rerecording, which needs
-states to carry the movie's position, is the TAS work in Gaps.md, and builds on this.
+| | Ridge Racer | Wild Arms |
+|---|---|---|
+| 3,000 frames held in | 88.9 MB | 166.6 MB |
+| A delta, mean | 29.0 KB | 55.5 KB |
+| ...made on the worker in | 2.14 ms | 2.49 ms |
+| A step back (decompress, XOR) | 1.00 ms | 1.19 ms |
+| 600 states back | the frame kept aside, byte for byte | the same |
+| ...played on 600 frames | the run's own end, byte for byte | the same |
 
-### The front end
+At a state a frame, 256 MB holds about 150 s of Ridge Racer's first 3,000 frames and 80 s of
+Wild Arms'. The averages include the boot, where deltas are small, so a busy scene holds less;
+the settings window shows what it holds for the game running.
 
-- **Settings > Emulation > Rewind**: on or off, a state every 1-10 frames, a memory budget,
-  and the seconds that buys for the game running.
-- **Settings > Emulation > Run-Ahead**: 0-3 frames. Per game, through
-  `gamesettings\<serial>.ini` (bug 116), since how many frames of lag a game builds in is the
-  game's own. Unavailable with the interpreter, saying why.
-- **A Rewind binding**, held, Backspace by default. F1-F12 and Tab are taken. It goes in
-  Settings > Input > Controllers beside fast-forward.
-- **The overlay**: a "Rewind" badge at the top middle, where fast-forward's is. The
-  performance panel's emulate time includes every frame run, which shows run-ahead's cost.
+**Playing back.** While Backspace is held, each frame shown is a step back (`Machine::StepBack`):
+the store's newest state is loaded and shown, and the one before becomes the newest. It runs at
+the console's pace, so a state every K frames rewinds at K times the speed it was played. At the
+oldest it stays. The SPU's output is drained and the device plays silence. On release the
+machine plays on from the state shown, as from a resume: paced afresh, its sound starting clean.
+The states newer than it are gone.
+
+**What it leaves alone, and when it is off.**
+
+- **The memory cards.** States carry no cards, so a rewind never undoes a save the player made.
+- **Off** while the debugger is armed and while a movie plays (`Hooks::may_rewind`).
+- **The history is forgotten** (`Machine::ForgetHistory`) at a reset, a boot, a state loaded
+  from a file and a movie started.
+- **Unlike run-ahead it works under the interpreter too.** It runs no extra frames; it costs only
+  the save, and a step back is a load.
+
+**Checked.** `boot_runner --rewind-test 300` and `600` on Ridge Racer (both CPUs) and Wild Arms:
+the state 300 or 600 back is the one kept aside, and playing on from it reaches the run's own
+end, byte for byte. `host_test` holds Backspace on the machine's thread at frame 300, lets go
+after exactly 50 steps back, and finds the whole machine 100 frames shown later as a straight run
+to frame 351 has it, and not as at 400. The app, from a scratch copy: after 15 s of Ridge Racer
+the store held 16 s. Five seconds of Backspace stepped back from the game into the BIOS intro,
+at full speed, muted. It played on at 100% with its sound back, the store now holding 11 s.
+
+**Not done.** Nobody has watched it or listened to it yet. On the hardware rasteriser above 1x,
+a stepped-back picture is drawn from native VRAM, at native resolution, until the game redraws.
+A rewind across a disc change puts the old disc back, as the state says, whatever the tray holds.
+
+**The movie**: rewind waits until a movie is over. Rerecording, which needs states to carry the
+movie's position, is the TAS work in Gaps.md, and builds on this.
+
+### The front end (as built)
+
+- **Settings > Emulation > Rewind**: Off, or a state every frame, 2, 3, 5 or 10 frames
+  (`rewind_interval`), and 128-1024 MB (`rewind_budget_mb`, 256 by default). The hint under it
+  says how many seconds the store holds for the game running. The person's settings, not a
+  game's.
+- **Settings > Emulation > Run-ahead**: Off or 1-3 frames, per game (phase 3).
+- **Backspace**, held, as Tab is held for fast forward: a key of the window, not a controller
+  binding. With rewind off, a press says where to turn it on. Letting go, the window losing
+  focus, or the save-state picker opening all end it.
+- **The overlay**: a "Rewind" badge at the top middle, where fast-forward's is, in its stead
+  while both are held.
 
 ## Phases
 
@@ -491,8 +533,8 @@ states to carry the movie's position, is the TAS work in Gaps.md, and builds on 
 | 2 | **Done 2026-10-16.** Run-ahead in `boot_runner --run-ahead <n>`, and `--shown-log` for the picture shown. Bug 160 on the way (a recompiled chain ended where its links did, so its course depended on what was compiled before) and bug 161 (the GP0 queue and drawing debt not in a state) | Twelve discs, both CPUs, four presses each, `--run-ahead 2` against none: every checkpoint picture, instruction count and final state the same. Each press shows 2 frames earlier in 22 runs of 24, 1 earlier in the two where the game reacts within one frame. Every shown picture is the plain run's 2 frames on, except 0-2 frames a run where the frames ahead ran on the input before a press |
 | 3 | **Built 2026-10-16, not yet played.** Run-ahead in the front end: the hook split (`after_each_frame`, `may_run_ahead`), the sound, the cards flushed after the load, the motion tracker kept, Settings > Emulation > Run-ahead, per game | `host_test`: a recompiled boot with run-ahead 2 on the machine's thread lands where one without does, and the interpreter holds it off. The app at 100% speed with run-ahead 2 in Ridge Racer. Still to do: an hour of play, and listening |
 | 4 | Hardware rasteriser snapshots on the card | A run-ahead load at 4x costs what it does at 1x, and `hw_raster_test`'s scenes are identical with run-ahead on |
-| 5 | Rewind's store: reverse deltas on a thread, the budget | Record 600 frames, step back to frame 300, compare with a state saved at frame 300: byte-identical. Changed-page compression measured |
-| 6 | Rewind in the front end: the binding, playback, the badge | Rewind to a point, release, and the run from there matches a run loaded from a state saved at that point |
+| 5 | **Done 2026-10-16.** Rewind's store (`emu/rewind_buffer.h`): reverse deltas made on a worker thread, the budget | `boot_runner --rewind-test`: 300 and 600 states back are the frames kept aside, byte for byte, and play on to the run's own end. Deltas 29-56 KB in 2.1-2.5 ms on the worker |
+| 6 | **Built 2026-10-16, not yet watched.** Rewind in the front end: Backspace held, the step back, the badge, Settings > Emulation > Rewind, the history forgotten at a jump | `host_test`: 50 steps back on the machine's thread, let go, and the machine is where a straight run to that frame has it. The app stepped back 5 s at full speed, muted, and played on |
 | later | The unchanged-input shortcut for run-ahead | Phase 2's test still passes with it, and a held button costs one frame |
 
 The phase 1 test is the one that guards everything after it. A load of a state just saved
@@ -519,13 +561,14 @@ did not.
 
 ## Decisions that are yours
 
-- **Rewind and memory cards**: leave the cards alone (above, the recommendation), or rewind
-  them with the machine, which can undo a save the player meant to keep.
-- **Defaults**: rewind off or on (it costs 0.13-0.29 ms a capture and the memory budget),
-  256 MB, a state every frame; run-ahead 0.
-- **The Rewind key**: Backspace, or another.
-- **Run-ahead under the interpreter**: refused (recommended, as measured) or allowed with a
-  warning.
+Each was built as recommended, and can be changed:
+
+- **Rewind and memory cards**: left alone. Rewinding them with the machine would undo a save the
+  player meant to keep.
+- **Defaults**: rewind off, 256 MB when on; run-ahead off.
+- **The Rewind key**: Backspace, fixed as Tab is. Making both bindable is its own change.
+- **Run-ahead under the interpreter**: held off, the setting saying why. Rewind is allowed there,
+  since it runs no extra frames.
 
 ## How it was measured
 

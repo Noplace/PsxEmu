@@ -45,6 +45,11 @@ namespace psxemu {
             std::function<void(emulation::psx::EmulationPreset preset)> apply_preset;
             // Run-ahead's frames, 0-3, from its list (EmuConfig::run_ahead).
             std::function<void(int frames)> set_run_ahead;
+            // Rewind's interval (0 off) and memory, from their lists (EmuConfig::rewind_interval,
+            // rewind_budget_mb), and how many seconds of the game running its store holds now.
+            std::function<void(int frames)> set_rewind_interval;
+            std::function<void(int megabytes)> set_rewind_budget;
+            std::function<double()> rewind_seconds;
             // Whose settings these are, and the check box that changes it.
             std::function<GameScope()> game;
             std::function<void(bool separate)> set_separate;
@@ -82,6 +87,9 @@ namespace psxemu {
         HWND game_box_ = nullptr;
         HWND run_ahead_ = nullptr;        // the list of frames
         HWND run_ahead_hint_ = nullptr;
+        HWND rewind_ = nullptr;           // how often a state is kept
+        HWND rewind_budget_ = nullptr;    // the memory they may use
+        HWND rewind_hint_ = nullptr;
         HWND note_ = nullptr;
         HFONT font_ = nullptr;
         HFONT bold_font_ = nullptr;

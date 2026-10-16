@@ -1,6 +1,7 @@
 #include "host/machine.h"
 
 #include "psx/psx.h"
+#include "emu/rewind_buffer.h"
 
 #include <utility>
 
@@ -20,8 +21,10 @@ double Ms(std::chrono::steady_clock::duration d) {
 
 }  // namespace
 
+// Run-ahead's kept state, and rewind's: the one being taken for its store, or stepped back to.
 struct Machine::Ahead {
   psx::System::MemoryState state;
+  psx::System::MemoryState rewind_state;
 };
 
 Machine::Machine(psx::System* system, FrameMailbox* video, SampleRing* audio, Hooks hooks)
@@ -120,6 +123,24 @@ void Machine::Run() {
     }
 
     const Clock::time_point start = Clock::now();
+    // Rewind: Backspace held and a state to step back to - this frame shown is a step back, at
+    // the console's pace, with the sound muted. Let go, the machine plays on from the state
+    // shown, as from a resume: paced afresh, its sound starting clean.
+    if (rewinding_ && StepBack()) {
+      was_rewinding_ = true;
+      if (hooks_.rewound)
+        hooks_.rewound(*this);
+      Pace();
+      ++report_frames_;
+      if (Clock::now() - report_since_ >= std::chrono::seconds(1))
+        Report(false);
+      continue;
+    }
+    if (was_rewinding_) {
+      was_rewinding_ = false;
+      rewind_countdown_ = 0;
+      Resume();
+    }
     // NVIDIA Reflex, while DLSS Frame Generation runs (host/latency_markers.h): the next
     // picture's simulation starts at the first vblank after the last one was drawn.
     if (latency_ != nullptr && latency_picture_ <= system_->gpu().picture_number()) {
@@ -170,6 +191,8 @@ void Machine::Run() {
     for (int port = 0; port < 2; ++port)
       for (int slot = 0; slot < psx::System::kCardSlotsPerPort; ++slot)
         system_->mc(port, slot).OnFrame();
+    // Rewind's store: the end of a real frame, every rewind_interval of them.
+    KeepForRewind();
     const Clock::time_point handed_over = Clock::now();
     Pace();
     const Clock::time_point paced = Clock::now();
@@ -310,6 +333,64 @@ void Machine::RunAhead(int frames) {
   // stopped: run-ahead stays off from then on rather than doing it again every frame.
   if (!system_->LoadMemoryState(ahead_->state, /*continuing=*/true).empty())
     run_ahead_failed_ = true;
+}
+
+bool Machine::RewindAllowed() const {
+  if (system_->config().rewind_interval <= 0 || system_->debugger().armed())
+    return false;
+  return !hooks_.may_rewind || hooks_.may_rewind();
+}
+
+// A state at the end of a real frame - after run-ahead's load back, so never a frame ahead - into
+// rewind's store, every rewind_interval frames. The save is all it costs here (0.13-0.29 ms);
+// making its delta is the store's worker's. Without the cards: rewind leaves them as they are.
+void Machine::KeepForRewind() {
+  const psx::EmuConfig& config = system_->config();
+  if (config.rewind_interval <= 0) {
+    rewind_.reset();   // turned off: the memory goes back
+    return;
+  }
+  if (!RewindAllowed())
+    return;
+  const size_t budget = static_cast<size_t>(config.rewind_budget_mb) << 20;
+  if (rewind_ == nullptr)
+    rewind_.reset(new psx::RewindBuffer(budget));
+  else
+    rewind_->set_budget(budget);
+  if (--rewind_countdown_ > 0)
+    return;
+  rewind_countdown_ = config.rewind_interval;
+  if (ahead_ == nullptr)
+    ahead_.reset(new Ahead());
+  system_->SaveMemoryState(&ahead_->rewind_state, /*with_cards=*/false);
+  rewind_->Push(&ahead_->rewind_state.payload);
+}
+
+// One step back: the newest state kept is loaded and shown, and the one before becomes the
+// newest, so holding Backspace walks back a kept state a frame. At the oldest it stays there.
+// The SPU's output since is dropped and the device plays silence until Backspace is let go.
+bool Machine::StepBack() {
+  if (rewind_ == nullptr || !RewindAllowed())
+    return false;
+  if (ahead_ == nullptr)
+    ahead_.reset(new Ahead());
+  if (!rewind_->Pop(&ahead_->rewind_state.payload))
+    return false;
+  if (!system_->LoadMemoryState(ahead_->rewind_state).empty()) {
+    rewind_->Clear();
+    return false;
+  }
+  while (system_->spu().ReadSamples(scratch_.data(), kScratchFrames) > 0) {
+  }
+  audio_->set_producing(false);
+  PublishFrame();
+  return true;
+}
+
+void Machine::ForgetHistory() {
+  if (rewind_ != nullptr)
+    rewind_->Clear();
+  rewind_countdown_ = 0;
 }
 
 void Machine::set_plane_view(psx::PlaneView view) {
@@ -530,6 +611,13 @@ void Machine::Report(bool paused) {
   report.frames_dropped = video_->dropped();
   report.instructions = instructions_;
   report.run_ahead = run_ahead_now_;
+  report.rewinding = was_rewinding_;
+  if (rewind_ != nullptr && report.refresh_hz > 0.0) {
+    const size_t held = rewind_->count();
+    report.rewind_seconds = held > 1 ? static_cast<double>(held - 1) *
+                                           system_->config().rewind_interval / report.refresh_hz
+                                     : 0.0;
+  }
   report.hardware_raster = system_->gpu().hardware_raster();
   report.raster_error = system_->gpu().raster_error();
   report.shared_picture = published_shared_;

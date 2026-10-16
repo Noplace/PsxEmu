@@ -67,6 +67,9 @@
 //                        changed - each over n tries (Docs/Rewind-and-Run-Ahead-Plan.md)
 //     --memory-state-every <n>  every n frames, save a state in memory (cards and all) and
 //                        load it straight back: the run must be exactly the run without it
+//     --rewind-test <n>  keep a state every frame in rewind's store; at the end step back n of
+//                        them, check it is the frame n before byte for byte, and play n frames
+//                        on from it to the run's own end (Docs/Rewind-and-Run-Ahead-Plan.md)
 //     --run-ahead <n>    after every frame, run n frames ahead on its input, take their last
 //                        picture as the one shown, and go back: everything the run reports
 //                        is still the real frames' (Docs/Rewind-and-Run-Ahead-Plan.md)
@@ -124,6 +127,7 @@
 #include "emu/recompiler_bridge.h"
 #include "debug/disasm.h"
 #include "emu/movie.h"
+#include "emu/rewind_buffer.h"
 #ifdef PSXEMU_HW_RASTER
 #include "graphics/adapters.h"
 #include "graphics/hw_raster/hardware_raster.h"
@@ -332,6 +336,7 @@ struct Options {
   int bench_state;   // --bench-state n: tries per measurement, 0 for none
   int memory_state_every;   // --memory-state-every n: a memory state round trip every n frames
   int run_ahead;            // --run-ahead n: frames run ahead of the real one, 0 for none
+  int rewind_test;          // --rewind-test n: rewind's store, stepped back n states at the end
   const char* shown_log;    // --shown-log f: the picture shown, frame by frame
   // --hw-raster: draw with the Direct3D 11 rasteriser the front end has (12 with --d3d12), on
   // the graphics card or, with --warp, on WARP - Windows' software Direct3D, which needs no card and gives the
@@ -720,6 +725,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->bench_state = 0;
   options->memory_state_every = 0;
   options->run_ahead = 0;
+  options->rewind_test = 0;
   options->shown_log = nullptr;
   options->hw_raster = false;
   options->warp = false;
@@ -753,6 +759,8 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->save_state = argv[++i];
     } else if (strcmp(arg, "--bench-state") == 0 && i + 1 < argc) {
       options->bench_state = atoi(argv[++i]);
+    } else if (strcmp(arg, "--rewind-test") == 0 && i + 1 < argc) {
+      options->rewind_test = atoi(argv[++i]);
     } else if (strcmp(arg, "--run-ahead") == 0 && i + 1 < argc) {
       options->run_ahead = atoi(argv[++i]);
     } else if (strcmp(arg, "--shown-log") == 0 && i + 1 < argc) {
@@ -1978,6 +1986,12 @@ int main(int argc, char** argv) {
   double memory_state_load_ms = 0.0;
   // --run-ahead: the state the real frame is kept in, and what the frames ahead cost.
   System::MemoryState ahead_state;
+  // --rewind-test: the store, a state a frame, and the one n frames before the end kept aside.
+  std::unique_ptr<emulation::psx::RewindBuffer> rewind;
+  System::MemoryState rewind_state;
+  std::vector<uint8_t> rewind_target;
+  if (options.rewind_test > 0)
+    rewind.reset(new emulation::psx::RewindBuffer(size_t(4) << 30));
   uint64_t ahead_frames = 0;
   uint64_t ahead_instructions = 0;
   double ahead_save_ms = 0.0;
@@ -2311,6 +2325,15 @@ int main(int argc, char** argv) {
         int h = 0;
         const uint32_t* px = system->gpu().framebuffer(w, h);
         WriteFrame(name.c_str(), px, w, h);
+      }
+      // --rewind-test: a state a frame into rewind's store, each made the newest before the next
+      // (WaitIdle), so none is replaced; the one n frames before the end also kept whole.
+      if (rewind != nullptr) {
+        system->SaveMemoryState(&rewind_state, /*with_cards=*/false);
+        if (frames == options.frames - options.rewind_test)
+          rewind_target = rewind_state.payload;
+        rewind->Push(&rewind_state.payload);
+        rewind->WaitIdle();
       }
       // --run-ahead: the frame just run is the real one. The machine is kept as it stands, n
       // more frames run on the input the real frame had, the last of their pictures is the one
@@ -3153,6 +3176,47 @@ int main(int argc, char** argv) {
     } else {
       fprintf(stderr, "could not write %s\n", options.spu_ram);
     }
+  }
+
+  // --rewind-test: step back n states from the end - each the one a frame before - and check the
+  // last is the frame kept aside, byte for byte; then load it and play n frames on, which must
+  // come to the run's own end exactly, as a rewind released there would.
+  if (rewind != nullptr) {
+    const emulation::psx::RewindBuffer::Stats stats = rewind->stats();
+    const size_t held = rewind->count();
+    const size_t held_bytes = rewind->bytes();
+    System::MemoryState end;
+    system->SaveMemoryState(&end, false);
+    std::vector<uint8_t> state;
+    bool popped = true;
+    const auto start = std::chrono::steady_clock::now();
+    for (int i = 0; i <= options.rewind_test && popped; ++i)
+      popped = rewind->Pop(&state);
+    const double pop_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+            .count() / (options.rewind_test + 1);
+    const bool same_frame = popped && state == rewind_target;
+    bool same_end = false;
+    if (same_frame) {
+      System::MemoryState back;
+      back.payload = state;
+      if (system->LoadMemoryState(back).empty()) {
+        for (int i = 0; i < options.rewind_test; ++i)
+          bench::RunFrame(system);
+        System::MemoryState again;
+        system->SaveMemoryState(&again, false);
+        same_end = again.payload == end.payload;
+      }
+    }
+    printf("rewind         %zu states held in %.1f MB; a delta %.1f KB in %.2f ms on the worker, "
+           "%.2f ms a step back\n",
+           held, held_bytes / 1048576.0,
+           stats.deltas ? stats.delta_bytes / 1024.0 / stats.deltas : 0.0,
+           stats.deltas ? stats.delta_ms / stats.deltas : 0.0, pop_ms);
+    printf("rewind         %d states back: %s; played on %d frames: %s\n", options.rewind_test,
+           same_frame ? "the frame kept aside, byte for byte" : "NOT the frame kept aside",
+           options.rewind_test,
+           same_end ? "the run's own end, byte for byte" : "NOT the run's own end");
   }
 
   // Last, since it runs the machine on from where the run left it.

@@ -252,6 +252,16 @@ struct EmuConfig {
   int run_ahead = 0;
   static const int kMaxRunAhead = 3;
 
+  // Rewind (Docs/Rewind-and-Run-Ahead-Plan.md): a state kept in memory every this many frames, 0
+  // for none, and held Backspace steps back through them, one a frame shown. The store keeps as
+  // many as rewind_budget_mb holds, each older one a compressed difference from the one after
+  // (emu/rewind_buffer.h). Off while the debugger is armed or a movie plays; never touches the
+  // memory cards. The person's preference, not a game's.
+  int rewind_interval = 0;
+  static const std::array<int, 6> kValidRewindIntervals;
+  int rewind_budget_mb = 256;
+  static const std::array<int, 4> kValidRewindBudgets;
+
   // Rasterise on a thread of its own, behind a queue of parsed primitives
   // (phase 7 of Docs/Threading-Plan.md). The GPU's timing stays on the machine
   // thread either way - only the pixels move - and every read of VRAM waits
@@ -535,6 +545,8 @@ inline const std::array<const char*, 3>
     EmuConfig::kValidGpuRasterisers = { "software", "hardware", "hardware_d3d12" };
 
 inline const std::array<int, 7> EmuConfig::kValidResolutionScales = { 1, 2, 3, 4, 5, 6, 8 };
+inline const std::array<int, 6> EmuConfig::kValidRewindIntervals = { 0, 1, 2, 3, 5, 10 };
+inline const std::array<int, 4> EmuConfig::kValidRewindBudgets = { 128, 256, 512, 1024 };
 
 // In the order PSXEmu.Win32's Video Settings window offers them.
 inline const std::array<const char*, 6> EmuConfig::kValidDlssModes = {
