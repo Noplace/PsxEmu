@@ -126,6 +126,16 @@
 //                        the identity check's debug switch
 //     --texture-pack-scale <k>  ...each replacement made k times as large as it is read,
 //                        nearest: a dump at 1x drawn as a pack at 2x-8x, for the identity check
+//     --texture-ai <model.onnx>  ...and every texture drawn upscaled by the model as it is read
+//                        (graphics/upscale/texture/ai_textures.h, phase 3), on the hardware
+//                        rasteriser's card, into --texture-ai-out <dir> (needed), at
+//                        --texture-ai-scale 2 or 4 (4); the upscaler held to --texture-ai-share
+//                        of the time (1: all of it), --texture-ai-grid n tiles to a call each
+//                        way (3; 1 is one tile, as the front end's on the game's own card),
+//                        ONNX Runtime from --texture-ai-runtime
+//                        <dir> (this program's folder). The report waits for the queue at the end.
+//     --upscale-folder <dumps>  ...with --texture-ai and its out folder, and no disc: every dump in
+//                        the folder upscaled - Upscale All - and nothing run
 //     --gpu <name>       ...drawing on the graphics card with <name> in its name (any case),
 //                        as Settings > Video > Graphics Card does; the report names the card
 //     --list-gpus        list the graphics cards and their LUIDs, and exit
@@ -153,6 +163,7 @@
 #ifdef PSXEMU_HW_RASTER
 #include "graphics/adapters.h"
 #include "graphics/hw_raster/hardware_raster.h"
+#include "graphics/upscale/texture/ai_textures.h"
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
@@ -400,6 +411,13 @@ struct Options {
   const char* texture_pack;   // --texture-pack: replacements from this folder
   bool texture_console;       // --texture-console: drawn as the console's texels
   int texture_pack_scale;     // --texture-pack-scale: each replacement made this much larger
+  const char* texture_ai;           // --texture-ai: the model
+  const char* texture_ai_out;       // --texture-ai-out: where its images go
+  const char* texture_ai_runtime;   // --texture-ai-runtime: ONNX Runtime's folder
+  int texture_ai_scale;             // --texture-ai-scale: 2 or 4
+  double texture_ai_share;          // --texture-ai-share: of the time, 0-1
+  int texture_ai_grid;              // --texture-ai-grid: tiles to a call each way, 1-3
+  const char* upscale_folder;       // --upscale-folder: dumps to upscale, nothing run
 };
 
 // FNV-1a over the visible framebuffer. Small, order-sensitive, and good enough
@@ -789,6 +807,13 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->texture_pack = nullptr;
   options->texture_console = false;
   options->texture_pack_scale = 1;
+  options->texture_ai = nullptr;
+  options->texture_ai_out = nullptr;
+  options->texture_ai_runtime = nullptr;
+  options->texture_ai_scale = 4;
+  options->texture_ai_share = 1.0;
+  options->texture_ai_grid = 3;
+  options->upscale_folder = nullptr;
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -958,6 +983,25 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->texture_pack = argv[++i];
     } else if (strcmp(arg, "--texture-console") == 0) {
       options->texture_console = true;
+    } else if (strcmp(arg, "--texture-ai") == 0 && i + 1 < argc) {
+      options->textures = true;
+      options->texture_ai = argv[++i];
+    } else if (strcmp(arg, "--texture-ai-out") == 0 && i + 1 < argc) {
+      options->texture_ai_out = argv[++i];
+    } else if (strcmp(arg, "--texture-ai-runtime") == 0 && i + 1 < argc) {
+      options->texture_ai_runtime = argv[++i];
+    } else if (strcmp(arg, "--texture-ai-scale") == 0 && i + 1 < argc) {
+      options->texture_ai_scale = atoi(argv[++i]);
+      if (options->texture_ai_scale != 2 && options->texture_ai_scale != 4) {
+        fprintf(stderr, "--texture-ai-scale is 2 or 4\n");
+        return false;
+      }
+    } else if (strcmp(arg, "--texture-ai-share") == 0 && i + 1 < argc) {
+      options->texture_ai_share = atof(argv[++i]);
+    } else if (strcmp(arg, "--texture-ai-grid") == 0 && i + 1 < argc) {
+      options->texture_ai_grid = atoi(argv[++i]);
+    } else if (strcmp(arg, "--upscale-folder") == 0 && i + 1 < argc) {
+      options->upscale_folder = argv[++i];
     } else if (strcmp(arg, "--texture-pack-scale") == 0 && i + 1 < argc) {
       options->texture_pack_scale = atoi(argv[++i]);
       if (options->texture_pack_scale < 1 || options->texture_pack_scale > 8) {
@@ -1655,6 +1699,69 @@ void Run(System* system, int n) {
 }  // namespace bench
 }  // namespace
 
+#ifdef PSXEMU_HW_RASTER
+// --gpu's card, by part of its name; 0 for Windows' default, or when there is no such card.
+uint64_t ChosenAdapter(const Options& options) {
+  if (options.gpu == nullptr)
+    return 0;
+  const std::vector<psxemu::GraphicsAdapter> cards = psxemu::EnumerateGraphicsAdapters();
+  const psxemu::GraphicsAdapter* card = psxemu::FindGraphicsAdapterLike(cards, options.gpu);
+  return card != nullptr ? card->luid : 0;
+}
+
+// --texture-ai: the model on that card, ONNX Runtime from its folder - this program's unless
+// --texture-ai-runtime says - writing into --texture-ai-out. Null, having said why.
+std::unique_ptr<psxemu::AiTextures> MakeAiTextures(const Options& options) {
+  if (options.texture_ai_out == nullptr) {
+    fprintf(stderr, "--texture-ai needs --texture-ai-out <dir>\n");
+    return nullptr;
+  }
+  auto wide = [](const char* text) {
+    std::wstring out;
+    for (const char* p = text; *p != '\0'; ++p)
+      out += static_cast<wchar_t>(static_cast<unsigned char>(*p));
+    return out;
+  };
+  std::wstring runtime;
+  if (options.texture_ai_runtime != nullptr) {
+    runtime = wide(options.texture_ai_runtime);
+  } else {
+    wchar_t self[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    runtime = self;
+    runtime.erase(runtime.find_last_of(L"\\/") + 1);
+  }
+  std::string error;
+  std::unique_ptr<psxemu::TextureUpscaler> backend =
+      psxemu::MakeOnnxBackend(runtime, wide(options.texture_ai), ChosenAdapter(options), &error);
+  if (!backend) {
+    fprintf(stderr, "--texture-ai: %s\n", error.c_str());
+    return nullptr;
+  }
+  psxemu::AiTextures::Options ai;
+  ai.scale = options.texture_ai_scale;
+  ai.output = options.texture_ai_out;
+  ai.share = options.texture_ai_share;
+  ai.grid = options.texture_ai_grid;
+  printf("texture ai     %s at %dx into %s, %s, %.0f%% of the time\n", options.texture_ai,
+         ai.scale, ai.output.c_str(), backend->description().c_str(), ai.share * 100.0);
+  return std::make_unique<psxemu::AiTextures>(std::move(backend), ai);
+}
+
+void ReportAi(psxemu::AiTextures& ai, double seconds) {
+  const psxemu::AiTextures::Counts c = ai.counts();
+  printf("upscaled       %llu tiles in %llu calls, %.1f ms a call (%.1f s of %.1f), %llu tiles "
+         "with nothing drawn; %llu sources told of, %llu images made; %llu images read through "
+         "more than eight palettes%s%s\n",
+         static_cast<unsigned long long>(c.tiles), static_cast<unsigned long long>(c.calls),
+         c.calls > 0 ? c.call_ms / static_cast<double>(c.calls) : 0.0, c.call_ms / 1000.0, seconds,
+         static_cast<unsigned long long>(c.empty_tiles), static_cast<unsigned long long>(c.sources),
+         static_cast<unsigned long long>(c.published),
+         static_cast<unsigned long long>(c.palettes_cycling),
+         c.failures > 0 ? "; failed: " : "", c.failures > 0 ? c.last_error.c_str() : "");
+}
+#endif
+
 int main(int argc, char** argv) {
 #ifdef PSXEMU_HW_RASTER
   // The graphics cards, and the LUID each is known by - which is also how Windows' `\GPU Engine`
@@ -1681,6 +1788,27 @@ int main(int argc, char** argv) {
   // Two machines rather than one, and nothing else about this run applies.
   if (options.recompiler_diff)
     return RunRecompilerDiff(options);
+
+  // --upscale-folder: Upscale All, and no machine at all.
+  if (options.upscale_folder != nullptr) {
+#ifdef PSXEMU_HW_RASTER
+    std::unique_ptr<psxemu::AiTextures> ai =
+        options.texture_ai != nullptr ? MakeAiTextures(options) : nullptr;
+    if (!ai) {
+      fprintf(stderr, "--upscale-folder needs --texture-ai and --texture-ai-out\n");
+      return 2;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    printf("upscaling      %zu dumps in %s\n", ai->QueueFolder(options.upscale_folder),
+           options.upscale_folder);
+    ai->Drain();
+    ReportAi(*ai, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+    return ai->counts().failures == 0 ? 0 : 1;
+#else
+    fprintf(stderr, "--upscale-folder: this build has no AI upscaler\n");
+    return 2;
+#endif
+  }
 
   System* system = new System();
   // The rasteriser is made when the GPU is initialised, so it is chosen before.
@@ -1905,6 +2033,10 @@ int main(int argc, char** argv) {
   // --textures: watching every draw from the first, so every upload is seen.
   std::unique_ptr<emulation::psx::TextureTracker> textures;
   std::unique_ptr<emulation::psx::TexturePack> pack;   // --texture-pack: after the tracker
+#ifdef PSXEMU_HW_RASTER
+  std::unique_ptr<psxemu::AiTextures> ai_textures;   // --texture-ai: after the pack it feeds
+  std::chrono::steady_clock::time_point ai_started;
+#endif
   if (options.textures) {
     textures = std::make_unique<emulation::psx::TextureTracker>(system->gpu().vram());
     if (options.texture_dump != nullptr) {
@@ -1918,21 +2050,34 @@ int main(int argc, char** argv) {
     const int* t = options.texture_trace;
     textures->set_trace(t[0], t[1], t[2], t[3]);
     system->gpu().set_raster_observer(textures.get());
-    if (options.texture_pack != nullptr) {
+    if (options.texture_pack != nullptr || options.texture_ai != nullptr) {
       pack = std::make_unique<emulation::psx::TexturePack>(textures.get());
       pack->set_synchronous(true);
       pack->set_test_scale(options.texture_pack_scale);
       std::string error;
-      if (!pack->Open(options.texture_pack, &error)) {
+      const std::string folder = options.texture_pack != nullptr ? options.texture_pack : "";
+      const std::string ai_folder = options.texture_ai_out != nullptr ? options.texture_ai_out : "";
+      if (!pack->Open(folder, &error, options.texture_ai != nullptr ? ai_folder : "")) {
         fprintf(stderr, "--texture-pack: %s\n", error.c_str());
         return 2;
       }
       if (!options.hw_raster)
         fprintf(stderr, "--texture-pack: only the hardware rasteriser (--hw-raster) draws them\n");
       printf("texture pack   %llu replacements in %s\n",
-             static_cast<unsigned long long>(pack->counts().files), options.texture_pack);
+             static_cast<unsigned long long>(pack->counts().files),
+             folder.empty() ? ai_folder.c_str() : folder.c_str());
       system->gpu().set_texture_replacer(pack.get());
     }
+#ifdef PSXEMU_HW_RASTER
+    if (options.texture_ai != nullptr) {
+      ai_textures = MakeAiTextures(options);
+      if (!ai_textures)
+        return 2;
+      ai_textures->set_pack(pack.get());
+      textures->set_upscale_queue(ai_textures.get());
+      ai_started = std::chrono::steady_clock::now();
+    }
+#endif
   }
 
   // Before the machine executes a single instruction, so the whole run is one
@@ -3037,11 +3182,22 @@ int main(int argc, char** argv) {
     if (t.dump_failures > 0)
       printf("               %llu could not be written\n",
              static_cast<unsigned long long>(t.dump_failures));
+#ifdef PSXEMU_HW_RASTER
+    // The upscaler's queue finished: everything the run read upscaled.
+    if (ai_textures) {
+      ai_textures->Drain();
+      ReportAi(*ai_textures, std::chrono::duration<double>(std::chrono::steady_clock::now() -
+                                                           ai_started).count());
+    }
+#endif
     if (pack) {
       const emulation::psx::TexturePack::Counts p = pack->counts();
-      printf("replaced       %llu jobs drawn with a replacement; %llu named one the pack has "
-             "not, %llu one it leaves alone; %llu images read, %llu unusable, %llu let go\n",
+      printf("replaced       %llu jobs drawn with a replacement (%llu the upscaler's, %llu images "
+             "handed over); %llu named one the pack has not, %llu one it leaves alone; %llu "
+             "images read, %llu unusable, %llu let go\n",
              static_cast<unsigned long long>(p.jobs_replaced),
+             static_cast<unsigned long long>(p.jobs_ai),
+             static_cast<unsigned long long>(p.provided),
              static_cast<unsigned long long>(p.jobs_unmatched),
              static_cast<unsigned long long>(p.jobs_never),
              static_cast<unsigned long long>(p.loaded), static_cast<unsigned long long>(p.bad),

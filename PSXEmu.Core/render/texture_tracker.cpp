@@ -747,7 +747,7 @@ void TextureTracker::Drawing(const DrawJob& job) {
     ++counts_.sources;
     named_.store(counts_.sources, std::memory_order_relaxed);
   }
-  if (!dump_folder_.empty() && !holding_)
+  if ((!dump_folder_.empty() || upscale_ != nullptr) && !holding_)
     Gather(job, use, key, Name(use.image_hash, use.clut_hash, mode));
 }
 
@@ -1022,9 +1022,84 @@ void TextureTracker::Gather(const DrawJob& job, const Use& use, uint64_t key,
   const int32_t cy0 = std::max(0, (page_y + use.texels.y0) / 8);
   const int32_t cx1 = std::min(static_cast<int32_t>(source.cells_x) - 1, (page_x + use.texels.x1) / 8);
   const int32_t cy1 = std::min(static_cast<int32_t>(source.cells_y) - 1, (page_y + use.texels.y1) / 8);
+  bool grew = false;
   for (int32_t cy = cy0; cy <= cy1; ++cy)
-    for (int32_t cx = cx0; cx <= cx1; ++cx)
-      source.used[static_cast<size_t>(cy) * source.cells_x + cx] = 1;
+    for (int32_t cx = cx0; cx <= cx1; ++cx) {
+      uint8_t& cell = source.used[static_cast<size_t>(cy) * source.cells_x + cx];
+      grew = grew || cell == 0;
+      cell = 1;
+    }
+  // The upscaler hears of a source each time draws read more of it.
+  if (grew && upscale_ != nullptr)
+    upscale_->Read(Texels(source, key));
+}
+
+namespace {
+
+// A source as its records hold it, for an upscaler on another thread: the records' halfwords are
+// copies no one changes, and the palette and cells are its own.
+class RecordTexels : public SourceTexels {
+ public:
+  struct Part {
+    std::shared_ptr<const std::vector<uint16_t>> pixels;
+    uint32_t x, y, w, h;   // halfwords, from the source's corner
+  };
+  uint32_t mode = 0;
+  uint32_t halfwords = 0, rows = 0;
+  std::vector<Part> parts;
+  std::vector<uint16_t> clut;
+
+  void Decode(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint8_t* rgba) const override {
+    const uint32_t per = PerHalfword(mode);
+    const uint32_t bits = 16 / per;
+    // The halfwords under the rectangle, from whichever records hold them; 0000h where none does.
+    const uint32_t hx0 = x / per, hw = (x + w - 1) / per - hx0 + 1;
+    std::vector<uint16_t> under(static_cast<size_t>(hw) * h, 0);
+    for (const Part& part : parts) {
+      const uint32_t r0 = std::max(y, part.y), r1 = std::min(y + h, part.y + part.h);
+      const uint32_t c0 = std::max(hx0, part.x), c1 = std::min(hx0 + hw, part.x + part.w);
+      for (uint32_t row = r0; row < r1; ++row)
+        for (uint32_t col = c0; col < c1; ++col)
+          under[static_cast<size_t>(row - y) * hw + (col - hx0)] =
+              (*part.pixels)[static_cast<size_t>(row - part.y) * part.w + (col - part.x)];
+    }
+    for (uint32_t row = 0; row < h; ++row)
+      for (uint32_t col = 0; col < w; ++col) {
+        const uint32_t texel = x + col;
+        const uint16_t block = under[static_cast<size_t>(row) * hw + texel / per - hx0];
+        const uint32_t index = (block >> ((texel % per) * bits)) & ((1u << bits) - 1);
+        const uint16_t c = per == 1 ? block : clut[index];
+        uint8_t* p = &rgba[(static_cast<size_t>(row) * w + col) * 4];
+        if (c == 0) {
+          p[0] = p[1] = p[2] = p[3] = 0;   // not drawn: clear
+          continue;
+        }
+        p[0] = Widen(c & 31);
+        p[1] = Widen((c >> 5) & 31);
+        p[2] = Widen((c >> 10) & 31);
+        p[3] = (c & 0x8000) != 0 ? 128 : 255;
+      }
+  }
+};
+
+}  // namespace
+
+std::shared_ptr<SourceTexels> TextureTracker::Texels(const Source& source, uint64_t key) const {
+  auto texels = std::make_shared<RecordTexels>();
+  texels->name = source.name;
+  texels->key = key;
+  texels->width = source.width;
+  texels->height = source.height;
+  texels->cells_x = source.cells_x;
+  texels->cells_y = source.cells_y;
+  texels->cells = source.used;
+  texels->mode = source.mode;
+  texels->halfwords = source.halfwords;
+  texels->rows = source.rows;
+  for (const Part& part : source.parts)
+    texels->parts.push_back({ part.pixels, part.x, part.y, part.w, part.h });
+  texels->clut = source.clut;
+  return texels;
 }
 
 void TextureTracker::Close(int record) {
@@ -1039,7 +1114,8 @@ void TextureTracker::Close(int record) {
     auto found = open_.find(key);
     if (found == open_.end())
       continue;
-    Write(found->second);
+    if (!dump_folder_.empty())
+      Write(found->second);
     open_.erase(found);
   }
   u.sources.clear();
@@ -1060,52 +1136,24 @@ void TextureTracker::Write(const Source& source) {
     if (!more)
       return;
   }
-  const std::string path = dump_folder_ + "/" + source.name + ".png";
-  // Its records laid out as they were in VRAM; a corner none of them covers holds 0000h, clear.
-  std::vector<uint16_t> image(static_cast<size_t>(source.halfwords) * source.rows, 0);
-  for (const Part& part : source.parts)
-    for (uint32_t row = 0; row < part.h; ++row)
-      std::copy(part.pixels->begin() + static_cast<size_t>(row) * part.w,
-                part.pixels->begin() + static_cast<size_t>(row + 1) * part.w,
-                image.begin() + static_cast<size_t>(part.y + row) * source.halfwords + part.x);
-  const uint32_t per = PerHalfword(source.mode);
-  const uint32_t bits = 16 / per;
-  std::vector<uint8_t> rgba(static_cast<size_t>(source.width) * source.height * 4, 0);
-  uint64_t used = 0;
-  for (uint32_t cy = 0; cy < source.cells_y; ++cy)
-    for (uint32_t cx = 0; cx < source.cells_x; ++cx) {
-      if (!source.used[static_cast<size_t>(cy) * source.cells_x + cx])
-        continue;
-      for (uint32_t row = cy * 8; row < std::min(source.height, cy * 8 + 8); ++row)
-        for (uint32_t col = cx * 8; col < std::min(source.width, cx * 8 + 8); ++col) {
-          ++used;
-          const uint16_t block = image[static_cast<size_t>(row) * source.halfwords + col / per];
-          const uint32_t index = (block >> ((col % per) * bits)) & ((1u << bits) - 1);
-          const uint16_t c = per == 1 ? block : source.clut[index];
-          uint8_t* p = &rgba[(static_cast<size_t>(row) * source.width + col) * 4];
-          if (c == 0)
-            continue;   // not drawn: left clear
-          p[0] = Widen(c & 31);
-          p[1] = Widen((c >> 5) & 31);
-          p[2] = Widen((c >> 10) & 31);
-          p[3] = (c & 0x8000) != 0 ? 128 : 255;
-        }
-    }
-  if (used == 0)
+  bool any = false;
+  for (size_t i = 0; i < cells && !any; ++i)
+    any = source.used[i] != 0;
+  if (!any)
     return;
   std::vector<uint8_t>& filled = written_[source.name];
   filled.resize(cells, 0);
   for (size_t i = 0; i < cells; ++i)
     filled[i] = filled[i] || source.used[i];
+  // Decoded where it is written: on the writer's thread, in the front end.
   Dump dump;
-  dump.path = path;
+  dump.path = dump_folder_ + "/" + source.name + ".png";
   dump.width = source.width;
   dump.height = source.height;
   dump.cells_x = source.cells_x;
   dump.cells_y = source.cells_y;
   dump.used = source.used;
-  dump.used_texels = used;
-  dump.rgba = std::move(rgba);
+  dump.texels = Texels(source, 0);
   if (!background_) {
     Store(dump);
     return;
@@ -1119,7 +1167,25 @@ void TextureTracker::Write(const Source& source) {
   write_wake_.notify_one();
 }
 
-void TextureTracker::Store(const Dump& dump) {
+void TextureTracker::Store(const Dump& given) {
+  // Its texels decoded, with only the cells read through its palette filled in.
+  Dump dump = given;
+  dump.rgba.assign(static_cast<size_t>(dump.width) * dump.height * 4, 0);
+  dump.texels->Decode(0, 0, dump.width, dump.height, dump.rgba.data());
+  dump.used_texels = 0;
+  for (uint32_t cy = 0; cy < dump.cells_y; ++cy)
+    for (uint32_t cx = 0; cx < dump.cells_x; ++cx) {
+      const bool read = dump.used[static_cast<size_t>(cy) * dump.cells_x + cx] != 0;
+      for (uint32_t row = cy * 8; row < std::min(dump.height, cy * 8 + 8); ++row)
+        for (uint32_t col = cx * 8; col < std::min(dump.width, cx * 8 + 8); ++col) {
+          if (read) {
+            ++dump.used_texels;
+            continue;
+          }
+          uint8_t* p = &dump.rgba[(static_cast<size_t>(row) * dump.width + col) * 4];
+          p[0] = p[1] = p[2] = p[3] = 0;
+        }
+    }
   const int w = static_cast<int>(dump.width), h = static_cast<int>(dump.height);
   auto counted = [this](uint64_t DumpCounts::*field, uint64_t by) {
     std::lock_guard<std::mutex> lock(write_mutex_);

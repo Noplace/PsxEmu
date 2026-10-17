@@ -57,6 +57,8 @@ PsxEmu/
                                the textures dumped (Docs/Texture-Upscaling-Plan.md, phase 1)
       texture_pack.h/.cpp      a folder of replacements for those names, pack.ini, a loader
                                thread: what the hardware rasteriser asks (phase 2)
+      texture_upscale.h        what the AI upscaler is handed - a source's texels and the cells
+                               read - and its queue, as the core sees it (phase 3)
       png_file.h/.cpp          PNGs written and read with the core's own zlib
       shared_picture.h         a picture left on the graphics card, for a renderer to open there
     enhance/                   opt-in enhancements on top of the machine
@@ -128,6 +130,8 @@ PsxEmu/
                                (Docs/Texture-Upscaling-Plan.md)
       texture_tracker_test.cpp the texture tracker's rules, dumps read back and added to, PNGs
                                of every kind read
+      ai_textures_test.cpp     the AI upscaler's tiles made ready and put back together, and its
+                               queue, with a model that only repeats pixels
       wav_pitch.cpp            the note in a WAV boot_runner wrote
       make_test_disc.cpp       writes a synthetic disc image
       make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format
@@ -199,6 +203,11 @@ PsxEmu/
                                only where NVIDIA's SDK is unpacked in Temp\rtxvideo\ (never committed)
         fetch_onnxruntime.ps1  downloads ONNX Runtime and DirectML from nuget.org into
                                Temp\onnxruntime\ - 36 MB, never committed
+        ai_textures.h/.cpp     the upscaler's thread and queue: tiles made ready (holes filled,
+                               coverage as its own picture), run on a card, put back together and
+                               handed to the pack; the cache folder; Upscale All
+        ai_download.h/.cpp     ONNX Runtime, DirectML and Real-ESRGAN's models downloaded by the
+                               emulator itself, each checked (Get the AI files...)
       filters/                 the picture filters (Settings > Video > Filter)
         filter_chain.h         the custom chain's arithmetic: up to four filters, one after another
         shader_pass.h          one stage of a chain, apart from any engine so it can be tested
@@ -237,8 +246,9 @@ PsxEmu/
       cheats_window.h/.cpp     Emulation > Cheats: the game's codes, on and off, typed or imported
       emulation_settings_window.h/.cpp  Settings > Emulation: CPU, timing, GPU and CD-ROM
                                switches, and the Accuracy and Performance presets
-      video_settings_window.h/.cpp  Settings > Video: the renderer, card and filter; the
-                               rasteriser, resolution and PGXP; NVIDIA DLSS; the on-screen display
+      video_settings_window.h/.cpp  Settings > Video, a page each, chosen from a list down its
+                               left: the renderer, card and filter; the rasteriser, resolution
+                               and PGXP; NVIDIA DLSS; AMD FSR; textures; the on-screen display
       game_scope.h             whether those three windows are editing everyone's settings or
                                the running game's own
       dpi.h/.cpp               per-monitor DPI: layouts in 96-DPI pixels scaled to each window's

@@ -1035,6 +1035,24 @@ boot_runner bios/SCPH1001.BIN --disc <cue> --frames 3000 --hw-raster --warp --sc
 
 Every `frame`, `shown` and `checksum` line of the two must be the same.
 
+`ai_textures_test` (19 checks) is the AI texture upscaler's own work
+(`graphics/upscale/texture/ai_textures.h`, Docs/Texture-Upscaling-Plan.md, phase 3), with a model
+that only repeats pixels, so what comes out is known exactly and no graphics card is needed:
+
+- a tile made ready: one tile for a small source, its coverage going through when it has clear
+  texels, holes filled from the nearest drawn texel rather than black, the source's edge repeated
+  past it, a cell not read through this palette taken as clear, a tile with nothing drawn empty
+- a tile put back together: every drawn cell a block, an opaque texel's colour, alpha 128 for a
+  semi-transparent one, clear pixels where the texels are clear, and 2x as the 4x halved
+- the queue: three sources' tiles in one call nine slots wide, three images handed to the pack and
+  written; nothing more done for a source read again, nor by the next run, which reads back what
+  was written; and nothing for a texture the pack has its own image for
+
+`boot_runner --texture-ai <model.onnx> --texture-ai-out <dir>` upscales every texture a run reads,
+as the front end does, on `--gpu`'s card, and waits for the queue at the end; `--upscale-folder
+<dumps>`, with no disc, does Upscale All over a folder of dumps. `--texture-ai-scale`,
+`--texture-ai-share` and `--texture-ai-grid` set what the front end's settings set.
+
 `rec_test` (2059 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter
 rather than inside it - nothing in `rec/` includes `psx/`, and

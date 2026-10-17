@@ -40,6 +40,7 @@ struct EmuConfig;
 class RewindBuffer;
 class TextureTracker;
 class TexturePack;
+class TextureUpscaleQueue;
 }  // namespace psx
 
 namespace host {
@@ -212,12 +213,14 @@ class Machine {
   // NVIDIA Reflex's markers while DLSS Frame Generation runs (host/latency_markers.h), null for
   // none. Outlives the machine, or is set to null first; the machine's thread calls it.
   void set_latency_markers(LatencyMarkers* markers) { latency_ = markers; }
-  // Textures (Docs/Texture-Upscaling-Plan.md, phase 2): every texture named as it is drawn,
+  // Textures (Docs/Texture-Upscaling-Plan.md, phases 2 and 3): every texture named as it is drawn,
   // written into `dump` - in the background - and drawn from the pack in `replace` by the hardware
-  // rasteriser; either empty for not. Both empty, nothing watches the drawing at all. Kept
-  // across boots and changes of rasteriser; a folder that is the same as before is left as it is.
-  void SetTextures(const std::string& dump, const std::string& replace,
-                   uint64_t memory_budget);
+  // rasteriser; and upscaled by `ai` (render/texture_upscale.h), its images kept in `ai_folder`
+  // and drawn under the pack's own. Any empty or null for not; all of them, and nothing watches
+  // the drawing at all. Kept across boots and changes of rasteriser; a folder that is the same as
+  // before is left as it is.
+  void SetTextures(const std::string& dump, const std::string& replace, uint64_t memory_budget,
+                   const std::string& ai_folder, std::shared_ptr<psx::TextureUpscaleQueue> ai);
   // The pack read again from its folder: what changed on disk drawn from the next job on.
   void ReloadTextures();
 
@@ -277,6 +280,10 @@ class Machine {
   std::unique_ptr<psx::TexturePack> texture_pack_;
   std::string texture_dump_, texture_replace_;
   std::string replacement_error_;
+  // ...and the upscaler, shared with the front end, which reads how far it has got.
+  std::shared_ptr<psx::TextureUpscaleQueue> texture_ai_;
+  std::string texture_ai_folder_;
+  bool pack_opened_ = false;
   LatencyMarkers* latency_ = nullptr;
   // The picture whose simulation is under way, 0 before the first starts (latency_ only).
   uint32_t latency_picture_ = 0;

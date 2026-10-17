@@ -66,6 +66,7 @@
 // the game uploads again.
 
 #include "render/raster.h"
+#include "render/texture_upscale.h"
 
 #include <atomic>
 #include <condition_variable>
@@ -136,6 +137,10 @@ namespace psx {
     // Writes every source not yet written - the end of a run - and waits until all are. Call with
     // nothing being drawn.
     void Flush();
+
+    // The AI upscaler (render/texture_upscale.h, Docs/Texture-Upscaling-Plan.md, phase 3), told
+    // of each source as draws read more of it; null for none. With nothing being drawn.
+    void set_upscale_queue(TextureUpscaleQueue* queue) { upscale_ = queue; }
 
     // Run-ahead (Docs/Rewind-and-Run-Ahead-Plan.md): the machine saves a state, runs frames
     // ahead, and loads the state back every frame. Hold, as the state is saved, keeps the records
@@ -293,8 +298,11 @@ namespace psx {
       std::string path;
       uint32_t width = 0, height = 0, cells_x = 0, cells_y = 0;
       std::vector<uint8_t> used, rgba;
+      std::shared_ptr<SourceTexels> texels;   // decoded into rgba where it is stored
       uint64_t used_texels = 0;
     };
+    // A source as an upscaler or the writer reads it (render/texture_upscale.h).
+    std::shared_ptr<SourceTexels> Texels(const Source& source, uint64_t key) const;
     void Store(const Dump& dump);
     void Writer();         // the background thread
     void WaitWritten();    // until nothing is waiting to be written
@@ -326,6 +334,7 @@ namespace psx {
     bool tracing_ = false;
     std::string dump_folder_;
     int dump_min_ = 8;
+    TextureUpscaleQueue* upscale_ = nullptr;
     Counts counts_;
     // Writing: the background thread, what waits for it, and what it has written - Counts'
     // dump fields, kept apart since that thread counts them.

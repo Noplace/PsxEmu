@@ -32,11 +32,12 @@ namespace emulation {
 namespace psx {
 
   // `rgba` is `width` x `height` pixels, four bytes each, rows top to bottom. False if the file
-  // cannot be written.
-  bool WritePngFile(const std::string& path, int width, int height, const uint8_t* rgba);
+  // cannot be written. `level` is zlib's, 1 (fastest, and run-length only) to 9; -1 its default.
+  bool WritePngFile(const std::string& path, int width, int height, const uint8_t* rgba,
+                    int level = -1);
 
   // The same as bytes, for the tests.
-  std::vector<uint8_t> EncodePng(int width, int height, const uint8_t* rgba);
+  std::vector<uint8_t> EncodePng(int width, int height, const uint8_t* rgba, int level = -1);
 
   // A PNG file's pixels as RGBA8, rows top to bottom - 16-bit samples cut to their high byte,
   // a colour key (tRNS) as alpha 0. False if it cannot be read or is not a PNG this reads.

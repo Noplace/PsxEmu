@@ -46,6 +46,9 @@
     <Filter Include="graphics\upscale\fsr">
       <UniqueIdentifier>{7e50c92e-35cc-4d23-874c-067f50ef4cd8}</UniqueIdentifier>
     </Filter>
+    <Filter Include="graphics\upscale\texture">
+      <UniqueIdentifier>{c41a7d2e-6f3b-4e1a-9d27-5b8e0f3a2c61}</UniqueIdentifier>
+    </Filter>
     <Filter Include="input">
       <UniqueIdentifier>{c112c9e8-f7ff-4bc7-9911-ce9ccb2dc704}</UniqueIdentifier>
     </Filter>
@@ -134,6 +137,18 @@
     </ClCompile>
     <ClCompile Include="graphics\upscale\fsr\fsr_download.cpp">
       <Filter>graphics\upscale\fsr</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\upscale\texture\ai_textures.cpp">
+      <Filter>graphics\upscale\texture</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\upscale\texture\ai_download.cpp">
+      <Filter>graphics\upscale\texture</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\upscale\texture\onnx_runtime.cpp">
+      <Filter>graphics\upscale\texture</Filter>
+    </ClCompile>
+    <ClCompile Include="graphics\upscale\texture\torch_model.cpp">
+      <Filter>graphics\upscale\texture</Filter>
     </ClCompile>
     <ClCompile Include="graphics\present\opengl\opengl_engine.cpp">
       <Filter>graphics\present\opengl</Filter>
@@ -280,6 +295,21 @@
     </ClInclude>
     <ClInclude Include="graphics\upscale\fsr\fsr_download.h">
       <Filter>graphics\upscale\fsr</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\upscale\texture\ai_textures.h">
+      <Filter>graphics\upscale\texture</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\upscale\texture\ai_download.h">
+      <Filter>graphics\upscale\texture</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\upscale\texture\onnx_runtime.h">
+      <Filter>graphics\upscale\texture</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\upscale\texture\texture_upscaler.h">
+      <Filter>graphics\upscale\texture</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\upscale\texture\torch_model.h">
+      <Filter>graphics\upscale\texture</Filter>
     </ClInclude>
     <ClInclude Include="graphics\present\opengl\opengl_engine.h">
       <Filter>graphics\present\opengl</Filter>

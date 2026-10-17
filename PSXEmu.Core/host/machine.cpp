@@ -43,7 +43,7 @@ Machine::Machine(psx::System* system, FrameMailbox* video, SampleRing* audio, Ho
 Machine::~Machine() {
   Stop();
   // The GPU outlives this: nothing of the machine's may be left watching it.
-  SetTextures(std::string(), std::string(), 0);
+  SetTextures(std::string(), std::string(), 0, std::string(), nullptr);
 }
 
 void Machine::Start(uint32_t pause_reasons) {
@@ -410,9 +410,22 @@ void Machine::set_plane_view(psx::PlaneView view) {
 }
 
 void Machine::SetTextures(const std::string& dump, const std::string& replace,
-                          uint64_t memory_budget) {
+                          uint64_t memory_budget, const std::string& ai_folder,
+                          std::shared_ptr<psx::TextureUpscaleQueue> ai) {
   psx::Gpu& gpu = system_->gpu();
-  if (dump.empty() && replace.empty()) {
+  if (ai_folder.empty())
+    ai.reset();
+  // An upscaler going, or another coming: the old one told of nothing more, and given no pack.
+  if (ai != texture_ai_) {
+    if (texture_tracker_) {
+      gpu.set_raster_observer(texture_tracker_.get());   // waits for the rasteriser
+      texture_tracker_->set_upscale_queue(nullptr);
+    }
+    if (texture_ai_)
+      texture_ai_->set_pack(nullptr);
+    texture_ai_ = ai;
+  }
+  if (dump.empty() && replace.empty() && !texture_ai_) {
     gpu.set_texture_replacer(nullptr);
     gpu.set_raster_observer(nullptr);   // waits for the rasteriser
     texture_pack_.reset();
@@ -421,6 +434,7 @@ void Machine::SetTextures(const std::string& dump, const std::string& replace,
     texture_tracker_.reset();
     texture_dump_.clear();
     texture_replace_.clear();
+    texture_ai_folder_.clear();
     replacement_error_.clear();
     return;
   }
@@ -435,21 +449,33 @@ void Machine::SetTextures(const std::string& dump, const std::string& replace,
     texture_tracker_->set_dump_folder(dump, 8, true);
     texture_dump_ = dump;
   }
-  if (replace.empty()) {
+  // The pack: the game's own replacements, the upscaler's, or both.
+  if (replace.empty() && !texture_ai_) {
     gpu.set_texture_replacer(nullptr);
     texture_pack_.reset();
     texture_replace_.clear();
+    texture_ai_folder_.clear();
     replacement_error_.clear();
     return;
   }
   if (!texture_pack_) {
     texture_pack_ = std::make_unique<psx::TexturePack>(texture_tracker_.get());
     texture_replace_.clear();
+    texture_ai_folder_.clear();
+    pack_opened_ = false;
   }
   texture_pack_->set_memory_budget(memory_budget);
-  if (replace != texture_replace_) {
+  const std::string upscaled = texture_ai_ ? ai_folder : std::string();
+  if (!pack_opened_ || replace != texture_replace_ || upscaled != texture_ai_folder_) {
     texture_replace_ = replace;
+    texture_ai_folder_ = upscaled;
+    pack_opened_ = true;
     ReloadTextures();
+  }
+  if (texture_ai_) {
+    gpu.set_raster_observer(texture_tracker_.get());   // waits for the rasteriser
+    texture_ai_->set_pack(texture_pack_.get());
+    texture_tracker_->set_upscale_queue(texture_ai_.get());
   }
 }
 
@@ -458,7 +484,7 @@ void Machine::ReloadTextures() {
     return;
   psx::Gpu& gpu = system_->gpu();
   gpu.set_texture_replacer(nullptr);   // waits for the rasteriser
-  if (texture_pack_->Open(texture_replace_, &replacement_error_)) {
+  if (texture_pack_->Open(texture_replace_, &replacement_error_, texture_ai_folder_)) {
     replacement_error_.clear();
     gpu.set_texture_replacer(texture_pack_.get());
   } else {

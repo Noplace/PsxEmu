@@ -20,9 +20,10 @@
 
 // Settings > Video: how the picture is made and shown - the renderer, the graphics card and the
 // filter; the rasteriser and what it adds (resolution, true colour, PGXP); NVIDIA DLSS and AMD
-// FSR; and what the on-screen display draws over the picture. One window, where these used to be
-// six popups of a menu, so how they bear on each other - DLSS and FSR need Direct3D 12 and the
-// hardware rasteriser, and take over its resolution - is in view while choosing.
+// FSR; the game's textures; and what the on-screen display draws over the picture. One window,
+// where these used to be six popups of a menu, a page each, chosen from a list down its left.
+// Each page's status lines say how it bears on the others - DLSS and FSR need Direct3D 12 and
+// the hardware rasteriser, and take over its resolution.
 //
 // Like Emulation Settings there is no OK or Cancel: each control reaches the App the moment it
 // changes, and the App applies it to the running game. The window keeps no settings of its own;
@@ -90,6 +91,9 @@ namespace psxemu {
             bool texture_replacement = false;
             bool game_running = false;
             std::wstring texture_status;
+            int texture_ai_scale = 0;            // 0, 2 or 4
+            std::string texture_ai_model;        // EmuConfig::kValidTextureAiModels
+            bool ai_files_missing = false;       // ONNX Runtime or the model not beside PSXEmu
             int stats_mode = 0;               // the performance panel: off, compact, full
             bool notifications = true;
             bool controllers_always = false;
@@ -125,6 +129,8 @@ namespace psxemu {
             std::function<void()> get_fsr_files;
             std::function<void(bool on)> set_texture_dump;
             std::function<void(bool on)> set_texture_replacement;
+            std::function<void(int scale, const std::string& model)> set_texture_ai;
+            std::function<void()> get_ai_files;
             std::function<void(int mode)> set_stats;
             std::function<void(bool on)> set_notifications;
             std::function<void(bool on)> set_controllers_always;
@@ -155,9 +161,21 @@ namespace psxemu {
         void OnCommand(int id, int code);
         void MakeFonts();
         int Scale(int value) const { return MulDiv(value, dpi_, 96); }
+        // The page chosen in the list shown, the others hidden.
+        void ShowPage(int page);
+        // A control Refresh shows only sometimes - a link to files that are missing: shown if
+        // `shown` and its page is the one showing, and kept hidden by ShowPage otherwise.
+        void SetShown(HWND control, bool shown);
+
+        static constexpr int kPageCount = 6;
 
         Host host_;
         HWND window_ = nullptr;
+        HWND pages_list_ = nullptr;
+        // Each page's controls, and the page showing - kept while the window is closed.
+        std::array<std::vector<HWND>, kPageCount> pages_;
+        int page_ = 0;
+        std::vector<HWND> hidden_;   // what SetShown hides
         HWND game_box_ = nullptr;
         HWND renderer_ = nullptr;
         HWND card_ = nullptr;
@@ -198,6 +216,7 @@ namespace psxemu {
         HWND texture_dump_ = nullptr;
         HWND texture_replace_ = nullptr;
         HWND texture_status_ = nullptr;
+        HWND texture_ai_ = nullptr;
         HWND stats_ = nullptr;
         HWND notifications_ = nullptr;
         HWND controllers_ = nullptr;

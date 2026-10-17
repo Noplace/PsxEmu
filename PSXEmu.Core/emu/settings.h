@@ -242,6 +242,10 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("texture_dump", c.texture_dump);
   f.SetBool("texture_replacement", c.texture_replacement);
   f.SetInt("texture_budget_mb", c.texture_budget_mb);
+  f.SetInt("texture_ai_scale", c.texture_ai_scale);
+  f.SetString("texture_ai_model", c.texture_ai_model);
+  f.SetInt("texture_ai_share", c.texture_ai_share);
+  f.SetString("texture_ai_card", c.texture_ai_card);
   f.SetString("dlss_mode", c.dlss_mode);
   f.SetString("dlss_preset", c.dlss_preset);
   f.SetString("dlss_frame_generation", c.dlss_frame_generation);
@@ -366,6 +370,16 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   const int budget = f.GetInt("texture_budget_mb", c.texture_budget_mb);
   if (budget >= 64 && budget <= 32768)
     c.texture_budget_mb = budget;
+  const int ai_scale = f.GetInt("texture_ai_scale", c.texture_ai_scale);
+  if (ai_scale == 0 || ai_scale == 2 || ai_scale == 4)
+    c.texture_ai_scale = ai_scale;
+  const std::string ai_model = f.GetString("texture_ai_model", c.texture_ai_model);
+  if (IsValidChoice(ai_model, EmuConfig::kValidTextureAiModels))
+    c.texture_ai_model = ai_model;
+  const int ai_share = f.GetInt("texture_ai_share", c.texture_ai_share);
+  if (ai_share >= 5 && ai_share <= 100)
+    c.texture_ai_share = ai_share;
+  c.texture_ai_card = f.GetString("texture_ai_card", c.texture_ai_card);
   const std::string dlss_mode = f.GetString("dlss_mode", c.dlss_mode);
   if (IsValidChoice(dlss_mode, EmuConfig::kValidDlssModes))
     c.dlss_mode = dlss_mode;
@@ -471,7 +485,7 @@ inline std::vector<std::string> GameSettingKeys() {
       "pgxp_vertices",      "pgxp_textures",       "pgxp_culling",
       // ...and textures dumped and replaced, which are a game's own (Docs/Texture-Upscaling-
       // Plan.md).
-      "texture_dump",       "texture_replacement",
+      "texture_dump",       "texture_replacement", "texture_ai_scale",   "texture_ai_model",
       // ...and DLSS off, or in another mode, for a game it does badly or well
       // (Docs/DLSS-Plan.md).
       "dlss_mode",          "dlss_frame_generation",

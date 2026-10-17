@@ -55,10 +55,15 @@ set HWRASTER=PSXEmu.Win32\graphics\hw_raster\d3d11_raster.cpp ^
  PSXEmu.Win32\graphics\hw_raster\d3d12_raster.cpp ^
  PSXEmu.Win32\graphics\hw_raster\hardware_raster.cpp
 
+rem The AI texture upscaler, for --texture-ai and --upscale-folder (Docs/Texture-Upscaling-Plan.md,
+rem phase 3), and its test.
+set AITEXTURES=PSXEmu.Win32\graphics\upscale\texture\ai_textures.cpp ^
+ PSXEmu.Win32\graphics\upscale\texture\onnx_runtime.cpp
+
 rem boot_runner alone also has the front end's hardware rasteriser, for --hw-raster.
 cl %FLAGS% /DPSXEMU_HW_RASTER /I PSXEmu.Win32 /Fo:Temp\tools\obj_boot\ ^
    /Fe:Temp\tools\boot_runner.exe PSXEmu.Core\tools\boot_runner.cpp ^
-   %HWRASTER% %CORE% %LIBS%
+   %HWRASTER% %AITEXTURES% %CORE% %LIBS%
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_media mkdir Temp\tools\obj_media
@@ -251,6 +256,13 @@ if not exist Temp\tools\obj_ttracker mkdir Temp\tools\obj_ttracker
 cl %FLAGS% /Fo:Temp\tools\obj_ttracker\ /Fe:Temp\tools\texture_tracker_test.exe ^
    PSXEmu.Core\tools\texture_tracker_test.cpp PSXEmu.Core\render\texture_tracker.cpp ^
    PSXEmu.Core\render\png_file.cpp %LIBS%
+if errorlevel 1 exit /b 1
+
+rem The AI texture upscaler's own work, with a model that only repeats pixels - phase 3.
+if not exist Temp\tools\obj_aitextures mkdir Temp\tools\obj_aitextures
+cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_aitextures\ /Fe:Temp\tools\ai_textures_test.exe ^
+   PSXEmu.Core\tools\ai_textures_test.cpp %AITEXTURES% PSXEmu.Core\render\texture_pack.cpp ^
+   PSXEmu.Core\render\texture_tracker.cpp PSXEmu.Core\render\png_file.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem What AMD's FidelityFX runtime says about each card - Docs/FSR-Plan.md, phase 0. Needs

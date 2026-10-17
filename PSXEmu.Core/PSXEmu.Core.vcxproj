@@ -260,6 +260,7 @@
     <ClInclude Include="render\software_raster.h" />
     <ClInclude Include="render\texture_tracker.h" />
     <ClInclude Include="render\texture_pack.h" />
+    <ClInclude Include="render\texture_upscale.h" />
     <ClInclude Include="render\png_file.h" />
     <ClInclude Include="psx\gte.h" />
     <ClInclude Include="enhance\pgxp.h" />

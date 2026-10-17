@@ -64,9 +64,13 @@
 
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <thread>
 
 namespace psxemu {
+
+    class AiTextures;
 
     class App {
      public:
@@ -167,6 +171,18 @@ namespace psxemu {
         std::string GameTextureFolder() const;
         void OpenTextureFolder();
         std::wstring TextureStatus() const;
+        // The AI upscaler (phase 3): its setting; it made - on a thread, as ONNX Runtime and the
+        // model take a moment to load - for what the settings and the game say, or let go; the
+        // files it needs and which are missing, and the dialog that says where they go; and View >
+        // Upscale All Dumped Textures.
+        void SetTextureAi(int scale, const std::string& model);
+        uint64_t AiAdapter() const;
+        void UpdateAiTextures();
+        std::wstring AiModelFile() const;
+        std::vector<std::wstring> MissingAiFiles() const;
+        void ShowAiFiles();
+        void FetchAiFiles();
+        void UpscaleAllTextures();
         void ReportRasteriser(bool hardware, const std::string& error, bool announce);
         // The Video Settings window, if open, and the View menu's depth and motion items, from
         // what is set and what is running. Called by everything that changes either.
@@ -484,7 +500,15 @@ namespace psxemu {
         std::string game_cheat_key_;
         std::vector<emulation::psx::Cheat> cheats_;
         std::string cheats_dir_;          // cheats\, beside psxemu.ini
-        std::string textures_dir_;        // textures\, beside psxemu.ini: a folder each game
+        std::string textures_dir_;        // textures\, in the data folder: a folder each game
+        // The upscaler, shared with the machine, and what it was made for - model, scale, share,
+        // card and folder - so a change of any makes it again; why it could not be, if it could
+        // not; and the thread making it.
+        std::shared_ptr<AiTextures> ai_textures_;
+        std::string ai_textures_for_;
+        std::string ai_textures_error_;
+        std::string ai_textures_folder_;
+        std::thread ai_textures_maker_;
 
         // Whichever backends are actually open, as the threads that opened them reported. Not the
         // requested ones: opening can fall back.

@@ -1,6 +1,11 @@
 # Texture upscaling: a texture cache, replacement packs, and an AI upscaler
 
-**Status: phases 0, 1 and 2 done (2026-10-16, -16, -17).** Every textured draw is named by the
+**Status: phases 0 to 3 done (2026-10-16, -16, -17, -17).** The emulator upscales a game's
+textures itself as they are read, 2x or 4x with Real-ESRGAN on DirectML, and draws them like a
+hand-made pack: Settings > Video > Textures > AI upscaling, per game, the files fetched by the
+emulator. It runs on a card the game is not drawing on when there is one, at full speed on Ridge
+Racer, Castlevania and Valkyrie Profile; on one card alone it takes a tenth of that card's time
+([Phase 3, as built](#phase-3-as-built-2026-10-17)). Every textured draw is named by the
 texture it reads, the same name every run, on either rasteriser: 95.2% of textured pixels on the 26 discs, 22 of them at 100%, the rest
 textures the GPU drew. A game's textures are dumped as PNGs, and a pack of PNGs named the same -
 any of 1x to 8x their size - is drawn in their place by the hardware rasteriser: Settings > Video
@@ -217,7 +222,8 @@ transfer, one record"; the 26 discs showed that is too simple, and the rules bec
   (written over, patched, joined), at a state load, or at the end. A copy of each record is taken
   while it is still whole, so what is written is what was read.
 - **Where**: in the app, on a thread of the tracker's own, into `textures\<serial>\dump\<name>.png`
-  beside psxemu.ini (the serial is the per-game settings' key, as `cheats\<serial>.cht` uses); in
+  in the data folder, `Documents\My Games\PSXEmu\`, with the save states and memory cards (the
+  serial is the per-game settings' key, as `cheats\<serial>.cht` uses); in
   the tools, `boot_runner --texture-dump <folder>`, as each source closes.
 - **Added to** if the file is already there (phase 2): the cells read now are filled in over it,
   and it is written only if that changed it. A dump grows as a game is played further, and
@@ -251,36 +257,47 @@ transfer, one record"; the 26 discs showed that is too simple, and the rules bec
 
 ### The AI upscaler
 
-- **A producer of replacement images**, behind one interface: `TextureUpscaler::Upscale(rgba, w, h,
-  scale) -> rgba`. There are two backends: `OnnxUpscaler` (ONNX Runtime with DirectML) and
-  `RtxVideoUpscaler`.
-- **Its own thread and its own Direct3D 12 device** on the rasteriser's card. It is independent of
-  the rasteriser's API and of Streamline, which only wraps the renderer's device. It takes RGBA in
-  and gives RGBA out: a 256x256 texture is 256 KB in and 4 MB out at 4x. Sharing the D3D12
-  rasteriser's device is an optimisation, measured before it is attempted.
-- **The queue**: a source with no file in `replace\` or the cache is queued at its first draw,
-  nearest the centre of the screen first. A per-frame budget (milliseconds on the card) keeps the
-  game at full speed. Results are written to `textures\<serial>\ai\<model>-<scale>x\<name>.png`.
-  On the next run they are simply there, so the AI folder is a replacement pack the emulator
-  generated itself. Video > Upscale All Dumped Textures runs the queue over a whole dump folder,
-  with a progress dialog.
-- **Before inference**:
-  - Transparent texels take the colour of the nearest opaque one (a dilation), so the model does
-    not pull black halos into the edges of cut-out sprites.
-  - The image is padded by repeating its edges, or by wrapping when the game uses a texture window
-    over it, by at least the model's receptive field.
-  - Small sources are packed into one padded atlas per call, so a hundred 16x16 glyphs are one
-    inference rather than a hundred.
-- **After inference**:
-  - The alpha is upscaled separately: coverage is smoothed and thresholded at 0.5, so cut-out
-    edges are smooth too; the bit-15 marking is taken by nearest.
-  - Each source is cut back out of the atlas.
-- **The model** is fetched by the emulator into `models\` beside it, as FSR's DLLs are, with its
-  licence beside it. ONNX Runtime's DLL and DirectML's redistributable come the same way. They are
-  never committed; `fetch_onnxruntime.ps1` does it for the tools.
-- **Palette animation** (water, lava, flashing text) makes a new CLUT hash every few frames. Each
-  key is one inference, cached, and the set is small and repeats. If a game cycles more than it is
-  worth, `pack.ini` can mark the image "never upscale"; phase 3 counts how often that happens.
+As built in phase 3 (`graphics/upscale/texture/ai_textures.h`); where that differs from what was
+planned, the plan's words follow in italics.
+
+- **A producer of replacement images**, behind one interface, phase 0's `TextureUpscaler` (an RGB
+  picture in, one a whole number of times larger out), so an ONNX model on DirectML and, in phase
+  4, RTX Video plug in alike.
+- **Fed by the texture tracker** (`render/texture_upscale.h`): each time draws read more of a
+  source, the source's texels and the 8x8-texel cells read so far, handed over on the rasteriser's
+  thread in a moment. Only the cells read are upscaled - Ridge Racer's sheet read through 91
+  palettes is 91 corners, not 91 sheets - and each only once: what is done is kept, and written to
+  `textures\<serial>\ai\<model>-<scale>x\<name>.png`. The next run reads those back, so the folder
+  is a pack the emulator made itself, drawn under any hand-made one. *Planned: queued nearest the
+  centre of the screen first; it is first come, first served, which has been enough.*
+- **In tiles** of 64x64 texels, each with 16 texels round it - the source's own where it has
+  them, its edge repeated past them - as the model looks about that far. Nine tiles go through
+  as one picture, three by three, so a texture of a few cells shares a call rather than paying the
+  2-14 ms a call costs whatever its size. The picture is always the same size, so the model's
+  graph is made once.
+- **Before**: texels not drawn - clear, or in cells not read through this palette - take the
+  colour of the nearest drawn texel, so no dark fringe is drawn into a cut-out's edge.
+- **After**: a tile with clear texels has its coverage go through the model too, in a slot of its
+  own; smoothed over the pixels round each and cut at a half, so cut-outs have smooth edges.
+  Semi-transparency (bit 15) follows the nearest texel. At 2x, the model's 4x halved.
+- **Its own thread and its own Direct3D 12 device** - *planned: on the rasteriser's card; built:
+  on a card the game is not drawing on, when there is one.* A call holds a card for tens of
+  milliseconds, and on the card that draws, the game waits behind it (Phase 3, as built). Its
+  results come back as pixels, so any card will do: by default the card with the most memory of
+  its own other than the renderer's - a laptop's discrete card while the game draws on the
+  integrated - with all of its time; otherwise the renderer's card, a tile a call, held to 10% of
+  the time (`texture_ai_share`). `texture_ai_card` names one.
+- **View > Upscale All Dumped Textures** feeds it the game's `dump\` folder, a dialog saying how
+  far it has got; `boot_runner --upscale-folder` the same for the tools.
+- **The files** are fetched by the emulator (`ai_download.h`), from Settings > Video > Textures'
+  "Get the AI files...": ONNX Runtime 1.24.4 and DirectML 1.15.4 out of their NuGet packages -
+  only the entries wanted, by HTTP ranges, each checked against the zip's CRC-32 and Microsoft's
+  signature - and the model from Real-ESRGAN's release, checked against its SHA-256 and converted
+  to ONNX in `models\`, with its licence. About 20 MB. Never committed; `fetch_onnxruntime.ps1`
+  still does it for the tools, and the build copies what it fetched beside the executable.
+- **Palette animation** (water, lava, flashing text) makes a new CLUT hash every few frames, and
+  each is upscaled once. The upscaler counts images read through more than eight palettes (Phase
+  3, as built); `pack.ini`'s `[never]` keeps one from ever being replaced, upscaled or not.
 
 ### RTX Video Super Resolution
 
@@ -345,7 +362,7 @@ Independent of everything above: a filter over the texels `PsDraw` already decod
 | 0 (**done**) | The SDKs read and licences settled: ONNX Runtime, the DirectML redistributable, the RTX Video SDK, and two or three candidate models. `ai_probe`: each backend's sizes, factors and cost on one 256x256 texture, one device per run | a model chosen and every file's licence allowing what we do with it - done for ONNX Runtime, DirectML, RTX Video and seven models | Radeon; 4060 once | 1 |
 | 1 (**done**) | Uploads and sources, with no drawing changed: records at `Written`, retired by draws, keys, `boot_runner --textures` counts, dumping | the share of textured pixels nameable measured on the 26 discs; the twelve-disc table's instruction and sector counts identical with dumping on; dumps reviewed on five discs | Radeon, WARP | 2-3 |
 | 2 (**done**) | Replacement: the slot in `PsDraw`, atlas pages, the loader thread, `pack.ini`, the menus | **the identity check**: a dump loaded back as its own pack at 1x, and nearest-upscaled at 2x-8x, draws every picture of the table bit for bit as without it on WARP (with the replacement cut to 15 bits and the console's colour path, a debug switch); a hand-edited texture seen in game | Radeon, WARP | 2-3 |
-| 3 | The AI upscaler on ONNX Runtime and DirectML: thread, device, queue, dilation, padding, atlases, alpha, cache folder, Upscale All | full speed with the queue running on Ridge Racer and two 2D discs, on both cards; reviewed on the 26 discs' dumps; no halo on cut-out sprites | Radeon, then 4060 for a few long runs | 2-3 |
+| 3 (**done**) | The AI upscaler on ONNX Runtime and DirectML: thread, device, queue, dilation, padding, atlases, alpha, cache folder, Upscale All | full speed with the queue running on Ridge Racer and two 2D discs, on both cards; reviewed on the 26 discs' dumps; no halo on cut-out sprites | Radeon, then 4060 for a few long runs | 2-3 |
 | 4 | RTX Video as the second backend, and the comparison | the side-by-side reviewed; RTX Video either on the menu or left in psxemu.ini only, and this plan says why | 4060 | 1-2 |
 | F | Texture filtering in the shader: the modes, UV bounds, coverage | Nearest identical to today on the whole table; each mode reviewed on five discs; full speed at 4x on the Radeon | Radeon, WARP | 1-2 |
 
@@ -689,6 +706,97 @@ recompiler, as phase 1 measured): every disc's share the same as phase 1's, to t
   closes many at once (Ridge Racer patches its font glyph by glyph) writes many small files;
 - the software rasteriser draws no replacements, by design.
 
+### Phase 3, as built (2026-10-17)
+
+**What was built** (the design is [The AI upscaler](#the-ai-upscaler), above, as built):
+
+- **`render/texture_upscale.h`**, in the core: what the upscaler is handed - a source's texels,
+  decoded on demand through its palette, and the 8x8-texel cells read so far - and the queue it
+  is handed them through. The texture tracker hands a source over each time draws read more of
+  it, on the rasteriser's thread, and whether or not it is dumping.
+- **`graphics/upscale/texture/ai_textures.h/.cpp`**, in the front end: the queue, its thread and
+  its device. Tiles are made ready (holes filled from the nearest drawn texel, the source's edge
+  repeated), run three by three through phase 0's `OnnxUpscaler`, put back together into 8x8
+  blocks, and handed to the pack (`TexturePack::Provide`) and written as PNGs - zlib's fastest
+  level, run lengths only, since an image is mostly empty where a sheet is read only in a corner.
+  On the card that draws, a call is one tile beside its coverage, and the thread sleeps so that
+  its calls take a share of the time (`texture_ai_share`, 10%).
+- **The pack** takes images from the upscaler beside its own: a hand-made one always wins
+  (`HandMade`), and `ai\<model>-<k>x\` is read as a second folder.
+- **`graphics/upscale/texture/ai_download.h/.cpp`**: the files fetched by the emulator - ONNX
+  Runtime and DirectML out of their NuGet packages by HTTP ranges, Real-ESRGAN's two models from
+  its release, converted with phase 0's `torch_model` - about 20 MB, each checked. The same files
+  as `fetch_onnxruntime.ps1` fetches, byte for byte.
+- **The app**: `texture_ai_scale` (Off, 2x, 4x) and `texture_ai_model` (`anime`, the default,
+  or `general`, sharper), per game; `texture_ai_share` and `texture_ai_card` in psxemu.ini.
+  Settings > Video > Textures has an "AI upscaling" choice, and "Get the AI files..." in its status
+  line while any are missing; View > Upscale All Dumped Textures. The status line counts tiles
+  done and waiting. With Textures added, Settings > Video was 1,493 lines tall at 200%, nearly
+  the whole screen, so it became a page each - Renderer, Rasteriser, NVIDIA DLSS, AMD FSR,
+  Textures, On-screen display - chosen from a list down its left: 971 lines. Each game's
+  `textures\` folder is in the data folder, `Documents\My Games\PSXEmu\`, with its save states.
+- **`boot_runner`**: `--texture-ai`, `--texture-ai-out`, `--texture-ai-scale`,
+  `--texture-ai-share`, `--texture-ai-grid`, `--upscale-folder`. `ai_textures_test`, 19 checks,
+  with a model that only repeats pixels.
+
+**Full speed** - the app on Ridge Racer (a 3D disc that reads its sheets through 91 palettes),
+Castlevania and Valkyrie Profile (2D), at 4x, the upscaler at 4x, 60 seconds
+of the attract mode each, the lowest of Show Timings' samples after the first 4 seconds, and
+the mean:
+
+| Drawing on | Upscaling on | Ridge Racer | Castlevania | Valkyrie Profile |
+|---|---|---|---|---|
+| Radeon 780M | nothing | 100%, 100.4% | | 25%, 93.3% |
+| Radeon 780M | RTX 4060, all its time (the default) | 99%, 100.5% | 99%, 99.9% | 57%, 98.1% |
+| RTX 4060 | nothing | | 99%, 99.9% | |
+| RTX 4060 | RTX 4060, 10% (the default) | 98%, 100.4% | 99%, 100% | 98%, 99.9% |
+| RTX 4060 | RTX 4060, 25% | 83-85%, 99.8-99.9% | 93%, 99.7% | |
+| Radeon 780M | Radeon 780M, 10% | 88-92%, 99.5-100.4% | | |
+| Radeon 780M | Radeon 780M, 25% | 84-86%, 99.5-99.7% | | |
+
+Valkyrie Profile's dips on the Radeon are its own: they come at the same moment of its attract
+mode with the upscaler off, and lower. One run of Castlevania on the 4060 at 10% fell to 31%
+once and did not again in three more. So with two cards the queue costs nothing, and on the
+4060 alone a tenth of its time costs nothing either; on the Radeon alone even a tenth shows as
+dips of a few percent while the queue is running - the first minute of a game, until its
+textures are done, and none at all on the next run, which reads them back. A share of 25% is
+too much on either card. The 780M draws Ridge Racer at 4x with little time left over, and a
+call of 80-180 ms cannot be cut finer than a tile.
+
+`boot_runner --texture-ai` on Ridge Racer, 3,000 frames at 4x on the Radeon: 651,731 jobs drawn
+with the upscaler's images.
+
+**Upscale All on the 26 discs' dumps** (phase 1's, 6,000 frames each) on the Radeon, at 4x:
+4,313 dumps, 4,303 images made - the other ten are clear to the last texel - from 16,567 tiles
+in 2,711 calls: 280 seconds of calls in 601, and 1.1 GB of PNGs. Most discs take a few seconds;
+Valkyrie Profile (1,204 dumps) 177 seconds, Metal Gear Solid (1,356) 118. Spyro 3's 388 dumps are
+2048x512 sheets read only in places, and each image is 8192x2048 at 4x: 113 of its 122 seconds
+went outside the model until the PNGs were written with run lengths only - 82 seconds, and 43
+MB rather than 122.
+
+**Reviewed**, on all 26 discs: for each, the eight textures with the most cut-out edge and the
+most detail, a 64x64-texel corner of each, the dump nearest beside the upscale over a
+checkerboard - and the cut-out edges closer, over magenta too. No dark fringe on any: what was
+clear takes the colour of the drawn texel next to it before the model sees it, so what the
+model smooths across a cut-out's edge is the sprite's own colour. Valkyrie Profile's sprites,
+outlined in light grey, keep that outline as a thin smooth rim; Vandal Hearts' monsters, Crash
+3's lettering and the BIOS's logo are clean-edged. What the model does badly is what it was not
+trained on: tiny pixel lettering (Einhänder's fine print, Wild Arms 2's font) comes out softer
+and fainter, and dithered noise (Xenogears' title) is smoothed away.
+
+**Palette animation**: 57 of the 4,303 images are read through more than eight palettes, 41 of
+them Valkyrie Profile's; each palette is an image, done once.
+
+**Left for later**:
+- on one card alone the queue shows as small dips while it runs (above); a half-float model, or
+  the Radeon's NPU through Windows ML, may make a call short enough not to;
+- Real-ESRGAN softens pixel-art lettering and HUDs; there is no default list of what never to
+  upscale - `pack.ini`'s `[never]` does it per game - and a pixel-art model whose licence allows
+  it would do better;
+- tiles go first come, first served, not nearest the middle of the screen first;
+- a 2x model, rather than the 4x one halved;
+- RTX Video as a second backend is phase 4.
+
 ---
 
 ## How it will be verified
@@ -720,7 +828,8 @@ recompiler, as phase 1 measured): every disc's share the same as phase 1's, to t
   that sit side by side on screen are far apart on the sheet. `pack.ini` can exclude a sheet, and
   the binary-alpha filter is the alternative for it.
 - **Fonts and HUDs** often look worse upscaled by a photographic model. They can be excluded by
-  name, and a pixel-art model handles them better; phase 3's review decides the default list.
+  name, and a pixel-art model handles them better; phase 3's review found them softened
+  (Einhänder, Wild Arms 2) and left the list to `pack.ini`'s `[never]`, per game.
 - **DirectML is in sustained engineering.** It still ships and runs, but new work is going into
   Windows ML. Using ONNX Runtime's API keeps that move small.
 - **Size of what ships**: ONNX Runtime and DirectML are tens of MB, as FSR's DLLs are. They are

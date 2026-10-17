@@ -61,19 +61,40 @@ namespace psxemu {
         const int kIdChainFirst = 128;   // four
         const int kIdTextureDump = 132;
         const int kIdTextureReplace = 133;
+        const int kIdTextureAi = 134;
+        const int kIdTextureStatus = 135;
+        const int kIdPages = 136;
+
+        // The pages, in the list's order.
+        enum Page { kPageRenderer, kPageRasteriser, kPageDlss, kPageFsr, kPageTextures, kPageOsd };
+        const wchar_t* const kPageNames[] = { L"Renderer",  L"Rasteriser", L"NVIDIA DLSS",
+                                              L"AMD FSR",   L"Textures",   L"On-screen display" };
+
+        // Settings > Video > Textures > AI upscaling: off, or the scale and the model.
+        struct TextureAiChoice {
+            int scale;
+            const char* model;
+            const wchar_t* label;
+        };
+        const TextureAiChoice kTextureAiChoices[] = {
+            { 0, "anime", L"Off" },
+            { 2, "anime", L"2x" },
+            { 4, "anime", L"4x" },
+            { 2, "general", L"2x, the sharper model" },
+            { 4, "general", L"4x, the sharper model" },
+        };
         const int kIdHintFirst = 300;   // the grey lines, which WM_CTLCOLORSTATIC finds by id
         const int kIdHintLast = 399;
 
-        // The layout, in pixels at 96 DPI: the game's check box across the top; what shows the
-        // picture across the window; what draws it, NVIDIA DLSS and AMD FSR side by side, the
-        // same height; what is drawn over it across the bottom; then Close. A list has its label
-        // in front of it, in a column of their own so the lists in a group line up. Three columns
-        // rather than the upscalers one above the other: at 200% the window stays inside a
-        // 1600-line screen.
+        // The layout, in pixels at 96 DPI: the game's check box across the top; the list of pages
+        // down the left, and the page beside it, one or two groups one above the other, every
+        // page as tall as the tallest; then Close. A list has its label in front of it, in a
+        // column of their own so the lists in a group line up.
         const int kMargin = 12;
-        const int kClientWidth = 1080;
-        const int kFullWidth = kClientWidth - kMargin * 2;
-        const int kColumnWidth = (kClientWidth - kMargin * 4) / 3;
+        const int kPagesWidth = 160;
+        const int kPageLeft = kMargin * 2 + kPagesWidth;
+        const int kPageWidth = 640;
+        const int kClientWidth = kPageLeft + kPageWidth + kMargin;
         const int kGroupsTop = 44;
         const int kGroupHeader = 22;   // from a group box's top to its first row
         const int kGroupFooter = 10;
@@ -82,13 +103,8 @@ namespace psxemu {
         const int kListRow = 30;
         const int kSwitchRow = 24;
         const int kHintLine = 15;      // a line of the small font
-        // A group across the window is two halves: the left for the short lists, the right wide
-        // enough for a graphics card's whole name.
-        const int kLeftHalf = 300;
-        const int kHalfGap = 24;
-        const int kRightHalf = kFullWidth - kInset * 2 - kLeftHalf - kHalfGap;
-        const int kHalfLabel = 96;
-        const int kColumnLabel = 118;   // in the two side by side: "Internal resolution:"
+        const int kPagesItem = 28;     // a line of the list of pages
+        const int kColumnLabel = 140;  // "Internal resolution:"
 
         void SetItems(HWND list, const std::vector<std::wstring>& items) {
             SendMessageW(list, CB_RESETCONTENT, 0, 0);
@@ -167,6 +183,8 @@ namespace psxemu {
         dpi_ = WindowDpi(window_);
         MakeFonts();
 
+        // What is made while `page` is one of the pages is on that page, and shown with it.
+        int page = -1;
         auto make = [&](const wchar_t* cls, const wchar_t* text, DWORD control_style, int id,
                         int x, int y, int w, int h, HFONT font) {
             HWND control = CreateWindowExW(
@@ -175,6 +193,8 @@ namespace psxemu {
                 reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), instance, nullptr);
             if (control != nullptr && font != nullptr)
                 SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), FALSE);
+            if (control != nullptr && page >= 0)
+                pages_[page].push_back(control);
             return control;
         };
 
@@ -241,57 +261,66 @@ namespace psxemu {
 
         // Whose settings these are: everyone's, or the running game's alone.
         game_box_ = make(L"BUTTON", L"", BS_AUTOCHECKBOX | WS_TABSTOP, kIdGame, kMargin, 12,
-                         kFullWidth, 22, bold_font_);
+                         kClientWidth - kMargin * 2, 22, bold_font_);
 
-        // What shows the picture, across the window.
-        const int left = kMargin + kInset;
-        const int right = left + kLeftHalf + kHalfGap;
-        Group display = begin_group(L"Renderer", kMargin, kFullWidth, kGroupsTop);
-        renderer_ = list_at(left, display.y, kHalfLabel, kLeftHalf, L"&Renderer:", kIdRenderer);
-        card_ = list_at(right, display.y, kHalfLabel, kRightHalf, L"Graphics &card:", kIdCard);
-        display.y += kListRow;
-        filter_ = list_at(left, display.y, kHalfLabel, kLeftHalf, L"&Filter:", kIdFilter);
-        text_at(right, display.y + 1, kRightHalf, 2,
-                L"NVIDIA DLSS and AMD FSR need Direct3D 12. The filters need Direct3D 12, OpenGL "
-                L"or Vulkan.",
-                hint_id++);
-        display.y += kListRow;
-        // The custom chain: four stages across the window, an arrow between each two.
+        // The list of pages, first so it is first in the tab order; sized once the pages are in.
+        pages_list_ = make(WC_LISTBOXW, L"",
+                           LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_OWNERDRAWFIXED | LBS_HASSTRINGS |
+                               WS_BORDER | WS_TABSTOP,
+                           kIdPages,
+                           kMargin, kGroupsTop + 6, kPagesWidth, 0, font_);
+        for (const wchar_t* name : kPageNames)
+            SendMessageW(pages_list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
+        SendMessageW(pages_list_, LB_SETITEMHEIGHT, 0, Scale(kPagesItem));
+
+        // The last group of each page, stretched to the tallest page's foot once all are in.
+        std::vector<Group> feet;
+
+        // Renderer: what shows the picture, and the filter over it.
+        page = kPageRenderer;
+        Group display = begin_group(L"Renderer", kPageLeft, kPageWidth, kGroupsTop);
+        renderer_ = list_row(display, L"&Renderer:", kIdRenderer);
+        card_ = list_row(display, L"Graphics &card:", kIdCard);
+        pacing_ = list_row(display, L"Frame &pacing:", kIdPacing);
+        pacing_status_ = text_row(display, 2, L"", 0);
+        display.y += 4;
+        text_row(display, 1,
+                 L"NVIDIA DLSS and AMD FSR need Direct3D 12. The filters need Direct3D 12, OpenGL "
+                 L"or Vulkan.",
+                 hint_id++);
+        Group filters = begin_group(L"Filter", kPageLeft, kPageWidth,
+                                    end_group(display, 0) + kGroupGap);
+        filter_ = list_row(filters, L"&Filter:", kIdFilter);
+        // The custom chain: four stages, two to a row, an arrow after each but the last.
         {
+            const int x0 = filters.x + kInset;
             const int arrow = 24;
-            const int lists = kFullWidth - kInset * 2 - kHalfLabel;
-            const int stage = (lists - arrow * 3) / 4;
-            chain_label_ = make(L"STATIC", L"C&hain:", SS_LEFT, 0, left, display.y + 4,
-                                kHalfLabel - 4, 20, font_);
-            int x = left + kHalfLabel;
+            const int lists = filters.width - kInset * 2 - kColumnLabel;
+            const int stage = (lists - arrow * 2) / 2;
+            chain_label_ = make(L"STATIC", L"C&hain:", SS_LEFT, 0, x0, filters.y + 4,
+                                kColumnLabel - 4, 20, font_);
             for (size_t i = 0; i < chain_.size(); ++i) {
+                const int row = static_cast<int>(i) / 2, column = static_cast<int>(i) % 2;
+                const int x = x0 + kColumnLabel + column * (stage + arrow);
+                const int y = filters.y + row * kListRow;
                 chain_[i] = make(WC_COMBOBOXW, L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
-                                 kIdChainFirst + static_cast<int>(i), x, display.y, stage, 320,
-                                 font_);
-                x += stage;
-                if (i < chain_arrows_.size()) {
-                    chain_arrows_[i] = make(L"STATIC", L"\x2192", SS_CENTER, 0, x, display.y + 4,
+                                 kIdChainFirst + static_cast<int>(i), x, y, stage, 320, font_);
+                if (i < chain_arrows_.size())
+                    chain_arrows_[i] = make(L"STATIC", L"\x2192", SS_CENTER, 0, x + stage, y + 4,
                                             arrow, 20, font_);
-                    x += arrow;
-                }
             }
-            display.y += kListRow;
-            text_at(left + kHalfLabel, display.y, lists, 1,
-                    L"Each stage works on the picture the one before made. The upscalers double "
-                    L"it, up to 4x; CRT and Scanline after one draw its lines, not the console's.",
-                    hint_id++);
-            display.y += kHintLine + 2;
-            chain_note_ = text_at(left + kHalfLabel, display.y, lists, 1, L"", 0);
-            display.y += kHintLine + 6;
+            filters.y += kListRow * 2;
+            text_row(filters, 2,
+                     L"Each stage works on the picture the one before made. The upscalers double "
+                     L"it, up to 4x; CRT and Scanline after one draw its lines, not the console's.",
+                     hint_id++);
+            chain_note_ = text_row(filters, 1, L"", 0);
         }
-        pacing_ = list_at(left, display.y, kHalfLabel, kLeftHalf, L"Frame &pacing:", kIdPacing);
-        pacing_status_ = text_at(right, display.y + 1, kRightHalf, 2, L"", 0);
-        display.y += kListRow + 4;
-        const int display_bottom = end_group(display, 0);
+        feet.push_back(filters);
 
-        // What draws it, and NVIDIA DLSS and AMD FSR, which work on what it draws: side by side.
-        const int middle = display_bottom + kGroupGap;
-        Group raster = begin_group(L"Rasteriser", kMargin, kColumnWidth, middle);
+        // Rasteriser: what draws the picture, and what the hardware one adds.
+        page = kPageRasteriser;
+        Group raster = begin_group(L"Rasteriser", kPageLeft, kPageWidth, kGroupsTop);
         software_ = switch_row(raster, L"&Software: draws as the console does", BS_RADIOBUTTON,
                                kIdSoftware);
         hardware_ = switch_row(raster, L"&Hardware: on the graphics card, Direct3D 11",
@@ -309,8 +338,11 @@ namespace psxemu {
         pgxp_[2] = switch_row(raster, L"PGXP: precise c&ulling (may break some games)",
                               BS_AUTOCHECKBOX, kIdPgxpFirst + 2);
         raster_hint_ = text_row(raster, 2, L"", hint_id++);
+        feet.push_back(raster);
 
-        Group dlss = begin_group(L"NVIDIA DLSS", kMargin * 2 + kColumnWidth, kColumnWidth, middle);
+        // NVIDIA DLSS.
+        page = kPageDlss;
+        Group dlss = begin_group(L"NVIDIA DLSS", kPageLeft, kPageWidth, kGroupsTop);
         dlss_labels_[0] = dlss.box;
         dlss_mode_ = list_row(dlss, L"&Mode:", kIdDlssMode, &dlss_labels_[1]);
         dlss_preset_ = list_row(dlss, L"&Preset:", kIdDlssPreset, &dlss_labels_[2]);
@@ -322,14 +354,16 @@ namespace psxemu {
         dlss_files_ = make(WC_LINK, L"<a>Get NVIDIA's DLSS files...</a>", WS_TABSTOP,
                            kIdDlssFiles, dlss.x + kInset, dlss.y + 4, dlss.width - kInset * 2,
                            20, font_);
-        dlss.y += 4 + 20;
-        dlss.y += 4;
-        text_row(dlss, 3,
+        dlss.y += 4 + 20 + 4;
+        text_row(dlss, 2,
                  L"Needs an NVIDIA RTX graphics card, Direct3D 12 and the hardware rasteriser. "
                  L"Frame generation runs at 100% speed only, with NVIDIA Reflex on.",
                  hint_id++);
+        feet.push_back(dlss);
 
-        Group fsr = begin_group(L"AMD FSR", kMargin * 3 + kColumnWidth * 2, kColumnWidth, middle);
+        // AMD FSR.
+        page = kPageFsr;
+        Group fsr = begin_group(L"AMD FSR", kPageLeft, kPageWidth, kGroupsTop);
         fsr_labels_[0] = fsr.box;
         fsr_mode_ = list_row(fsr, L"Mo&de:", kIdFsrMode, &fsr_labels_[1]);
         fsr_version_ = list_row(fsr, L"Upsc&aler:", kIdFsrVersion, &fsr_labels_[2]);
@@ -341,57 +375,67 @@ namespace psxemu {
         // Shown only while AMD's files are not all here (State::fsr_files_missing).
         fsr_files_ = make(WC_LINK, L"<a>Get AMD's FSR files...</a>", WS_TABSTOP, kIdFsrFiles,
                           fsr.x + kInset, fsr.y + 4, fsr.width - kInset * 2, 20, font_);
-        fsr.y += 4 + 20;
-        fsr.y += 4;
-        text_row(fsr, 3,
+        fsr.y += 4 + 20 + 4;
+        text_row(fsr, 2,
                  L"Runs on any Direct3D 12 card, with the hardware rasteriser. Frame generation "
                  L"runs at 100% speed only, and is made for 60 fps games.",
                  hint_id++);
+        feet.push_back(fsr);
 
-        const int middle_height =
-            std::max({ raster.y, dlss.y, fsr.y }) - middle + kGroupFooter;
-        end_group(raster, middle_height);
-        end_group(dlss, middle_height);
-        const int middle_bottom = end_group(fsr, middle_height);
-
-        // What is drawn over the picture, two columns wide; and beside it the game's textures,
-        // written out and drawn from a pack (Docs/Texture-Upscaling-Plan.md) - side by side, so
-        // the window stays inside a 1600-line screen at 200%.
-        const int bottom_top = middle_bottom + kGroupGap;
-        const int osd_width = kColumnWidth * 2 + kMargin;
-        const int osd_right = kInset * 2 + kLeftHalf + kHalfGap;   // the right half's width left
-        Group osd = begin_group(L"On-screen display", kMargin, osd_width, bottom_top);
-        stats_ = list_at(left, osd.y, kHalfLabel, kLeftHalf, L"Perf&ormance:", kIdStats);
-        notifications_ = switch_at(right, osd.y + 3, osd_width - osd_right, L"&Notifications",
-                                   BS_AUTOCHECKBOX, kIdNotifications);
-        osd.y += kListRow;
-        make(L"STATIC", L"Theme:", SS_LEFT, 0, left, osd.y + 4, kHalfLabel - 4, 20, font_);
-        classic_ = switch_at(left + kHalfLabel, osd.y + 3, 90, L"Classic", BS_RADIOBUTTON,
-                             kIdClassic);
-        glass_ = switch_at(left + kHalfLabel + 96, osd.y + 3, 90, L"Glass", BS_RADIOBUTTON,
-                           kIdGlass);
-        controllers_ = switch_at(right, osd.y + 3, osd_width - osd_right,
-                                 L"Always show the contro&llers", BS_AUTOCHECKBOX, kIdControllers);
-        osd.y += kListRow;
-        text_at(left, osd.y, osd_width - kInset * 2, 1,
-                L"F9 steps through the performance panels.", hint_id++);
-        osd.y += kHintLine + 2;
-
-        Group textures = begin_group(L"Textures", kMargin * 3 + kColumnWidth * 2, kColumnWidth,
-                                     bottom_top);
-        texture_dump_ = switch_row(textures, L"Dump textures as they are dra&wn", BS_AUTOCHECKBOX,
-                                   kIdTextureDump);
-        texture_replace_ = switch_row(textures, L"Draw replacements from the game's pac&k",
+        // Textures: the game's own written out, drawn from a pack, and upscaled
+        // (Docs/Texture-Upscaling-Plan.md).
+        page = kPageTextures;
+        Group textures = begin_group(L"Textures", kPageLeft, kPageWidth, kGroupsTop);
+        texture_dump_ = switch_row(textures, L"Dump te&xtures: each one the game reads, as a PNG",
+                                   BS_AUTOCHECKBOX, kIdTextureDump);
+        texture_replace_ = switch_row(textures, L"Draw the pac&k: the PNGs in replace\\ in their place",
                                       BS_AUTOCHECKBOX, kIdTextureReplace);
-        texture_status_ = text_row(textures, 1, L"", 0);
-        text_row(textures, 1, L"textures\\<game>: dump\\ is written, replace\\ drawn from.",
+        textures.y += 4;
+        texture_ai_ = list_row(textures, L"A&I upscaling:", kIdTextureAi);
+        // What it is doing - and, while the upscaler's files are not here, the way to them.
+        texture_status_ = make(WC_LINK, L"", WS_TABSTOP, kIdTextureStatus, textures.x + kInset,
+                               textures.y + 2, textures.width - kInset * 2, kHintLine * 2,
+                               small_font_);
+        textures.y += 2 + kHintLine * 2 + 4;
+        text_row(textures, 3,
+                 L"Each game's are in Documents\\My Games\\PSXEmu\\textures\\<game>: dump\\, "
+                 L"replace\\ and ai\\. Packs and AI upscaling need the hardware rasteriser, above "
+                 L"1x to be seen. AI upscaling runs on a card the game is not drawing on, if there "
+                 L"is one; the first time a texture is drawn, it is upscaled a moment later.",
                  hint_id++);
+        feet.push_back(textures);
 
-        const int bottom_height = std::max(osd.y, textures.y) - bottom_top + kGroupFooter;
-        end_group(textures, bottom_height);
-        const int osd_bottom = end_group(osd, bottom_height);
+        // On-screen display: what is drawn over the picture.
+        page = kPageOsd;
+        Group osd = begin_group(L"On-screen display", kPageLeft, kPageWidth, kGroupsTop);
+        stats_ = list_row(osd, L"Perf&ormance:", kIdStats);
+        {
+            const int x0 = osd.x + kInset;
+            make(L"STATIC", L"Theme:", SS_LEFT, 0, x0, osd.y + 4, kColumnLabel - 4, 20, font_);
+            classic_ = switch_at(x0 + kColumnLabel, osd.y + 3, 90, L"Classic", BS_RADIOBUTTON,
+                                 kIdClassic);
+            glass_ = switch_at(x0 + kColumnLabel + 96, osd.y + 3, 90, L"Glass", BS_RADIOBUTTON,
+                               kIdGlass);
+            osd.y += kListRow;
+        }
+        notifications_ = switch_row(osd, L"&Notifications", BS_AUTOCHECKBOX, kIdNotifications);
+        controllers_ = switch_row(osd, L"Always show the contro&llers", BS_AUTOCHECKBOX,
+                                  kIdControllers);
+        text_row(osd, 1, L"F9 steps through the performance panels.", hint_id++);
+        feet.push_back(osd);
+        page = -1;
 
-        const int buttons_top = osd_bottom + 8;
+        // Every page as tall as the tallest, and the list of pages beside them.
+        int pages_bottom = 0;
+        for (const Group& foot : feet)
+            pages_bottom = std::max(pages_bottom, foot.y + kGroupFooter);
+        for (const Group& foot : feet)
+            end_group(foot, pages_bottom - foot.top);
+        SetWindowPos(pages_list_, nullptr, 0, 0, Scale(kPagesWidth),
+                     Scale(pages_bottom) - Scale(kGroupsTop + 6),
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+        const int buttons_top = pages_bottom + 10;
         note_ = make(L"STATIC", L"", SS_LEFT, 0, kMargin, buttons_top,
                      kClientWidth - kMargin * 3 - 100, 30, small_font_);
         make(L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP, kIdClose,
@@ -429,6 +473,10 @@ namespace psxemu {
                 items.push_back(choice.label);
             SetItems(resolution_, items);
             items.clear();
+            for (const TextureAiChoice& choice : kTextureAiChoices)
+                items.push_back(choice.label);
+            SetItems(texture_ai_, items);
+            items.clear();
             for (const DlssModeChoice& choice : kDlssModeChoices)
                 items.push_back(choice.label);
             SetItems(dlss_mode_, items);
@@ -458,7 +506,35 @@ namespace psxemu {
         AdjustWindowRectExForDpi(&bounds, style, FALSE, 0, static_cast<UINT>(dpi_));
         SetWindowPos(window_, nullptr, 0, 0, bounds.right - bounds.left,
                      bounds.bottom - bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        ShowPage(page_);
         return true;
+    }
+
+    void VideoSettingsWindow::ShowPage(int page) {
+        page_ = std::clamp(page, 0, kPageCount - 1);
+        SendMessageW(pages_list_, LB_SETCURSEL, static_cast<WPARAM>(page_), 0);
+        // The page shown first, then the others hidden, so nothing behind flashes through.
+        for (HWND control : pages_[page_]) {
+            const bool hidden = std::find(hidden_.begin(), hidden_.end(), control) != hidden_.end();
+            ShowWindow(control, hidden ? SW_HIDE : SW_SHOWNA);
+        }
+        for (int i = 0; i < kPageCount; ++i) {
+            if (i == page_)
+                continue;
+            for (HWND control : pages_[i])
+                ShowWindow(control, SW_HIDE);
+        }
+    }
+
+    void VideoSettingsWindow::SetShown(HWND control, bool shown) {
+        const auto at = std::find(hidden_.begin(), hidden_.end(), control);
+        if (shown && at != hidden_.end())
+            hidden_.erase(at);
+        else if (!shown && at == hidden_.end())
+            hidden_.push_back(control);
+        const auto& current = pages_[page_];
+        const bool on_page = std::find(current.begin(), current.end(), control) != current.end();
+        ShowWindow(control, shown && on_page ? SW_SHOWNA : SW_HIDE);
     }
 
     void VideoSettingsWindow::MakeFonts() {
@@ -564,9 +640,28 @@ namespace psxemu {
         // Textures: a game's own, so there is nothing to dump or replace without one.
         Check(texture_dump_, state.texture_dump);
         Check(texture_replace_, state.texture_replacement);
+        int ai = 0;
+        for (size_t i = 0; i < std::size(kTextureAiChoices); ++i)
+            if (kTextureAiChoices[i].scale == state.texture_ai_scale &&
+                (state.texture_ai_scale == 0 || state.texture_ai_model == kTextureAiChoices[i].model))
+                ai = static_cast<int>(i);
+        Select(texture_ai_, ai);
+        EnableWindow(texture_ai_, state.game_running);
         EnableWindow(texture_dump_, state.game_running);
         EnableWindow(texture_replace_, state.game_running);
-        SetWindowTextW(texture_status_, state.texture_status.c_str());
+        // A link's text is markup: the status as text, and the way to the files as a link.
+        std::wstring status;
+        for (wchar_t c : state.texture_status) {
+            if (c == L'<')
+                status += L"&lt;";
+            else if (c == L'&')
+                status += L"&amp;";
+            else
+                status += c;
+        }
+        if (state.ai_files_missing)
+            status += L" <a>Get the AI files...</a>";
+        SetWindowTextW(texture_status_, status.c_str());
 
         // NVIDIA DLSS. Frame generation past 2x, and Dynamic, only once the card says it makes
         // them - and whatever is chosen, so the list never shows something else.
@@ -603,7 +698,7 @@ namespace psxemu {
         EnableWindow(dlss_generation_, dlss);
         SetWindowTextW(dlss_status_, state.dlss_status.c_str());
         SetWindowTextW(generation_status_, state.generation_status.c_str());
-        ShowWindow(dlss_files_, state.dlss_files_missing ? SW_SHOWNA : SW_HIDE);
+        SetShown(dlss_files_, state.dlss_files_missing);
 
         // AMD FSR: the same, with Frame Generation a check box - FSR makes one picture between
         // two, no more.
@@ -621,7 +716,7 @@ namespace psxemu {
         EnableWindow(fsr_generation_, fsr);
         SetWindowTextW(fsr_status_, state.fsr_status.c_str());
         SetWindowTextW(fsr_generation_status_, state.fsr_generation_status.c_str());
-        ShowWindow(fsr_files_, state.fsr_files_missing ? SW_SHOWNA : SW_HIDE);
+        SetShown(fsr_files_, state.fsr_files_missing);
 
         // On-screen display.
         Select(stats_, std::clamp(state.stats_mode, 0, 2));
@@ -654,6 +749,11 @@ namespace psxemu {
     // Each change goes to the App, whose setter refreshes the window - which is what puts a
     // list back where it was if the change was refused.
     void VideoSettingsWindow::OnCommand(int id, int code) {
+        if (id == kIdPages) {
+            if (code == LBN_SELCHANGE)
+                ShowPage(static_cast<int>(SendMessageW(pages_list_, LB_GETCURSEL, 0, 0)));
+            return;
+        }
         if (code == CBN_SELCHANGE) {
             const int index = Selected(GetDlgItem(window_, id));
             if (index < 0)
@@ -710,6 +810,12 @@ namespace psxemu {
                     if (index < static_cast<int>(generation_items_.size()) &&
                         host_.set_dlss_generation)
                         host_.set_dlss_generation(generation_items_[index]);
+                    break;
+                case kIdTextureAi:
+                    if (index < static_cast<int>(std::size(kTextureAiChoices)) &&
+                        host_.set_texture_ai)
+                        host_.set_texture_ai(kTextureAiChoices[index].scale,
+                                             kTextureAiChoices[index].model);
                     break;
                 case kIdFsrMode:
                     if (index < static_cast<int>(std::size(kFsrModeChoices)) && host_.set_fsr_mode)
@@ -823,6 +929,31 @@ namespace psxemu {
                 self->OnCommand(LOWORD(wparam), HIWORD(wparam));
                 return 0;
 
+            case WM_DRAWITEM: {
+                // The list of pages: each name in the middle of its line, a little in from the
+                // left, the page showing highlighted.
+                const DRAWITEMSTRUCT* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lparam);
+                if (item->CtlID != static_cast<UINT>(kIdPages) || item->itemID == static_cast<UINT>(-1))
+                    break;
+                const bool selected = (item->itemState & ODS_SELECTED) != 0;
+                FillRect(item->hDC, &item->rcItem,
+                         GetSysColorBrush(selected ? COLOR_HIGHLIGHT : COLOR_WINDOW));
+                wchar_t name[64] = {};
+                SendMessageW(item->hwndItem, LB_GETTEXT, item->itemID,
+                             reinterpret_cast<LPARAM>(name));
+                RECT text = item->rcItem;
+                text.left += self->Scale(8);
+                SetBkMode(item->hDC, TRANSPARENT);
+                SetTextColor(item->hDC,
+                             GetSysColor(selected ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
+                const HGDIOBJ old = SelectObject(item->hDC, self->font_);
+                DrawTextW(item->hDC, name, -1, &text, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+                SelectObject(item->hDC, old);
+                if ((item->itemState & ODS_FOCUS) != 0)
+                    DrawFocusRect(item->hDC, &item->rcItem);
+                return TRUE;
+            }
+
             case WM_NOTIFY: {
                 // The links to NVIDIA's and AMD's files, clicked or chosen with Enter.
                 const NMHDR* header = reinterpret_cast<const NMHDR*>(lparam);
@@ -833,6 +964,9 @@ namespace psxemu {
                 if (chosen && header->idFrom == static_cast<UINT_PTR>(kIdFsrFiles) &&
                     self->host_.get_fsr_files)
                     self->host_.get_fsr_files();
+                if (chosen && header->idFrom == static_cast<UINT_PTR>(kIdTextureStatus) &&
+                    self->host_.get_ai_files)
+                    self->host_.get_ai_files();
                 return 0;
             }
 
@@ -850,6 +984,7 @@ namespace psxemu {
                         DeleteObject(font);
                 }
                 RescaleForDpi(window, from, self->dpi_, *reinterpret_cast<const RECT*>(lparam));
+                SendMessageW(self->pages_list_, LB_SETITEMHEIGHT, 0, self->Scale(kPagesItem));
                 return 0;
             }
 

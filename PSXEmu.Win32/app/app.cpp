@@ -28,6 +28,8 @@
 #include "graphics/filters/filter_chain.h"
 #include "graphics/upscale/dlss/reflex_markers.h"
 #include "graphics/upscale/fsr/fsr_download.h"
+#include "graphics/upscale/texture/ai_download.h"
+#include "graphics/upscale/texture/ai_textures.h"
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/shared_device.h"
 #include "ui/dpi.h"
@@ -326,6 +328,10 @@ namespace psxemu {
                 SetTextureSetting(&config_.texture_replacement, on,
                                   on ? L"Replacement textures on" : L"Replacement textures off");
             };
+            host.set_texture_ai = [this](int scale, const std::string& model) {
+                SetTextureAi(scale, model);
+            };
+            host.get_ai_files = [this] { ShowAiFiles(); };
             host.set_stats = [this](int mode) { SetStatsMode(static_cast<StatsMode>(mode)); };
             host.set_notifications = [this](bool on) { SetOverlayNotifications(on); };
             host.set_controllers_always = [this](bool on) { SetControllersAlwaysVisible(on); };
@@ -539,6 +545,7 @@ namespace psxemu {
         memcards_root_ = data_root_ + "\\memcards";
         savestates_root_ = data_root_ + "\\savestates";
         screenshots_root_ = data_root_ + "\\screenshots";   // made by the first screenshot
+        textures_dir_ = data_root_ + "\\textures";          // made as a game first wants it
         // Created whether or not anything is in it: an empty folder is where to put a dump, which
         // is a better answer to "where do BIOS images go" than a folder that only appears once one
         // is already there.
@@ -756,6 +763,9 @@ namespace psxemu {
         // entitled to while a swap chain is being released, and a UI thread sitting in a join
         // would never answer it. Pumping costs nothing and closes that off entirely.
         std::thread stopper([this] {
+            // An upscaler being made is let finish; nobody takes it now.
+            if (ai_textures_maker_.joinable())
+                ai_textures_maker_.join();
             // The machine first: nothing more is produced, and nothing more is asked of the
             // outputs. Then video, which destroys the Direct3D engine on its own thread - and
             // has to, before the window it draws into is destroyed.
@@ -1345,7 +1355,11 @@ namespace psxemu {
     void App::ConfigReplaced(const EmuConfig& before) {
         SendConfigToMachine();
         if (config_.texture_dump != before.texture_dump ||
-            config_.texture_replacement != before.texture_replacement)
+            config_.texture_replacement != before.texture_replacement ||
+            config_.texture_ai_scale != before.texture_ai_scale ||
+            config_.texture_ai_model != before.texture_ai_model ||
+            config_.texture_ai_share != before.texture_ai_share ||
+            config_.texture_ai_card != before.texture_ai_card)
             SendTexturesToMachine();
         // A game's own DLSS or FSR mode - the one going off told first.
         if (config_.dlss_mode != "off") {
@@ -1633,9 +1647,13 @@ namespace psxemu {
                 EnsureDirectory(replace);
             }
         }
+        // The upscaler, if it is on and made; until it is, the machine goes on without.
+        UpdateAiTextures();
+        const std::string ai_folder = ai_textures_ ? ai_textures_folder_ : std::string();
+        std::shared_ptr<emulation::psx::TextureUpscaleQueue> ai = ai_textures_;
         const uint64_t budget = static_cast<uint64_t>(config_.texture_budget_mb) << 20;
-        PostToMachine([dump, replace, budget](Machine& machine) {
-            machine.SetTextures(dump, replace, budget);
+        PostToMachine([dump, replace, budget, ai_folder, ai](Machine& machine) {
+            machine.SetTextures(dump, replace, budget, ai_folder, ai);
         });
     }
 
@@ -1653,22 +1671,32 @@ namespace psxemu {
     std::wstring App::TextureStatus() const {
         if (game_cheat_key_.empty())
             return L"No game running.";
-        if (!config_.texture_dump && !config_.texture_replacement)
+        const bool ai = config_.texture_ai_scale != 0;
+        if (!config_.texture_dump && !config_.texture_replacement && !ai)
             return L"Off for this game.";
+        if (ai && !MissingAiFiles().empty())
+            return L"The AI upscaler's files are not here.";
+        if (ai && !ai_textures_error_.empty())
+            return L"The AI upscaler could not start.";
         if (!have_report_ || !report_.textures)
             return L"Starting...";
-        // One line: what is named and written, and what the pack draws or why it cannot.
+        // One line: what is named and written, and what is drawn in their place or why not.
         std::wstring status = std::to_wstring(report_.textures_named) + L" named";
         if (config_.texture_dump)
             status += L", " + std::to_wstring(report_.textures_dumped) + L" written";
-        if (config_.texture_replacement) {
+        if (config_.texture_replacement || ai) {
             if (!report_.replacement_error.empty())
                 status += L"; the pack could not be read";
             else if (!report_.hardware_raster)
                 status += L"; replacing needs the hardware rasteriser";
             else
-                status += L"; " + std::to_wstring(report_.replacements) + L" in the pack, " +
-                          std::to_wstring(report_.jobs_replaced) + L" draws";
+                status += L"; " + std::to_wstring(report_.jobs_replaced) + L" draws replaced";
+        }
+        if (ai && ai_textures_) {
+            const AiTextures::Counts c = ai_textures_->counts();
+            status += L"; " + std::to_wstring(c.tiles) + L" tiles upscaled";
+            if (c.queued > 0)
+                status += L", " + std::to_wstring(c.queued) + L" waiting";
         }
         return status + L".";
     }
@@ -2028,6 +2056,9 @@ namespace psxemu {
         state.texture_replacement = config_.texture_replacement;
         state.game_running = !game_cheat_key_.empty();
         state.texture_status = TextureStatus();
+        state.texture_ai_scale = config_.texture_ai_scale;
+        state.texture_ai_model = config_.texture_ai_model;
+        state.ai_files_missing = config_.texture_ai_scale != 0 && !MissingAiFiles().empty();
         state.upscaler_running = upscaler_active_;
         state.fsr_running = fsr_active_;
         state.dlss_mode = config_.dlss_mode;
@@ -3961,7 +3992,319 @@ namespace psxemu {
             return folder;
         }
 
+        // The AI upscaler's files beside the executable: ONNX Runtime and DirectML, and the models.
+        const wchar_t* const kAiRuntimeFiles[] = { L"onnxruntime.dll",
+                                                   L"onnxruntime_providers_shared.dll",
+                                                   L"DirectML.dll" };
+
     }   // namespace
+
+    // ---- The AI texture upscaler (Docs/Texture-Upscaling-Plan.md, phase 3) -----------------
+
+    std::wstring App::AiModelFile() const {
+        return ProgramFolder() + L"models\\" + AiModelFileName(config_.texture_ai_model);
+    }
+
+    std::vector<std::wstring> App::MissingAiFiles() const {
+        std::vector<std::wstring> missing;
+        const std::wstring folder = ProgramFolder();
+        for (const wchar_t* file : kAiRuntimeFiles)
+            if (GetFileAttributesW((folder + file).c_str()) == INVALID_FILE_ATTRIBUTES)
+                missing.push_back(file);
+        if (GetFileAttributesW(AiModelFile().c_str()) == INVALID_FILE_ATTRIBUTES)
+            missing.push_back(L"models\\" + AiModelFile().substr(AiModelFile().find_last_of(L'\\') + 1));
+        return missing;
+    }
+
+    // The card the upscaler runs on. Its results come back as pixels, so any card will do, and the
+    // best is one the game is not drawing on: a call keeps a card busy for tens of milliseconds,
+    // and on the card that draws, the game waits behind it - the Radeon 780M lost frames at the
+    // start of every Ridge Racer race. So a card other than the renderer's with more memory of
+    // its own - a laptop's discrete one, while the game draws on the integrated - and otherwise
+    // the renderer's, the upscaler held to its share of the time. texture_ai_card names one.
+    uint64_t App::AiAdapter() const {
+        if (!config_.texture_ai_card.empty()) {
+            for (const GraphicsAdapter& card : adapters_)
+                if (card.name == config_.texture_ai_card)
+                    return card.luid;
+        }
+        const GraphicsAdapter* drawing = nullptr;
+        for (const GraphicsAdapter& card : adapters_)
+            if (card.luid == presenter_adapter_)
+                drawing = &card;
+        const GraphicsAdapter* best = nullptr;
+        for (const GraphicsAdapter& card : adapters_) {
+            if (card.luid == presenter_adapter_ || card.video_memory < (1ull << 30))
+                continue;
+            if (drawing != nullptr && card.video_memory <= drawing->video_memory)
+                continue;
+            if (best == nullptr || card.video_memory > best->video_memory)
+                best = &card;
+        }
+        return best != nullptr ? best->luid : presenter_adapter_;
+    }
+
+    void App::SetTextureAi(int scale, const std::string& model) {
+        if (scale == config_.texture_ai_scale && (scale == 0 || model == config_.texture_ai_model))
+            return;
+        config_.texture_ai_scale = scale;
+        if (scale != 0)
+            config_.texture_ai_model = model;
+        SaveSettingsIfChanged();
+        SendTexturesToMachine();
+        UpdateVideoSettings();
+        Notify(OverlayIcon::kScreen, ToastKind::kInfo,
+               scale == 0 ? std::wstring(L"AI upscaling off")
+                          : L"AI upscaling at " + std::to_wstring(scale) + L"x" +
+                                (model == "general" ? L", the sharper model" : L""));
+        if (scale != 0 && !MissingAiFiles().empty())
+            ShowAiFiles();
+    }
+
+    // The upscaler for what the settings and the game say now: kept if it is the one made for
+    // that, let go if there is to be none, and made again on a thread of its own otherwise - which
+    // hands it over to the machine when it is ready.
+    void App::UpdateAiTextures() {
+        const std::string game = GameTextureFolder();
+        std::string folder, wanted;
+        if (!game.empty() && config_.texture_ai_scale != 0) {
+            folder = game + "\\ai\\" + config_.texture_ai_model + "-" +
+                     std::to_string(config_.texture_ai_scale) + "x";
+            wanted = folder + "|" + std::to_string(config_.texture_ai_share) + "|" +
+                     std::to_string(AiAdapter());
+        }
+        if (wanted == ai_textures_for_)
+            return;
+        ai_textures_for_ = wanted;
+        ai_textures_folder_ = folder;
+        ai_textures_.reset();
+        ai_textures_error_.clear();
+        if (wanted.empty() || !MissingAiFiles().empty())
+            return;
+        if (ai_textures_maker_.joinable())
+            ai_textures_maker_.join();
+        const std::wstring runtime = ProgramFolder(), model = AiModelFile();
+        const uint64_t adapter = AiAdapter();
+        AiTextures::Options options;
+        options.scale = config_.texture_ai_scale;
+        options.output = folder;
+        // On a card of its own it holds nothing up, and has all of it; on the game's, a tile a
+        // call, short enough to fall between two frames.
+        const bool own_card = adapter != presenter_adapter_;
+        options.share = own_card ? 1.0 : config_.texture_ai_share / 100.0;
+        options.grid = own_card ? AiTextures::kGrid : 1;
+        ai_textures_maker_ = std::thread([this, wanted, runtime, model, adapter, options] {
+            std::string error;
+            std::unique_ptr<TextureUpscaler> backend = MakeOnnxBackend(runtime, model, adapter, &error);
+            std::shared_ptr<AiTextures> made;
+            if (backend)
+                made = std::make_shared<AiTextures>(std::move(backend), options);
+            PostToUi([this, wanted, made, error] {
+                if (wanted != ai_textures_for_)
+                    return;   // the settings moved on meanwhile
+                ai_textures_ = made;
+                ai_textures_error_ = error;
+                SendTexturesToMachine();
+                UpdateVideoSettings();
+                if (!made)
+                    Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"AI upscaling could not start",
+                           Wide(error));
+            });
+        });
+    }
+
+    void App::ShowAiFiles() {
+        const std::vector<std::wstring> missing = MissingAiFiles();
+        std::wstring content =
+            L"AI upscaling runs a Real-ESRGAN model (BSD-3) with Microsoft's ONNX Runtime (MIT) and "
+            L"DirectML on any Direct3D 12 graphics card. It needs, beside PSXEmu:\n"
+            L"  onnxruntime.dll, onnxruntime_providers_shared.dll and DirectML.dll\n"
+            L"and in its models folder the model chosen:\n"
+            L"  realesr-animevideov3.onnx, or realesr-general-x4v3.onnx for the sharper one.";
+        std::wstring footer;
+        if (missing.empty()) {
+            footer = L"They are all there.";
+        } else {
+            footer = L"Missing now: ";
+            for (size_t i = 0; i < missing.size(); ++i)
+                footer += (i == 0 ? L"" : L", ") + missing[i];
+            footer += L".";
+        }
+        constexpr int kOpenFolder = 101, kCheckAgain = 102, kDownload = 103;
+        const TASKDIALOG_BUTTON buttons[] = {
+            { kDownload, L"Download them now\nAbout 20 MB: ONNX Runtime 1.24.4 and DirectML 1.15.4 "
+                         L"from nuget.org, each checked against Microsoft's signature, and the "
+                         L"model from Real-ESRGAN's release on GitHub, checked and converted here" },
+            { kOpenFolder, L"Open PSXEmu's folder\nWhere the files go" },
+            { kCheckAgain, L"Check again\nAI upscaling starts if the files are there now" },
+        };
+        struct Links {
+            std::wstring folder;
+        } links = { ProgramFolder() };
+        TASKDIALOGCONFIG config = {};
+        config.cbSize = sizeof(config);
+        config.hwndParent = video_settings_.window() != nullptr &&
+                                    IsWindowVisible(video_settings_.window())
+                                ? video_settings_.window()
+                                : window_;
+        config.hInstance = GetModuleHandleW(nullptr);
+        config.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION |
+                         TDF_POSITION_RELATIVE_TO_WINDOW;
+        config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+        config.pszWindowTitle = L"AI upscaling files";
+        config.pszMainIcon = TD_INFORMATION_ICON;
+        config.pszMainInstruction = L"Get the AI upscaler's files";
+        config.pszContent = content.c_str();
+        config.pButtons = buttons;
+        config.cButtons = static_cast<UINT>(std::size(buttons));
+        config.pszFooter = footer.c_str();
+        config.lpCallbackData = reinterpret_cast<LONG_PTR>(&links);
+        config.pfCallback = [](HWND, UINT note, WPARAM wparam, LPARAM, LONG_PTR data) -> HRESULT {
+            if (note == TDN_BUTTON_CLICKED && wparam == static_cast<WPARAM>(kOpenFolder)) {
+                const Links* links = reinterpret_cast<const Links*>(data);
+                ShellExecuteW(nullptr, L"open", links->folder.c_str(), nullptr, nullptr, SW_SHOW);
+                return S_FALSE;
+            }
+            return S_OK;
+        };
+        int chosen = 0;
+        TaskDialogIndirect(&config, &chosen, nullptr, nullptr);
+        if (chosen == kDownload)
+            FetchAiFiles();
+        if (chosen == kCheckAgain || chosen == kDownload) {
+            ai_textures_for_.clear();   // made afresh
+            SendTexturesToMachine();
+            UpdateVideoSettings();
+        }
+    }
+
+    // The upscaler's files downloaded beside the emulator (graphics/upscale/texture/ai_download.h)
+    // on a thread of their own, a dialog showing how far it has got and offering to cancel.
+    void App::FetchAiFiles() {
+        struct Fetch {
+            AiDownloadProgress progress;
+            std::atomic<bool> finished{ false };
+            bool ok = false;
+            std::wstring error;
+            std::wstring line;
+        } fetch;
+        const std::wstring folder = ProgramFolder();
+        const std::vector<std::string> models = { config_.texture_ai_model };
+        std::thread worker([&fetch, folder, models] {
+            fetch.ok = DownloadAiFiles(folder, models, &fetch.progress, &fetch.error);
+            fetch.finished.store(true);
+        });
+        TASKDIALOGCONFIG config = {};
+        config.cbSize = sizeof(config);
+        config.hwndParent = video_settings_.window() != nullptr &&
+                                    IsWindowVisible(video_settings_.window())
+                                ? video_settings_.window()
+                                : window_;
+        config.hInstance = GetModuleHandleW(nullptr);
+        config.dwFlags = TDF_SHOW_PROGRESS_BAR | TDF_CALLBACK_TIMER | TDF_POSITION_RELATIVE_TO_WINDOW;
+        config.dwCommonButtons = TDCBF_CANCEL_BUTTON;
+        config.pszWindowTitle = L"AI upscaling files";
+        config.pszMainIcon = TD_INFORMATION_ICON;
+        config.pszMainInstruction = L"Downloading the AI upscaler's files";
+        config.pszContent = L"Starting...";
+        config.lpCallbackData = reinterpret_cast<LONG_PTR>(&fetch);
+        config.pfCallback = [](HWND dialog, UINT note, WPARAM wparam, LPARAM,
+                               LONG_PTR data) -> HRESULT {
+            Fetch* fetch = reinterpret_cast<Fetch*>(data);
+            switch (note) {
+                case TDN_CREATED:
+                    SendMessageW(dialog, TDM_SET_PROGRESS_BAR_RANGE, 0, MAKELPARAM(0, 1000));
+                    break;
+                case TDN_TIMER: {
+                    if (fetch->finished.load()) {
+                        SendMessageW(dialog, TDM_CLICK_BUTTON, IDCANCEL, 0);
+                        break;
+                    }
+                    const uint64_t done = fetch->progress.done.load();
+                    const uint64_t total = std::max<uint64_t>(fetch->progress.total.load(), 1);
+                    SendMessageW(dialog, TDM_SET_PROGRESS_BAR_POS,
+                                 static_cast<WPARAM>(std::min<uint64_t>(done * 1000 / total, 1000)), 0);
+                    const int step = std::min(std::max(fetch->progress.step.load(), 0), 3);
+                    wchar_t line[256];
+                    swprintf(line, std::size(line), L"%ls\n%.1f of %.1f MB%ls", kAiDownloadSteps[step],
+                             done / 1048576.0, total / 1048576.0,
+                             fetch->progress.cancel.load() ? L" - cancelling" : L"");
+                    if (fetch->line != line) {
+                        fetch->line = line;
+                        SendMessageW(dialog, TDM_SET_ELEMENT_TEXT, TDE_CONTENT,
+                                     reinterpret_cast<LPARAM>(fetch->line.c_str()));
+                    }
+                    break;
+                }
+                case TDN_BUTTON_CLICKED:
+                    if (wparam == IDCANCEL && !fetch->finished.load()) {
+                        fetch->progress.cancel.store(true);
+                        return S_FALSE;
+                    }
+                    break;
+            }
+            return S_OK;
+        };
+        TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+        worker.join();
+        if (fetch.ok)
+            Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"AI upscaling files downloaded",
+                   L"Checked against Microsoft's signature and the model's release");
+        else if (!fetch.progress.cancel.load())
+            ShowWarning(config.hwndParent,
+                        (L"The AI upscaler's files could not be downloaded.\n\n" + fetch.error).c_str());
+    }
+
+    // View > Upscale All Dumped Textures: the game's dumps through the upscaler, with a dialog
+    // saying how far it has got. The game runs on meanwhile, the upscaler at its usual share.
+    void App::UpscaleAllTextures() {
+        const std::string game = GameTextureFolder();
+        if (game.empty() || config_.texture_ai_scale == 0 || !ai_textures_) {
+            Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"AI upscaling is off, or not ready",
+                   L"View > Video Settings > Textures to turn it on");
+            return;
+        }
+        std::shared_ptr<AiTextures> ai = ai_textures_;
+        const size_t queued = ai->QueueFolder(game + "\\dump");
+        if (queued == 0) {
+            Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"No dumped textures to upscale",
+                   L"Dump textures turns dumping on");
+            return;
+        }
+        struct Progress {
+            std::shared_ptr<AiTextures> ai;
+            uint64_t start = 0;
+            std::wstring line;
+        } progress = { ai, ai->counts().tiles, L"" };
+        TASKDIALOGCONFIG config = {};
+        config.cbSize = sizeof(config);
+        config.hwndParent = window_;
+        config.hInstance = GetModuleHandleW(nullptr);
+        config.dwFlags = TDF_SHOW_MARQUEE_PROGRESS_BAR | TDF_CALLBACK_TIMER |
+                         TDF_POSITION_RELATIVE_TO_WINDOW;
+        config.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+        config.pszWindowTitle = L"Upscale All Dumped Textures";
+        config.pszMainIcon = TD_INFORMATION_ICON;
+        config.pszMainInstruction = L"Upscaling the dumped textures";
+        config.pszContent = L"Starting...";
+        config.lpCallbackData = reinterpret_cast<LONG_PTR>(&progress);
+        config.pfCallback = [](HWND dialog, UINT note, WPARAM, LPARAM, LONG_PTR data) -> HRESULT {
+            Progress* p = reinterpret_cast<Progress*>(data);
+            if (note == TDN_CREATED)
+                SendMessageW(dialog, TDM_SET_PROGRESS_BAR_MARQUEE, TRUE, 0);
+            if (note == TDN_TIMER) {
+                const AiTextures::Counts c = p->ai->counts();
+                p->line = std::to_wstring(c.tiles - p->start) + L" tiles upscaled, " +
+                          std::to_wstring(c.queued) + L" waiting. It goes on when this is closed.";
+                if (c.queued == 0)
+                    p->line = std::to_wstring(c.tiles - p->start) + L" tiles upscaled. Done.";
+                SendMessageW(dialog, TDM_SET_ELEMENT_TEXT, TDE_CONTENT,
+                             reinterpret_cast<LPARAM>(p->line.c_str()));
+            }
+            return S_OK;
+        };
+        TaskDialogIndirect(&config, nullptr, nullptr, nullptr);
+    }
 
     std::vector<std::wstring> App::MissingDlssFiles() const {
         std::vector<std::wstring> missing;
@@ -4891,6 +5234,10 @@ namespace psxemu {
 
             case kCommandOpenTextureFolder:
                 OpenTextureFolder();
+                break;
+
+            case kCommandUpscaleAllTextures:
+                UpscaleAllTextures();
                 break;
 
             case kCommandFrameLimiter:

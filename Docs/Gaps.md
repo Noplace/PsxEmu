@@ -871,7 +871,16 @@ look for. Each was looked for in the code and settings on 2026-10-14 and is not 
   - the video memory budget is `texture_budget_mb` in psxemu.ini only;
   - the software rasteriser never draws replacements.
 
-  Texture filtering and an AI upscaler writing its own pack are the plan's next phases.
+  An AI upscaler writing its own pack is built too (2026-10-17, phase 3): Settings > Video >
+  Textures > AI upscaling, 2x or 4x with Real-ESRGAN on DirectML, its files fetched by the
+  emulator. What it leaves:
+  - on one card alone (the Radeon 780M drawing at 4x) the game dips to 88-92% speed while the
+    queue runs, the first minute or so of a game; with a second card, or on the RTX 4060 alone,
+    it costs nothing;
+  - tiny pixel lettering comes out softer - no font list is skipped by default;
+  - every palette of an animated texture is its own image.
+
+  Texture filtering is the plan's next phase, and RTX Video as a second backend.
 - **Overrides:** no region override (PAL or NTSC whatever the disc and BIOS say), no CPU
   overclock.
 - **Recording:** no video recording, and sound only through `boot_runner --wav`. Input movies

@@ -67,7 +67,9 @@ namespace psx {
    public:
     struct Counts {
       uint64_t files = 0;            // names the pack has an image for, aliases included
-      uint64_t jobs_replaced = 0;    // textured jobs drawn with a replacement
+      uint64_t jobs_replaced = 0;    // textured jobs drawn with a replacement...
+      uint64_t jobs_ai = 0;          // ...the AI upscaler's
+      uint64_t provided = 0;         // images the upscaler handed over this run
       uint64_t jobs_waiting = 0;     // ...named one the pack has, still loading
       uint64_t jobs_unmatched = 0;   // ...named one the pack has nothing for
       uint64_t jobs_never = 0;       // ...named one pack.ini says to leave alone
@@ -81,9 +83,17 @@ namespace psx {
     explicit TexturePack(const TextureTracker* tracker);
     ~TexturePack() override;
 
-    // Reads `folder`'s names and its pack.ini, letting go of whatever was open. False, with
-    // `error` saying why, if the folder cannot be read.
-    bool Open(const std::string& folder, std::string* error);
+    // Reads `folder`'s names and its pack.ini, letting go of whatever was open - and `ai_folder`'s
+    // names, if one is given, the AI upscaler's own (phase 3), for any texture `folder` has none
+    // for. Either may be empty. False, with `error` saying why, if a folder given cannot be read.
+    bool Open(const std::string& folder, std::string* error, const std::string& ai_folder = "");
+
+    // The AI upscaler's (render/texture_upscale.h), from its thread: whether a texture has an
+    // image of the pack's own or is never to be replaced - nothing for the upscaler to do; and an
+    // image it has made, written at `path`, drawn in place of the texture from the next job on.
+    bool HandMade(uint64_t key) const;
+    void Provide(uint64_t key, const std::string& name, const std::string& path,
+                 std::shared_ptr<const ReplacementImage> image);
     // Lets go of everything; nothing is replaced until Open is called again.
     void Close();
     // Reads each image on the thread that first wants it, rather than the loader's.
@@ -107,12 +117,15 @@ namespace psx {
     static bool MakeImage(const std::vector<uint8_t>& rgba, int w, int h, uint32_t width,
                           uint32_t height, bool bilinear, ReplacementImage* image,
                           std::string* error);
+    // A number for an image made elsewhere (ReplacementImage::id): never one given before.
+    static uint64_t NewImageId();
 
    private:
     enum class State { kUnloaded, kLoading, kReady, kBad };
     struct Entry {
       std::string path;
       std::string name;
+      bool ai = false;      // the upscaler's, not the pack's own
       bool never = false;
       bool bilinear = false;
       State state = State::kUnloaded;

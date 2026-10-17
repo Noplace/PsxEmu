@@ -137,6 +137,8 @@ namespace psxemu {
         // read again, and its folder of textures (Docs/Texture-Upscaling-Plan.md).
         kCommandReloadTextures,
         kCommandOpenTextureFolder,
+        // View > Upscale All Dumped Textures: the game's dumps through the AI upscaler (phase 3).
+        kCommandUpscaleAllTextures,
     };
 
     // ---------------------------------------------------------------------------------------------

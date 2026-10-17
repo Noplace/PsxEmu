@@ -9941,3 +9941,28 @@ checkpoints again.
 - Speed, Ridge Racer and Wild Arms on the recompiler, alternated with the build before four
   times: the same within 0.5% once settled (Ridge Racer 4.21 s and 4.22 s, Wild Arms 3.35 s and
   3.34 s on the last pair).
+
+## 164. Video Settings as pages, and textures with the save states
+
+`ui/video_settings_window.h/.cpp`, `app/app.cpp`, `app/app.h`
+
+Not a bug: a request - "make sure these textures and everything are in my games folder like the
+savestates, the video options dialog is too big now, I think we need tabs or a left menu list".
+
+**The window.** With the Textures group (Texture-Upscaling-Plan.md, phases 2 and 3) Settings >
+Video was 1,493 lines tall at 200% - the screen's work area is 1,504. It is now a page each,
+Renderer, Rasteriser, NVIDIA DLSS, AMD FSR, Textures and On-screen display, chosen from a list down
+its left, and 971 lines tall. A list rather than tabs: six names are already a crowded row of
+tabs, and the plan adds texture filtering and RTX Video. Every page is one column, each list as
+wide as the page, so the graphics card's whole name fits without the two-halves layout; the custom
+filter chain is two stages to a row. Every control is made once, as before, and belongs to a page:
+choosing a page shows its controls and hides the rest, and the links to NVIDIA's, AMD's and the
+AI's files, shown only while those are missing, stay hidden off their own page. The list is drawn
+by the window, each name centred on a 28-pixel line.
+
+**The textures** were in `textures\` beside psxemu.ini - the build folder, here - while save
+states, memory cards and screenshots are in `Documents\My Games\PSXEmu\`. `textures\` is there
+too now; the user's FF7 folder was moved across by hand.
+
+**Checked** on the scratch front end at 192 DPI: each page captured, its controls where they
+should be and no other page's showing through; the FSR link on the FSR page only.

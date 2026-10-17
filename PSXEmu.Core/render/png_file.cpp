@@ -61,7 +61,7 @@ void Chunk(std::vector<uint8_t>* out, const char* type, const std::vector<uint8_
 
 }  // namespace
 
-std::vector<uint8_t> EncodePng(int width, int height, const uint8_t* rgba) {
+std::vector<uint8_t> EncodePng(int width, int height, const uint8_t* rgba, int level) {
   std::vector<uint8_t> png = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n' };
   std::vector<uint8_t> header;
   Put32(&header, static_cast<uint32_t>(width));
@@ -78,7 +78,12 @@ std::vector<uint8_t> EncodePng(int width, int height, const uint8_t* rgba) {
     raw.insert(raw.end(), rgba + y * row, rgba + (y + 1) * row);
   }
   z_stream z = {};
-  deflateInit(&z, Z_DEFAULT_COMPRESSION);
+  // At the fastest, runs only: an upscaled canvas of half of VRAM is mostly zeros (Spyro's), and
+  // run-length deflate goes through them several times as fast for about the same size.
+  if (level == 1)
+    deflateInit2(&z, 1, Z_DEFLATED, 15, 8, Z_RLE);
+  else
+    deflateInit(&z, level);
   std::vector<uint8_t> packed(deflateBound(&z, static_cast<uLong>(raw.size())));
   z.next_in = raw.data();
   z.avail_in = static_cast<uInt>(raw.size());
@@ -92,8 +97,9 @@ std::vector<uint8_t> EncodePng(int width, int height, const uint8_t* rgba) {
   return png;
 }
 
-bool WritePngFile(const std::string& path, int width, int height, const uint8_t* rgba) {
-  const std::vector<uint8_t> png = EncodePng(width, height, rgba);
+bool WritePngFile(const std::string& path, int width, int height, const uint8_t* rgba,
+                  int level) {
+  const std::vector<uint8_t> png = EncodePng(width, height, rgba, level);
   FILE* f = fopen(path.c_str(), "wb");
   if (f == nullptr)
     return false;

@@ -185,6 +185,8 @@ namespace psxemu {
                     L"&Reload Textures");
         AppendMenuW(view, MF_STRING, static_cast<UINT_PTR>(kCommandOpenTextureFolder),
                     L"Open Te&xture Folder");
+        AppendMenuW(view, MF_STRING, static_cast<UINT_PTR>(kCommandUpscaleAllTextures),
+                    L"&Upscale All Dumped Textures...");
         AppendMenuW(view, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(view, MF_STRING, static_cast<UINT_PTR>(kCommandVideoSettings),
                     L"Video &Settings...");
