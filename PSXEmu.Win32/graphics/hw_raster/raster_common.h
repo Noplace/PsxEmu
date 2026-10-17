@@ -74,11 +74,15 @@ namespace raster {
     // is, in 64ths of a console pixel, x and y 16 bits apiece:
     //   p[16-18]  corners a, b, c's (a rectangle's whole motion in p[16])
     //   p[19]     which of them is known, bits 0-2
+    //
+    // and for a textured one drawn with a replacement texture (Docs/Texture-Upscaling-Plan.md,
+    // phase 2), where the replacement is - replacement_atlas.h says how:
+    //   p[20-23]  its words, p[20] 0 for none
     enum Kind : uint32_t { kKindTriangle = 0, kKindRectangle = 1, kKindFlat = 2, kKindPrecise = 3 };
 
-    // Words a vertex carries for the pixel shader: 16 for the primitive, and 4 for its motion,
-    // which only the plane takes (Docs/DLSS-Plan.md, phase 2).
-    inline constexpr int kPayload = 20;
+    // Words a vertex carries for the pixel shader: 16 for the primitive, 4 for its motion, which
+    // only the plane takes (Docs/DLSS-Plan.md, phase 2), and 4 for a replacement texture.
+    inline constexpr int kPayload = 24;
 
     // A corner of what is drawn, and - the same at every corner - what the pixel shader needs to
     // work out each pixel of the primitive.
@@ -136,6 +140,13 @@ namespace raster {
     // PLANES: PsDraw and PsCopy write the plane beside VRAM too (render/shared_picture.h), as a
     // second target - which is what DLSS will need to know of each sub-pixel. Compiled both
     // ways, so with the plane not kept the shaders are exactly what they were.
+    //
+    // Replacement textures (Docs/Texture-Upscaling-Plan.md, phase 2): a texel whose job carries
+    // one (p[20-23]) is the replacement image's pixel under the sub-pixel - nearest, or bilinear
+    // as its pack says - where the image has anything there, and the game's own texel where it
+    // has not. Drawn at eight bits a channel and not dithered, whatever TRUE_COLOR says; or, with
+    // AS_CONSOLE (the identity check's debug switch), cut to 15 bits and drawn exactly as the
+    // texel it replaces.
     inline constexpr char kShaderSource[] =
         "static const int scale = SCALE;\n"
         "static const bool fine = SCALE > 1 && TRUE_COLOR != 0;\n"
@@ -160,6 +171,9 @@ namespace raster {
         "Texture2D<float4> source : register(t0);\n"
         "// The plane's read copy, for copies to carry it along.\n"
         "Texture2D<float4> plane_source : register(t1);\n"
+        "// Replacement textures' pages, and the table of where each block of them is.\n"
+        "Texture2DArray<float4> atlas : register(t2);\n"
+        "Buffer<uint> blocks : register(t3);\n"
         "\n"
         "#if PLANES\n"
         "struct Out {\n"
@@ -175,6 +189,7 @@ namespace raster {
         "  uint4 p2 : P2;\n"
         "  uint4 p3 : P3;\n"
         "  uint4 p4 : P4;\n"
+        "  uint4 p5 : P5;\n"
         "};\n"
         "struct VsOut {\n"
         "  float4 position : SV_POSITION;\n"
@@ -183,6 +198,7 @@ namespace raster {
         "  nointerpolation uint4 p2 : P2;\n"
         "  nointerpolation uint4 p3 : P3;\n"
         "  nointerpolation uint4 p4 : P4;\n"
+        "  nointerpolation uint4 p5 : P5;\n"
         "};\n"
         "\n"
         "// Positions are in the console's pixels, whatever the viewport's size.\n"
@@ -195,6 +211,7 @@ namespace raster {
         "  output.p2 = input.p2;\n"
         "  output.p3 = input.p3;\n"
         "  output.p4 = input.p4;\n"
+        "  output.p5 = input.p5;\n"
         "  return output;\n"
         "}\n"
         "\n"
@@ -228,6 +245,64 @@ namespace raster {
         "  return (c.r >> 3) | ((c.g >> 3) << 5) | ((c.b >> 3) << 10) | (c.a >= 128 ? 0x8000 : 0);\n"
         "}\n"
         "int Fetch(int x, int y) { return Pack(Texel(x, y, 0, 0)); }\n"
+        "\n"
+        "static const bool as_console = AS_CONSOLE != 0;\n"
+        "// Pixel `px` of a replacement image - in its own pixels - from its words `r` (p[20-23]):\n"
+        "// false where it has nothing, outside it or in a block it left clear.\n"
+        "bool ReplacedPixel(uint4 r, int2 px, out int4 colour) {\n"
+        "  colour = int4(0, 0, 0, 0);\n"
+        "  int k = (int)((r.x >> 24) & 7u) + 1;\n"
+        "  int width = (int)(r.y & 8191u), height = (int)((r.y >> 13) & 1023u);\n"
+        "  if (px.x < 0 || px.y < 0)\n"
+        "    return false;\n"
+        "  int2 at = px / k;   // the texel\n"
+        "  if (at.x >= width || at.y >= height)\n"
+        "    return false;\n"
+        "  uint entry = blocks[(r.x & 0xFFFFFFu) + (uint)((at.y >> 3) * ((width + 7) >> 3) + (at.x >> 3))];\n"
+        "  if (entry == 0u)\n"
+        "    return false;\n"
+        "  int side = 8 * k, per_row = 4096 / side;\n"
+        "  int cell = (int)(entry & 0x3FFFFFu);\n"
+        "  int2 corner = int2(cell % per_row, cell / per_row) * side;\n"
+        "  int2 inside = px - (at >> 3) * side;\n"
+        "  colour = int4(atlas.Load(int4(corner + inside, (int)((entry >> 22) & 511u), 0)) * 255.0 + 0.5);\n"
+        "  return true;\n"
+        "}\n"
+        "// Texel `texel` of a replacement image, at `fraction` across it: nearest, or bilinear -\n"
+        "// the four pixels round the point the image has, coloured from the opaque ones and drawn\n"
+        "// where they cover half or more, semi-transparent as the nearest is.\n"
+        "bool Replaced(uint4 r, int2 texel, float2 fraction, out int4 colour) {\n"
+        "  int k = (int)((r.x >> 24) & 7u) + 1;\n"
+        "  if (!ReplacedPixel(r, texel * k + min(int2(fraction * k), k - 1), colour))\n"
+        "    return false;\n"
+        "  if ((r.x & 0x8000000u) == 0u)\n"
+        "    return true;\n"
+        "  float2 p = (float2(texel) + fraction) * k - 0.5;\n"
+        "  int2 base = int2(floor(p));\n"
+        "  float2 f = p - float2(base);\n"
+        "  float3 sum = float3(0.0, 0.0, 0.0);\n"
+        "  float all = 0.0, opaque = 0.0, alpha = 0.0;\n"
+        "  [unroll] for (int i = 0; i < 4; ++i) {\n"
+        "    int2 o = int2(i & 1, i >> 1);\n"
+        "    float w = (o.x != 0 ? f.x : 1.0 - f.x) * (o.y != 0 ? f.y : 1.0 - f.y);\n"
+        "    int4 c;\n"
+        "    if (ReplacedPixel(r, base + o, c)) {\n"
+        "      all += w;\n"
+        "      if (c.a != 0) {\n"
+        "        sum += w * float3(c.rgb);\n"
+        "        alpha += w * (float)c.a;\n"
+        "        opaque += w;\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "  if (opaque <= 0.0 || opaque < 0.5 * all) {\n"
+        "    colour = int4(0, 0, 0, 0);\n"
+        "    return true;\n"
+        "  }\n"
+        "  int a = colour.a != 0 ? colour.a : (alpha / opaque >= 192.0 ? 255 : 128);\n"
+        "  colour = int4(int3(sum / opaque + 0.5), a);\n"
+        "  return true;\n"
+        "}\n"
         "\n"
         "// A precise triangle's edge function from P to Q at p. Worked out from the two ends in\n"
         "// one fixed order and negated for the other, so the triangle on the far side of a shared\n"
@@ -269,6 +344,7 @@ namespace raster {
         "  int3 c;\n"
         "  int u = 0, v = 0;\n"
         "  int2 fine_texel = int2(0, 0);\n"
+        "  float2 fraction = float2(0.5, 0.5);   // where in its texel, for a replacement\n"
         "  if (kind == 0u) {\n"
         "    int2 A = XY(input.p0.x) * scale, B = XY(input.p0.y) * scale;\n"
         "    int2 C = XY(input.p0.z) * scale;\n"
@@ -296,6 +372,10 @@ namespace raster {
         "      if (textured) {\n"
         "        u = (int)((wa * us.x + wb * us.y + wc * us.z) / area);\n"
         "        v = (int)((wa * vs.x + wb * vs.y + wc * vs.z) / area);\n"
+        "        float3 wf = float3(w1, w2, w0);\n"
+        "        float2 tf = float2(dot(wf, float3(us)), dot(wf, float3(vs))) /\n"
+        "                    ((float)area * (float)square);\n"
+        "        fraction = saturate(tf - float2(u, v));\n"
         "      }\n"
         "    } else {\n"
         "      float3 w = float3(w1, w2, w0);\n"
@@ -309,6 +389,7 @@ namespace raster {
         "        u = (int)whole.x;\n"
         "        v = (int)whole.y;\n"
         "        fine_texel = clamp(int2((t - whole) * scale), 0, scale - 1);\n"
+        "        fraction = saturate(t - whole);\n"
         "      }\n"
         "    }\n"
         "  } else if (kind == 3u) {\n"
@@ -357,6 +438,7 @@ namespace raster {
         "      u = (int)whole.x;\n"
         "      v = (int)whole.y;\n"
         "      fine_texel = clamp(int2((t - whole) * scale), 0, scale - 1);\n"
+        "      fraction = saturate(t - whole);\n"
         "    }\n"
         "  } else if (kind == 1u) {\n"
         "    int2 offset = pixel - XY(input.p0.x);\n"
@@ -365,6 +447,7 @@ namespace raster {
         "    u = flip_x ? base_u - offset.x : base_u + offset.x;\n"
         "    v = flip_y ? base_v - offset.y : base_v + offset.y;\n"
         "    fine_texel = int2(flip_x ? scale - 1 - sub.x : sub.x, flip_y ? scale - 1 - sub.y : sub.y);\n"
+        "    fraction = (float2(fine_texel) + 0.5) / scale;\n"
         "    c = int3(RGB(input.p0.w));\n"
         "    if (motion_known)\n"
         "      motion = Motion(input.p4.x);\n"
@@ -376,6 +459,7 @@ namespace raster {
         "    fine_texel = int2(0, 0);\n"
         "  bool raw = (a0 & 0x400000u) != 0;\n"
         "  bool texel_mask = false;\n"
+        "  bool eight_bit = fine;   // eight bits a channel, not dithered\n"
         "  if (textured) {\n"
         "    u = ((u & ~(tw_mask_x * 8)) | ((tw_offset_x & tw_mask_x) * 8)) & 255;\n"
         "    v = ((v & ~(tw_mask_y * 8)) | ((tw_offset_y & tw_mask_y) * 8)) & 255;\n"
@@ -387,8 +471,17 @@ namespace raster {
         "    // A palette index cannot be a finer sample of anything, so a paletted texture\n"
         "    // and its CLUT are read at their pixels' own sub-pixels; a 15-bit one - which may\n"
         "    // itself have been drawn at this scale - at the sub-texel under this sub-pixel.\n"
-        "    int4 t;\n"
-        "    if (depth == 0) {\n"
+        "    int4 t = int4(0, 0, 0, 0);\n"
+        "    bool replaced = false;\n"
+        "    if ((input.p5.x & 0x10000000u) != 0u)\n"
+        "      replaced = Replaced(input.p5, int2(u, v) + XY(input.p5.z), fraction, t);\n"
+        "    if (depth >= 2) {\n"
+        "      direct = true;\n"
+        "      direct_at = int2(((page_x + u) & 1023) * scale + fine_texel.x,\n"
+        "                       ((page_y + v) & 511) * scale + fine_texel.y);\n"
+        "    }\n"
+        "    if (replaced) {\n"
+        "    } else if (depth == 0) {\n"
         "      int block = Fetch(page_x + u / 4, page_y + v);\n"
         "      t = Texel(clut_x + ((block >> ((u & 3) * 4)) & 15), clut_y, 0, 0);\n"
         "    } else if (depth == 1) {\n"
@@ -396,24 +489,33 @@ namespace raster {
         "      t = Texel(clut_x + ((block >> ((u & 1) * 8)) & 255), clut_y, 0, 0);\n"
         "    } else {\n"
         "      t = Texel(page_x + u, page_y + v, fine_texel.x, fine_texel.y);\n"
-        "      direct = true;\n"
-        "      direct_at = int2(((page_x + u) & 1023) * scale + fine_texel.x,\n"
-        "                       ((page_y + v) & 511) * scale + fine_texel.y);\n"
         "    }\n"
-        "    int texel = Pack(t);\n"
-        "    if (texel == 0)\n"
-        "      discard;\n"
-        "    texel_mask = (texel & 0x8000) != 0;\n"
+        "    int texel;\n"
+        "    if (replaced) {\n"
+        "      // Alpha 0 not drawn, 128 semi-transparent (bit 15), 255 opaque.\n"
+        "      if (t.a == 0)\n"
+        "        discard;\n"
+        "      texel_mask = t.a < 192;\n"
+        "      texel = (t.r >> 3) | ((t.g >> 3) << 5) | ((t.b >> 3) << 10) | (texel_mask ? 0x8000 : 0);\n"
+        "      if (as_console && texel == 0)\n"
+        "        discard;\n"
+        "      eight_bit = fine || !as_console;\n"
+        "    } else {\n"
+        "      texel = Pack(t);\n"
+        "      if (texel == 0)\n"
+        "        discard;\n"
+        "      texel_mask = (texel & 0x8000) != 0;\n"
+        "    }\n"
         "    // Tinted from the component shifted up, not widened by replication: the replicated\n"
         "    // bits would keep a tint just under 80h from ever taking a step off (software_raster's\n"
         "    // Modulate says more).\n"
-        "    int3 tc = fine ? t.rgb : (raw ? Widen(texel) : Shift(texel));\n"
+        "    int3 tc = eight_bit ? t.rgb : (raw ? Widen(texel) : Shift(texel));\n"
         "    if (!raw)\n"
         "      tc = (tc * c) >> 7;\n"
         "    c = tc;\n"
         "  }\n"
         "  // Dithered last, the texel already tinted and not yet cut to 8 bits; a raw texel not at all.\n"
-        "  if (!fine && (a0 & 0x4000000u) != 0 && !(textured && raw))\n"
+        "  if (!eight_bit && (a0 & 0x4000000u) != 0 && !(textured && raw))\n"
         "    c += kDither[(pixel.y & 3) * 4 + (pixel.x & 3)];\n"
         "  c = clamp(c, 0, 255);\n"
         "\n"
@@ -436,7 +538,7 @@ namespace raster {
         "      c = clamp(c, 0, 255);\n"
         "    }\n"
         "  }\n"
-        "  float3 colour = fine ? float3(c) / 255.0 : float3(Cut(c.r), Cut(c.g), Cut(c.b));\n"
+        "  float3 colour = eight_bit ? float3(c) / 255.0 : float3(Cut(c.r), Cut(c.g), Cut(c.b));\n"
         "  float4 result = float4(colour, (force_mask != 0 || texel_mask) ? 1.0 : 0.0);\n"
         "#if PLANES\n"
         "  // A fill is a background standing still; motion otherwise as worked out above, in\n"
@@ -572,10 +674,12 @@ namespace raster {
         "}\n";
 
     // One of the shaders above, for `target` ("ps_4_0", "vs_5_0", ...) at a scale, true colour
-    // or not, and writing the plane or not. `name` is what the compiler calls the source.
+    // or not, writing the plane or not, and drawing replacements as the console would or not
+    // (RasterOptions::replacements_as_console). `name` is what the compiler calls the source.
     inline bool CompileShader(const char* name, const char* entry, const char* target, int scale,
                               bool true_color, bool planes,
-                              Microsoft::WRL::ComPtr<ID3DBlob>* blob, std::string* error) {
+                              Microsoft::WRL::ComPtr<ID3DBlob>* blob, std::string* error,
+                              bool as_console = false) {
         const std::string scale_text = std::to_string(scale);
         const std::string unknown_text = std::to_string(emulation::psx::kUnknownMotion);
         const std::string depth_text = std::to_string(emulation::psx::kPlaneDepthScale);
@@ -585,6 +689,7 @@ namespace raster {
             { "PLANES", planes ? "1" : "0" },
             { "UNKNOWN_MOTION", unknown_text.c_str() },
             { "DEPTH_SCALE", depth_text.c_str() },
+            { "AS_CONSOLE", as_console ? "1" : "0" },
             { nullptr, nullptr },
         };
         Microsoft::WRL::ComPtr<ID3DBlob> errors;

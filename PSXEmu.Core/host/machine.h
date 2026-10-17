@@ -38,6 +38,8 @@ namespace psx {
 class System;
 struct EmuConfig;
 class RewindBuffer;
+class TextureTracker;
+class TexturePack;
 }  // namespace psx
 
 namespace host {
@@ -86,6 +88,15 @@ struct MachineReport {
   double display_hz = 0.0;
   int display_refreshes = 0;
   double pace_ratio = 1.0;
+  // Textures (Docs/Texture-Upscaling-Plan.md, phase 2), while dumping or replacing: the textures
+  // named so far, written so far, the replacements the pack has, and the textured jobs drawn
+  // with one since it was opened.
+  bool textures = false;
+  uint64_t textures_named = 0;
+  uint64_t textures_dumped = 0;
+  uint64_t replacements = 0;
+  uint64_t jobs_replaced = 0;
+  std::string replacement_error;   // why the pack could not be opened, if it could not
 };
 
 // One frame's worth of timing, as the machine thread measured it - what the front end's
@@ -201,6 +212,14 @@ class Machine {
   // NVIDIA Reflex's markers while DLSS Frame Generation runs (host/latency_markers.h), null for
   // none. Outlives the machine, or is set to null first; the machine's thread calls it.
   void set_latency_markers(LatencyMarkers* markers) { latency_ = markers; }
+  // Textures (Docs/Texture-Upscaling-Plan.md, phase 2): every texture named as it is drawn,
+  // written into `dump` - in the background - and drawn from the pack in `replace` by the hardware
+  // rasteriser; either empty for not. Both empty, nothing watches the drawing at all. Kept
+  // across boots and changes of rasteriser; a folder that is the same as before is left as it is.
+  void SetTextures(const std::string& dump, const std::string& replace,
+                   uint64_t memory_budget);
+  // The pack read again from its folder: what changed on disk drawn from the next job on.
+  void ReloadTextures();
 
   // Instructions stepped since the thread started. The machine's thread, or
   // anyone once Stop has returned.
@@ -252,6 +271,12 @@ class Machine {
   bool view_vram_ = false;
   psx::PlaneView plane_view_ = psx::PlaneView::kPicture;
   bool dlss_ = false;
+  // SetTextures': the tracker naming each job and dumping, and the pack it names them for, with
+  // the folders they were given. The pack is dropped before the tracker it reads.
+  std::unique_ptr<psx::TextureTracker> texture_tracker_;
+  std::unique_ptr<psx::TexturePack> texture_pack_;
+  std::string texture_dump_, texture_replace_;
+  std::string replacement_error_;
   LatencyMarkers* latency_ = nullptr;
   // The picture whose simulation is under way, 0 before the first starts (latency_ only).
   uint32_t latency_picture_ = 0;

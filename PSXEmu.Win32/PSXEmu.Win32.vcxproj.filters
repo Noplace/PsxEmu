@@ -254,6 +254,9 @@
     <ClInclude Include="graphics\hw_raster\raster_common.h">
       <Filter>graphics\hw_raster</Filter>
     </ClInclude>
+    <ClInclude Include="graphics\hw_raster\replacement_atlas.h">
+      <Filter>graphics\hw_raster</Filter>
+    </ClInclude>
     <ClInclude Include="graphics\present\d3d12\d3d12_engine.h">
       <Filter>graphics\present\d3d12</Filter>
     </ClInclude>

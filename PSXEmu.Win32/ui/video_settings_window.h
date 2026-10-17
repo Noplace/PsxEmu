@@ -84,6 +84,12 @@ namespace psxemu {
             std::wstring fsr_generation_status;
             bool fsr_files_missing = false;
             bool fsr_available = false;
+            // Textures (Docs/Texture-Upscaling-Plan.md): dumped, and replaced from the game's
+            // pack - which need a game running - and what that is doing, or why not.
+            bool texture_dump = false;
+            bool texture_replacement = false;
+            bool game_running = false;
+            std::wstring texture_status;
             int stats_mode = 0;               // the performance panel: off, compact, full
             bool notifications = true;
             bool controllers_always = false;
@@ -117,6 +123,8 @@ namespace psxemu {
             std::function<void(bool on)> set_fsr_generation;
             // "Get AMD's FSR files...": how to, and the way to check again.
             std::function<void()> get_fsr_files;
+            std::function<void(bool on)> set_texture_dump;
+            std::function<void(bool on)> set_texture_replacement;
             std::function<void(int mode)> set_stats;
             std::function<void(bool on)> set_notifications;
             std::function<void(bool on)> set_controllers_always;
@@ -187,6 +195,9 @@ namespace psxemu {
         HWND fsr_generation_status_ = nullptr;
         HWND fsr_files_ = nullptr;
         std::array<HWND, 4> fsr_labels_ = {};
+        HWND texture_dump_ = nullptr;
+        HWND texture_replace_ = nullptr;
+        HWND texture_status_ = nullptr;
         HWND stats_ = nullptr;
         HWND notifications_ = nullptr;
         HWND controllers_ = nullptr;

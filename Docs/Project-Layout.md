@@ -55,7 +55,9 @@ PsxEmu/
       software_raster.h/.cpp   the software rasteriser: every DrawJob into native VRAM
       texture_tracker.h/.cpp   which texture each draw reads, by a name the same every run, and
                                the textures dumped (Docs/Texture-Upscaling-Plan.md, phase 1)
-      png_file.h/.cpp          a PNG written with the core's own zlib
+      texture_pack.h/.cpp      a folder of replacements for those names, pack.ini, a loader
+                               thread: what the hardware rasteriser asks (phase 2)
+      png_file.h/.cpp          PNGs written and read with the core's own zlib
       shared_picture.h         a picture left on the graphics card, for a renderer to open there
     enhance/                   opt-in enhancements on top of the machine
       pgxp.h                   PGXP's shadows: each register's and RAM word's unrounded vertex
@@ -124,7 +126,8 @@ PsxEmu/
       ai_probe.cpp             the AI texture upscaler's models: .pth to ONNX, checked against
                                an author's export, timed on a card, run over pictures
                                (Docs/Texture-Upscaling-Plan.md)
-      texture_tracker_test.cpp the texture tracker's rules, and a dump read back
+      texture_tracker_test.cpp the texture tracker's rules, dumps read back and added to, PNGs
+                               of every kind read
       wav_pitch.cpp            the note in a WAV boot_runner wrote
       make_test_disc.cpp       writes a synthetic disc image
       make_chd.cpp  chd_writer.h   any mountable image written out as a CHD, chdman's format
@@ -218,6 +221,9 @@ PsxEmu/
                                of VRAM kept there; native VRAM brought up to date in 32x32 tiles
         d3d12_raster.h/.cpp    the same with Direct3D 12 (gpu_rasteriser = hardware_d3d12), on
                                a device of its own or the Direct3D 12 renderer's
+        replacement_atlas.h    where both keep replacement textures on the card: pages of
+                               8x8-texel blocks, the table saying where each is, eviction
+                               (Docs/Texture-Upscaling-Plan.md, phase 2)
     input/                     the host's devices, and what they press
       input_thread.h/.cpp      the input thread: pads, keyboard, raw mouse at 1 kHz
       sony_pads.h/.cpp         DualShock 4 and DualSense pads over HID, in the Gamepad slots XInput leaves

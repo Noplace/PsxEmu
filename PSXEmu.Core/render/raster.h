@@ -139,6 +139,47 @@ namespace psx {
     uint32_t x = 0, y = 0, w = 0, h = 0;
   };
 
+  // A texture's replacement (Docs/Texture-Upscaling-Plan.md, phase 2): a source's texels as a pack
+  // has them (render/texture_pack.h), `scale` pixels to a texel each way. Kept in blocks of 8x8
+  // texels, and only the blocks with anything in them: a source can be a canvas of half of VRAM
+  // with a few of its cells filled, and a block the image leaves wholly clear is drawn with the
+  // game's own texels - a texel a dump never saw read stays the game's.
+  struct ReplacementImage {
+    static const uint32_t kBlock = 8;   // texels a block is, each way
+    uint64_t id = 0;                    // never reused, for a rasteriser's cache
+    uint32_t width = 0, height = 0;     // the source's, in texels
+    uint32_t scale = 1;                 // 1 to 8
+    bool bilinear = false;              // sampled bilinear rather than nearest (pack.ini)
+    // Each block kept, as bx + by * blocks_x(), and its pixels - (8 * scale) squared of them,
+    // RGBA8 rows, the blocks one after another. Alpha is 0 (not drawn), 128 (bit 15 set:
+    // semi-transparent) or 255.
+    std::vector<uint32_t> blocks;
+    std::vector<uint8_t> pixels;
+    uint32_t blocks_x() const { return (width + kBlock - 1) / kBlock; }
+    uint32_t blocks_y() const { return (height + kBlock - 1) / kBlock; }
+    uint32_t block_pixels() const { return kBlock * scale; }   // a block's side, in pixels
+  };
+
+  // What a textured job draws with in place of the texels it reads: an image, and where the job's
+  // texture page lies in it, in texels - texel (u, v) of the page is the image's (page_x + u,
+  // page_y + v) - so the texture window and a sprite's flips work as ever.
+  struct TextureReplacement {
+    std::shared_ptr<const ReplacementImage> image;
+    int32_t page_x = 0, page_y = 0;
+  };
+
+  // Where a hardware rasteriser asks for replacements: a texture pack, which knows each job's
+  // source from the texture tracker that `Gpu` tells of each job just before the rasteriser
+  // draws it (RasterObserver).
+  class TextureReplacer {
+   public:
+    virtual ~TextureReplacer() {}
+    // On the rasteriser's thread, as it takes a textured triangle or rectangle - the job the
+    // observer was told of last: its replacement, if the pack has one ready. False to draw the
+    // game's own texels.
+    virtual bool Replace(const DrawJob& job, TextureReplacement* replacement) = 0;
+  };
+
   class RasterBackend {
    public:
     virtual ~RasterBackend() {}
@@ -203,6 +244,12 @@ namespace psx {
     // hardware rasteriser does, above 1x, while the plane is kept.
     virtual bool FillsSkippedFields() const { return false; }
 
+    // Where to ask for replacement textures, or null for none (Docs/Texture-Upscaling-Plan.md,
+    // phase 2). The hardware rasteriser draws with them; the software one never does. Like the
+    // plane, nothing the machine depends on: but a replaced texel is drawn into VRAM, so a game
+    // that reads back a picture it drew sees it.
+    virtual void set_texture_replacer(TextureReplacer* replacer) { (void)replacer; }
+
     // The counters since the last call, which `Gpu` merges into its stats and clears.
     virtual RasterCounters& counters() = 0;
     // Which rectangle's writes to attribute. Set by `Gpu` when it changes.
@@ -243,6 +290,12 @@ namespace psx {
     // Drawn with Direct3D 12 rather than 11 (EmuConfig::gpu_rasteriser "hardware_d3d12"): the
     // front end's choice of which hardware rasteriser to make. The same pictures either way.
     bool d3d12 = false;
+    // A debug switch, for the identity check (Docs/Texture-Upscaling-Plan.md, phase 2): replaced
+    // texels cut to the console's 15 bits and drawn through its colour path - dithered, five
+    // bits a channel - exactly as the texels they replace, rather than at eight bits.
+    bool replacements_as_console = false;
+    // The most video memory replacement textures may take, in bytes.
+    uint64_t replacement_budget = 512ull << 20;
   };
 
   // Makes a hardware rasteriser for `vram` - Gpu's native VRAM, which it must keep in step

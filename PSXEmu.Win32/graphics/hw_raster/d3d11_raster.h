@@ -50,6 +50,7 @@
 
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/hw_raster/raster_common.h"
+#include "graphics/hw_raster/replacement_atlas.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -110,6 +111,9 @@ namespace psxemu {
         void SimulateLoss() override { lost_ = "simulated for a test"; }
         void set_watch(const emulation::psx::RasterWatch&) override {}
         void NoteWatchWrite(uint32_t, uint32_t) override {}
+        void set_texture_replacer(emulation::psx::TextureReplacer* replacer) override {
+            replacer_ = replacer;
+        }
 
      private:
         // What both rasterisers draw with (raster_common.h).
@@ -129,7 +133,9 @@ namespace psxemu {
 
         D3D11Raster(uint16_t* vram, const emulation::psx::RasterOptions& options)
             : vram_(vram), scale_(options.scale), true_color_(options.true_color),
-              adapter_(options.adapter), share_(options.shared_picture) {}
+              adapter_(options.adapter), share_(options.shared_picture),
+              as_console_(options.replacements_as_console),
+              atlas_(options.replacement_budget) {}
         bool Initialize(bool warp, std::string* error);
         // The textures and fence shared pictures need; without them the picture is read back.
         void StartSharing();
@@ -172,6 +178,13 @@ namespace psxemu {
         // `payload`, and marks it drawn.
         void AddBox(int32_t left, int32_t top, int32_t right, int32_t bottom,
                     const uint32_t (&payload)[kPayload]);
+
+        // A textured job's replacement texture, if the replacer has one: its words in
+        // payload[20-23] - the image put on the card first if it is not there. Draws what is
+        // batched before writing the card's pages.
+        void Replace(const emulation::psx::DrawJob& job, uint32_t (&payload)[kPayload]);
+        // The pages grown to the atlas's, and its table's changes written.
+        bool WriteAtlas(const std::vector<raster::ReplacementAtlas::Run>& runs);
 
         void AddTriangle(const emulation::psx::DrawJob& job);
         void AddPreciseTriangle(const emulation::psx::DrawJob& job, const BatchKey& key);
@@ -216,6 +229,19 @@ namespace psxemu {
         const bool true_color_;
         const uint64_t adapter_;  // the LUID asked for, or 0
         const bool share_;        // asked to hand pictures over on the card
+        const bool as_console_;   // RasterOptions::replacements_as_console
+        // Replacement textures (Docs/Texture-Upscaling-Plan.md, phase 2): where to ask for them,
+        // what is on the card (replacement_atlas.h), its pages - a texture array grown a slice at
+        // a time - and its block table, a buffer of words grown by doubling.
+        emulation::psx::TextureReplacer* replacer_ = nullptr;
+        raster::ReplacementAtlas atlas_;
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> atlas_pages_;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> atlas_pages_view_;
+        uint32_t atlas_slices_ = 0;
+        Microsoft::WRL::ComPtr<ID3D11Buffer> atlas_table_;
+        Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> atlas_table_view_;
+        uint32_t atlas_table_words_ = 0;
+        std::vector<uint8_t> atlas_run_;   // one run of blocks, laid out as rows to write
         Microsoft::WRL::ComPtr<ID3D11Device> device_;
         Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;
         Microsoft::WRL::ComPtr<ID3D11Texture2D> target_;       // VRAM on the card, at scale_

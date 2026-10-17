@@ -59,6 +59,8 @@ namespace psxemu {
         const int kIdFsrFiles = 126;
         const int kIdPacing = 127;
         const int kIdChainFirst = 128;   // four
+        const int kIdTextureDump = 132;
+        const int kIdTextureReplace = 133;
         const int kIdHintFirst = 300;   // the grey lines, which WM_CTLCOLORSTATIC finds by id
         const int kIdHintLast = 399;
 
@@ -352,11 +354,15 @@ namespace psxemu {
         end_group(dlss, middle_height);
         const int middle_bottom = end_group(fsr, middle_height);
 
-        // What is drawn over the picture, across the window.
-        Group osd = begin_group(L"On-screen display", kMargin, kFullWidth,
-                                middle_bottom + kGroupGap);
+        // What is drawn over the picture, two columns wide; and beside it the game's textures,
+        // written out and drawn from a pack (Docs/Texture-Upscaling-Plan.md) - side by side, so
+        // the window stays inside a 1600-line screen at 200%.
+        const int bottom_top = middle_bottom + kGroupGap;
+        const int osd_width = kColumnWidth * 2 + kMargin;
+        const int osd_right = kInset * 2 + kLeftHalf + kHalfGap;   // the right half's width left
+        Group osd = begin_group(L"On-screen display", kMargin, osd_width, bottom_top);
         stats_ = list_at(left, osd.y, kHalfLabel, kLeftHalf, L"Perf&ormance:", kIdStats);
-        notifications_ = switch_at(right, osd.y + 3, kRightHalf, L"&Notifications",
+        notifications_ = switch_at(right, osd.y + 3, osd_width - osd_right, L"&Notifications",
                                    BS_AUTOCHECKBOX, kIdNotifications);
         osd.y += kListRow;
         make(L"STATIC", L"Theme:", SS_LEFT, 0, left, osd.y + 4, kHalfLabel - 4, 20, font_);
@@ -364,13 +370,26 @@ namespace psxemu {
                              kIdClassic);
         glass_ = switch_at(left + kHalfLabel + 96, osd.y + 3, 90, L"Glass", BS_RADIOBUTTON,
                            kIdGlass);
-        controllers_ = switch_at(right, osd.y + 3, kRightHalf, L"Always show the contro&llers",
-                                 BS_AUTOCHECKBOX, kIdControllers);
+        controllers_ = switch_at(right, osd.y + 3, osd_width - osd_right,
+                                 L"Always show the contro&llers", BS_AUTOCHECKBOX, kIdControllers);
         osd.y += kListRow;
-        text_at(left, osd.y, kFullWidth - kInset * 2, 1,
+        text_at(left, osd.y, osd_width - kInset * 2, 1,
                 L"F9 steps through the performance panels.", hint_id++);
         osd.y += kHintLine + 2;
-        const int osd_bottom = end_group(osd, 0);
+
+        Group textures = begin_group(L"Textures", kMargin * 3 + kColumnWidth * 2, kColumnWidth,
+                                     bottom_top);
+        texture_dump_ = switch_row(textures, L"Dump textures as they are dra&wn", BS_AUTOCHECKBOX,
+                                   kIdTextureDump);
+        texture_replace_ = switch_row(textures, L"Draw replacements from the game's pac&k",
+                                      BS_AUTOCHECKBOX, kIdTextureReplace);
+        texture_status_ = text_row(textures, 1, L"", 0);
+        text_row(textures, 1, L"textures\\<game>: dump\\ is written, replace\\ drawn from.",
+                 hint_id++);
+
+        const int bottom_height = std::max(osd.y, textures.y) - bottom_top + kGroupFooter;
+        end_group(textures, bottom_height);
+        const int osd_bottom = end_group(osd, bottom_height);
 
         const int buttons_top = osd_bottom + 8;
         note_ = make(L"STATIC", L"", SS_LEFT, 0, kMargin, buttons_top,
@@ -541,6 +560,13 @@ namespace psxemu {
                                     L"vertices on, while it runs.")
                            : L"The hardware rasteriser draws at up to 8x the console's "
                              L"resolution. Experimental.");
+
+        // Textures: a game's own, so there is nothing to dump or replace without one.
+        Check(texture_dump_, state.texture_dump);
+        Check(texture_replace_, state.texture_replacement);
+        EnableWindow(texture_dump_, state.game_running);
+        EnableWindow(texture_replace_, state.game_running);
+        SetWindowTextW(texture_status_, state.texture_status.c_str());
 
         // NVIDIA DLSS. Frame generation past 2x, and Dynamic, only once the card says it makes
         // them - and whatever is chosen, so the list never shows something else.
@@ -738,6 +764,14 @@ namespace psxemu {
             case kIdFsrGeneration:
                 if (host_.set_fsr_generation)
                     host_.set_fsr_generation(Checked(fsr_generation_));
+                break;
+            case kIdTextureDump:
+                if (host_.set_texture_dump)
+                    host_.set_texture_dump(Checked(texture_dump_));
+                break;
+            case kIdTextureReplace:
+                if (host_.set_texture_replacement)
+                    host_.set_texture_replacement(Checked(texture_replace_));
                 break;
             case kIdNotifications:
                 if (host_.set_notifications)

@@ -858,13 +858,20 @@ look for. Each was looked for in the code and settings on 2026-10-14 and is not 
   - no deinterlacing modes to choose between (bob, weave, blend) for 480-line games: a picture
     is shown one way, as VRAM holds it;
   - no texture filtering in the hardware rasteriser - "Bilinear" is a filter over the whole
-    picture, not over textures;
-  - no texture dumping or replacement.
+    picture, not over textures.
 
-  Both are planned, with an AI texture upscaler on top, in
-  [Texture-Upscaling-Plan.md](Texture-Upscaling-Plan.md) (2026-10-16). Phase 0, the models and
-  their runtime, and phase 1, naming every texture a draw reads and dumping them, are done -
-  `boot_runner --texture-dump` writes a game's textures as PNGs. Nothing in the app yet.
+  Texture dumping and replacement packs are built (2026-10-17,
+  [Texture-Upscaling-Plan.md](Texture-Upscaling-Plan.md), phase 2): Settings > Video > Textures,
+  per game, into and from `textures\<game>\`, with the hardware rasteriser. What they leave:
+  - textures the GPU drew itself (Metal Gear Solid's screen effects, render-to-texture) stay the
+    game's own, by design;
+  - a state load forgets which uploads are which until the game uploads again - a loaded state,
+    and each step back while rewinding, shows the game's own textures until then (run-ahead's
+    load back is the exception: the tracker holds its records across it);
+  - the video memory budget is `texture_budget_mb` in psxemu.ini only;
+  - the software rasteriser never draws replacements.
+
+  Texture filtering and an AI upscaler writing its own pack are the plan's next phases.
 - **Overrides:** no region override (PAL or NTSC whatever the disc and BIOS say), no CPU
   overclock.
 - **Recording:** no video recording, and sound only through `boot_runner --wav`. Input movies

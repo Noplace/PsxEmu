@@ -70,9 +70,19 @@ const char* TextureTracker::ReasonName(Reason reason) {
 }
 
 TextureTracker::TextureTracker(const uint16_t* vram)
-    : vram_(vram), cells_(kCellsX * kCellsY), drawn_(kCellsX * kCellsY, 0) {}
+    : vram_(vram), cells_(kCellsX * kCellsY), drawn_(kCellsX * kCellsY, 0),
+      drawn_bits_(kVramW * kVramH / 64, 0), zero_bits_(kVramW * kVramH / 64, 0) {}
 
-TextureTracker::~TextureTracker() = default;
+TextureTracker::~TextureTracker() {
+  // What is waiting is written first.
+  {
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    write_stop_ = true;
+  }
+  write_wake_.notify_all();
+  if (writer_.joinable())
+    writer_.join();
+}
 
 uint64_t TextureTracker::HashRect(const uint16_t* vram, uint32_t x, uint32_t y, uint32_t w,
                                   uint32_t h) {
@@ -86,7 +96,144 @@ uint64_t TextureTracker::HashRect(const uint16_t* vram, uint32_t x, uint32_t y, 
   return hash;
 }
 
+uint64_t TextureTracker::Key(uint64_t image_hash, uint64_t clut_hash, uint32_t mode) {
+  return Mix(Mix(image_hash, clut_hash), mode);
+}
+
+bool TextureTracker::ParseName(const std::string& name, uint64_t* image_hash, uint64_t* clut_hash,
+                               uint32_t* mode) {
+  // <16 hex digits>-<16 hex digits>-<4|8|15>
+  if (name.size() < 35 || name[16] != '-' || name[33] != '-')
+    return false;
+  auto hex = [&](size_t at, uint64_t* out) {
+    uint64_t value = 0;
+    for (size_t i = at; i < at + 16; ++i) {
+      const char c = name[i];
+      const int digit = c >= '0' && c <= '9' ? c - '0'
+                        : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                        : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+      if (digit < 0)
+        return false;
+      value = (value << 4) | static_cast<uint64_t>(digit);
+    }
+    *out = value;
+    return true;
+  };
+  const std::string tail = name.substr(34);
+  if (!hex(0, image_hash) || !hex(17, clut_hash))
+    return false;
+  if (tail == "4")
+    *mode = 0;
+  else if (tail == "8")
+    *mode = 1;
+  else if (tail == "15")
+    *mode = 2;
+  else
+    return false;
+  return true;
+}
+
 // ---- Records ---------------------------------------------------------------------------------
+
+uint16_t TextureTracker::Read(uint32_t x, uint32_t y) const {
+  for (int index : cells_[(y / kCell) * kCellsX + x / kCell]) {
+    const Record& u = records_[index];
+    if (x >= u.x && y >= u.y && x < u.x + u.w && y < u.y + u.h)
+      return u.own ? (*u.own)[static_cast<size_t>(y - u.y) * u.w + (x - u.x)] : vram_[y * kVramW + x];
+  }
+  // Outside every record: what Tiling counts as clear - a zero fill if the GPU drew there,
+  // whatever native VRAM still says, and native VRAM's zeros if it did not.
+  return Bit(drawn_bits_, x, y) ? 0 : vram_[y * kVramW + x];
+}
+
+void TextureTracker::MarkTriangle(const DrawJob& job, const Rect& r) {
+  // The console's own coverage, row by row: each pixel's top-left sample inside all three edges,
+  // the edges the fill rule leaves out not taken in (software_raster.cpp's EdgeBias). Every
+  // rasteriser draws exactly these at native size - the hardware one at each pixel's own
+  // sub-pixel too - so what else a bounding box holds is as it was.
+  const RasterVertex& a = job.v[0];
+  const int32_t area = (job.v[1].x - a.x) * (job.v[2].y - a.y) - (job.v[2].x - a.x) * (job.v[1].y - a.y);
+  const RasterVertex& b = area > 0 ? job.v[1] : job.v[2];
+  const RasterVertex& c = area > 0 ? job.v[2] : job.v[1];
+  struct Edge {
+    int64_t dx, dy, px, py;
+    int64_t bias;
+  };
+  auto edge = [](const RasterVertex& p, const RasterVertex& q) {
+    const int64_t dx = q.x - p.x, dy = q.y - p.y;
+    const bool left_out = !((dy < 0) || (dy == 0 && dx > 0));
+    return Edge{ dx, dy, p.x, p.y, left_out ? 1 : 0 };
+  };
+  const Edge edges[3] = { edge(a, b), edge(b, c), edge(c, a) };
+  for (int32_t y = r.y0; y <= r.y1; ++y) {
+    // w(x) = dx * (y - py) - dy * (x - px) >= bias, for each edge: a bound on x.
+    int64_t lo = r.x0, hi = r.x1;
+    for (const Edge& e : edges) {
+      const int64_t k = -e.dy;                                  // w's slope in x
+      const int64_t m = e.dx * (y - e.py) + e.dy * e.px - e.bias;   // w(x) - bias = k*x + m
+      if (k == 0) {
+        if (m < 0)
+          hi = lo - 1;
+      } else if (k > 0) {   // x >= -m / k
+        const int64_t n = -m;
+        lo = std::max(lo, n >= 0 ? (n + k - 1) / k : -((-n) / k));
+      } else {              // x <= m / -k
+        const int64_t d = -k;
+        hi = std::min(hi, m >= 0 ? m / d : -((-m + d - 1) / d));
+      }
+    }
+    if (lo > hi)
+      continue;
+    const Rect span = { static_cast<int32_t>(lo), y, static_cast<int32_t>(hi), y };
+    SetBits(&drawn_bits_, span, true);
+    SetBits(&zero_bits_, span, false);
+  }
+}
+
+bool TextureTracker::KnownValue(uint32_t x, uint32_t y, uint16_t* value) const {
+  for (int index : cells_[(y / kCell) * kCellsX + x / kCell]) {
+    const Record& u = records_[index];
+    if (x >= u.x && y >= u.y && x < u.x + u.w && y < u.y + u.h) {
+      *value = u.own ? (*u.own)[static_cast<size_t>(y - u.y) * u.w + (x - u.x)]
+                     : vram_[y * kVramW + x];
+      return true;
+    }
+  }
+  if (!Bit(drawn_bits_, x, y)) {
+    *value = vram_[y * kVramW + x];
+    return true;
+  }
+  *value = 0;
+  return Bit(zero_bits_, x, y);
+}
+
+bool TextureTracker::KnownClear(uint32_t x, uint32_t y) const {
+  uint16_t value;
+  return KnownValue(x, y, &value) && value == 0;
+}
+
+uint64_t TextureTracker::HashRecord(const Record& u) const {
+  if (!u.own)
+    return HashRect(vram_, u.x, u.y, u.w, u.h);
+  // HashRect's arithmetic over the record's own halfwords.
+  uint64_t hash = 0xCBF29CE484222325ull ^ ((static_cast<uint64_t>(u.w) << 32) | u.h);
+  for (uint16_t texel : *u.own)
+    hash = (hash ^ texel) * 0x100000001B3ull;
+  return hash;
+}
+
+void TextureTracker::SetBits(std::vector<uint64_t>* bits, const Rect& r, bool on) {
+  for (int32_t y = r.y0; y <= r.y1; ++y) {
+    uint64_t* row = bits->data() + static_cast<size_t>(y) * (kVramW / 64);
+    for (int32_t x = r.x0; x <= r.x1;) {
+      const int32_t word = x / 64, first = x % 64;
+      const int32_t last = std::min(r.x1, word * 64 + 63) % 64;
+      const uint64_t mask = (last == 63 ? ~0ull : ((1ull << (last + 1)) - 1)) & ~((1ull << first) - 1);
+      row[word] = on ? (row[word] | mask) : (row[word] & ~mask);
+      x = word * 64 + 64;
+    }
+  }
+}
 
 int TextureTracker::Holding(const Rect& r, bool* overlapped) const {
   const std::vector<int>& here = cells_[(r.y0 / kCell) * kCellsX + r.x0 / kCell];
@@ -133,7 +280,9 @@ bool TextureTracker::Tiling(const Rect& r, std::vector<int>* records) const {
   // What they leave uncovered may still be zeros - clear texels, never drawn - which a draw can
   // sweep over around its image: Einhander's planes read whole pages, a part of each its image
   // and the rest VRAM nothing wrote, or a scrap of the BIOS's logo long gone. Looked at
-  // halfword by halfword, which is why it comes last.
+  // halfword by halfword, which is why it comes last. Where the GPU drew, only a fill of zeros
+  // counts: a hardware rasteriser has drawn it on the card and native VRAM may still say
+  // anything, and every rasteriser must name the same.
   std::vector<uint8_t> mine(static_cast<size_t>(w * h), 0);
   for (int index : *records) {
     const Record& u = records_[index];
@@ -144,9 +293,13 @@ bool TextureTracker::Tiling(const Rect& r, std::vector<int>* records) const {
         mine[static_cast<size_t>(y - r.y0) * w + (x - r.x0)] = 1;
   }
   for (int32_t y = r.y0; y <= r.y1; ++y)
-    for (int32_t x = r.x0; x <= r.x1; ++x)
-      if (!mine[static_cast<size_t>(y - r.y0) * w + (x - r.x0)] && vram_[y * kVramW + x] != 0)
+    for (int32_t x = r.x0; x <= r.x1; ++x) {
+      if (mine[static_cast<size_t>(y - r.y0) * w + (x - r.x0)])
+        continue;
+      const uint32_t ux = static_cast<uint32_t>(x), uy = static_cast<uint32_t>(y);
+      if (Bit(drawn_bits_, ux, uy) ? !Bit(zero_bits_, ux, uy) : vram_[y * kVramW + x] != 0)
         return false;
+    }
   return true;
 }
 
@@ -174,7 +327,8 @@ void TextureTracker::Unregister(int index) {
     }
 }
 
-int TextureTracker::AddRecord(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+int TextureTracker::AddRecord(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                              std::shared_ptr<const std::vector<uint16_t>> own) {
   int index;
   if (!free_.empty()) {
     index = free_.back();
@@ -188,7 +342,8 @@ int TextureTracker::AddRecord(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
   u.y = y;
   u.w = w;
   u.h = h;
-  u.hash = HashRect(vram_, x, y, w, h);
+  u.own = std::move(own);
+  u.hash = HashRecord(u);
   u.serial = ++serial_;
   u.live = true;
   u.pixels.reset();
@@ -205,6 +360,7 @@ void TextureTracker::Remove(int index) {
   if (last_ == index)
     last_ = -1;
   u.live = false;
+  u.own.reset();
   free_.push_back(index);
   --counts_.records_live;
 }
@@ -224,9 +380,19 @@ void TextureTracker::Cut(int index, const Rect& r) {
                      std::min(p.y1, uy1) };
     if (q.x0 > q.x1 || q.y0 > q.y1)
       continue;
-    const int kept = AddRecord(static_cast<uint32_t>(q.x0), static_cast<uint32_t>(q.y0),
-                               static_cast<uint32_t>(q.x1 - q.x0 + 1),
-                               static_cast<uint32_t>(q.y1 - q.y0 + 1));
+    const uint32_t qw = static_cast<uint32_t>(q.x1 - q.x0 + 1), qh = static_cast<uint32_t>(q.y1 - q.y0 + 1);
+    // A copied record's pieces keep their part of its texels.
+    std::shared_ptr<std::vector<uint16_t>> own;
+    if (u.own) {
+      own = std::make_shared<std::vector<uint16_t>>(static_cast<size_t>(qw) * qh);
+      for (uint32_t row = 0; row < qh; ++row) {
+        const auto from = u.own->begin() +
+                          static_cast<ptrdiff_t>((q.y0 - uy0 + row) * u.w + (q.x0 - ux0));
+        std::copy(from, from + qw, own->begin() + static_cast<ptrdiff_t>(row * qw));
+      }
+    }
+    const int kept = AddRecord(static_cast<uint32_t>(q.x0), static_cast<uint32_t>(q.y0), qw, qh,
+                               std::move(own));
     const Record& k = records_[kept];
     Trace("  leaving", k.x, k.y, k.w, k.h);
   }
@@ -247,9 +413,15 @@ void TextureTracker::WriteOver(const Rect& r, bool by_draw) {
     const bool whole = r.x0 <= static_cast<int32_t>(u.x) && r.y0 <= static_cast<int32_t>(u.y) &&
                        r.x1 >= static_cast<int32_t>(u.x + u.w) - 1 &&
                        r.y1 >= static_cast<int32_t>(u.y + u.h) - 1;
-    Trace(by_draw ? (whole ? "drawn over:" : "drawn over in part:")
-                  : (whole ? "  uploads over" : "  uploads over part of"),
-          u.x, u.y, u.w, u.h);
+    char drawn[80];
+    if (drawing_from_[0] >= 0)
+      snprintf(drawn, sizeof(drawn), "drawn over%s by GP0(%02Xh) from %d,%d:",
+               whole ? "" : " in part", drawing_command_, drawing_from_[0], drawing_from_[1]);
+    else
+      snprintf(drawn, sizeof(drawn), "drawn over%s by GP0(%02Xh):", whole ? "" : " in part",
+               drawing_command_);
+    Trace(by_draw ? drawn : (whole ? "  uploads over" : "  uploads over part of"), u.x, u.y,
+          u.w, u.h);
     if (whole) {
       Remove(index);
       ++(by_draw ? counts_.records_retired : counts_.records_replaced);
@@ -450,8 +622,11 @@ TextureTracker::Reason TextureTracker::Find(const DrawJob& job, Use* use) const 
     if (found == clut_hashes_.end()) {
       if (clut_hashes_.size() > (1u << 20))
         clut_hashes_.clear();
-      found = clut_hashes_.emplace(key, HashRect(vram_, job.state.clut_x, job.state.clut_y,
-                                                 fits, 1)).first;
+      // HashRect's arithmetic, over what the records hold (a copied palette's own texels).
+      uint64_t hash = 0xCBF29CE484222325ull ^ ((static_cast<uint64_t>(fits) << 32) | 1);
+      for (uint32_t i = 0; i < fits; ++i)
+        hash = (hash ^ Read(job.state.clut_x + i, job.state.clut_y)) * 0x100000001B3ull;
+      found = clut_hashes_.emplace(key, hash).first;
     }
     use->clut_hash = found->second;
   }
@@ -480,14 +655,54 @@ void TextureTracker::Drawing(const DrawJob& job) {
   // corner), a texture out of a staging area - carries them along: the destination is recorded
   // too, once copied. Looked at before the copy, which may land over its own source.
   pending_copy_ = false;
-  if (job.kind == DrawJob::kVramCopy && job.w > 0 && job.h > 0 &&
-      job.src_x + job.w <= static_cast<int32_t>(kVramW) &&
-      job.src_y + job.h <= static_cast<int32_t>(kVramH) &&
-      job.x + job.w <= static_cast<int32_t>(kVramW) && job.y + job.h <= static_cast<int32_t>(kVramH)) {
+  current_.named = false;
+  copy_zero_.clear();
+  if (job.kind == DrawJob::kVramCopy && job.w > 0 && job.h > 0) {
+    // What lands, texel by texel, wherever it can be known whatever rasteriser drew: the source's
+    // texel with the mask bit set if the copy sets it - or, with the mask checked, the texel
+    // already there where its bit 15 is set. So what a copy lands is clear wherever what it
+    // copies is known to be (Metal Gear Solid copies zeros over the ends of its palettes' row,
+    // and swaps palette banks back and forth with the mask checked).
+    const int32_t w = std::min<int32_t>(job.w, kVramW), h = std::min<int32_t>(job.h, kVramH);
     const Rect source = { job.src_x, job.src_y, job.src_x + job.w - 1, job.src_y + job.h - 1 };
     bool overlapped = true;
     std::vector<int> tiles;
-    pending_copy_ = Holding(source, &overlapped) >= 0 || Tiling(source, &tiles);
+    const bool inside = job.src_x + job.w <= static_cast<int32_t>(kVramW) &&
+                        job.src_y + job.h <= static_cast<int32_t>(kVramH) &&
+                        job.x + job.w <= static_cast<int32_t>(kVramW) &&
+                        job.y + job.h <= static_cast<int32_t>(kVramH);
+    const bool uploaded = inside && (Holding(source, &overlapped) >= 0 || Tiling(source, &tiles));
+    const uint16_t set = job.env.force_set_mask ? 0x8000 : 0;
+    std::shared_ptr<std::vector<uint16_t>> lands;
+    if (uploaded)
+      lands = std::make_shared<std::vector<uint16_t>>(static_cast<size_t>(w) * h);
+    copy_zero_.assign(static_cast<size_t>(w) * h, 0);
+    bool all_known = true;
+    for (int32_t row = 0; row < h; ++row)
+      for (int32_t col = 0; col < w; ++col) {
+        uint16_t from = 0, there = 0, landed = 0;
+        bool known = KnownValue(static_cast<uint32_t>(job.src_x + col) & (kVramW - 1),
+                                static_cast<uint32_t>(job.src_y + row) & (kVramH - 1), &from);
+        landed = from | set;
+        if (job.env.check_mask) {
+          if (!KnownValue(static_cast<uint32_t>(job.x + col) & (kVramW - 1),
+                          static_cast<uint32_t>(job.y + row) & (kVramH - 1), &there)) {
+            known = false;
+          } else if (there & 0x8000) {
+            landed = there;
+            known = true;
+          }
+        }
+        const size_t i = static_cast<size_t>(row) * w + col;
+        copy_zero_[i] = known && landed == 0;
+        all_known = all_known && known;
+        if (lands)
+          (*lands)[i] = landed;
+      }
+    // Uploaded texels copied whole are recorded where they land, keeping what landed.
+    pending_copy_ = uploaded && all_known;
+    if (pending_copy_)
+      copied_ = lands;
   }
   pending_textured_ = (job.kind == DrawJob::kTriangle || job.kind == DrawJob::kRectangle) &&
                       job.state.textured;
@@ -495,6 +710,28 @@ void TextureTracker::Drawing(const DrawJob& job) {
     return;
   Use use;
   pending_ = Find(job, &use);
+  if (pending_ == kNamed) {
+    // Where the job's texture page lies in its source: the records' corner, as Gather takes it.
+    const uint32_t per = PerHalfword(Mode(job.state));
+    uint32_t x0 = kVramW, y0 = kVramH, x1 = 0, y1 = 0;
+    for (int index : use.records) {
+      const Record& u = records_[index];
+      x0 = std::min(x0, u.x);
+      y0 = std::min(y0, u.y);
+      x1 = std::max(x1, u.x + u.w);
+      y1 = std::max(y1, u.y + u.h);
+    }
+    current_.named = true;
+    current_.image_hash = use.image_hash;
+    current_.clut_hash = use.clut_hash;
+    current_.mode = Mode(job.state);
+    current_.key = Key(use.image_hash, use.clut_hash, current_.mode);
+    current_.width = (x1 - x0) * per;
+    current_.height = y1 - y0;
+    current_.page_x = (static_cast<int32_t>(job.state.texpage_x) - static_cast<int32_t>(x0)) *
+                      static_cast<int32_t>(per);
+    current_.page_y = static_cast<int32_t>(job.state.texpage_y) - static_cast<int32_t>(y0);
+  }
   if (pending_ != kNamed) {
     if (log_ != nullptr && log_left_[pending_] > 0) {
       --log_left_[pending_];
@@ -505,10 +742,12 @@ void TextureTracker::Drawing(const DrawJob& job) {
   if (use.records.size() > 1)
     ++counts_.composite_jobs;
   const uint32_t mode = Mode(job.state);
-  const uint64_t key = Mix(Mix(use.image_hash, use.clut_hash), mode);
-  if (seen_.insert(key).second)
+  const uint64_t key = current_.key;
+  if (seen_.insert(key).second) {
     ++counts_.sources;
-  if (!dump_folder_.empty())
+    named_.store(counts_.sources, std::memory_order_relaxed);
+  }
+  if (!dump_folder_.empty() && !holding_)
     Gather(job, use, key, Name(use.image_hash, use.clut_hash, mode));
 }
 
@@ -520,27 +759,78 @@ void TextureTracker::Drawn(const DrawJob& job, uint64_t pixels) {
     counts_.pixels[pending_] += pixels;
     pending_textured_ = false;
   }
-  // A job that put nothing down changed nothing - but fills and copies are not counted in pixels
-  // by every rasteriser, so they always count as drawn.
-  if (pixels == 0 && job.kind != DrawJob::kFill && job.kind != DrawJob::kVramCopy)
+  // A job that can put nothing down changes nothing: a triangle the console rejects - flat at whole
+  // pixels, or wider than 1023 or taller than 511 - and anything wholly outside the drawing area
+  // (Destination). Judged from the job alone, not from the pixels the rasteriser counted: a
+  // hardware rasteriser counts none, and every rasteriser must name the same.
+  if (job.kind == DrawJob::kTriangle) {
+    const RasterVertex* v = job.v;
+    const int32_t area = (v[1].x - v[0].x) * (v[2].y - v[0].y) - (v[2].x - v[0].x) * (v[1].y - v[0].y);
+    const int32_t w = std::max({ v[0].x, v[1].x, v[2].x }) - std::min({ v[0].x, v[1].x, v[2].x });
+    const int32_t h = std::max({ v[0].y, v[1].y, v[2].y }) - std::min({ v[0].y, v[1].y, v[2].y });
+    if (area == 0 || w >= 1024 || h >= 512)
+      return;
+  }
+  if (job.kind == DrawJob::kRectangle && (job.w <= 0 || job.h <= 0))
     return;
   Destination(job, &destination_);
+  drawing_command_ = job.command;
+  drawing_from_[0] = job.kind == DrawJob::kVramCopy ? job.src_x : -1;
+  drawing_from_[1] = job.src_y;
+  if (job.kind == DrawJob::kVramCopy && tracing_ && log_ != nullptr) {
+    char what[64];
+    snprintf(what, sizeof(what), "a copy from %d,%d lands", job.src_x, job.src_y);
+    Trace(what, static_cast<uint32_t>(job.x), static_cast<uint32_t>(job.y),
+          static_cast<uint32_t>(job.w), static_cast<uint32_t>(job.h));
+  }
+  // A fill of zeros clears what it covers; so does a black rectangle - opaque, untextured, never
+  // dithered, its colour cut to 0 - without the mask rules: Metal Gear Solid clears all of VRAM
+  // with one. Either leaving the displayed field's rows alone covers only some of them.
+  const bool black_rectangle = job.kind == DrawJob::kRectangle && !job.state.textured &&
+                               !job.state.semi_transparent && job.r < 8 && job.g < 8 &&
+                               job.b < 8 && !job.env.force_set_mask && !job.env.check_mask;
+  const bool zeros = ((job.kind == DrawJob::kFill && job.fill_colour == 0) || black_rectangle) &&
+                     !job.env.skip_field;
   for (const Rect& r : destination_) {
     for (int cy = r.y0 / kCell; cy <= r.y1 / kCell; ++cy)
       for (int cx = r.x0 / kCell; cx <= r.x1 / kCell; ++cx)
         drawn_[cy * kCellsX + cx] = 1;
+    if (tracing_ && log_ != nullptr) {
+      char what[48];
+      snprintf(what, sizeof(what), "GP0(%02Xh) draws%s", job.command, zeros ? " zeros" : "");
+      Trace(what, static_cast<uint32_t>(r.x0), static_cast<uint32_t>(r.y0),
+            static_cast<uint32_t>(r.x1 - r.x0 + 1), static_cast<uint32_t>(r.y1 - r.y0 + 1));
+    }
+    if (job.kind == DrawJob::kTriangle) {
+      MarkTriangle(job, r);
+    } else {
+      SetBits(&drawn_bits_, r, true);
+      SetBits(&zero_bits_, r, zeros);
+    }
     WriteOver(r, true);
+  }
+  if (!copy_zero_.empty()) {
+    const int32_t w = std::min<int32_t>(job.w, kVramW), h = std::min<int32_t>(job.h, kVramH);
+    for (int32_t row = 0; row < h; ++row)
+      for (int32_t col = 0; col < w; ++col)
+        if (copy_zero_[static_cast<size_t>(row) * w + col]) {
+          const uint32_t x = static_cast<uint32_t>(job.x + col) & (kVramW - 1);
+          const uint32_t y = static_cast<uint32_t>(job.y + row) & (kVramH - 1);
+          zero_bits_[static_cast<size_t>(y) * 16 + x / 64] |= 1ull << (x % 64);
+        }
+    copy_zero_.clear();
   }
   if (pending_copy_ && destination_.size() == 1) {
     const Rect& r = destination_[0];
     const int copied = AddRecord(static_cast<uint32_t>(r.x0), static_cast<uint32_t>(r.y0),
                                  static_cast<uint32_t>(r.x1 - r.x0 + 1),
-                                 static_cast<uint32_t>(r.y1 - r.y0 + 1));
+                                 static_cast<uint32_t>(r.y1 - r.y0 + 1), copied_);
     const Record& c = records_[copied];
     Trace("copied from uploads, making", c.x, c.y, c.w, c.h);
     ++counts_.records_copied;
   }
   pending_copy_ = false;
+  copied_.reset();
 }
 
 void TextureTracker::Written(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
@@ -561,7 +851,18 @@ void TextureTracker::Written(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
       Record& u = records_[patched];
       Trace("  patches", u.x, u.y, u.w, u.h);
       Close(patched);
-      u.hash = HashRect(vram_, u.x, u.y, u.w, u.h);
+      if (u.own) {
+        // A copied record takes the patch into its own texels, from native VRAM, which the
+        // upload has just written.
+        auto own = std::make_shared<std::vector<uint16_t>>(*u.own);
+        const Rect& p = destination_[0];
+        for (int32_t py = p.y0; py <= p.y1; ++py)
+          for (int32_t px = p.x0; px <= p.x1; ++px)
+            (*own)[static_cast<size_t>(py - static_cast<int32_t>(u.y)) * u.w +
+                   (px - static_cast<int32_t>(u.x))] = vram_[py * kVramW + px];
+        u.own = own;
+      }
+      u.hash = HashRecord(u);
       u.serial = ++serial_;
       last_ = patched;
       ++counts_.uploads_patched;
@@ -570,8 +871,10 @@ void TextureTracker::Written(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
   }
   const std::vector<Rect> pieces = destination_;
   for (const Rect& r : pieces) {
-    // What was there before is written over...
+    // What was there before is written over, and native VRAM holds it now...
     WriteOver(r, false);
+    SetBits(&drawn_bits_, r, false);
+    SetBits(&zero_bits_, r, false);
     // ...and a cell it covers whole holds nothing the GPU drew any more.
     for (int cy = (r.y0 + kCell - 1) / kCell; (cy + 1) * kCell - 1 <= r.y1; ++cy)
       for (int cx = (r.x0 + kCell - 1) / kCell; (cx + 1) * kCell - 1 <= r.x1; ++cx)
@@ -606,7 +909,32 @@ void TextureTracker::Written(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
   ++counts_.uploads;
 }
 
+void TextureTracker::Hold() {
+  holding_ = true;
+  held_.records = records_;
+  held_.free = free_;
+  held_.cells = cells_;
+  held_.drawn = drawn_;
+  held_.drawn_bits = drawn_bits_;
+  held_.zero_bits = zero_bits_;
+  held_.last = last_;
+}
+
 void TextureTracker::Reloaded() {
+  if (holding_) {
+    // Run-ahead's load back: VRAM is what it was when the records were held.
+    records_ = held_.records;
+    free_ = held_.free;
+    cells_ = held_.cells;
+    drawn_ = held_.drawn;
+    drawn_bits_ = held_.drawn_bits;
+    zero_bits_ = held_.zero_bits;
+    last_ = held_.last;
+    counts_.records_live = 0;
+    for (const Record& u : records_)
+      counts_.records_live += u.live ? 1 : 0;
+    return;
+  }
   // Whatever was uploaded before is not known to be anything now; what was gathered from it is
   // written first.
   Flush();
@@ -616,6 +944,8 @@ void TextureTracker::Reloaded() {
   for (std::vector<int>& list : cells_)
     list.clear();
   drawn_.assign(drawn_.size(), 0);
+  drawn_bits_.assign(drawn_bits_.size(), 0);
+  zero_bits_.assign(zero_bits_.size(), 0);
   clut_hashes_.clear();
   counts_.records_live = 0;
 }
@@ -624,6 +954,7 @@ void TextureTracker::Flush() {
   for (size_t i = 0; i < records_.size(); ++i)
     if (records_[i].live)
       Close(static_cast<int>(i));
+  WaitWritten();
 }
 
 // ---- Dumping ---------------------------------------------------------------------------------
@@ -653,7 +984,9 @@ void TextureTracker::Gather(const DrawJob& job, const Use& use, uint64_t key,
       // Each record's halfwords, copied once while it is still what was uploaded, for every
       // source read from it.
       Record& u = records_[index];
-      if (!u.pixels) {
+      if (!u.pixels && u.own) {
+        u.pixels = u.own;
+      } else if (!u.pixels) {
         auto copy = std::make_shared<std::vector<uint16_t>>(static_cast<size_t>(u.w) * u.h);
         for (uint32_t row = 0; row < u.h; ++row) {
           const uint16_t* line = vram_ + (u.y + row) * kVramW + u.x;
@@ -670,9 +1003,9 @@ void TextureTracker::Gather(const DrawJob& job, const Use& use, uint64_t key,
       // As far as VRAM's edge, as Find hashed it; the entries past it read as clear.
       const uint32_t entries = mode == 0 ? 16 : 256;
       const uint32_t fits = std::min(entries, kVramW - job.state.clut_x);
-      const uint16_t* clut = vram_ + job.state.clut_y * kVramW + job.state.clut_x;
-      source.clut.assign(clut, clut + fits);
-      source.clut.resize(entries, 0);
+      source.clut.assign(entries, 0);
+      for (uint32_t i = 0; i < fits; ++i)
+        source.clut[i] = Read(job.state.clut_x + i, job.state.clut_y);
     }
     source.cells_x = (source.width + 7) / 8;
     source.cells_y = (source.height + 7) / 8;
@@ -696,6 +1029,12 @@ void TextureTracker::Gather(const DrawJob& job, const Use& use, uint64_t key,
 
 void TextureTracker::Close(int record) {
   Record& u = records_[record];
+  if (holding_) {
+    // A frame ahead: the held records, brought back, still have their sources.
+    u.sources.clear();
+    u.pixels.reset();
+    return;
+  }
   for (uint64_t key : u.sources) {
     auto found = open_.find(key);
     if (found == open_.end())
@@ -711,11 +1050,17 @@ void TextureTracker::Write(const Source& source) {
   const uint32_t least = static_cast<uint32_t>(dump_min_);
   if (source.width < least || source.height < least)
     return;
-  const std::string path = dump_folder_ + "/" + source.name + ".png";
-  if (FILE* there = fopen(path.c_str(), "rb")) {
-    fclose(there);
-    return;   // a run before wrote it
+  // Nothing to add to a file this run has already filled every one of these cells in.
+  const size_t cells = source.used.size();
+  auto known = written_.find(source.name);
+  if (known != written_.end() && known->second.size() == cells) {
+    bool more = false;
+    for (size_t i = 0; i < cells && !more; ++i)
+      more = source.used[i] && !known->second[i];
+    if (!more)
+      return;
   }
+  const std::string path = dump_folder_ + "/" + source.name + ".png";
   // Its records laid out as they were in VRAM; a corner none of them covers holds 0000h, clear.
   std::vector<uint16_t> image(static_cast<size_t>(source.halfwords) * source.rows, 0);
   for (const Part& part : source.parts)
@@ -748,14 +1093,107 @@ void TextureTracker::Write(const Source& source) {
     }
   if (used == 0)
     return;
-  const int w = static_cast<int>(source.width), h = static_cast<int>(source.height);
-  if (WritePngFile(path, w, h, rgba.data())) {
-    ++counts_.dumped;
-    counts_.dumped_texels += static_cast<uint64_t>(source.width) * source.height;
-    counts_.dumped_used += used;
-  } else {
-    ++counts_.dump_failures;
+  std::vector<uint8_t>& filled = written_[source.name];
+  filled.resize(cells, 0);
+  for (size_t i = 0; i < cells; ++i)
+    filled[i] = filled[i] || source.used[i];
+  Dump dump;
+  dump.path = path;
+  dump.width = source.width;
+  dump.height = source.height;
+  dump.cells_x = source.cells_x;
+  dump.cells_y = source.cells_y;
+  dump.used = source.used;
+  dump.used_texels = used;
+  dump.rgba = std::move(rgba);
+  if (!background_) {
+    Store(dump);
+    return;
   }
+  {
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    dumps_.push_back(std::move(dump));
+    if (!writer_.joinable())
+      writer_ = std::thread(&TextureTracker::Writer, this);
+  }
+  write_wake_.notify_one();
+}
+
+void TextureTracker::Store(const Dump& dump) {
+  const int w = static_cast<int>(dump.width), h = static_cast<int>(dump.height);
+  auto counted = [this](uint64_t DumpCounts::*field, uint64_t by) {
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    dump_counts_.*field += by;
+  };
+  // A file already there - this run's, or a run before's - keeps what it has, and these cells are
+  // filled in over it; one of another size is not this source's, and is left alone.
+  int there_w = 0, there_h = 0;
+  std::vector<uint8_t> there;
+  if (ReadPngFile(dump.path, &there_w, &there_h, &there)) {
+    if (there_w != w || there_h != h)
+      return;
+    const std::vector<uint8_t> before = there;
+    for (uint32_t cy = 0; cy < dump.cells_y; ++cy)
+      for (uint32_t cx = 0; cx < dump.cells_x; ++cx) {
+        if (!dump.used[static_cast<size_t>(cy) * dump.cells_x + cx])
+          continue;
+        for (uint32_t row = cy * 8; row < std::min(dump.height, cy * 8 + 8); ++row) {
+          const size_t at = (static_cast<size_t>(row) * dump.width + cx * 8) * 4;
+          const size_t bytes = static_cast<size_t>(std::min(dump.width, cx * 8 + 8) - cx * 8) * 4;
+          std::copy(dump.rgba.begin() + static_cast<ptrdiff_t>(at),
+                    dump.rgba.begin() + static_cast<ptrdiff_t>(at + bytes),
+                    there.begin() + static_cast<ptrdiff_t>(at));
+        }
+      }
+    if (there == before)
+      return;   // it had them all already
+    if (WritePngFile(dump.path, w, h, there.data()))
+      counted(&DumpCounts::merged, 1);
+    else
+      counted(&DumpCounts::failures, 1);
+    return;
+  }
+  if (WritePngFile(dump.path, w, h, dump.rgba.data())) {
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    ++dump_counts_.written;
+    dump_counts_.texels += static_cast<uint64_t>(dump.width) * dump.height;
+    dump_counts_.used += dump.used_texels;
+  } else {
+    counted(&DumpCounts::failures, 1);
+  }
+}
+
+void TextureTracker::Writer() {
+  std::unique_lock<std::mutex> lock(write_mutex_);
+  for (;;) {
+    write_wake_.wait(lock, [this] { return write_stop_ || !dumps_.empty(); });
+    if (dumps_.empty())
+      return;   // stopping, with nothing left to write
+    Dump dump = std::move(dumps_.front());
+    dumps_.pop_front();
+    ++writing_;
+    lock.unlock();
+    Store(dump);
+    lock.lock();
+    --writing_;
+    write_done_.notify_all();
+  }
+}
+
+void TextureTracker::WaitWritten() {
+  std::unique_lock<std::mutex> lock(write_mutex_);
+  write_done_.wait(lock, [this] { return dumps_.empty() && writing_ == 0; });
+}
+
+TextureTracker::Counts TextureTracker::counts() const {
+  Counts counts = counts_;
+  std::lock_guard<std::mutex> lock(write_mutex_);
+  counts.dumped = dump_counts_.written;
+  counts.dumped_texels = dump_counts_.texels;
+  counts.dumped_used = dump_counts_.used;
+  counts.dumped_merged = dump_counts_.merged;
+  counts.dump_failures = dump_counts_.failures;
+  return counts;
 }
 
 // ---- Logs ------------------------------------------------------------------------------------

@@ -164,6 +164,7 @@ exit /b 0</Command>
     <ClInclude Include="graphics\hw_raster\d3d12_raster.h" />
     <ClInclude Include="graphics\hw_raster\hardware_raster.h" />
     <ClInclude Include="graphics\hw_raster\raster_common.h" />
+    <ClInclude Include="graphics\hw_raster\replacement_atlas.h" />
     <ClInclude Include="graphics\present\d3d12\d3d12_engine.h" />
     <ClInclude Include="graphics\upscale\dlss\dlss_choice.h" />
     <ClInclude Include="graphics\upscale\dlss\dlss_timing.h" />

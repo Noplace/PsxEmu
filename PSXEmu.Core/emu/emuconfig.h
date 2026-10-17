@@ -309,6 +309,18 @@ struct EmuConfig {
   // itself decides, unlike the two above, and breaks a few games - off by default.
   bool pgxp_culling = false;
 
+  // Textures (Docs/Texture-Upscaling-Plan.md, phase 2), each in textures\<game>\ beside the
+  // settings: every texture a game draws written as a PNG into dump\ as it is first drawn, named
+  // the same every run; and the PNGs in replace\ drawn in place of the textures they are named
+  // for, by the hardware rasteriser, at whatever size they are - 1x to 8x - and colour. Off by
+  // default; nothing the machine runs changes, though a game that reads back a picture it drew
+  // reads the replacement in it. Per game, both: a pack belongs to a game.
+  bool texture_dump = false;
+  bool texture_replacement = false;
+  // The most video memory replacements may take, in MB; past it, the longest unused are let go
+  // and read again when next drawn.
+  int texture_budget_mb = 512;
+
   // NVIDIA DLSS (Docs/DLSS-Plan.md): the picture drawn smaller and jittered, and DLSS making the
   // screen's picture of it from the motion and depth the hardware rasteriser keeps beside VRAM.
   // An enhancement, like PGXP, and off by default: only what is shown changes. It runs in the

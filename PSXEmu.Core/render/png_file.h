@@ -19,8 +19,10 @@
 #pragma once
 
 // A picture as a PNG file, with the core's own zlib: the texture tracker's dumps
-// (render/texture_tracker.h). The core knows no operating system, so this is the whole format
-// written by hand - signature, IHDR, one IDAT, IEND - rather than a call into Windows.
+// (render/texture_tracker.h) and the replacements read back (render/texture_pack.h). The core
+// knows no operating system, so this is the format by hand rather than a call into Windows:
+// written as signature, IHDR, one IDAT, IEND; read in any of its colour types and depths,
+// palettes and tRNS, interlaced or not.
 
 #include <cstdint>
 #include <string>
@@ -35,6 +37,12 @@ namespace psx {
 
   // The same as bytes, for the tests.
   std::vector<uint8_t> EncodePng(int width, int height, const uint8_t* rgba);
+
+  // A PNG file's pixels as RGBA8, rows top to bottom - 16-bit samples cut to their high byte,
+  // a colour key (tRNS) as alpha 0. False if it cannot be read or is not a PNG this reads.
+  bool ReadPngFile(const std::string& path, int* width, int* height, std::vector<uint8_t>* rgba);
+  bool DecodePng(const uint8_t* data, size_t size, int* width, int* height,
+                 std::vector<uint8_t>* rgba);
 
 }  // namespace psx
 }  // namespace emulation

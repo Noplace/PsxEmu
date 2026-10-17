@@ -420,7 +420,7 @@ namespace psxemu {
             return false;
         }
         heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        heap.NumDescriptors = 2 * kTableCount;
+        heap.NumDescriptors = 4 * kTableCount;
         heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         if (FAILED(device_->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&srv_heap_)))) {
             *error = "the hardware rasteriser could not make its descriptor heaps";
@@ -483,10 +483,10 @@ namespace psxemu {
     }
 
     bool D3D12Raster::CreatePipelines(std::string* error) {
-        // Root constants are the cbuffer (b0); one table of two textures is t0 and t1.
+        // Root constants are the cbuffer (b0); one table of four views is t0 to t3.
         D3D12_DESCRIPTOR_RANGE range = {};
         range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-        range.NumDescriptors = 2;
+        range.NumDescriptors = 4;
         range.BaseShaderRegister = 0;
         range.OffsetInDescriptorsFromTableStart = 0;
         D3D12_ROOT_PARAMETER parameters[2] = {};
@@ -513,7 +513,7 @@ namespace psxemu {
 
         auto compile = [&](const char* entry, const char* target, bool planes, ComPtr<ID3DBlob>* blob) {
             return CompileShader("d3d12_raster", entry, target, scale_, true_color_, planes, blob,
-                                 error);
+                                 error, as_console_);
         };
         ComPtr<ID3DBlob> vertex, pixels[raster::kShaderCount], plane_draw, plane_copy;
         if (!compile("VsMain", "vs_5_0", false, &vertex))
@@ -537,6 +537,8 @@ namespace psxemu {
             { "P", 3, DXGI_FORMAT_R32G32B32A32_UINT, 0, offsetof(Vertex, p) + 48,
               D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
             { "P", 4, DXGI_FORMAT_R32G32B32A32_UINT, 0, offsetof(Vertex, p) + 64,
+              D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "P", 5, DXGI_FORMAT_R32G32B32A32_UINT, 0, offsetof(Vertex, p) + 80,
               D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
         };
 
@@ -755,14 +757,14 @@ namespace psxemu {
 
     D3D12_GPU_DESCRIPTOR_HANDLE D3D12Raster::TableHandle(Table table) const {
         D3D12_GPU_DESCRIPTOR_HANDLE handle = srv_heap_->GetGPUDescriptorHandleForHeapStart();
-        handle.ptr += static_cast<UINT64>(table) * 2 * srv_size_;
+        handle.ptr += static_cast<UINT64>(table) * 4 * srv_size_;
         return handle;
     }
 
     void D3D12Raster::WriteTable(Table table, ID3D12Resource* first, DXGI_FORMAT first_format,
                                  ID3D12Resource* second, DXGI_FORMAT second_format) {
         D3D12_CPU_DESCRIPTOR_HANDLE handle = srv_heap_->GetCPUDescriptorHandleForHeapStart();
-        handle.ptr += static_cast<SIZE_T>(table) * 2 * srv_size_;
+        handle.ptr += static_cast<SIZE_T>(table) * 4 * srv_size_;
         const struct { ID3D12Resource* resource; DXGI_FORMAT format; } views[2] = {
             { first, first_format }, { second, second_format },
         };
@@ -776,6 +778,29 @@ namespace psxemu {
             device_->CreateShaderResourceView(view.resource, &description, handle);
             handle.ptr += srv_size_;
         }
+        // The replacements' pages and block table: only drawing reads them.
+        const bool draw = table == kTableDraw;
+        D3D12_SHADER_RESOURCE_VIEW_DESC pages = {};
+        pages.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        pages.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        pages.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        pages.Texture2DArray.MipLevels = 1;
+        pages.Texture2DArray.ArraySize = draw && atlas_pages_.resource ? atlas_slices_ : 1;
+        device_->CreateShaderResourceView(draw ? atlas_pages_.resource.Get() : nullptr, &pages,
+                                          handle);
+        handle.ptr += srv_size_;
+        D3D12_SHADER_RESOURCE_VIEW_DESC words = {};
+        words.Format = DXGI_FORMAT_R32_UINT;
+        words.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        words.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        words.Buffer.NumElements = draw && atlas_table_.resource ? atlas_table_words_ : 1;
+        device_->CreateShaderResourceView(draw ? atlas_table_.resource.Get() : nullptr, &words,
+                                          handle);
+    }
+
+    void D3D12Raster::WriteDrawTable() {
+        WriteTable(kTableDraw, read_copy_.resource.Get(), DXGI_FORMAT_R8G8B8A8_UNORM,
+                   plane_read_copy_.resource.Get(), DXGI_FORMAT_R16G16B16A16_FLOAT);
     }
 
     bool D3D12Raster::MakeTexture(Texture* texture, UINT width, UINT height, DXGI_FORMAT format,
@@ -1052,6 +1077,8 @@ namespace psxemu {
                                                     : (points ? kPipeDrawPoints : kPipeDraw);
             Use(target_, D3D12_RESOURCE_STATE_RENDER_TARGET);
             Use(read_copy_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            Use(atlas_pages_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            Use(atlas_table_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             if (planes_kept) {
                 Use(plane_target_, D3D12_RESOURCE_STATE_RENDER_TARGET);
                 Use(plane_read_copy_, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -1141,6 +1168,158 @@ namespace psxemu {
     }
 
     // ------------------------------------------------------------------------------------------
+    // Replacement textures - D3D11Raster's, with the pages and table copied in on the list
+    // ------------------------------------------------------------------------------------------
+
+    void D3D12Raster::Replace(const DrawJob& job, uint32_t (&payload)[kPayload]) {
+        if (replacer_ == nullptr || !job.state.textured || !lost_.empty())
+            return;
+        emulation::psx::TextureReplacement replacement;
+        if (!replacer_->Replace(job, &replacement))
+            return;
+        uint32_t words[4];
+        if (!atlas_.Words(replacement, words)) {
+            // Not on the card yet: whatever is batched is recorded first, so nothing still to
+            // be drawn reads a page about to be written over.
+            Flush();
+            std::vector<raster::ReplacementAtlas::Run> runs;
+            if (!atlas_.Place(replacement.image, &runs))
+                return;   // larger than the budget: the game's own texels
+            if (!WriteAtlas(runs)) {
+                // The card cannot hold them: the game's own texels from now on.
+                atlas_.Clear();
+                replacer_ = nullptr;
+                return;
+            }
+            atlas_.Words(replacement, words);
+        }
+        memcpy(&payload[20], words, sizeof(words));
+    }
+
+    bool D3D12Raster::WriteAtlas(const std::vector<raster::ReplacementAtlas::Run>& runs) {
+        using raster::ReplacementAtlas;
+        const std::vector<uint32_t>& table = atlas_.table();
+        const bool grow_pages = atlas_.pages() > atlas_slices_;
+        const bool grow_table = table.size() > atlas_table_words_;
+        if (grow_pages || grow_table) {
+            // New pages or a new table mean new descriptors, which nothing in flight may still be
+            // reading; and the old pages are copied from, so they are kept until that is done.
+            if (!Finish())
+                return false;
+            const Texture old_pages = atlas_pages_;
+            D3D12_HEAP_PROPERTIES heap = {};
+            heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+            if (grow_pages) {
+                const uint32_t slices = std::min(std::max(atlas_.pages(), atlas_slices_ * 2),
+                                                 atlas_.most_pages());
+                D3D12_RESOURCE_DESC description = {};
+                description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+                description.Width = ReplacementAtlas::kPage;
+                description.Height = ReplacementAtlas::kPage;
+                description.DepthOrArraySize = static_cast<UINT16>(slices);
+                description.MipLevels = 1;
+                description.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                description.SampleDesc.Count = 1;
+                description.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+                Texture pages;
+                if (FAILED(device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+                                                            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                            IID_PPV_ARGS(&pages.resource)))) {
+                    CheckDevice();
+                    return false;
+                }
+                pages.state = D3D12_RESOURCE_STATE_COPY_DEST;
+                atlas_pages_ = pages;
+                Texture source = old_pages;
+                if (source.resource)
+                    Use(source, D3D12_RESOURCE_STATE_COPY_SOURCE);
+                for (uint32_t i = 0; i < atlas_slices_; ++i) {
+                    D3D12_TEXTURE_COPY_LOCATION to = {}, from = {};
+                    to.pResource = atlas_pages_.resource.Get();
+                    to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                    to.SubresourceIndex = i;
+                    from.pResource = source.resource.Get();
+                    from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                    from.SubresourceIndex = i;
+                    List()->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+                }
+                atlas_slices_ = slices;
+            }
+            if (grow_table) {
+                uint32_t words = std::max<uint32_t>(atlas_table_words_ * 2, 65536);
+                while (words < table.size())
+                    words *= 2;
+                D3D12_RESOURCE_DESC description = {};
+                description.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+                description.Width = static_cast<UINT64>(words) * 4;
+                description.Height = 1;
+                description.DepthOrArraySize = 1;
+                description.MipLevels = 1;
+                description.SampleDesc.Count = 1;
+                description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+                Texture buffer;
+                if (FAILED(device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &description,
+                                                            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                            IID_PPV_ARGS(&buffer.resource)))) {
+                    CheckDevice();
+                    return false;
+                }
+                buffer.state = D3D12_RESOURCE_STATE_COPY_DEST;
+                atlas_table_ = buffer;
+                atlas_table_words_ = words;
+            }
+            WriteDrawTable();
+            if (grow_pages && old_pages.resource && !Finish())
+                return false;
+        }
+        // The table, written whole when it is new, or where it changed.
+        uint32_t first = 0, end = 0;
+        const bool changed = atlas_.TakeChanged(&first, &end);
+        if (grow_table) {
+            first = 0;
+            end = static_cast<uint32_t>(table.size());
+        } else if (!changed) {
+            first = end = 0;
+        }
+        if (end > first) {
+            const size_t bytes = static_cast<size_t>(end - first) * 4;
+            const UploadSpace memory = Allocate(bytes, 256);
+            if (memory.cpu == nullptr)
+                return false;
+            memcpy(memory.cpu, table.data() + first, bytes);
+            Use(atlas_table_, D3D12_RESOURCE_STATE_COPY_DEST);
+            List()->CopyBufferRegion(atlas_table_.resource.Get(), static_cast<UINT64>(first) * 4,
+                                     memory.buffer, memory.offset, bytes);
+        }
+        // The blocks, a run at a time: laid side by side as the rows the page has them in.
+        for (const ReplacementAtlas::Run& run : runs) {
+            const UINT count = static_cast<UINT>(run.pixels.size());
+            const UINT width = count * run.side;
+            const UINT pitch = RowPitch(width, 4);
+            const UploadSpace memory = Allocate(static_cast<size_t>(pitch) * run.side,
+                                                D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+            if (memory.cpu == nullptr)
+                return false;
+            const size_t row = static_cast<size_t>(run.side) * 4;
+            for (uint32_t y = 0; y < run.side; ++y)
+                for (UINT b = 0; b < count; ++b)
+                    memcpy(memory.cpu + static_cast<size_t>(y) * pitch + b * row,
+                           run.pixels[b] + y * row, row);
+            Use(atlas_pages_, D3D12_RESOURCE_STATE_COPY_DEST);
+            D3D12_TEXTURE_COPY_LOCATION to = {}, from = {};
+            to.pResource = atlas_pages_.resource.Get();
+            to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            to.SubresourceIndex = run.page;
+            from.pResource = memory.buffer;
+            from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            from.PlacedFootprint.Offset = memory.offset;
+            from.PlacedFootprint.Footprint = { DXGI_FORMAT_R8G8B8A8_UNORM, width, run.side, 1, pitch };
+            List()->CopyTextureRegion(&to, run.x, run.y, 0, &from, nullptr);
+        }
+        return true;
+    }
+
+    // ------------------------------------------------------------------------------------------
     // Drawing - D3D11Raster's, line for line
     // ------------------------------------------------------------------------------------------
 
@@ -1199,6 +1378,7 @@ namespace psxemu {
         payload[8] = Attributes(state, kKindTriangle, state.textured, state.dither);
         payload[9] = (state.clut_x & 1023) | ((state.clut_y & 511) << 10);
         PutMotion(payload, a, b, c);
+        Replace(job, payload);
         Begin(key, 6);
         AddBox(left, top, right, bottom, payload);
     }
@@ -1282,6 +1462,7 @@ namespace psxemu {
         payload[14] = perspective ? bits(c.w) : 0;
         payload[15] = rule;
         PutMotion(payload, va, vb, vc);
+        Replace(job, payload);
         Begin(key, 6);
         AddBox(left, top, right, bottom, payload);
     }
@@ -1320,6 +1501,7 @@ namespace psxemu {
             payload[16] = PackMotion(job.mx, job.my);
             payload[19] = 7;
         }
+        Replace(job, payload);
         Begin(key, 6);
         AddBox(left, top, right, bottom, payload);
     }

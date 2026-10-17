@@ -44,6 +44,7 @@
 
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/hw_raster/raster_common.h"
+#include "graphics/hw_raster/replacement_atlas.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -107,6 +108,9 @@ namespace psxemu {
                         std::vector<float>* rgba) override;
         int scale() const override { return scale_; }
         void SimulateLoss() override { lost_ = "simulated for a test"; }
+        void set_texture_replacer(emulation::psx::TextureReplacer* replacer) override {
+            replacer_ = replacer;
+        }
 
      private:
         using Vertex = raster::Vertex;
@@ -161,9 +165,10 @@ namespace psxemu {
             kPipeCount
         };
 
-        // Shader-visible descriptor tables of two (t0, t1), by what they hold.
+        // Shader-visible descriptor tables of four (t0-t3), by what they hold.
         enum Table {
-            kTableDraw,      // the read copy, and the plane's read copy
+            kTableDraw,      // the read copy, the plane's read copy, and the replacements' pages
+                             // and block table
             kTableTarget,    // the target, for downloads and showing it
             kTableNative,    // native VRAM's copy on the card, for uploads
             kTablePlane,     // the plane, for showing it
@@ -179,8 +184,9 @@ namespace psxemu {
         D3D12Raster(uint16_t* vram, const emulation::psx::RasterOptions& options,
                     ID3D12Device* device)
             : vram_(vram), scale_(options.scale), true_color_(options.true_color),
-              adapter_(options.adapter), share_(options.shared_picture), device_(device),
-              one_device_(device != nullptr) {}
+              adapter_(options.adapter), share_(options.shared_picture),
+              as_console_(options.replacements_as_console), device_(device),
+              one_device_(device != nullptr), atlas_(options.replacement_budget) {}
         bool Initialize(bool warp, std::string* error);
         bool CreatePipelines(std::string* error);
         // The textures and fence shared pictures need; without them the picture is read back.
@@ -206,9 +212,12 @@ namespace psxemu {
                           UINT target_count, UINT width, UINT height, const D3D12_RECT& scissor);
         D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle(int index) const;
         D3D12_GPU_DESCRIPTOR_HANDLE TableHandle(Table table) const;
-        // Fills table `table`'s two descriptors: `first` as t0 and `second` as t1, either null.
+        // Fills table `table`'s descriptors: `first` as t0 and `second` as t1, either null - and
+        // for kTableDraw the replacements' pages and table as t2 and t3, null elsewhere.
         void WriteTable(Table table, ID3D12Resource* first, DXGI_FORMAT first_format,
                         ID3D12Resource* second, DXGI_FORMAT second_format);
+        // kTableDraw written afresh, from what there is now.
+        void WriteDrawTable();
         // A texture on the card, `width` x `height`: drawn into and read by shaders, or only
         // read. False if the card would not make it.
         bool MakeTexture(Texture* texture, UINT width, UINT height, DXGI_FORMAT format,
@@ -242,6 +251,9 @@ namespace psxemu {
         }
         void AddBox(int32_t left, int32_t top, int32_t right, int32_t bottom,
                     const uint32_t (&payload)[kPayload]);
+        // As d3d11_raster.h's.
+        void Replace(const emulation::psx::DrawJob& job, uint32_t (&payload)[kPayload]);
+        bool WriteAtlas(const std::vector<raster::ReplacementAtlas::Run>& runs);
         void AddTriangle(const emulation::psx::DrawJob& job);
         void AddPreciseTriangle(const emulation::psx::DrawJob& job, const BatchKey& key);
         void AddRectangle(const emulation::psx::DrawJob& job);
@@ -273,11 +285,20 @@ namespace psxemu {
         const bool true_color_;
         const uint64_t adapter_;
         const bool share_;
+        const bool as_console_;   // RasterOptions::replacements_as_console
 
         Microsoft::WRL::ComPtr<ID3D12Device> device_;
         // Drawing on the renderer's device rather than one of its own: pictures go to it as
         // they are (SharedPictureSource::device).
         const bool one_device_;
+        // Replacement textures, as d3d11_raster.h's: the pages a texture array, the block table
+        // a buffer.
+        emulation::psx::TextureReplacer* replacer_ = nullptr;
+        raster::ReplacementAtlas atlas_;
+        Texture atlas_pages_;
+        uint32_t atlas_slices_ = 0;
+        Texture atlas_table_;
+        uint32_t atlas_table_words_ = 0;
         Microsoft::WRL::ComPtr<ID3D12CommandQueue> queue_;
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list_;
         Microsoft::WRL::ComPtr<ID3D12Fence> fence_;

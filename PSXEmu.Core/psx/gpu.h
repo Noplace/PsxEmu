@@ -146,6 +146,15 @@ class Gpu : public GpuCore {
     SyncRaster();
     observer_ = observer;
   }
+  // Where the hardware rasteriser asks for replacement textures (render/raster.h's
+  // TextureReplacer: a texture pack), or null. Not owned; it names jobs by what the observer
+  // was told, so it comes with one. Kept across a change of rasteriser.
+  void set_texture_replacer(TextureReplacer* replacer) {
+    SyncRaster();
+    replacer_ = replacer;
+    if (backend_)
+      backend_->set_texture_replacer(replacer);
+  }
 
   // Incremented once per completed frame; a cheap way for a harness to wait
   // for a specific frame without knowing anything about timing.
@@ -577,6 +586,7 @@ class Gpu : public GpuCore {
   // machine thread, with nothing being drawn.
   std::unique_ptr<RasterBackend> backend_;
   RasterObserver* observer_ = nullptr;
+  TextureReplacer* replacer_ = nullptr;
   bool hardware_raster_ = false;
   std::string raster_error_;
   // The display area as a higher-resolution rasteriser drew it, and at what scale; 1 when

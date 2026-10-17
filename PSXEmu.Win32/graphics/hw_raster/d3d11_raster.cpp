@@ -349,7 +349,7 @@ namespace psxemu {
         auto compile = [&](const char* entry, const char* target, bool planes,
                            Microsoft::WRL::ComPtr<ID3DBlob>* blob) {
             return CompileShader("d3d11_raster", entry, target, scale_, true_color_, planes, blob,
-                                 error);
+                                 error, as_console_);
         };
         if (!compile("VsMain", "vs_4_0", false, &vertex_blob))
             return false;
@@ -371,6 +371,8 @@ namespace psxemu {
             { "P", 3, DXGI_FORMAT_R32G32B32A32_UINT, 0, offsetof(Vertex, p) + 48,
               D3D11_INPUT_PER_VERTEX_DATA, 0 },
             { "P", 4, DXGI_FORMAT_R32G32B32A32_UINT, 0, offsetof(Vertex, p) + 64,
+              D3D11_INPUT_PER_VERTEX_DATA, 0 },
+            { "P", 5, DXGI_FORMAT_R32G32B32A32_UINT, 0, offsetof(Vertex, p) + 80,
               D3D11_INPUT_PER_VERTEX_DATA, 0 },
         };
         bool made = SUCCEEDED(device_->CreateVertexShader(vertex_blob->GetBufferPointer(),
@@ -716,13 +718,14 @@ namespace psxemu {
         }
         context_->PSSetShader(shader, nullptr, 0);
         // Bound only while drawing, since the read copies are also what refreshes copy into.
-        ID3D11ShaderResourceView* const sources[2] = {
-            read_copy_view_.Get(), planes_kept ? plane_read_copy_view_.Get() : nullptr
+        ID3D11ShaderResourceView* const sources[4] = {
+            read_copy_view_.Get(), planes_kept ? plane_read_copy_view_.Get() : nullptr,
+            atlas_pages_view_.Get(), atlas_table_view_.Get()
         };
-        context_->PSSetShaderResources(0, 2, sources);
+        context_->PSSetShaderResources(0, 4, sources);
         context_->Draw(static_cast<UINT>(batch_.size()), 0);
-        ID3D11ShaderResourceView* const none[2] = { nullptr, nullptr };
-        context_->PSSetShaderResources(0, 2, none);
+        ID3D11ShaderResourceView* const none[4] = { nullptr, nullptr, nullptr, nullptr };
+        context_->PSSetShaderResources(0, 4, none);
         batch_.clear();
         ++batch_serial_;
     }
@@ -787,6 +790,117 @@ namespace psxemu {
             batch_.push_back(vertex);
         }
         MarkDrawn(left, top, right, bottom);
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // Replacement textures
+    // ------------------------------------------------------------------------------------------
+
+    void D3D11Raster::Replace(const DrawJob& job, uint32_t (&payload)[kPayload]) {
+        if (replacer_ == nullptr || !job.state.textured || !lost_.empty())
+            return;
+        emulation::psx::TextureReplacement replacement;
+        if (!replacer_->Replace(job, &replacement))
+            return;
+        uint32_t words[4];
+        if (!atlas_.Words(replacement, words)) {
+            // Not on the card yet: whatever is batched is drawn first, so nothing still to be
+            // drawn reads a page about to be written over.
+            Flush();
+            std::vector<raster::ReplacementAtlas::Run> runs;
+            if (!atlas_.Place(replacement.image, &runs))
+                return;   // larger than the budget: the game's own texels
+            if (!WriteAtlas(runs)) {
+                // The card cannot hold them: the game's own texels from now on.
+                atlas_.Clear();
+                replacer_ = nullptr;
+                return;
+            }
+            atlas_.Words(replacement, words);
+        }
+        memcpy(&payload[20], words, sizeof(words));
+    }
+
+    bool D3D11Raster::WriteAtlas(const std::vector<raster::ReplacementAtlas::Run>& runs) {
+        using raster::ReplacementAtlas;
+        // The pages, grown to the slices the atlas uses - doubling, within its most - with the
+        // old ones copied across.
+        if (atlas_.pages() > atlas_slices_) {
+            const uint32_t slices = std::min(std::max(atlas_.pages(), atlas_slices_ * 2),
+                                             atlas_.most_pages());
+            D3D11_TEXTURE2D_DESC texture = {};
+            texture.Width = ReplacementAtlas::kPage;
+            texture.Height = ReplacementAtlas::kPage;
+            texture.MipLevels = 1;
+            texture.ArraySize = slices;
+            texture.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            texture.SampleDesc.Count = 1;
+            texture.Usage = D3D11_USAGE_DEFAULT;
+            texture.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> pages;
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+            if (FAILED(device_->CreateTexture2D(&texture, nullptr, &pages)) ||
+                FAILED(device_->CreateShaderResourceView(pages.Get(), nullptr, &view))) {
+                CheckDevice();
+                return false;
+            }
+            for (uint32_t i = 0; i < atlas_slices_; ++i)
+                context_->CopySubresourceRegion(pages.Get(), i, 0, 0, 0, atlas_pages_.Get(), i,
+                                                nullptr);
+            atlas_pages_ = pages;
+            atlas_pages_view_ = view;
+            atlas_slices_ = slices;
+        }
+        // The table, grown by doubling and then written whole, or written where it changed.
+        const std::vector<uint32_t>& table = atlas_.table();
+        uint32_t first = 0, end = 0;
+        const bool changed = atlas_.TakeChanged(&first, &end);
+        if (table.size() > atlas_table_words_) {
+            uint32_t words = std::max<uint32_t>(atlas_table_words_ * 2, 65536);
+            while (words < table.size())
+                words *= 2;
+            D3D11_BUFFER_DESC buffer = {};
+            buffer.ByteWidth = words * 4;
+            buffer.Usage = D3D11_USAGE_DEFAULT;
+            buffer.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            D3D11_SHADER_RESOURCE_VIEW_DESC view_desc = {};
+            view_desc.Format = DXGI_FORMAT_R32_UINT;
+            view_desc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+            view_desc.Buffer.FirstElement = 0;
+            view_desc.Buffer.NumElements = words;
+            Microsoft::WRL::ComPtr<ID3D11Buffer> made;
+            Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> view;
+            if (FAILED(device_->CreateBuffer(&buffer, nullptr, &made)) ||
+                FAILED(device_->CreateShaderResourceView(made.Get(), &view_desc, &view))) {
+                CheckDevice();
+                return false;
+            }
+            atlas_table_ = made;
+            atlas_table_view_ = view;
+            atlas_table_words_ = words;
+            first = 0;
+            end = static_cast<uint32_t>(table.size());
+        } else if (!changed) {
+            first = end = 0;
+        }
+        if (end > first) {
+            const D3D11_BOX box = { first * 4, 0, 0, end * 4, 1, 1 };
+            context_->UpdateSubresource(atlas_table_.Get(), 0, &box, table.data() + first, 0, 0);
+        }
+        // The blocks, a run at a time: laid side by side as the rows the page has them in.
+        for (const ReplacementAtlas::Run& run : runs) {
+            const UINT count = static_cast<UINT>(run.pixels.size());
+            const size_t row = static_cast<size_t>(run.side) * 4;
+            atlas_run_.resize(count * row * run.side);
+            for (uint32_t y = 0; y < run.side; ++y)
+                for (UINT b = 0; b < count; ++b)
+                    memcpy(&atlas_run_[(static_cast<size_t>(y) * count + b) * row],
+                           run.pixels[b] + y * row, row);
+            const D3D11_BOX box = { run.x, run.y, 0, run.x + count * run.side, run.y + run.side, 1 };
+            context_->UpdateSubresource(atlas_pages_.Get(), D3D11CalcSubresource(0, run.page, 1),
+                                        &box, atlas_run_.data(), static_cast<UINT>(count * row), 0);
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------------------------------
@@ -861,6 +975,7 @@ namespace psxemu {
         payload[8] = Attributes(state, kKindTriangle, state.textured, state.dither);
         payload[9] = (state.clut_x & 1023) | ((state.clut_y & 511) << 10);
         PutMotion(payload, a, b, c);
+        Replace(job, payload);
         Begin(key, 6);
         AddBox(left, top, right, bottom, payload);
     }
@@ -950,6 +1065,7 @@ namespace psxemu {
         payload[14] = perspective ? bits(c.w) : 0;
         payload[15] = rule;
         PutMotion(payload, va, vb, vc);
+        Replace(job, payload);
         Begin(key, 6);
         AddBox(left, top, right, bottom, payload);
     }
@@ -989,6 +1105,7 @@ namespace psxemu {
             payload[16] = PackMotion(job.mx, job.my);
             payload[19] = 7;
         }
+        Replace(job, payload);
         Begin(key, 6);
         AddBox(left, top, right, bottom, payload);
     }

@@ -162,6 +162,8 @@ namespace emulation {
                 RasterOptions options;
                 options.scale = system().config().resolution_scale;
                 options.true_color = system().config().true_color;
+                options.replacement_budget =
+                    static_cast<uint64_t>(system().config().texture_budget_mb) << 20;
                 options.d3d12 = system().config().gpu_rasteriser == "hardware_d3d12";
                 if (!factory)
                     raster_error_ = "no hardware rasteriser in this build";
@@ -179,6 +181,7 @@ namespace emulation {
             picture_scale_ = 1;   // until the new one resolves a frame
             shared_picture_ = SharedPicture();
             PushWatch();
+            backend_->set_texture_replacer(replacer_);
             backend_->SetPlanes(planes_keep_, plane_view_);
             backend_->set_motion_check(motion_check_);
             backend_->SetJitter(jitter_phases_);

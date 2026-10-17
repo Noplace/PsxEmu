@@ -133,6 +133,10 @@ namespace psxemu {
         // (emu/movie.h). Stop is greyed out unless one is playing.
         kCommandPlayMovie,
         kCommandStopMovie,
+        // View > Reload Textures and Open Texture Folder: the running game's replacement pack
+        // read again, and its folder of textures (Docs/Texture-Upscaling-Plan.md).
+        kCommandReloadTextures,
+        kCommandOpenTextureFolder,
     };
 
     // ---------------------------------------------------------------------------------------------

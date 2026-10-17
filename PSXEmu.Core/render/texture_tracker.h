@@ -35,7 +35,8 @@
 //     each hashed afresh: Gran Turismo 2 loads the whole of VRAM at once, then draws its
 //     framebuffer into it. Written over whole, a record is gone.
 //   - A VRAM-to-VRAM copy of uploaded texels carries them along: the copy is recorded too
-//     (Silent Hill copies its palettes into the framebuffer's corner).
+//     (Silent Hill copies its palettes into the framebuffer's corner), with its texels kept by
+//     the record, since a hardware rasteriser copies on the card and leaves native VRAM behind.
 // - **Sources.** A textured job names a source when the texels it can sample lie inside one live
 //   record - or are tiled exactly by several, a composite (Castlevania's backdrops, uploaded as
 //   64x128 tiles a row at a time), with whatever they leave uncovered all zeros, the clear texel
@@ -56,7 +57,9 @@
 //   a texel is 0000h (not drawn), 128 where bit 15 is set (semi-transparent), 255 elsewhere. A
 //   source is written once one of its records stops being what it was - written over, patched,
 //   joined - or at a state load, or Flush; from copies of the records taken while they were whole.
-//   A file already there is left as it is.
+//   A file already there is added to: the cells read now are filled in over it, so a dump grows
+//   as a game is played further, and loaded back as a pack (render/texture_pack.h) it holds every
+//   texel a run like this one reads.
 //
 // An observer of `Gpu` (render/raster.h): it reads native VRAM and changes nothing the machine
 // sees. Upload records are not machine state either; after a state load nothing is named until
@@ -64,10 +67,15 @@
 
 #include "render/raster.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -109,6 +117,7 @@ namespace psx {
       uint64_t dumped = 0;            // ...written as PNGs
       uint64_t dumped_texels = 0;     // ...the area of those PNGs
       uint64_t dumped_used = 0;       // ...the texels of it filled in, in 8x8 cells
+      uint64_t dumped_merged = 0;     // ...of them, files already there that cells were added to
       uint64_t dump_failures = 0;
     };
 
@@ -117,15 +126,32 @@ namespace psx {
     ~TextureTracker() override;
 
     // Where to write sources; empty for nowhere. Sources smaller than `min_texels` in either
-    // direction are named and counted but not written.
-    void set_dump_folder(const std::string& folder, int min_texels = 8) {
+    // direction are named and counted but not written. In the `background`, on a thread of the
+    // tracker's own, rather than on the rasteriser's as each source closes: the front end's.
+    void set_dump_folder(const std::string& folder, int min_texels = 8, bool background = false) {
       dump_folder_ = folder;
       dump_min_ = min_texels;
+      background_ = background;
     }
-    // Writes every source not yet written - the end of a run. Call with nothing being drawn.
+    // Writes every source not yet written - the end of a run - and waits until all are. Call with
+    // nothing being drawn.
     void Flush();
 
-    const Counts& counts() const { return counts_; }
+    // Run-ahead (Docs/Rewind-and-Run-Ahead-Plan.md): the machine saves a state, runs frames
+    // ahead, and loads the state back every frame. Hold, as the state is saved, keeps the records
+    // as they are; the frames ahead are named as ever - their pictures are the ones shown - but
+    // dump nothing; and the load back, rather than forgetting everything as any other does,
+    // brings the records back as they were held. Release after it. With nothing being drawn.
+    void Hold();
+    void Release() { holding_ = false; }
+
+    Counts counts() const;   // with nothing being drawn
+    // Textures named and files written so far, from any thread at any time: the front end's.
+    uint64_t named_so_far() const { return named_.load(std::memory_order_relaxed); }
+    uint64_t written_so_far() const {
+      std::lock_guard<std::mutex> lock(write_mutex_);
+      return dump_counts_.written + dump_counts_.merged;
+    }
 
     // A line into `log` for the first `per_reason` jobs of each reason that names nothing: the
     // texels it reads and the uploads they touch. Null for none.
@@ -143,6 +169,23 @@ namespace psx {
     // What a textured job names, and why if nothing: what Drawing works out. `name` is the
     // source's file name without ".png".
     Reason Classify(const DrawJob& job, std::string* name) const;
+
+    // What the job being drawn names - the one Drawing was last told of - for a replacement pack
+    // (render/texture_pack.h): its source, and where the job's texture page lies in it.
+    struct Named {
+      bool named = false;
+      uint64_t key = 0;                  // Key(image_hash, clut_hash, mode)
+      uint64_t image_hash = 0, clut_hash = 0;
+      uint32_t mode = 0;                 // 0 4-bit, 1 8-bit, 2 15-bit
+      uint32_t width = 0, height = 0;    // the source, in texels
+      int32_t page_x = 0, page_y = 0;    // the texture page's corner in it, in texels
+    };
+    const Named& current() const { return current_; }
+    // A source's key, as a name's three parts give it.
+    static uint64_t Key(uint64_t image_hash, uint64_t clut_hash, uint32_t mode);
+    // A file name's three parts, or false if it is not one of a source's names.
+    static bool ParseName(const std::string& name, uint64_t* image_hash, uint64_t* clut_hash,
+                          uint32_t* mode);
 
     // RasterObserver.
     void Drawing(const DrawJob& job) override;
@@ -162,6 +205,10 @@ namespace psx {
       uint64_t hash = 0;
       uint64_t serial = 0;                    // which record this is, never reused
       bool live = false;
+      // Its halfwords, for a record made by a VRAM-to-VRAM copy: a hardware rasteriser copies on
+      // the card, and native VRAM has them only once something reads it there. Null for an
+      // upload's, which native VRAM always holds.
+      std::shared_ptr<const std::vector<uint16_t>> own;
       // While dumping: its halfwords, copied the first time a source is named from it, and the
       // sources being gathered from it.
       std::shared_ptr<const std::vector<uint16_t>> pixels;
@@ -203,7 +250,26 @@ namespace psx {
     // Whether live records tile all of `r` between them, and which.
     bool Tiling(const Rect& r, std::vector<int>* records) const;
     bool AnyDrawn(const Rect& r) const;
-    int AddRecord(uint32_t x, uint32_t y, uint32_t w, uint32_t h);
+    // The halfword at (x, y) of VRAM as the records there say: a copied record's own, and native
+    // VRAM's otherwise.
+    uint16_t Read(uint32_t x, uint32_t y) const;
+    // Whether the halfword at (x, y) is known to be 0000h whatever rasteriser drew: a record's
+    // own, native VRAM's where nothing drew since, or a fill or copy of zeros where it did.
+    bool KnownClear(uint32_t x, uint32_t y) const;
+    // ...and its value, wherever that is known so: false where the GPU drew anything but zeros.
+    bool KnownValue(uint32_t x, uint32_t y, uint16_t* value) const;
+    // A record's hash, of the halfwords Read gives.
+    uint64_t HashRecord(const Record& u) const;
+    // A bit per halfword of VRAM (drawn_bits_, zero_bits_): one, and a rectangle of them set.
+    static bool Bit(const std::vector<uint64_t>& bits, uint32_t x, uint32_t y) {
+      return ((bits[static_cast<size_t>(y) * 16 + x / 64] >> (x % 64)) & 1) != 0;
+    }
+    static void SetBits(std::vector<uint64_t>* bits, const Rect& r, bool on);
+    // The pixels of `r` a triangle job covers, as the console decides them, marked drawn.
+    void MarkTriangle(const DrawJob& job, const Rect& r);
+    // `own`, if not null, is the record's halfwords (Record::own).
+    int AddRecord(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                  std::shared_ptr<const std::vector<uint16_t>> own = nullptr);
     void Register(int index);
     void Unregister(int index);
     void Remove(int index);
@@ -222,6 +288,16 @@ namespace psx {
     // A record's sources written, as it stops being what they were read from.
     void Close(int record);
     void Write(const Source& source);
+    // A source's picture on its way to its file, and the file written - added to if it is there.
+    struct Dump {
+      std::string path;
+      uint32_t width = 0, height = 0, cells_x = 0, cells_y = 0;
+      std::vector<uint8_t> used, rgba;
+      uint64_t used_texels = 0;
+    };
+    void Store(const Dump& dump);
+    void Writer();         // the background thread
+    void WaitWritten();    // until nothing is waiting to be written
     void Log(const DrawJob& job, Reason reason) const;
     // A trace line, if `what` touches the traced rectangle.
     void Trace(const char* what, uint32_t x, uint32_t y, uint32_t w, uint32_t h) const;
@@ -231,6 +307,10 @@ namespace psx {
     std::vector<int> free_;
     std::vector<std::vector<int>> cells_;   // the records overlapping each cell
     std::vector<uint8_t> drawn_;            // each cell drawn by the GPU since last uploaded whole
+    // Each halfword in what the GPU drew since it was last uploaded - a job's whole extent, which
+    // a hardware rasteriser has drawn on the card and not yet in native VRAM - and of those, the
+    // ones a fill of 0000h drew last, which are clear whatever native VRAM says.
+    std::vector<uint64_t> drawn_bits_, zero_bits_;
     uint64_t serial_ = 0;
     int last_ = -1;   // the upload recorded last, which the next may carry on from
     // Palettes' hashes by the record holding them and where: a live record never changes.
@@ -238,6 +318,8 @@ namespace psx {
     std::unordered_set<uint64_t> seen_;     // the names met, hashed
     std::unordered_map<uint64_t, Source> open_;   // sources being gathered, by that hash
     std::vector<Rect> destination_;
+    uint8_t drawing_command_ = 0;   // the job WriteOver is writing for, for the trace...
+    int32_t drawing_from_[2] = { -1, 0 };   // ...and a copy's source
     FILE* log_ = nullptr;
     std::vector<int> log_left_;
     Rect trace_ = {};
@@ -245,10 +327,42 @@ namespace psx {
     std::string dump_folder_;
     int dump_min_ = 8;
     Counts counts_;
+    // Writing: the background thread, what waits for it, and what it has written - Counts'
+    // dump fields, kept apart since that thread counts them.
+    bool background_ = false;
+    std::thread writer_;
+    mutable std::mutex write_mutex_;
+    std::condition_variable write_wake_, write_done_;
+    std::deque<Dump> dumps_;
+    int writing_ = 0;
+    bool write_stop_ = false;
+    struct DumpCounts {
+      uint64_t written = 0, texels = 0, used = 0, merged = 0, failures = 0;
+    };
+    DumpCounts dump_counts_;
+    std::atomic<uint64_t> named_{ 0 };   // Counts::sources, for named_so_far
+    // Hold's: the records as they were held. Serials and palettes' hashes are not in it - serials
+    // never go back, so what was hashed for one stays true.
+    bool holding_ = false;
+    struct Held {
+      std::vector<Record> records;
+      std::vector<int> free;
+      std::vector<std::vector<int>> cells;
+      std::vector<uint8_t> drawn;
+      std::vector<uint64_t> drawn_bits, zero_bits;
+      int last = -1;
+    };
+    Held held_;
     // Between Drawing and Drawn: what the job was found to name.
     Reason pending_ = kNamed;
     bool pending_textured_ = false;
-    bool pending_copy_ = false;   // a VRAM-to-VRAM copy of uploaded texels
+    bool pending_copy_ = false;   // a VRAM-to-VRAM copy of uploaded texels...
+    std::shared_ptr<std::vector<uint16_t>> copied_;   // ...and they, read before it lands
+    std::vector<uint8_t> copy_zero_;   // a copy's texels known to be clear, read the same way
+    Named current_;
+    // Dumping: the cells of each file known to be filled in this run, by its name, so a source
+    // closed again reads and rewrites its file only when it has read cells the file lacks.
+    std::unordered_map<std::string, std::vector<uint8_t>> written_;
   };
 
 }  // namespace psx

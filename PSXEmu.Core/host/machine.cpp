@@ -2,6 +2,8 @@
 
 #include "psx/psx.h"
 #include "emu/rewind_buffer.h"
+#include "render/texture_pack.h"
+#include "render/texture_tracker.h"
 
 #include <utility>
 
@@ -40,6 +42,8 @@ Machine::Machine(psx::System* system, FrameMailbox* video, SampleRing* audio, Ho
 
 Machine::~Machine() {
   Stop();
+  // The GPU outlives this: nothing of the machine's may be left watching it.
+  SetTextures(std::string(), std::string(), 0);
 }
 
 void Machine::Start(uint32_t pause_reasons) {
@@ -72,7 +76,8 @@ void Machine::ApplyConfig(const psx::EmuConfig& config) {
                               current.frame_pacing != config.frame_pacing;
   const bool rasteriser_changed = current.gpu_rasteriser != config.gpu_rasteriser ||
                                   current.resolution_scale != config.resolution_scale ||
-                                  current.true_color != config.true_color;
+                                  current.true_color != config.true_color ||
+                                  current.texture_budget_mb != config.texture_budget_mb;
   current = config;
   if (rasteriser_changed)
     system_->gpu().ChooseRasteriser();
@@ -313,6 +318,10 @@ void Machine::RunAhead(int frames) {
   if (ahead_ == nullptr)
     ahead_.reset(new Ahead());
   system_->SaveMemoryState(&ahead_->state, /*with_cards=*/true);
+  // The save waited for the rasteriser. The texture tracker keeps its records for the load back,
+  // so replacements carry on rather than starting over every frame.
+  if (texture_tracker_)
+    texture_tracker_->Hold();
   const Clock::time_point start = Clock::now();
   for (int i = 0; i < frames; ++i) {
     // As RunOneFrame does it, unarmed (RunAheadFrames), and not counted as the machine's.
@@ -333,6 +342,8 @@ void Machine::RunAhead(int frames) {
   // stopped: run-ahead stays off from then on rather than doing it again every frame.
   if (!system_->LoadMemoryState(ahead_->state, /*continuing=*/true).empty())
     run_ahead_failed_ = true;
+  if (texture_tracker_)
+    texture_tracker_->Release();
 }
 
 bool Machine::RewindAllowed() const {
@@ -396,6 +407,63 @@ void Machine::ForgetHistory() {
 void Machine::set_plane_view(psx::PlaneView view) {
   plane_view_ = view;
   system_->gpu().SetPlanes(dlss_, view);
+}
+
+void Machine::SetTextures(const std::string& dump, const std::string& replace,
+                          uint64_t memory_budget) {
+  psx::Gpu& gpu = system_->gpu();
+  if (dump.empty() && replace.empty()) {
+    gpu.set_texture_replacer(nullptr);
+    gpu.set_raster_observer(nullptr);   // waits for the rasteriser
+    texture_pack_.reset();
+    if (texture_tracker_)
+      texture_tracker_->Flush();   // what it was gathering written first
+    texture_tracker_.reset();
+    texture_dump_.clear();
+    texture_replace_.clear();
+    replacement_error_.clear();
+    return;
+  }
+  if (!texture_tracker_) {
+    // Records start empty: what the game uploaded before is not known, and is named once it
+    // uploads it again - the next level, the next scene.
+    texture_tracker_ = std::make_unique<psx::TextureTracker>(gpu.vram());
+    gpu.set_raster_observer(texture_tracker_.get());
+  }
+  if (dump != texture_dump_) {
+    texture_tracker_->Flush();   // waits for the rasteriser; what was gathered written where it was going
+    texture_tracker_->set_dump_folder(dump, 8, true);
+    texture_dump_ = dump;
+  }
+  if (replace.empty()) {
+    gpu.set_texture_replacer(nullptr);
+    texture_pack_.reset();
+    texture_replace_.clear();
+    replacement_error_.clear();
+    return;
+  }
+  if (!texture_pack_) {
+    texture_pack_ = std::make_unique<psx::TexturePack>(texture_tracker_.get());
+    texture_replace_.clear();
+  }
+  texture_pack_->set_memory_budget(memory_budget);
+  if (replace != texture_replace_) {
+    texture_replace_ = replace;
+    ReloadTextures();
+  }
+}
+
+void Machine::ReloadTextures() {
+  if (!texture_pack_)
+    return;
+  psx::Gpu& gpu = system_->gpu();
+  gpu.set_texture_replacer(nullptr);   // waits for the rasteriser
+  if (texture_pack_->Open(texture_replace_, &replacement_error_)) {
+    replacement_error_.clear();
+    gpu.set_texture_replacer(texture_pack_.get());
+  } else {
+    texture_pack_->Close();
+  }
 }
 
 void Machine::set_dlss(bool on, int jitter_phases) {
@@ -624,6 +692,18 @@ void Machine::Report(bool paused) {
   report.display_hz = display_hz_;
   report.display_refreshes = display_match_.locked ? display_match_.refreshes : 0;
   report.pace_ratio = display_match_.locked ? display_match_.ratio : 1.0;
+  if (texture_tracker_) {
+    // Read while the rasteriser may be drawing: only what may be.
+    report.textures = true;
+    report.textures_named = texture_tracker_->named_so_far();
+    report.textures_dumped = texture_tracker_->written_so_far();
+    if (texture_pack_) {
+      const psx::TexturePack::Counts pack = texture_pack_->counts();
+      report.replacements = pack.files;
+      report.jobs_replaced = pack.jobs_replaced;
+    }
+    report.replacement_error = replacement_error_;
+  }
   if (hooks_.report)
     hooks_.report(report);
 

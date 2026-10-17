@@ -239,6 +239,9 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("pgxp_vertices", c.pgxp_vertices);
   f.SetBool("pgxp_textures", c.pgxp_textures);
   f.SetBool("pgxp_culling", c.pgxp_culling);
+  f.SetBool("texture_dump", c.texture_dump);
+  f.SetBool("texture_replacement", c.texture_replacement);
+  f.SetInt("texture_budget_mb", c.texture_budget_mb);
   f.SetString("dlss_mode", c.dlss_mode);
   f.SetString("dlss_preset", c.dlss_preset);
   f.SetString("dlss_frame_generation", c.dlss_frame_generation);
@@ -358,6 +361,11 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   c.pgxp_vertices = f.GetBool("pgxp_vertices", c.pgxp_vertices);
   c.pgxp_textures = f.GetBool("pgxp_textures", c.pgxp_textures);
   c.pgxp_culling = f.GetBool("pgxp_culling", c.pgxp_culling);
+  c.texture_dump = f.GetBool("texture_dump", c.texture_dump);
+  c.texture_replacement = f.GetBool("texture_replacement", c.texture_replacement);
+  const int budget = f.GetInt("texture_budget_mb", c.texture_budget_mb);
+  if (budget >= 64 && budget <= 32768)
+    c.texture_budget_mb = budget;
   const std::string dlss_mode = f.GetString("dlss_mode", c.dlss_mode);
   if (IsValidChoice(dlss_mode, EmuConfig::kValidDlssModes))
     c.dlss_mode = dlss_mode;
@@ -461,6 +469,9 @@ inline std::vector<std::string> GameSettingKeys() {
       // resolution (Docs/Hardware-Renderer-Plan.md).
       "gpu_rasteriser",     "resolution_scale",    "true_color",
       "pgxp_vertices",      "pgxp_textures",       "pgxp_culling",
+      // ...and textures dumped and replaced, which are a game's own (Docs/Texture-Upscaling-
+      // Plan.md).
+      "texture_dump",       "texture_replacement",
       // ...and DLSS off, or in another mode, for a game it does badly or well
       // (Docs/DLSS-Plan.md).
       "dlss_mode",          "dlss_frame_generation",

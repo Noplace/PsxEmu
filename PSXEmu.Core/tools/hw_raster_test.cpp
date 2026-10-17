@@ -31,6 +31,7 @@
 
 #include "psx/psx.h"
 #include "graphics/hw_raster/hardware_raster.h"
+#include "render/texture_pack.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1040,6 +1041,140 @@ void SceneJitter() {
         "not jittering, nothing is");
 }
 
+// A replacer that hands every textured job the same image, its page's corner at the image's.
+class FixedReplacer : public emulation::psx::TextureReplacer {
+ public:
+  std::shared_ptr<const emulation::psx::ReplacementImage> image;
+  bool Replace(const DrawJob& job, emulation::psx::TextureReplacement* replacement) override {
+    if (!job.state.textured || !image)
+      return false;
+    replacement->image = image;
+    replacement->page_x = 0;
+    replacement->page_y = 0;
+    return true;
+  }
+};
+
+// Replacement textures (Docs/Texture-Upscaling-Plan.md, phase 2), what the identity check cannot
+// see: drawn at eight bits, alpha's three meanings, a block left clear drawing the game's own
+// texels, and bilinear sampling - on a raw 4-bit sprite, at 2x, without true colour.
+void SceneReplacements() {
+  printf("replacement textures\n");
+  std::vector<uint16_t> vram(1024 * 512, 0);
+  emulation::psx::RasterOptions options;
+  options.scale = 2;
+  std::string error;
+  std::unique_ptr<psxemu::HardwareRaster> raster =
+      psxemu::HardwareRaster::Create(g_api, vram.data(), options, true, &error);
+  if (!raster) {
+    Check(false, "WARP makes a rasteriser at 2x: " + error);
+    return;
+  }
+  // The game's own: a 16x16 4-bit texture at (640, 0), every texel index 1, whose colour is
+  // grey 10; and a background of 0x1234 where the sprite goes.
+  for (int y = 0; y < 16; ++y)
+    for (int x = 0; x < 4; ++x)
+      vram[y * 1024 + 640 + x] = 0x1111;
+  vram[480 * 1024 + 1] = 10 | (10 << 5) | (10 << 10);
+  for (int y = 100; y < 116; ++y)
+    for (int x = 100; x < 116; ++x)
+      vram[y * 1024 + x] = 0x1234;
+  raster->Written(0, 0, 1024, 512);
+
+  // Its replacement at 2x, by 8x8-texel block: (0, 0) opaque (200, 100, 50); (1, 0) left clear,
+  // so the game's own; (0, 1) alpha 128, semi-transparent (40, 80, 120); (1, 1) the left half of
+  // each texel clear and the right half (250, 250, 250).
+  std::vector<uint8_t> rgba(32 * 32 * 4, 0);
+  for (int y = 0; y < 32; ++y)
+    for (int x = 0; x < 32; ++x) {
+      uint8_t* p = &rgba[(y * 32 + x) * 4];
+      const int bx = x / 16, by = y / 16;
+      if (bx == 0 && by == 0) {
+        p[0] = 200; p[1] = 100; p[2] = 50; p[3] = 255;
+      } else if (bx == 0 && by == 1) {
+        p[0] = 40; p[1] = 80; p[2] = 120; p[3] = 128;
+      } else if (bx == 1 && by == 1 && (x & 1) == 1) {
+        p[0] = 250; p[1] = 250; p[2] = 250; p[3] = 255;
+      }
+    }
+  auto image = std::make_shared<emulation::psx::ReplacementImage>();
+  std::string why;
+  Check(emulation::psx::TexturePack::MakeImage(rgba, 32, 32, 16, 16, false, image.get(), &why) &&
+            image->scale == 2 && image->blocks.size() == 3,
+        "an image at 2x keeps its three blocks with anything in them");
+  FixedReplacer replacer;
+  replacer.image = image;
+  raster->set_texture_replacer(&replacer);
+
+  DrawJob sprite = Job(DrawJob::kRectangle);
+  sprite.state.textured = true;
+  sprite.state.raw_texture = true;
+  sprite.state.texpage_x = 640;
+  sprite.state.texpage_colors = 0;
+  sprite.state.clut_x = 0;
+  sprite.state.clut_y = 480;
+  sprite.x = 100;
+  sprite.y = 100;
+  sprite.w = 16;
+  sprite.h = 16;
+  sprite.r = sprite.g = sprite.b = 128;
+  raster->Apply(sprite);
+
+  std::vector<uint32_t> picture;
+  emulation::psx::SharedPicture none;
+  int scale = 0;
+  const bool resolved = raster->ResolveDisplay(100, 100, 16, 16, &picture, &none, &scale) &&
+                        scale == 2 && picture.size() == 32u * 32u;
+  auto at = [&](int x, int y) { return resolved ? picture[y * 32 + x] & 0xFFFFFF : 0u; };
+  const uint32_t grey = (82u << 16) | (82u << 8) | 82u;   // 10 widened
+  const uint32_t background = 0x1234;
+  const uint32_t background_rgb = (static_cast<uint32_t>((((background >> 0) & 31) << 3) | (((background >> 0) & 31) >> 2)) << 16) |
+                                  (static_cast<uint32_t>((((background >> 5) & 31) << 3) | (((background >> 5) & 31) >> 2)) << 8) |
+                                  static_cast<uint32_t>((((background >> 10) & 31) << 3) | (((background >> 10) & 31) >> 2));
+  Check(resolved && at(3, 3) == ((200u << 16) | (100u << 8) | 50u),
+        "a replaced texel is drawn at eight bits a channel, not cut to five");
+  Check(at(20, 3) == grey && at(31, 15) == grey,
+        "a block the image left clear draws the game's own texel");
+  Check(at(4, 20) == ((40u << 16) | (80u << 8) | 120u), "alpha 128 is drawn");
+  Check(at(17, 20) == (250u << 16 | 250u << 8 | 250u) && at(16, 20) == background_rgb,
+        "alpha 0 is not drawn; inside a texel too, at 2x");
+  raster->PrepareRead(100, 100, 16, 16);
+  Check((vram[100 * 1024 + 100] & 0x8000) == 0 && (vram[110 * 1024 + 101] & 0x8000) != 0,
+        "alpha 128 sets the mask bit, as bit 15 does; 255 does not");
+
+  // Bilinear: an image at 4x whose pixels alternate red and blue across. Sampled nearest, the
+  // sub-pixel a quarter into a texel at 2x lands on a blue pixel; bilinear, half way between.
+  std::vector<uint8_t> stripes(64 * 64 * 4, 0);
+  for (int y = 0; y < 64; ++y)
+    for (int x = 0; x < 64; ++x) {
+      uint8_t* p = &stripes[(y * 64 + x) * 4];
+      p[0] = (x & 1) ? 0 : 255;
+      p[2] = (x & 1) ? 255 : 0;
+      p[3] = 255;
+    }
+  auto nearest = std::make_shared<emulation::psx::ReplacementImage>();
+  auto bilinear = std::make_shared<emulation::psx::ReplacementImage>();
+  emulation::psx::TexturePack::MakeImage(stripes, 64, 64, 16, 16, false, nearest.get(), &why);
+  emulation::psx::TexturePack::MakeImage(stripes, 64, 64, 16, 16, true, bilinear.get(), &why);
+  uint32_t sampled[2] = {};
+  for (int i = 0; i < 2; ++i) {
+    replacer.image = i == 0 ? nearest : bilinear;
+    raster->Apply(sprite);
+    // A picture read back is the one before; the second read is this one.
+    std::vector<uint32_t> shown;
+    raster->ResolveDisplay(100, 100, 16, 16, &shown, &none, &scale);
+    raster->ResolveDisplay(100, 100, 16, 16, &shown, &none, &scale);
+    sampled[i] = shown.size() == 32u * 32u ? shown[2 * 32 + 2] & 0xFFFFFF : 0;
+  }
+  if (g_verbose)
+    printf("  sampled %06x %06x\n", sampled[0], sampled[1]);
+  Check(sampled[0] == 0x0000FF, "nearest: the pixel under the sub-pixel");
+  const uint32_t red = sampled[1] >> 16, blue = sampled[1] & 255;
+  Check(red > 100 && red < 155 && blue > 100 && blue < 155 && ((sampled[1] >> 8) & 255) == 0,
+        "bilinear: half way between the two pixels round it");
+  raster->set_texture_replacer(nullptr);
+}
+
 int main(int argc, char** argv) {
   uint32_t seed = 1;
   int scale = 1;
@@ -1175,6 +1310,7 @@ int main(int argc, char** argv) {
   ScenePlanes();
   SceneFilledField();
   SceneJitter();
+  SceneReplacements();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete m.hardware;

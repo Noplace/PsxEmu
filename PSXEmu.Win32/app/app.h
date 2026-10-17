@@ -159,6 +159,14 @@ namespace psxemu {
         void SetTrueColour(bool on);
         void RemakeRasteriser(const std::wstring& done);
         void SetPgxp(bool* setting, bool on, const std::wstring& done);
+        // Textures (Docs/Texture-Upscaling-Plan.md, phase 2): dumped and replaced, a game's own
+        // settings; the running game's folders sent to the machine; View > Reload Textures and
+        // Open Texture Folder; and what is happening, for the Video Settings window.
+        void SetTextureSetting(bool* setting, bool on, const std::wstring& done);
+        void SendTexturesToMachine();
+        std::string GameTextureFolder() const;
+        void OpenTextureFolder();
+        std::wstring TextureStatus() const;
         void ReportRasteriser(bool hardware, const std::string& error, bool announce);
         // The Video Settings window, if open, and the View menu's depth and motion items, from
         // what is set and what is running. Called by everything that changes either.
@@ -476,6 +484,7 @@ namespace psxemu {
         std::string game_cheat_key_;
         std::vector<emulation::psx::Cheat> cheats_;
         std::string cheats_dir_;          // cheats\, beside psxemu.ini
+        std::string textures_dir_;        // textures\, beside psxemu.ini: a folder each game
 
         // Whichever backends are actually open, as the threads that opened them reported. Not the
         // requested ones: opening can fall back.

@@ -118,6 +118,14 @@
 //                        what it reads, and the uploads there
 //     --texture-trace x,y,w,h  ...a line for everything that happens to an upload touching
 //                        that rectangle of VRAM: recorded, joined, patched, uploaded over, drawn over
+//     --texture-pack <dir>  ...and drawn with the replacements in that folder, as the front end's
+//                        Use Replacement Textures does - with the hardware rasteriser - each image
+//                        read the first time a job wants it, so the pictures do not depend on a
+//                        loader's speed (render/texture_pack.h, phase 2)
+//     --texture-console  ...replacements cut to 15 bits and drawn as the texels they replace:
+//                        the identity check's debug switch
+//     --texture-pack-scale <k>  ...each replacement made k times as large as it is read,
+//                        nearest: a dump at 1x drawn as a pack at 2x-8x, for the identity check
 //     --gpu <name>       ...drawing on the graphics card with <name> in its name (any case),
 //                        as Settings > Video > Graphics Card does; the report names the card
 //     --list-gpus        list the graphics cards and their LUIDs, and exit
@@ -140,6 +148,7 @@
 #include "debug/disasm.h"
 #include "emu/movie.h"
 #include "emu/rewind_buffer.h"
+#include "render/texture_pack.h"
 #include "render/texture_tracker.h"
 #ifdef PSXEMU_HW_RASTER
 #include "graphics/adapters.h"
@@ -388,6 +397,9 @@ struct Options {
   const char* texture_dump;
   int texture_log;   // --texture-log: lines for the first n of each reason a texture is not named
   int texture_trace[4];   // --texture-trace x,y,w,h: what happens to uploads there; w 0 for none
+  const char* texture_pack;   // --texture-pack: replacements from this folder
+  bool texture_console;       // --texture-console: drawn as the console's texels
+  int texture_pack_scale;     // --texture-pack-scale: each replacement made this much larger
 };
 
 // FNV-1a over the visible framebuffer. Small, order-sensitive, and good enough
@@ -774,6 +786,9 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->texture_dump = nullptr;
   options->texture_log = 0;
   memset(options->texture_trace, 0, sizeof(options->texture_trace));
+  options->texture_pack = nullptr;
+  options->texture_console = false;
+  options->texture_pack_scale = 1;
 
   for (int i = 1; i < argc; ++i) {
     const char* arg = argv[i];
@@ -936,6 +951,17 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       int* t = options->texture_trace;
       if (sscanf(argv[++i], "%d,%d,%d,%d", &t[0], &t[1], &t[2], &t[3]) != 4) {
         fprintf(stderr, "--texture-trace wants x,y,w,h\n");
+        return false;
+      }
+    } else if (strcmp(arg, "--texture-pack") == 0 && i + 1 < argc) {
+      options->textures = true;
+      options->texture_pack = argv[++i];
+    } else if (strcmp(arg, "--texture-console") == 0) {
+      options->texture_console = true;
+    } else if (strcmp(arg, "--texture-pack-scale") == 0 && i + 1 < argc) {
+      options->texture_pack_scale = atoi(argv[++i]);
+      if (options->texture_pack_scale < 1 || options->texture_pack_scale > 8) {
+        fprintf(stderr, "--texture-pack-scale wants 1 to 8\n");
         return false;
       }
     } else if (strcmp(arg, "--motion") == 0) {
@@ -1699,13 +1725,15 @@ int main(int argc, char** argv) {
         return 2;
       }
     }
-    system->set_hardware_raster([warp, shared, adapter, api, device](
+    const bool as_console = options.texture_console;
+    system->set_hardware_raster([warp, shared, adapter, api, device, as_console](
                                     uint16_t* vram, const emulation::psx::RasterOptions& raster,
                                     std::string* error)
                                     -> std::unique_ptr<emulation::psx::RasterBackend> {
       emulation::psx::RasterOptions shown = raster;
       shown.shared_picture = shared;
       shown.adapter = adapter;
+      shown.replacements_as_console = as_console;
       return psxemu::HardwareRaster::Create(api, vram, shown, warp, error, device.Get());
     });
     system->config().gpu_rasteriser = "hardware";
@@ -1876,6 +1904,7 @@ int main(int argc, char** argv) {
 
   // --textures: watching every draw from the first, so every upload is seen.
   std::unique_ptr<emulation::psx::TextureTracker> textures;
+  std::unique_ptr<emulation::psx::TexturePack> pack;   // --texture-pack: after the tracker
   if (options.textures) {
     textures = std::make_unique<emulation::psx::TextureTracker>(system->gpu().vram());
     if (options.texture_dump != nullptr) {
@@ -1889,6 +1918,21 @@ int main(int argc, char** argv) {
     const int* t = options.texture_trace;
     textures->set_trace(t[0], t[1], t[2], t[3]);
     system->gpu().set_raster_observer(textures.get());
+    if (options.texture_pack != nullptr) {
+      pack = std::make_unique<emulation::psx::TexturePack>(textures.get());
+      pack->set_synchronous(true);
+      pack->set_test_scale(options.texture_pack_scale);
+      std::string error;
+      if (!pack->Open(options.texture_pack, &error)) {
+        fprintf(stderr, "--texture-pack: %s\n", error.c_str());
+        return 2;
+      }
+      if (!options.hw_raster)
+        fprintf(stderr, "--texture-pack: only the hardware rasteriser (--hw-raster) draws them\n");
+      printf("texture pack   %llu replacements in %s\n",
+             static_cast<unsigned long long>(pack->counts().files), options.texture_pack);
+      system->gpu().set_texture_replacer(pack.get());
+    }
   }
 
   // Before the machine executes a single instruction, so the whole run is one
@@ -2382,6 +2426,13 @@ int main(int argc, char** argv) {
                    system->gpu().stats().gp0_words),
                system->sio().analog_mode(0) ? 'A' : 'd',
                system->sio().analog_mode(1) ? 'A' : 'd');
+        // Above 1x, the sharper picture's checksum too: what the identity check compares.
+        if (options.scale > 1) {
+          int sw = 0, sh = 0;
+          const uint32_t* shown = system->gpu().picture(sw, sh);
+          printf("           shown %016llx  %dx%d\n",
+                 static_cast<unsigned long long>(Checksum(shown, sw * sh)), sw, sh);
+        }
         fflush(stdout);
       }
       // --ppm-every: the native picture as it stands, named for the frame.
@@ -2427,6 +2478,8 @@ int main(int argc, char** argv) {
           }
           const auto start = std::chrono::steady_clock::now();
           system->SaveMemoryState(&ahead_state, /*with_cards=*/true);
+          if (textures)
+            textures->Hold();   // as the front end's machine does
           const auto saved = std::chrono::steady_clock::now();
           for (int i = 0; i < options.run_ahead; ++i)
             ahead_instructions += bench::RunFrame(system);
@@ -2445,6 +2498,8 @@ int main(int argc, char** argv) {
           }
           const auto start = std::chrono::steady_clock::now();
           const std::string error = system->LoadMemoryState(ahead_state, /*continuing=*/true);
+          if (textures)
+            textures->Release();
           ahead_load_ms += std::chrono::duration<double, std::milli>(
                                std::chrono::steady_clock::now() - start).count();
           if (!error.empty()) {
@@ -2976,9 +3031,24 @@ int main(int argc, char** argv) {
       printf("               written: %.1f megatexels, %.1f%% of them read and filled in\n",
              static_cast<double>(t.dumped_texels) / 1e6,
              100.0 * static_cast<double>(t.dumped_used) / static_cast<double>(t.dumped_texels));
+    if (t.dumped_merged > 0)
+      printf("               %llu files already there had cells added to them\n",
+             static_cast<unsigned long long>(t.dumped_merged));
     if (t.dump_failures > 0)
       printf("               %llu could not be written\n",
              static_cast<unsigned long long>(t.dump_failures));
+    if (pack) {
+      const emulation::psx::TexturePack::Counts p = pack->counts();
+      printf("replaced       %llu jobs drawn with a replacement; %llu named one the pack has "
+             "not, %llu one it leaves alone; %llu images read, %llu unusable, %llu let go\n",
+             static_cast<unsigned long long>(p.jobs_replaced),
+             static_cast<unsigned long long>(p.jobs_unmatched),
+             static_cast<unsigned long long>(p.jobs_never),
+             static_cast<unsigned long long>(p.loaded), static_cast<unsigned long long>(p.bad),
+             static_cast<unsigned long long>(p.dropped));
+      for (const std::string& warning : pack->warnings())
+        printf("               %s\n", warning.c_str());
+    }
   }
   if (options.planes) {
     auto percent = [](uint64_t part, uint64_t whole) {

@@ -818,9 +818,14 @@ fixed seed, and then compares all of VRAM:
   native VRAM keeps the console's two fields, and the picture is this frame on
   every row and says which rows were filled; without the plane it is the two
   fields, as before
+- replacement textures (Docs/Texture-Upscaling-Plan.md, phase 2), at 2x without
+  true colour, on a raw 4-bit sprite: a replaced texel drawn at eight bits; a
+  block the image left clear drawing the game's own texel; alpha 128 drawn and
+  setting the mask bit, alpha 0 not drawn, inside a texel too; and an image at 4x
+  sampled nearest and bilinear
 
 At native size the two do the same integer arithmetic, so **every pixel must
-match** - 78 checks, two a scene, the lost card's own, six for the shared picture, sixteen for the plane, six for its motion, five for the filled field and six for jitter. A scene that does not says how many pixels
+match** - 86 checks, two a scene, the lost card's own, six for the shared picture, sixteen for the plane, six for its motion, five for the filled field, six for jitter and eight for replacement textures. A scene that does not says how many pixels
 differ and how many by more than one 5-bit step, which tells rounding from a
 wrong texel. `--bisect` compares after every primitive and stops at the first
 one to differ, printing its GP0 words. `--scale n` draws the hardware side at n
@@ -935,8 +940,8 @@ BizHawk `.bk2` input movies read and played into the ports; its own section abov
 `timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is), `host_test` (34 checks, the
-threads and the channels between them - its own section above), and `hw_raster_test` (78
-checks, 81 with `--d3d12`, bugs 122-123, 127, 137 and 138 - the hardware rasteriser against the software one, every pixel of VRAM
+threads and the channels between them - its own section above), and `hw_raster_test` (86
+checks, 89 with `--d3d12`, bugs 122-123, 127, 137 and 138 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
 which runs gpu_test's 98 through it), and `dlss_choice_test` (42 checks, the
 arithmetic of sizes around DLSS in `graphics/upscale/dlss/dlss_choice.h` - the rasteriser's
@@ -982,8 +987,8 @@ through the same tests on an RTX card - only in a build that found NVIDIA's SDK 
 `Temp\rtxvideo\`, which cannot be fetched by a script (it is behind NVIDIA's sign-in) and is
 never committed; build_tools.bat then copies its `rel` `nvngx_vsr.dll` into `Temp\tools`.
 
-`texture_tracker_test` (45 checks) is the texture tracker's rules
-(`render/texture_tracker.h`, Docs/Texture-Upscaling-Plan.md, phase 1), on a VRAM of its own:
+`texture_tracker_test` (70 checks) is the texture tracker's rules
+(`render/texture_tracker.h`, Docs/Texture-Upscaling-Plan.md, phases 1 and 2), on a VRAM of its own:
 
 - the name a draw gives a texture, the same wherever in VRAM the image and its palette are,
   another with another palette
@@ -995,13 +1000,40 @@ never committed; build_tools.bat then copies its `rel` `nvngx_vsr.dll` into `Tem
   palette copied by the GPU
 - each reason a draw names nothing
 - the texture window narrowing what a sprite reads
-- a dumped PNG read back texel by texel: alpha 0, 128 and 255, cells no draw read left clear,
-  a file already there left alone
+- a dumped PNG read back texel by texel: alpha 0, 128 and 255, cells no draw read left clear;
+  a file already holding every cell left as it is, one lacking some added to, and the same file
+  written by the front end's background writer
+- what a hardware rasteriser leaves behind in native VRAM changing no name: a palette copied on
+  the card names the same, a draw counted at no pixels is a draw all the same, and only what is
+  known to be zeros clears what the GPU drew over - a fill of zeros, a black rectangle, a copy of
+  clear texels - while a triangle draws only the pixels it covers, not its bounding box
+- run-ahead's load back bringing back the records held when its state was saved
+- PNGs of every colour type and depth, each row filtered each of the five ways, interlaced or not,
+  with palettes and colour keys, read by `render/png_file.h`'s reader
 
 `boot_runner --textures` runs the tracker over a disc and reports the share of textured pixels
 named, and why the rest are not. `--texture-dump <dir>` writes the textures, `--texture-log <n>`
 prints the first n draws of each reason a texture is not named, and `--texture-trace x,y,w,h`
-prints everything that happens to the uploads in a rectangle of VRAM.
+prints everything that happens to the uploads in a rectangle of VRAM. `--texture-pack <dir>`
+draws, with `--hw-raster`, from a pack of replacements (`render/texture_pack.h`, phase 2), each
+read the first time a job wants it; the report says how many jobs were replaced.
+
+**The identity check** (phase 2) is the replacement path end to end: a disc's dump loaded back as
+its own pack must draw every picture exactly as without it. `--texture-console` draws replaced
+texels as the console's 15 bits through the console's colour path - a debug switch, without
+which they are drawn at eight bits and undithered - and `--texture-pack-scale k` makes each
+image k times larger, nearest, as it is read, so one dump at 1x checks every scale. With
+`--frame-log 100`, above 1x the log carries the sharper picture's checksum too ("shown"):
+
+```bash
+boot_runner bios/SCPH1001.BIN --disc <cue> --frames 3000 --hw-raster --warp --scale 4 --frame-log 100 --texture-dump <dir>
+```
+
+```bash
+boot_runner bios/SCPH1001.BIN --disc <cue> --frames 3000 --hw-raster --warp --scale 4 --frame-log 100 --texture-pack <dir> --texture-console --texture-pack-scale 4
+```
+
+Every `frame`, `shown` and `checksum` line of the two must be the same.
 
 `rec_test` (2059 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter

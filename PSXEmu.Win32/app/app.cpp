@@ -182,6 +182,7 @@ namespace psxemu {
             if (slash != std::string::npos) {
                 game_settings_dir_ = settings_path_.substr(0, slash) + "\\gamesettings";
                 cheats_dir_ = settings_path_.substr(0, slash) + "\\cheats";
+                textures_dir_ = settings_path_.substr(0, slash) + "\\textures";
             }
         }
 
@@ -317,6 +318,14 @@ namespace psxemu {
             host.set_fsr_sharpness = [this](const std::string& key) { SetFsrSharpness(key); };
             host.set_fsr_generation = [this](bool on) { SetFsrFrameGeneration(on); };
             host.get_fsr_files = [this] { ShowFsrFiles(); };
+            host.set_texture_dump = [this](bool on) {
+                SetTextureSetting(&config_.texture_dump, on,
+                                  on ? L"Textures dumped as they are drawn" : L"Textures not dumped");
+            };
+            host.set_texture_replacement = [this](bool on) {
+                SetTextureSetting(&config_.texture_replacement, on,
+                                  on ? L"Replacement textures on" : L"Replacement textures off");
+            };
             host.set_stats = [this](int mode) { SetStatsMode(static_cast<StatsMode>(mode)); };
             host.set_notifications = [this](bool on) { SetOverlayNotifications(on); };
             host.set_controllers_always = [this](bool on) { SetControllersAlwaysVisible(on); };
@@ -733,6 +742,8 @@ namespace psxemu {
         audio_->Start(config_.audio_backend);
         video_->Start();
         machine_->Start(paused_by_user_ ? emulation::host::kPausedByUser : 0);
+        // A game entered from the command line was entered before there was a machine to tell.
+        SendTexturesToMachine();
     }
 
     void App::StopThreads() {
@@ -1258,6 +1269,7 @@ namespace psxemu {
         // Its cheats - and a word if any are on, since a game behaving oddly with a cheat left on
         // from last time is a puzzle nobody should have to solve.
         game_cheat_key_ = std::move(lookup.cheat_key);
+        SendTexturesToMachine();
         LoadCheats();
         SendCheatsToMachine(true);
         cheats_window_.OnCheatsChanged(-1);
@@ -1273,6 +1285,7 @@ namespace psxemu {
     void App::LeaveGame() {
         if (!game_cheat_key_.empty()) {
             game_cheat_key_.clear();
+            SendTexturesToMachine();   // none, without a game
             cheats_.clear();
             SendCheatsToMachine(true);
             cheats_window_.OnCheatsChanged(-1);
@@ -1331,6 +1344,9 @@ namespace psxemu {
     // rather than one setting changed through its setter.
     void App::ConfigReplaced(const EmuConfig& before) {
         SendConfigToMachine();
+        if (config_.texture_dump != before.texture_dump ||
+            config_.texture_replacement != before.texture_replacement)
+            SendTexturesToMachine();
         // A game's own DLSS or FSR mode - the one going off told first.
         if (config_.dlss_mode != "off") {
             SendFsrToRenderer();
@@ -1580,6 +1596,81 @@ namespace psxemu {
         SendConfigToMachine();
         UpdateVideoSettings();
         Notify(OverlayIcon::kScreen, ToastKind::kInfo, done);
+    }
+
+    // Textures dumped, or drawn from the game's pack: a game's own settings, saved as PGXP's are,
+    // and the machine told which folders to use.
+    void App::SetTextureSetting(bool* setting, bool on, const std::wstring& done) {
+        if (*setting == on)
+            return;
+        *setting = on;
+        SaveSettingsIfChanged();
+        SendTexturesToMachine();
+        UpdateVideoSettings();
+        Notify(OverlayIcon::kScreen, ToastKind::kInfo, done);
+    }
+
+    // The running game's folder of textures, textures\<game> - empty without a game.
+    std::string App::GameTextureFolder() const {
+        if (game_cheat_key_.empty() || textures_dir_.empty())
+            return std::string();
+        return textures_dir_ + "\\" + game_cheat_key_;
+    }
+
+    void App::SendTexturesToMachine() {
+        std::string dump, replace;
+        const std::string game = GameTextureFolder();
+        if (!game.empty() && (config_.texture_dump || config_.texture_replacement)) {
+            // Made as they are first wanted, so the replace folder is there to put a pack in.
+            EnsureDirectory(textures_dir_);
+            EnsureDirectory(game);
+            if (config_.texture_dump) {
+                dump = game + "\\dump";
+                EnsureDirectory(dump);
+            }
+            if (config_.texture_replacement) {
+                replace = game + "\\replace";
+                EnsureDirectory(replace);
+            }
+        }
+        const uint64_t budget = static_cast<uint64_t>(config_.texture_budget_mb) << 20;
+        PostToMachine([dump, replace, budget](Machine& machine) {
+            machine.SetTextures(dump, replace, budget);
+        });
+    }
+
+    void App::OpenTextureFolder() {
+        std::string folder = GameTextureFolder();
+        if (folder.empty())
+            folder = textures_dir_;
+        if (folder.empty())
+            return;
+        EnsureDirectory(textures_dir_);
+        EnsureDirectory(folder);
+        ShellExecuteW(window_, L"open", Wide(folder).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    }
+
+    std::wstring App::TextureStatus() const {
+        if (game_cheat_key_.empty())
+            return L"No game running.";
+        if (!config_.texture_dump && !config_.texture_replacement)
+            return L"Off for this game.";
+        if (!have_report_ || !report_.textures)
+            return L"Starting...";
+        // One line: what is named and written, and what the pack draws or why it cannot.
+        std::wstring status = std::to_wstring(report_.textures_named) + L" named";
+        if (config_.texture_dump)
+            status += L", " + std::to_wstring(report_.textures_dumped) + L" written";
+        if (config_.texture_replacement) {
+            if (!report_.replacement_error.empty())
+                status += L"; the pack could not be read";
+            else if (!report_.hardware_raster)
+                status += L"; replacing needs the hardware rasteriser";
+            else
+                status += L"; " + std::to_wstring(report_.replacements) + L" in the pack, " +
+                          std::to_wstring(report_.jobs_replaced) + L" draws";
+        }
+        return status + L".";
     }
 
     // View > Depth and Motion, one at a time or neither: the hardware rasteriser shows
@@ -1933,6 +2024,10 @@ namespace psxemu {
         state.pgxp_vertices = config_.pgxp_vertices;
         state.pgxp_textures = config_.pgxp_textures;
         state.pgxp_culling = config_.pgxp_culling;
+        state.texture_dump = config_.texture_dump;
+        state.texture_replacement = config_.texture_replacement;
+        state.game_running = !game_cheat_key_.empty();
+        state.texture_status = TextureStatus();
         state.upscaler_running = upscaler_active_;
         state.fsr_running = fsr_active_;
         state.dlss_mode = config_.dlss_mode;
@@ -4782,6 +4877,20 @@ namespace psxemu {
 
             case kCommandViewMotion:
                 SetPlaneView(plane_view_ == 2 ? 0 : 2);
+                break;
+
+            case kCommandReloadTextures:
+                if (!config_.texture_replacement || game_cheat_key_.empty()) {
+                    Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"Replacement textures are off",
+                           L"View > Video Settings > Textures to turn them on");
+                    break;
+                }
+                PostToMachine([](Machine& machine) { machine.ReloadTextures(); });
+                Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"Textures reloaded");
+                break;
+
+            case kCommandOpenTextureFolder:
+                OpenTextureFolder();
                 break;
 
             case kCommandFrameLimiter:
