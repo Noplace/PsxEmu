@@ -705,7 +705,7 @@ recompiler, as phase 1 measured): every disc's share the same as phase 1's, to t
 
 **Left for later**:
 - a state loaded, or a step back while rewinding, forgets every upload: the game's own textures
-  until it uploads again;
+  until it uploads again (since brought back - Phase 4, as built);
 - the budget is psxemu.ini's only;
 - dumps in the app are written as each source closes, on a thread of their own - a game that
   closes many at once (Ridge Racer patches its font glyph by glyph) writes many small files;
@@ -865,6 +865,26 @@ model and gave nothing - and, leaving nothing in the image, were not known to be
 Now a tile is empty if no cell it gives has a drawn texel. Ridge Racer, 2,000 frames at 4x run
 twice: the second run 0 calls (it had been 20 tiles in the app), and 293,314 jobs drawn with
 the upscaler's images against the first run's 206,714, every one there from the first frame.
+
+**Save states and rewind**: a load made the tracker forget every upload (phase 2's left for
+later), so after loading a state, or at each step back while rewinding, the game's own textures
+were drawn until it uploaded them again - for a texture loaded once, a font or a menu, the rest
+of the session. Uploads are not machine state, and stay out of the save state:
+
+- **Within a run** the tracker remembers every record it has made - where, and each hash it has
+  had there - and after a load brings back each that VRAM still holds, the largest first where
+  they overlap, so a joined upload comes back as itself and not as its strips. A load leaves
+  native VRAM all of VRAM - a hardware rasteriser is given it afresh - so what was drawn need not
+  be known.
+- **Across runs**, saving a state writes `<state>.textures` beside it: the live uploads, 24 bytes
+  each. Loading it restores exactly those, each checked against VRAM first.
+
+Ridge Racer, a state saved at frame 1,500 with the upscaler's images all made, loaded in a new
+run: 193 uploads restored, and all of the first 60 frames' 1,020 textured jobs drawn upscaled -
+none without the file. In the app the same: 1,661 draws upscaled in the first second after the
+load, none in three seconds without. `--rewind-test 60`: the 193 records brought back by the
+step back, and the machine the frame kept aside, byte for byte, as before. `texture_tracker_test`
+73 checks.
 
 **Not done**: RTX Video's quality levels 1-3, set beside 4 on the same textures.
 

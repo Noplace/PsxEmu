@@ -987,7 +987,7 @@ through the same tests on an RTX card - only in a build that found NVIDIA's SDK 
 `Temp\rtxvideo\`, which cannot be fetched by a script (it is behind NVIDIA's sign-in) and is
 never committed; build_tools.bat then copies its `rel` `nvngx_vsr.dll` into `Temp\tools`.
 
-`texture_tracker_test` (70 checks) is the texture tracker's rules
+`texture_tracker_test` (73 checks) is the texture tracker's rules
 (`render/texture_tracker.h`, Docs/Texture-Upscaling-Plan.md, phases 1 and 2), on a VRAM of its own:
 
 - the name a draw gives a texture, the same wherever in VRAM the image and its palette are,
@@ -1007,7 +1007,9 @@ never committed; build_tools.bat then copies its `rel` `nvngx_vsr.dll` into `Tem
   the card names the same, a draw counted at no pixels is a draw all the same, and only what is
   known to be zeros clears what the GPU drew over - a fill of zeros, a black rectangle, a copy of
   clear texels - while a triangle draws only the pixels it covers, not its bounding box
-- run-ahead's load back bringing back the records held when its state was saved
+- run-ahead's load back bringing back the records held when its state was saved; any other load
+  bringing back the uploads VRAM still holds - a joined upload as one, not its strips - or
+  exactly those given from the file beside a save state, and none VRAM no longer holds
 - PNGs of every colour type and depth, each row filtered each of the five ways, interlaced or not,
   with palettes and colour keys, read by `render/png_file.h`'s reader
 
@@ -1054,7 +1056,9 @@ as the front end does, on `--gpu`'s card, and waits for the queue at the end; `-
 `--texture-ai-share` and `--texture-ai-grid` set what the front end's settings set.
 `--texture-ai rtx-video` uses NVIDIA's RTX Video Super Resolution instead, at
 `--texture-ai-quality` 1-4 (4), on an RTX card, in a boot_runner built with NVIDIA's SDK in
-`Temp\rtxvideo\` (phase 4).
+`Temp\rtxvideo\` (phase 4). With textures on, `--save-state <f>` writes `<f>.textures` beside the
+state, the live texture uploads, as the front end does, and `--load-state <f>` reads it back;
+`--rewind-test` says how many texture records its step back brought back.
 
 `rec_test` (2059 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter

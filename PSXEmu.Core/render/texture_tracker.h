@@ -62,8 +62,8 @@
 //   texel a run like this one reads.
 //
 // An observer of `Gpu` (render/raster.h): it reads native VRAM and changes nothing the machine
-// sees. Upload records are not machine state either; after a state load nothing is named until
-// the game uploads again.
+// sees. Upload records are not machine state either; after a state load they are brought back
+// from what was seen of them this run, where VRAM still holds them (Reloaded, NextLoad).
 
 #include "render/raster.h"
 #include "render/texture_upscale.h"
@@ -109,6 +109,7 @@ namespace psx {
       uint64_t records_cut = 0;       // records written over in part, cut into what was left
       uint64_t records_copied = 0;    // records made by VRAM-to-VRAM copies of uploaded texels
       uint64_t records_live = 0;      // records alive now
+      uint64_t records_restored = 0;  // records brought back after a load, VRAM still holding them
       uint64_t textured_jobs = 0;
       uint64_t textured_pixels = 0;
       uint64_t jobs[kReasons] = {};
@@ -149,6 +150,24 @@ namespace psx {
     // brings the records back as they were held. Release after it. With nothing being drawn.
     void Hold();
     void Release() { holding_ = false; }
+
+    // Any other load - a save state, a step back while rewinding - leaves VRAM as it was then,
+    // and the records of this moment untrue. So every record the tracker has made this run is
+    // remembered - where it was and what it held - and after a load each that VRAM still holds
+    // comes back, the largest first where they overlap (a joined upload over the strips it was
+    // made of). Uploads are not machine state, so a save state does not carry them; the app writes
+    // the live ones beside it (LiveUploads), and gives them back before loading it (NextLoad),
+    // when that load restores those alone, each still checked against VRAM.
+    struct Upload {
+      uint32_t x = 0, y = 0, w = 0, h = 0;
+      uint64_t hash = 0;
+    };
+    std::vector<Upload> LiveUploads() const;
+    void NextLoad(std::vector<Upload> uploads) { next_load_ = std::move(uploads); have_next_ = true; }
+    void ForgetNextLoad() { next_load_.clear(); have_next_ = false; }
+    // As files: false if one cannot be written, or read as such.
+    static bool WriteUploads(const std::string& path, const std::vector<Upload>& uploads);
+    static bool ReadUploads(const std::string& path, std::vector<Upload>* uploads);
 
     Counts counts() const;   // with nothing being drawn
     // Textures named and files written so far, from any thread at any time: the front end's.
@@ -362,6 +381,19 @@ namespace psx {
       int last = -1;
     };
     Held held_;
+    // Every record made this run, by where it is - x, y, w, h packed - and the hashes it has had
+    // there; and the uploads a load is to bring back instead, if the app gave them.
+    static uint64_t Place(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+      return x | (static_cast<uint64_t>(y) << 11) | (static_cast<uint64_t>(w) << 22) |
+             (static_cast<uint64_t>(h) << 33);
+    }
+    void Remember(const Record& u);
+    // After a load: the records VRAM still holds, from `uploads`.
+    void Restore(const std::vector<Upload>& uploads);
+    std::unordered_map<uint64_t, std::unordered_set<uint64_t>> remembered_;
+    size_t remembered_count_ = 0;
+    std::vector<Upload> next_load_;
+    bool have_next_ = false;
     // Between Drawing and Drawn: what the job was found to name.
     Reason pending_ = kNamed;
     bool pending_textured_ = false;

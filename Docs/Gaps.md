@@ -865,9 +865,9 @@ look for. Each was looked for in the code and settings on 2026-10-14 and is not 
   per game, into and from `textures\<game>\`, with the hardware rasteriser. What they leave:
   - textures the GPU drew itself (Metal Gear Solid's screen effects, render-to-texture) stay the
     game's own, by design;
-  - a state load forgets which uploads are which until the game uploads again - a loaded state,
-    and each step back while rewinding, shows the game's own textures until then (run-ahead's
-    load back is the exception: the tracker holds its records across it);
+  - a save state made before 2026-10-17, or with textures off, has no file of its texture uploads
+    beside it: loaded in a new session, its textures are the game's own until it uploads them
+    again (a state saved since, and any load or rewind within a session, brings them back);
   - the video memory budget is `texture_budget_mb` in psxemu.ini only;
   - the software rasteriser never draws replacements.
 

@@ -467,9 +467,53 @@ void TestReasons() {
           "run-ahead's load back brings back the records held as its state was saved");
   }
 
+  // Any other load: the uploads this run made that VRAM still holds come back, named as before.
+  {
+    std::string before;
+    Classify(tracker, sprite, &before);
+    tracker.Reloaded();
+    std::string after;
+    Check(Classify(tracker, sprite, &after) == TextureTracker::kNamed && after == before &&
+              tracker.counts().records_restored >= 2,
+          "after a state load, the uploads VRAM still holds are named as before");
+  }
+  // ...a joined upload as the one record, not the strips it was made of.
+  {
+    Vram v4;
+    TextureTracker t4(v4.words.data());
+    for (uint32_t row = 0; row < 32; row += 8)
+      Upload(v4, t4, 256, 100 + row, 32, 8, 5, 0, row);
+    t4.Reloaded();
+    const std::vector<TextureTracker::Upload> live = t4.LiveUploads();
+    Check(live.size() == 1 && live[0].w == 32 && live[0].h == 32,
+          "...a joined upload as the one record, not its strips");
+  }
+  // ...exactly those the app gives, written beside the state and read back.
+  {
+    const std::string path =
+        (std::filesystem::temp_directory_path() / "psxemu_texture_uploads.textures").string();
+    std::vector<TextureTracker::Upload> read;
+    const bool round = TextureTracker::WriteUploads(path, tracker.LiveUploads()) &&
+                       TextureTracker::ReadUploads(path, &read) &&
+                       read.size() == tracker.LiveUploads().size();
+    std::filesystem::remove(path);
+    tracker.NextLoad({});
+    tracker.Reloaded();
+    const bool none = Classify(tracker, sprite) == TextureTracker::kNotUploaded;
+    tracker.NextLoad(read);
+    tracker.Reloaded();
+    Check(round && none && Classify(tracker, sprite) == TextureTracker::kNamed,
+          "...exactly the uploads the app gives, from the file beside the state");
+  }
+  // ...and none VRAM no longer holds.
+  for (uint32_t row = 0; row < kH; ++row)
+    for (uint32_t col = 0; col < kW; ++col)
+      vram.at(640 + col, row) ^= 0x5555;
   tracker.Reloaded();
-  Check(Classify(tracker, sprite) == TextureTracker::kNotUploaded,
-        "after a state load nothing is named until the game uploads again");
+  const TextureTracker::Reason gone = Classify(tracker, sprite);
+  if (gone != TextureTracker::kNotUploaded)
+    printf("  (named as %s)\n", TextureTracker::ReasonName(gone));
+  Check(gone == TextureTracker::kNotUploaded, "...and nothing VRAM no longer holds as it was");
 
   Draw(tracker, sprite, 256);
   const TextureTracker::Counts& c = tracker.counts();

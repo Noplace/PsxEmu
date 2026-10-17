@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 
 namespace emulation {
 namespace psx {
@@ -350,7 +351,90 @@ int TextureTracker::AddRecord(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
   u.sources.clear();
   Register(index);
   ++counts_.records_live;
+  Remember(u);
   return index;
+}
+
+void TextureTracker::Remember(const Record& u) {
+  // A run that uploads without end - a film into VRAM, say - starts the memory over rather than
+  // growing it: what it forgets is only what a load might have brought back.
+  if (remembered_count_ >= (1u << 18)) {
+    remembered_.clear();
+    remembered_count_ = 0;
+  }
+  if (remembered_[Place(u.x, u.y, u.w, u.h)].insert(u.hash).second)
+    ++remembered_count_;
+}
+
+std::vector<TextureTracker::Upload> TextureTracker::LiveUploads() const {
+  std::vector<Upload> uploads;
+  for (const Record& u : records_)
+    if (u.live)
+      uploads.push_back({ u.x, u.y, u.w, u.h, u.hash });
+  return uploads;
+}
+
+void TextureTracker::Restore(const std::vector<Upload>& uploads) {
+  // The largest first: a joined upload rather than the strips it was made of, which VRAM holds
+  // too. Each where VRAM holds what it held, and nothing restored already overlaps it.
+  std::vector<Upload> order = uploads;
+  std::stable_sort(order.begin(), order.end(), [](const Upload& a, const Upload& b) {
+    return static_cast<uint64_t>(a.w) * a.h > static_cast<uint64_t>(b.w) * b.h;
+  });
+  for (const Upload& up : order) {
+    if (up.w == 0 || up.h == 0 || up.x + up.w > static_cast<uint32_t>(kVramW) ||
+        up.y + up.h > static_cast<uint32_t>(kVramH))
+      continue;
+    const Rect r = { static_cast<int32_t>(up.x), static_cast<int32_t>(up.y),
+                     static_cast<int32_t>(up.x + up.w) - 1, static_cast<int32_t>(up.y + up.h) - 1 };
+    bool overlapped = false;
+    if (Holding(r, &overlapped) >= 0 || overlapped)
+      continue;
+    if (HashRect(vram_, up.x, up.y, up.w, up.h) != up.hash)
+      continue;
+    AddRecord(up.x, up.y, up.w, up.h);
+    ++counts_.records_restored;
+  }
+}
+
+bool TextureTracker::WriteUploads(const std::string& path, const std::vector<Upload>& uploads) {
+  FILE* file = fopen(path.c_str(), "wb");
+  if (file == nullptr)
+    return false;
+  const char magic[8] = { 'P', 'S', 'X', 'T', 'E', 'X', 'U', '1' };
+  const uint32_t count = static_cast<uint32_t>(uploads.size());
+  bool ok = fwrite(magic, 1, 8, file) == 8 && fwrite(&count, 4, 1, file) == 1;
+  for (const Upload& up : uploads) {
+    const uint32_t place[4] = { up.x, up.y, up.w, up.h };
+    ok = ok && fwrite(place, 4, 4, file) == 4 && fwrite(&up.hash, 8, 1, file) == 1;
+  }
+  return fclose(file) == 0 && ok;
+}
+
+bool TextureTracker::ReadUploads(const std::string& path, std::vector<Upload>* uploads) {
+  uploads->clear();
+  FILE* file = fopen(path.c_str(), "rb");
+  if (file == nullptr)
+    return false;
+  char magic[8] = {};
+  uint32_t count = 0;
+  bool ok = fread(magic, 1, 8, file) == 8 && memcmp(magic, "PSXTEXU1", 8) == 0 &&
+            fread(&count, 4, 1, file) == 1 && count <= (1u << 20);
+  for (uint32_t i = 0; ok && i < count; ++i) {
+    uint32_t place[4] = {};
+    Upload up;
+    ok = fread(place, 4, 4, file) == 4 && fread(&up.hash, 8, 1, file) == 1;
+    up.x = place[0];
+    up.y = place[1];
+    up.w = place[2];
+    up.h = place[3];
+    if (ok)
+      uploads->push_back(up);
+  }
+  fclose(file);
+  if (!ok)
+    uploads->clear();
+  return ok;
 }
 
 void TextureTracker::Remove(int index) {
@@ -864,6 +948,7 @@ void TextureTracker::Written(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
       }
       u.hash = HashRecord(u);
       u.serial = ++serial_;
+      Remember(u);
       last_ = patched;
       ++counts_.uploads_patched;
       return;
@@ -948,6 +1033,27 @@ void TextureTracker::Reloaded() {
   zero_bits_.assign(zero_bits_.size(), 0);
   clut_hashes_.clear();
   counts_.records_live = 0;
+  // Native VRAM is all of VRAM again - a hardware rasteriser has just been given it - so nothing
+  // drawn needs remembering, and each upload it still holds can come back: those the app gave, or
+  // any made this run.
+  if (have_next_) {
+    have_next_ = false;
+    Restore(next_load_);
+    next_load_.clear();
+  } else {
+    std::vector<Upload> held;
+    for (const auto& [place, hashes] : remembered_) {
+      const Upload at = { static_cast<uint32_t>(place & 0x7FF), static_cast<uint32_t>((place >> 11) & 0x7FF),
+                          static_cast<uint32_t>((place >> 22) & 0x7FF), static_cast<uint32_t>(place >> 33) };
+      if (at.x + at.w > kVramW || at.y + at.h > kVramH)
+        continue;
+      const uint64_t now = HashRect(vram_, at.x, at.y, at.w, at.h);
+      if (hashes.count(now) != 0)
+        held.push_back({ at.x, at.y, at.w, at.h, now });
+    }
+    Restore(held);
+  }
+  last_ = -1;
 }
 
 void TextureTracker::Flush() {

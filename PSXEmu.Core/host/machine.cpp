@@ -5,6 +5,7 @@
 #include "render/texture_pack.h"
 #include "render/texture_tracker.h"
 
+#include <cstdio>
 #include <utility>
 
 namespace emulation {
@@ -490,6 +491,23 @@ void Machine::ReloadTextures() {
   } else {
     texture_pack_->Close();
   }
+}
+
+void Machine::SaveTextureUploads(const std::string& path) const {
+  // The save has just waited for the rasteriser; nothing is being drawn.
+  if (!texture_tracker_ || !psx::TextureTracker::WriteUploads(path, texture_tracker_->LiveUploads()))
+    std::remove(path.c_str());   // an older one would say nothing true of this state
+}
+
+void Machine::LoadTextureUploads(const std::string& path) {
+  // Without the file - or with an empty path, after a load that failed - the next load brings
+  // back what this run saw.
+  std::vector<psx::TextureTracker::Upload> uploads;
+  if (!texture_tracker_)
+    return;
+  texture_tracker_->ForgetNextLoad();
+  if (!path.empty() && psx::TextureTracker::ReadUploads(path, &uploads))
+    texture_tracker_->NextLoad(std::move(uploads));
 }
 
 void Machine::set_dlss(bool on, int jitter_phases) {

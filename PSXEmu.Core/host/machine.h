@@ -223,6 +223,13 @@ class Machine {
                    const std::string& ai_folder, std::shared_ptr<psx::TextureUpscaleQueue> ai);
   // The pack read again from its folder: what changed on disk drawn from the next job on.
   void ReloadTextures();
+  // A save state's texture uploads (render/texture_tracker.h): which uploads are live, written
+  // to `path` as the state is saved - and the file taken away without textures on - and read
+  // back before it is loaded, so the textures it holds are named, and replaced, from its first
+  // frame. Without the file - a state from before this, or an empty path, which drops one read
+  // for a load that then failed - the load brings back the uploads this run saw.
+  void SaveTextureUploads(const std::string& path) const;
+  void LoadTextureUploads(const std::string& path);
 
   // Instructions stepped since the thread started. The machine's thread, or
   // anyone once Stop has returned.

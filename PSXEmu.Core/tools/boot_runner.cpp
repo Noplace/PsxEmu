@@ -2150,6 +2150,13 @@ int main(int argc, char** argv) {
   }
 
   if (options.load_state != nullptr) {
+    // The state's texture uploads, beside it, as the front end keeps them (host/machine.h).
+    std::vector<emulation::psx::TextureTracker::Upload> uploads;
+    if (textures && emulation::psx::TextureTracker::ReadUploads(
+                        std::string(options.load_state) + ".textures", &uploads)) {
+      printf("texture uploads %zu beside the state\n", uploads.size());
+      textures->NextLoad(std::move(uploads));
+    }
     const std::string error = system->LoadState(options.load_state);
     if (!error.empty()) {
       fprintf(stderr, "failed to load state %s: %s\n", options.load_state,
@@ -3178,6 +3185,9 @@ int main(int argc, char** argv) {
            static_cast<unsigned long long>(t.records_copied),
            static_cast<unsigned long long>(t.records_live),
            static_cast<unsigned long long>(t.sources), static_cast<unsigned long long>(t.dumped));
+    if (t.records_restored > 0)
+      printf("               %llu records brought back after state loads\n",
+             static_cast<unsigned long long>(t.records_restored));
     printf("               %llu textured pixels in %llu jobs (%llu named by several records):\n",
            static_cast<unsigned long long>(t.textured_pixels),
            static_cast<unsigned long long>(t.textured_jobs),
@@ -3472,6 +3482,9 @@ int main(int argc, char** argv) {
     const std::string error = system->SaveState(options.save_state);
     if (error.empty())
       printf("saved state    %s\n", options.save_state);
+    if (error.empty() && textures)
+      emulation::psx::TextureTracker::WriteUploads(std::string(options.save_state) + ".textures",
+                                                   textures->LiveUploads());
     else
       fprintf(stderr, "failed to save state %s: %s\n", options.save_state,
               error.c_str());
@@ -3581,6 +3594,10 @@ int main(int argc, char** argv) {
            same_frame ? "the frame kept aside, byte for byte" : "NOT the frame kept aside",
            options.rewind_test,
            same_end ? "the run's own end, byte for byte" : "NOT the run's own end");
+    // The texture tracker's records after the step back: what this run saw, that VRAM held.
+    if (textures)
+      printf("rewind         %llu texture records brought back after the loads\n",
+             static_cast<unsigned long long>(textures->counts().records_restored));
   }
 
   // Last, since it runs the machine on from where the run left it.

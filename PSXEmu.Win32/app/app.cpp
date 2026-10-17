@@ -3636,8 +3636,16 @@ namespace psxemu {
     void App::SaveOrLoadState(int slot, bool save) {
         PostToMachine([this, slot, save](Machine& machine) {
             const std::string path = SaveStateSlotPath(machine.system(), slot);
+            // Which texture uploads are live, beside the state, so a load names - and upscales -
+            // its textures from its first frame (Docs/Texture-Upscaling-Plan.md).
+            if (!save)
+                machine.LoadTextureUploads(path + ".textures");
             const std::string error = save ? machine.system().SaveState(path)
                                            : machine.system().LoadState(path);
+            if (save && error.empty())
+                machine.SaveTextureUploads(path + ".textures");
+            if (!save && !error.empty())
+                machine.LoadTextureUploads(std::string());   // not kept for another load
             if (!save) {
                 machine.ResetPacing();
                 machine.ForgetHistory();
