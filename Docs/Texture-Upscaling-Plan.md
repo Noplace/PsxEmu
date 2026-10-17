@@ -1,11 +1,14 @@
 # Texture upscaling: a texture cache, replacement packs, and an AI upscaler
 
-**Status: phases 0 to 3 done (2026-10-16, -16, -17, -17).** The emulator upscales a game's
+**Status: phases 0 to 4 done (2026-10-16 to -17).** The emulator upscales a game's
 textures itself as they are read, 2x or 4x with Real-ESRGAN on DirectML, and draws them like a
 hand-made pack: Settings > Video > Textures > AI upscaling, per game, the files fetched by the
 emulator. It runs on a card the game is not drawing on when there is one, at full speed on Ridge
 Racer, Castlevania and Valkyrie Profile; on one card alone it takes a tenth of that card's time
-([Phase 3, as built](#phase-3-as-built-2026-10-17)). Every textured draw is named by the
+([Phase 3, as built](#phase-3-as-built-2026-10-17)). NVIDIA's RTX Video Super Resolution runs as a
+second backend, but on the 26 discs' textures it is softer than either Real-ESRGAN model and
+only 1.5 times as fast. It is in the AI upscaling list on NVIDIA cards, the user's choice
+([Phase 4, as built](#phase-4-as-built-2026-10-17)). Every textured draw is named by the
 texture it reads, the same name every run, on either rasteriser: 95.2% of textured pixels on the 26 discs, 22 of them at 100%, the rest
 textures the GPU drew. A game's textures are dumped as PNGs, and a pack of PNGs named the same -
 any of 1x to 8x their size - is drawn in their place by the hardware rasteriser: Settings > Video
@@ -14,8 +17,8 @@ exactly as without it, at 1x and 4x ([Phase 2, as built](#phase-2-as-built-2026-
 [Phase 1](#phase-1-as-built-2026-10-16)). ONNX Runtime and DirectML load and run here, and `.pth`
 models convert to ONNX, matching their authors' own exports. Real-ESRGAN's animevideo-v3 (BSD-3)
 is the default model: 22-58 ms for a 256x256 texture at 4x. RTX Video Super Resolution runs on
-the RTX 4060 at 5.5 ms for the same, and looks as good, but only on RTX cards; phase 4 settles
-it on real textures ([Phase 0, as built](#phase-0-as-built-2026-10-16)). Without a pack, the
+the RTX 4060 at 5.5 ms for the same, and on whole frames looked as good, but only on RTX cards
+([Phase 0, as built](#phase-0-as-built-2026-10-16)). Without a pack, the
 hardware rasteriser draws polygons at up to 8x, but the game's textures are still the console's
 4-, 8- and 15-bit images, point-sampled. Each
 texel becomes a block of 8x8 pixels at 8x. This plan gets better textures in four ways, all opt-in
@@ -287,7 +290,9 @@ planned, the plan's words follow in italics.
   its own other than the renderer's - a laptop's discrete card while the game draws on the
   integrated - with all of its time; otherwise the renderer's card, a tile a call, held to 10% of
   the time (`texture_ai_share`). `texture_ai_card` names one.
-- **View > Upscale All Dumped Textures** feeds it the game's `dump\` folder, a dialog saying how
+- **The game's dumps, in the background**: each time the upscaler starts, every dump in the
+  game's `dump\` folder whose upscaled image is older than it, or missing, goes in behind what
+  the game draws. **View > Upscale All Dumped Textures** does every dump, with a dialog saying how
   far it has got; `boot_runner --upscale-folder` the same for the tools.
 - **The files** are fetched by the emulator (`ai_download.h`), from Settings > Video > Textures'
   "Get the AI files...": ONNX Runtime 1.24.4 and DirectML 1.15.4 out of their NuGet packages -
@@ -312,7 +317,8 @@ planned, the plan's words follow in italics.
 - **Offered only if it wins** (phase 4): on the dumped textures of the 2D and 3D discs below,
   side by side with the best ONNX model, at the same scale, and judged by eye, since nothing
   numerical says which upscale of a sprite is better. If it does not win, it stays in the code
-  behind a setting in psxemu.ini and is not on the menu.
+  behind a setting in psxemu.ini and is not on the menu. *It did not win, and is on the menu all
+  the same*, on NVIDIA cards, as the user asked ([Phase 4, as built](#phase-4-as-built-2026-10-17)).
 
 ### Texture filtering in the shader
 
@@ -341,8 +347,7 @@ Independent of everything above: a filter over the texels `PsDraw` already decod
   - **Draw replacements from the game's pack** - which needs the hardware rasteriser
   - **Texture filter**: Nearest, Bilinear, JINC2, xBR, Scale2x, Scale3x, MMPX (and binary-alpha
     variants)
-  - **AI upscaling**: Off, 2x, 4x; model; backend (DirectML on any card, RTX Video on RTX cards
-    only, once it has earned its place)
+  - **AI upscaling**: Off, 2x, 4x; model (RTX Video on NVIDIA cards - phase 4)
   - A line saying what is running: textures named and written, replacements and the draws they
     replaced, or why nothing is - later the upscaler's queue.
   - The video memory budget is `texture_budget_mb` in psxemu.ini, not in the window.
@@ -363,7 +368,7 @@ Independent of everything above: a filter over the texels `PsDraw` already decod
 | 1 (**done**) | Uploads and sources, with no drawing changed: records at `Written`, retired by draws, keys, `boot_runner --textures` counts, dumping | the share of textured pixels nameable measured on the 26 discs; the twelve-disc table's instruction and sector counts identical with dumping on; dumps reviewed on five discs | Radeon, WARP | 2-3 |
 | 2 (**done**) | Replacement: the slot in `PsDraw`, atlas pages, the loader thread, `pack.ini`, the menus | **the identity check**: a dump loaded back as its own pack at 1x, and nearest-upscaled at 2x-8x, draws every picture of the table bit for bit as without it on WARP (with the replacement cut to 15 bits and the console's colour path, a debug switch); a hand-edited texture seen in game | Radeon, WARP | 2-3 |
 | 3 (**done**) | The AI upscaler on ONNX Runtime and DirectML: thread, device, queue, dilation, padding, atlases, alpha, cache folder, Upscale All | full speed with the queue running on Ridge Racer and two 2D discs, on both cards; reviewed on the 26 discs' dumps; no halo on cut-out sprites | Radeon, then 4060 for a few long runs | 2-3 |
-| 4 | RTX Video as the second backend, and the comparison | the side-by-side reviewed; RTX Video either on the menu or left in psxemu.ini only, and this plan says why | 4060 | 1-2 |
+| 4 (**done**) | RTX Video as the second backend, and the comparison | the side-by-side reviewed; RTX Video either on the menu or left in psxemu.ini only, and this plan says why | 4060 | 1-2 |
 | F | Texture filtering in the shader: the modes, UV bounds, coverage | Nearest identical to today on the whole table; each mode reviewed on five discs; full speed at 4x on the Radeon | Radeon, WARP | 1-2 |
 
 Phase F can come at any point. If it comes before phase 2, it adds the UV-bounds word that phase
@@ -794,8 +799,74 @@ them Valkyrie Profile's; each palette is an image, done once.
   upscale - `pack.ini`'s `[never]` does it per game - and a pixel-art model whose licence allows
   it would do better;
 - tiles go first come, first served, not nearest the middle of the screen first;
-- a 2x model, rather than the 4x one halved;
-- RTX Video as a second backend is phase 4.
+- a 2x model, rather than the 4x one halved.
+
+### Phase 4, as built (2026-10-17)
+
+**What was built:**
+
+- **RTX Video as a backend of the upscaler** (`MakeRtxVideoBackend`, `ai_textures.h`): phase 0's
+  `rtx_video.h` on a Direct3D 12 device of its own, asked for 2x or 4x as it is rather than 4x
+  halved, at quality 4. Everything else - tiles, holes filled, coverage through it, the cache
+  folder - is the ONNX backend's.
+- **Built in where the SDK is**: the front end's project, `build_tools.bat` and `boot_runner`
+  define `PSXEMU_RTX_VIDEO` and link NGX only when `Temp\rtxvideo\` holds NVIDIA's SDK, and copy
+  its `rel` `nvngx_vsr.dll` beside the executable; anywhere else `rtx_video.cpp` is a backend that
+  says it is not there.
+- **In the AI upscaling list**, "2x/4x, NVIDIA RTX Video (RTX cards)", where it can run - a build
+  with NVIDIA's SDK, and an NVIDIA card - or while psxemu.ini sets it: `texture_ai_model =
+  rtx_video`, per game like the other models. It runs on the NVIDIA card with the most memory,
+  into `textures\<game>\ai\rtx_video-<k>x\`. "Get the AI files..." says what it needs rather
+  than offering a download - NVIDIA's SDK cannot be fetched for the user.
+- **`boot_runner --texture-ai rtx-video`**, `--texture-ai-quality 1-4`.
+
+**What it costs** - Upscale All over the 26 discs' dumps put together (4,047, those the discs
+share once), 15,955 tiles in 2,545 calls, each the same three by three tiles:
+
+| Backend | Card | A call | Calls, in all | The whole run |
+|---|---|---|---|---|
+| RTX Video, quality 4 | RTX 4060 | 23.6 ms | 60 s | 282 s |
+| Real-ESRGAN animevideo-v3 | RTX 4060 | 35.6 ms | 91 s | 289 s |
+| Real-ESRGAN general-x4v3 | Radeon 780M | 148.4 ms | 378 s | 584 s |
+
+RTX Video is 1.5 times as fast as the anime model on the same card, not the four times phase 0
+measured on one 256x256 picture: a call also carries the picture to the card and back, which at
+this size is much of what it costs. And the whole run hardly changes, being mostly the PNGs.
+
+**How it looks** - sheets of the dump nearest beside each upscale at 4x, for the textures with
+the most cut-out edge and the most detail, on twelve discs against the anime model and on four
+against both models (`Temp\texcmp\sheets\`, not committed):
+
+- **RTX Video keeps the texture as it was, softened**: grain, noise and dither stay - Xenogears'
+  speckled title, Castlevania's stone - and edges are a sharpened blur, like a good bicubic. On
+  phase 0's whole frames that read as natural; on textures it reads as soft.
+- **The anime model** draws the cleanest sprites and edges: Vandal Hearts' monsters, Valkyrie
+  Profile's outlines, FF7's credits lettering, with dither smoothed away.
+- **The general model** is the sharpest and keeps the most detail: Vandal Hearts' carved panel and
+  Wipeout's small print are the most legible of the four.
+
+RTX Video is best at nothing here. Its one advantage, speed, buys little: with two cards the
+upscaler already costs the game nothing, and on the RTX 4060 alone the anime model at a tenth of
+the card held full speed (phase 3). So it was to stay in psxemu.ini, as decided before it was
+measured; the user wanted the choice on the menu all the same, and it is there on NVIDIA cards,
+the Real-ESRGAN models first.
+
+**Checked in the app**: Ridge Racer for a minute at 4x on the Radeon, RTX Video on the 4060 - 617
+tiles upscaled, nearly a million draws replaced, the game at 100% throughout.
+
+**Upscale All without asking**: the game's dumps not yet upscaled now go in the background each
+time the upscaler starts (The AI upscaler, above). Ridge Racer's 279 dumps in the app, the
+upscaler on the 4060: all done within 20 seconds of starting, the game at 100%; the next start
+queued none.
+
+**Cells read but clear were upscaled every run**: a tile was empty only if nothing in it, its 16
+texels round included, was drawn. Clear cells beside drawn ones done before went through the
+model and gave nothing - and, leaving nothing in the image, were not known to be done next run.
+Now a tile is empty if no cell it gives has a drawn texel. Ridge Racer, 2,000 frames at 4x run
+twice: the second run 0 calls (it had been 20 tiles in the app), and 293,314 jobs drawn with
+the upscaler's images against the first run's 206,714, every one there from the first frame.
+
+**Not done**: RTX Video's quality levels 1-3, set beside 4 on the same textures.
 
 ---
 

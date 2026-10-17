@@ -1052,6 +1052,9 @@ that only repeats pixels, so what comes out is known exactly and no graphics car
 as the front end does, on `--gpu`'s card, and waits for the queue at the end; `--upscale-folder
 <dumps>`, with no disc, does Upscale All over a folder of dumps. `--texture-ai-scale`,
 `--texture-ai-share` and `--texture-ai-grid` set what the front end's settings set.
+`--texture-ai rtx-video` uses NVIDIA's RTX Video Super Resolution instead, at
+`--texture-ai-quality` 1-4 (4), on an RTX card, in a boot_runner built with NVIDIA's SDK in
+`Temp\rtxvideo\` (phase 4).
 
 `rec_test` (2059 checks) is not counted either, and for a different reason: it
 covers the recompiler in `PSXEmu.Core/rec/`, which sits beside the interpreter

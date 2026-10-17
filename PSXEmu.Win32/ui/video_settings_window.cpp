@@ -70,7 +70,9 @@ namespace psxemu {
         const wchar_t* const kPageNames[] = { L"Renderer",  L"Rasteriser", L"NVIDIA DLSS",
                                               L"AMD FSR",   L"Textures",   L"On-screen display" };
 
-        // Settings > Video > Textures > AI upscaling: off, or the scale and the model.
+        // Settings > Video > Textures > AI upscaling: off, or the scale and the model. RTX Video
+        // (Texture-Upscaling-Plan.md, phase 4) only where it can run - a build with NVIDIA's SDK,
+        // and an NVIDIA card - or while it is set.
         struct TextureAiChoice {
             int scale;
             const char* model;
@@ -78,10 +80,12 @@ namespace psxemu {
         };
         const TextureAiChoice kTextureAiChoices[] = {
             { 0, "anime", L"Off" },
-            { 2, "anime", L"2x" },
-            { 4, "anime", L"4x" },
-            { 2, "general", L"2x, the sharper model" },
-            { 4, "general", L"4x, the sharper model" },
+            { 2, "anime", L"2x, Real-ESRGAN" },
+            { 4, "anime", L"4x, Real-ESRGAN" },
+            { 2, "general", L"2x, Real-ESRGAN, the sharper model" },
+            { 4, "general", L"4x, Real-ESRGAN, the sharper model" },
+            { 2, "rtx_video", L"2x, NVIDIA RTX Video (RTX cards)" },
+            { 4, "rtx_video", L"4x, NVIDIA RTX Video (RTX cards)" },
         };
         const int kIdHintFirst = 300;   // the grey lines, which WM_CTLCOLORSTATIC finds by id
         const int kIdHintLast = 399;
@@ -397,11 +401,12 @@ namespace psxemu {
                                textures.y + 2, textures.width - kInset * 2, kHintLine * 2,
                                small_font_);
         textures.y += 2 + kHintLine * 2 + 4;
-        text_row(textures, 3,
+        text_row(textures, 4,
                  L"Each game's are in Documents\\My Games\\PSXEmu\\textures\\<game>: dump\\, "
                  L"replace\\ and ai\\. Packs and AI upscaling need the hardware rasteriser, above "
                  L"1x to be seen. AI upscaling runs on a card the game is not drawing on, if there "
-                 L"is one; the first time a texture is drawn, it is upscaled a moment later.",
+                 L"is one: a texture is upscaled a moment after it is first drawn, and kept for "
+                 L"every run after; dumped ones not yet upscaled are done in the background.",
                  hint_id++);
         feet.push_back(textures);
 
@@ -472,10 +477,6 @@ namespace psxemu {
             for (const ResolutionChoice& choice : kResolutionChoices)
                 items.push_back(choice.label);
             SetItems(resolution_, items);
-            items.clear();
-            for (const TextureAiChoice& choice : kTextureAiChoices)
-                items.push_back(choice.label);
-            SetItems(texture_ai_, items);
             items.clear();
             for (const DlssModeChoice& choice : kDlssModeChoices)
                 items.push_back(choice.label);
@@ -640,12 +641,26 @@ namespace psxemu {
         // Textures: a game's own, so there is nothing to dump or replace without one.
         Check(texture_dump_, state.texture_dump);
         Check(texture_replace_, state.texture_replacement);
-        int ai = 0;
+        // The listed choices, and the one set if it is not among them.
+        int set = 0;
         for (size_t i = 0; i < std::size(kTextureAiChoices); ++i)
             if (kTextureAiChoices[i].scale == state.texture_ai_scale &&
                 (state.texture_ai_scale == 0 || state.texture_ai_model == kTextureAiChoices[i].model))
-                ai = static_cast<int>(i);
-        Select(texture_ai_, ai);
+                set = static_cast<int>(i);
+        std::vector<int> ai_items;
+        for (size_t i = 0; i < std::size(kTextureAiChoices); ++i)
+            if (std::string(kTextureAiChoices[i].model) != "rtx_video" ||
+                state.rtx_video_available || static_cast<int>(i) == set)
+                ai_items.push_back(static_cast<int>(i));
+        if (ai_items != ai_items_) {
+            ai_items_ = ai_items;
+            std::vector<std::wstring> labels;
+            for (int i : ai_items)
+                labels.push_back(kTextureAiChoices[i].label);
+            SetItems(texture_ai_, labels);
+        }
+        Select(texture_ai_, static_cast<int>(std::find(ai_items_.begin(), ai_items_.end(), set) -
+                                             ai_items_.begin()));
         EnableWindow(texture_ai_, state.game_running);
         EnableWindow(texture_dump_, state.game_running);
         EnableWindow(texture_replace_, state.game_running);
@@ -812,10 +827,9 @@ namespace psxemu {
                         host_.set_dlss_generation(generation_items_[index]);
                     break;
                 case kIdTextureAi:
-                    if (index < static_cast<int>(std::size(kTextureAiChoices)) &&
-                        host_.set_texture_ai)
-                        host_.set_texture_ai(kTextureAiChoices[index].scale,
-                                             kTextureAiChoices[index].model);
+                    if (index < static_cast<int>(ai_items_.size()) && host_.set_texture_ai)
+                        host_.set_texture_ai(kTextureAiChoices[ai_items_[index]].scale,
+                                             kTextureAiChoices[ai_items_[index]].model);
                     break;
                 case kIdFsrMode:
                     if (index < static_cast<int>(std::size(kFsrModeChoices)) && host_.set_fsr_mode)

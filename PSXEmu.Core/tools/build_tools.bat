@@ -56,14 +56,19 @@ set HWRASTER=PSXEmu.Win32\graphics\hw_raster\d3d11_raster.cpp ^
  PSXEmu.Win32\graphics\hw_raster\hardware_raster.cpp
 
 rem The AI texture upscaler, for --texture-ai and --upscale-folder (Docs/Texture-Upscaling-Plan.md,
-rem phase 3), and its test.
+rem phases 3 and 4), and its test. NVIDIA's RTX Video SDK cannot be fetched (it is behind NVIDIA's
+rem sign-in) or committed: with it unpacked by hand into Temp\rtxvideo\ the RTX Video backend is
+rem built in, and its release DLL copied; without, rtx_video.cpp is a backend that says so.
 set AITEXTURES=PSXEmu.Win32\graphics\upscale\texture\ai_textures.cpp ^
- PSXEmu.Win32\graphics\upscale\texture\onnx_runtime.cpp
+ PSXEmu.Win32\graphics\upscale\texture\onnx_runtime.cpp ^
+ PSXEmu.Win32\graphics\upscale\texture\rtx_video.cpp
+set RTXVIDEO=
+if exist Temp\rtxvideo\include\nvsdk_ngx.h set RTXVIDEO=/DPSXEMU_RTX_VIDEO=1 /I Temp\rtxvideo\include
 
 rem boot_runner alone also has the front end's hardware rasteriser, for --hw-raster.
-cl %FLAGS% /DPSXEMU_HW_RASTER /I PSXEmu.Win32 /Fo:Temp\tools\obj_boot\ ^
+cl %FLAGS% /DPSXEMU_HW_RASTER /I PSXEmu.Win32 %RTXVIDEO% /Fo:Temp\tools\obj_boot\ ^
    /Fe:Temp\tools\boot_runner.exe PSXEmu.Core\tools\boot_runner.cpp ^
-   %HWRASTER% %AITEXTURES% %CORE% %LIBS%
+   %HWRASTER% %AITEXTURES% %CORE% %LIBS% /LIBPATH:Temp\rtxvideo\lib\Windows\x64
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_media mkdir Temp\tools\obj_media
@@ -282,10 +287,7 @@ if exist Temp\fidelityfx\v2.3.0\amd_fidelityfx_loader_dx12.dll (
 rem The AI texture upscaler's models, converted, checked and timed - Docs/Texture-Upscaling-Plan.md,
 rem phase 0. Needs PSXEmu.Win32\graphics\upscale\texture\fetch_onnxruntime.ps1 run first to load
 rem anything, but builds without; DirectML must be beside ONNX Runtime, so both are copied here.
-rem NVIDIA's RTX Video SDK cannot be fetched (it is behind NVIDIA's sign-in) or committed: with it
-rem unpacked by hand into Temp\rtxvideo\ the RTX Video backend is built in, and its release DLL copied.
-set RTXVIDEO=
-if exist Temp\rtxvideo\include\nvsdk_ngx.h set RTXVIDEO=/DPSXEMU_RTX_VIDEO=1 /I Temp\rtxvideo\include
+rem RTX Video's backend as boot_runner's, above.
 if not exist Temp\tools\obj_aiprobe mkdir Temp\tools\obj_aiprobe
 cl %FLAGS% /I PSXEmu.Win32 %RTXVIDEO% /Fo:Temp\tools\obj_aiprobe\ /Fe:Temp\tools\ai_probe.exe ^
    PSXEmu.Core\tools\ai_probe.cpp PSXEmu.Win32\graphics\upscale\texture\onnx_runtime.cpp ^

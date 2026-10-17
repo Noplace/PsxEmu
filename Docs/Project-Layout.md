@@ -200,7 +200,8 @@ PsxEmu/
                                as ONNX: ESRGAN and Real-ESRGAN's compact model
         texture_upscaler.h     what a backend is: RGB in, a whole number of times larger out
         rtx_video.h/.cpp       NVIDIA RTX Video Super Resolution as a backend, through NGX; built
-                               only where NVIDIA's SDK is unpacked in Temp\rtxvideo\ (never committed)
+                               only where NVIDIA's SDK is unpacked in Temp\rtxvideo\ (never
+                               committed); AI upscaling's RTX Video choice (phase 4)
         fetch_onnxruntime.ps1  downloads ONNX Runtime and DirectML from nuget.org into
                                Temp\onnxruntime\ - 36 MB, never committed
         ai_textures.h/.cpp     the upscaler's thread and queue: tiles made ready (holes filled,

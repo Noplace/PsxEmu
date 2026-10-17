@@ -94,6 +94,7 @@ namespace psxemu {
             int texture_ai_scale = 0;            // 0, 2 or 4
             std::string texture_ai_model;        // EmuConfig::kValidTextureAiModels
             bool ai_files_missing = false;       // ONNX Runtime or the model not beside PSXEmu
+            bool rtx_video_available = false;    // built with RTX Video, and an NVIDIA card here
             int stats_mode = 0;               // the performance panel: off, compact, full
             bool notifications = true;
             bool controllers_always = false;
@@ -227,6 +228,8 @@ namespace psxemu {
         // the card makes.
         std::vector<std::wstring> card_items_;
         std::vector<std::string> generation_items_;
+        // The AI upscaling choices listed, by their place in the table of them.
+        std::vector<int> ai_items_;
         HFONT font_ = nullptr;
         HFONT bold_font_ = nullptr;
         HFONT small_font_ = nullptr;

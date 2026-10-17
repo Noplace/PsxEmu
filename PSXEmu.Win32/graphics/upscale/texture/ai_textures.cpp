@@ -20,6 +20,7 @@
 
 #include "graphics/adapters.h"
 #include "graphics/upscale/texture/onnx_runtime.h"
+#include "graphics/upscale/texture/rtx_video.h"
 #include "render/png_file.h"
 #include "render/texture_pack.h"
 #include "render/texture_tracker.h"
@@ -70,7 +71,7 @@ namespace psxemu {
         pack_ = pack;
     }
 
-    size_t AiTextures::QueueFolder(const std::string& folder) {
+    size_t AiTextures::QueueFolder(const std::string& folder, bool only_new) {
         namespace fs = std::filesystem;
         std::error_code failed;
         size_t queued = 0;
@@ -86,6 +87,14 @@ namespace psxemu {
             if (ext != ".png" ||
                 !emulation::psx::TextureTracker::ParseName(path.stem().string(), &image, &clut, &mode))
                 continue;
+            if (only_new) {
+                // Done already: its image was written after the dump last grew.
+                std::error_code missing;
+                const fs::path done = fs::path(options_.output) / path.filename();
+                const auto done_at = fs::last_write_time(done, missing);
+                if (!missing && done_at >= fs::last_write_time(path, missing) && !missing)
+                    continue;
+            }
             files_.push_back(path.string());
             ++queued;
         }
@@ -290,7 +299,19 @@ namespace psxemu {
                 from[i] = static_cast<int>(i);
                 frontier.push_back(i);
             }
-        tile.empty = frontier.empty();
+        // Empty unless a cell it gives has a drawn texel: cells read but clear, beside drawn ones
+        // done before, give nothing - and leave nothing in the image to show the next run they
+        // were done, so they would go through the model every run.
+        tile.empty = true;
+        for (uint32_t cell : tile.cells) {
+            const int cx = static_cast<int>(cell % source.cells_x) * 8 - static_cast<int>(tx) * kTile;
+            const int cy = static_cast<int>(cell / source.cells_x) * 8 - static_cast<int>(ty) * kTile;
+            for (int y = cy; y < cy + 8 && tile.empty; ++y)
+                for (int x = cx; x < cx + 8 && tile.empty; ++x)
+                    tile.empty = alpha[static_cast<size_t>(y + kPad) * kSide + x + kPad] == 0;
+            if (!tile.empty)
+                break;
+        }
         for (size_t head = 0; head < frontier.size(); ++head) {
             const size_t i = frontier[head];
             const int x = static_cast<int>(i % kSide), y = static_cast<int>(i / kSide);
@@ -610,6 +631,31 @@ namespace psxemu {
             return nullptr;
         }
         std::unique_ptr<OnnxUpscaler> upscaler = OnnxUpscaler::Create(model, device.Get(), error);
+        if (!upscaler)
+            return nullptr;
+        return upscaler;
+    }
+
+    std::unique_ptr<TextureUpscaler> MakeRtxVideoBackend(const std::wstring& folder, int scale,
+                                                         int quality, uint64_t adapter,
+                                                         std::string* error) {
+        if (!RtxVideoUpscaler::Built()) {
+            *error = "this build has no RTX Video";
+            return nullptr;
+        }
+        Microsoft::WRL::ComPtr<IDXGIAdapter1> card;
+        if (adapter != 0)
+            card = OpenAdapter(adapter);
+        Microsoft::WRL::ComPtr<ID3D12Device> device;
+        if (FAILED(D3D12CreateDevice(card.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
+            *error = "no Direct3D 12 device on the card for the upscaler";
+            return nullptr;
+        }
+        std::wstring dll_folder = folder;
+        while (!dll_folder.empty() && (dll_folder.back() == L'\\' || dll_folder.back() == L'/'))
+            dll_folder.pop_back();
+        std::unique_ptr<RtxVideoUpscaler> upscaler =
+            RtxVideoUpscaler::Create(device.Get(), dll_folder, scale, quality, error);
         if (!upscaler)
             return nullptr;
         return upscaler;

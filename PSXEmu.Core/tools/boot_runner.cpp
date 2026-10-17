@@ -126,7 +126,9 @@
 //                        the identity check's debug switch
 //     --texture-pack-scale <k>  ...each replacement made k times as large as it is read,
 //                        nearest: a dump at 1x drawn as a pack at 2x-8x, for the identity check
-//     --texture-ai <model.onnx>  ...and every texture drawn upscaled by the model as it is read
+//     --texture-ai <model.onnx | rtx-video>  ...and every texture drawn upscaled by the model as
+//                        it is read - or by RTX Video Super Resolution at --texture-ai-quality
+//                        1-4 (4), nvngx_vsr.dll beside this program
 //                        (graphics/upscale/texture/ai_textures.h, phase 3), on the hardware
 //                        rasteriser's card, into --texture-ai-out <dir> (needed), at
 //                        --texture-ai-scale 2 or 4 (4); the upscaler held to --texture-ai-share
@@ -417,6 +419,7 @@ struct Options {
   int texture_ai_scale;             // --texture-ai-scale: 2 or 4
   double texture_ai_share;          // --texture-ai-share: of the time, 0-1
   int texture_ai_grid;              // --texture-ai-grid: tiles to a call each way, 1-3
+  int texture_ai_quality;           // --texture-ai-quality: RTX Video's, 1-4
   const char* upscale_folder;       // --upscale-folder: dumps to upscale, nothing run
 };
 
@@ -813,6 +816,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->texture_ai_scale = 4;
   options->texture_ai_share = 1.0;
   options->texture_ai_grid = 3;
+  options->texture_ai_quality = 4;
   options->upscale_folder = nullptr;
 
   for (int i = 1; i < argc; ++i) {
@@ -1000,6 +1004,12 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->texture_ai_share = atof(argv[++i]);
     } else if (strcmp(arg, "--texture-ai-grid") == 0 && i + 1 < argc) {
       options->texture_ai_grid = atoi(argv[++i]);
+    } else if (strcmp(arg, "--texture-ai-quality") == 0 && i + 1 < argc) {
+      options->texture_ai_quality = atoi(argv[++i]);
+      if (options->texture_ai_quality < 1 || options->texture_ai_quality > 4) {
+        fprintf(stderr, "--texture-ai-quality is 1 to 4\n");
+        return false;
+      }
     } else if (strcmp(arg, "--upscale-folder") == 0 && i + 1 < argc) {
       options->upscale_folder = argv[++i];
     } else if (strcmp(arg, "--texture-pack-scale") == 0 && i + 1 < argc) {
@@ -1733,7 +1743,11 @@ std::unique_ptr<psxemu::AiTextures> MakeAiTextures(const Options& options) {
   }
   std::string error;
   std::unique_ptr<psxemu::TextureUpscaler> backend =
-      psxemu::MakeOnnxBackend(runtime, wide(options.texture_ai), ChosenAdapter(options), &error);
+      strcmp(options.texture_ai, "rtx-video") == 0
+          ? psxemu::MakeRtxVideoBackend(runtime, options.texture_ai_scale,
+                                        options.texture_ai_quality, ChosenAdapter(options), &error)
+          : psxemu::MakeOnnxBackend(runtime, wide(options.texture_ai), ChosenAdapter(options),
+                                    &error);
   if (!backend) {
     fprintf(stderr, "--texture-ai: %s\n", error.c_str());
     return nullptr;

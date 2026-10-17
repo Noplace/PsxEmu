@@ -30,6 +30,7 @@
 #include "graphics/upscale/fsr/fsr_download.h"
 #include "graphics/upscale/texture/ai_download.h"
 #include "graphics/upscale/texture/ai_textures.h"
+#include "graphics/upscale/texture/rtx_video.h"
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/shared_device.h"
 #include "ui/dpi.h"
@@ -2059,6 +2060,12 @@ namespace psxemu {
         state.texture_ai_scale = config_.texture_ai_scale;
         state.texture_ai_model = config_.texture_ai_model;
         state.ai_files_missing = config_.texture_ai_scale != 0 && !MissingAiFiles().empty();
+        // RTX Video in the list: a build with NVIDIA's SDK, and an NVIDIA card to run it on.
+        state.rtx_video_available =
+            RtxVideoUpscaler::Built() &&
+            std::any_of(adapters_.begin(), adapters_.end(), [](const GraphicsAdapter& card) {
+                return card.name.find("NVIDIA") != std::string::npos;
+            });
         state.upscaler_running = upscaler_active_;
         state.fsr_running = fsr_active_;
         state.dlss_mode = config_.dlss_mode;
@@ -3996,6 +4003,8 @@ namespace psxemu {
         const wchar_t* const kAiRuntimeFiles[] = { L"onnxruntime.dll",
                                                    L"onnxruntime_providers_shared.dll",
                                                    L"DirectML.dll" };
+        // RTX Video's quality, 1-4: the best, as it costs next to nothing (Phase 4, as built).
+        constexpr int kRtxVideoQuality = 4;
 
     }   // namespace
 
@@ -4008,6 +4017,15 @@ namespace psxemu {
     std::vector<std::wstring> App::MissingAiFiles() const {
         std::vector<std::wstring> missing;
         const std::wstring folder = ProgramFolder();
+        // RTX Video needs NVIDIA's feature DLL alone, and a build made with NVIDIA's SDK.
+        if (config_.texture_ai_model == "rtx_video") {
+            if (!RtxVideoUpscaler::Built())
+                missing.push_back(L"RTX Video, which this build was made without");
+            else if (GetFileAttributesW((folder + L"nvngx_vsr.dll").c_str()) ==
+                     INVALID_FILE_ATTRIBUTES)
+                missing.push_back(L"nvngx_vsr.dll");
+            return missing;
+        }
         for (const wchar_t* file : kAiRuntimeFiles)
             if (GetFileAttributesW((folder + file).c_str()) == INVALID_FILE_ATTRIBUTES)
                 missing.push_back(file);
@@ -4027,6 +4045,17 @@ namespace psxemu {
             for (const GraphicsAdapter& card : adapters_)
                 if (card.name == config_.texture_ai_card)
                     return card.luid;
+        }
+        // RTX Video runs only on NVIDIA's cards: the one with the most memory, the renderer's if
+        // that is the only one.
+        if (config_.texture_ai_model == "rtx_video") {
+            const GraphicsAdapter* nvidia = nullptr;
+            for (const GraphicsAdapter& card : adapters_)
+                if (card.name.find("NVIDIA") != std::string::npos &&
+                    (nvidia == nullptr || card.video_memory > nvidia->video_memory))
+                    nvidia = &card;
+            if (nvidia != nullptr)
+                return nvidia->luid;
         }
         const GraphicsAdapter* drawing = nullptr;
         for (const GraphicsAdapter& card : adapters_)
@@ -4056,7 +4085,9 @@ namespace psxemu {
         Notify(OverlayIcon::kScreen, ToastKind::kInfo,
                scale == 0 ? std::wstring(L"AI upscaling off")
                           : L"AI upscaling at " + std::to_wstring(scale) + L"x" +
-                                (model == "general" ? L", the sharper model" : L""));
+                                (model == "general"     ? L", the sharper model"
+                                 : model == "rtx_video" ? L", NVIDIA RTX Video"
+                                                        : L""));
         if (scale != 0 && !MissingAiFiles().empty())
             ShowAiFiles();
     }
@@ -4093,9 +4124,13 @@ namespace psxemu {
         const bool own_card = adapter != presenter_adapter_;
         options.share = own_card ? 1.0 : config_.texture_ai_share / 100.0;
         options.grid = own_card ? AiTextures::kGrid : 1;
-        ai_textures_maker_ = std::thread([this, wanted, runtime, model, adapter, options] {
+        const bool rtx_video = config_.texture_ai_model == "rtx_video";
+        ai_textures_maker_ = std::thread([this, wanted, runtime, model, adapter, options, rtx_video] {
             std::string error;
-            std::unique_ptr<TextureUpscaler> backend = MakeOnnxBackend(runtime, model, adapter, &error);
+            std::unique_ptr<TextureUpscaler> backend =
+                rtx_video ? MakeRtxVideoBackend(runtime, options.scale, kRtxVideoQuality, adapter,
+                                                &error)
+                          : MakeOnnxBackend(runtime, model, adapter, &error);
             std::shared_ptr<AiTextures> made;
             if (backend)
                 made = std::make_shared<AiTextures>(std::move(backend), options);
@@ -4104,6 +4139,11 @@ namespace psxemu {
                     return;   // the settings moved on meanwhile
                 ai_textures_ = made;
                 ai_textures_error_ = error;
+                // The game's dumps not yet upscaled for this model and scale go in the background,
+                // behind whatever the game draws: Upscale All without asking.
+                const std::string game = GameTextureFolder();
+                if (made && !game.empty())
+                    made->QueueFolder(game + "\\dump", true);
                 SendTexturesToMachine();
                 UpdateVideoSettings();
                 if (!made)
@@ -4121,6 +4161,15 @@ namespace psxemu {
             L"  onnxruntime.dll, onnxruntime_providers_shared.dll and DirectML.dll\n"
             L"and in its models folder the model chosen:\n"
             L"  realesr-animevideov3.onnx, or realesr-general-x4v3.onnx for the sharper one.";
+        // RTX Video's DLL is NVIDIA's, from an SDK behind NVIDIA's sign-in: nothing to download.
+        const bool rtx_video = config_.texture_ai_model == "rtx_video";
+        if (rtx_video)
+            content =
+                L"RTX Video upscaling runs NVIDIA's RTX Video Super Resolution on an NVIDIA RTX "
+                L"graphics card. It needs a build of PSXEmu made with NVIDIA's RTX Video SDK, and "
+                L"beside PSXEmu:\n  nvngx_vsr.dll, which that build puts there.\n"
+                L"NVIDIA's SDK cannot be downloaded for you; the other AI upscaling choices need "
+                L"neither.";
         std::wstring footer;
         if (missing.empty()) {
             footer = L"They are all there.";
@@ -4155,8 +4204,8 @@ namespace psxemu {
         config.pszMainIcon = TD_INFORMATION_ICON;
         config.pszMainInstruction = L"Get the AI upscaler's files";
         config.pszContent = content.c_str();
-        config.pButtons = buttons;
-        config.cButtons = static_cast<UINT>(std::size(buttons));
+        config.pButtons = rtx_video ? buttons + 1 : buttons;   // no Download for RTX Video
+        config.cButtons = static_cast<UINT>(std::size(buttons)) - (rtx_video ? 1 : 0);
         config.pszFooter = footer.c_str();
         config.lpCallbackData = reinterpret_cast<LONG_PTR>(&links);
         config.pfCallback = [](HWND, UINT note, WPARAM wparam, LPARAM, LONG_PTR data) -> HRESULT {

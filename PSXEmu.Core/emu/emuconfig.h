@@ -323,11 +323,12 @@ struct EmuConfig {
   // The AI texture upscaler (phase 3): every texture drawn made 2 or 4 times larger by a model on
   // the graphics card as it is first drawn, kept in textures\<game>\ai\, and drawn in its place by
   // the hardware rasteriser - 0 for off. Per game. The model: "anime" (Real-ESRGAN animevideo-v3,
-  // quick) or "general" (Real-ESRGAN general-x4v3, sharper, about 1.5 times the cost). The share
+  // quick), "general" (Real-ESRGAN general-x4v3, sharper, about 1.5 times the cost) or
+  // "rtx_video" (NVIDIA's RTX Video Super Resolution, on an RTX card, phase 4). The share
   // of the time the card may spend on it, in percent, so the game keeps its speed.
   int texture_ai_scale = 0;
   std::string texture_ai_model = "anime";
-  static const std::array<const char*, 2> kValidTextureAiModels;
+  static const std::array<const char*, 3> kValidTextureAiModels;
   int texture_ai_share = 10;
   // The card it runs on, by name; empty for its own choice - another card than the renderer's,
   // with more memory of its own, if there is one (a laptop's discrete card), else the renderer's.
@@ -576,7 +577,8 @@ inline const std::array<int, 4> EmuConfig::kValidRewindBudgets = { 128, 256, 512
 inline const std::array<const char*, 6> EmuConfig::kValidDlssModes = {
     "off", "dlaa", "quality", "balanced", "performance", "ultra_performance" };
 inline const std::array<const char*, 4> EmuConfig::kValidDlssPresets = { "auto", "k", "l", "m" };
-inline const std::array<const char*, 2> EmuConfig::kValidTextureAiModels = { "anime", "general" };
+inline const std::array<const char*, 3> EmuConfig::kValidTextureAiModels = { "anime", "general",
+                                                                         "rtx_video" };
 inline const std::array<const char*, 7> EmuConfig::kValidDlssFrameGenerations = {
     "off", "2x", "3x", "4x", "5x", "6x", "dynamic" };
 inline const std::array<const char*, 6> EmuConfig::kValidFsrModes = {

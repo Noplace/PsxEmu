@@ -150,6 +150,9 @@
     <ClCompile Include="graphics\upscale\texture\torch_model.cpp">
       <Filter>graphics\upscale\texture</Filter>
     </ClCompile>
+    <ClCompile Include="graphics\upscale\texture\rtx_video.cpp">
+      <Filter>graphics\upscale\texture</Filter>
+    </ClCompile>
     <ClCompile Include="graphics\present\opengl\opengl_engine.cpp">
       <Filter>graphics\present\opengl</Filter>
     </ClCompile>
@@ -309,6 +312,9 @@
       <Filter>graphics\upscale\texture</Filter>
     </ClInclude>
     <ClInclude Include="graphics\upscale\texture\torch_model.h">
+      <Filter>graphics\upscale\texture</Filter>
+    </ClInclude>
+    <ClInclude Include="graphics\upscale\texture\rtx_video.h">
       <Filter>graphics\upscale\texture</Filter>
     </ClInclude>
     <ClInclude Include="graphics\present\opengl\opengl_engine.h">

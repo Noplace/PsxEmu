@@ -34,11 +34,12 @@
 //   texel that is drawn, so no dark fringe is drawn into a cut-out's edge.
 // - **After**: a tile with clear texels has its coverage go through the model too, and a pixel is
 //   drawn where that is a half or more - smooth edges for cut-outs; semi-transparency (bit 15)
-//   follows the nearest texel. The model's 4x is halved, a 2x2 average, for 2x.
-// - **On its own thread and its own Direct3D 12 device** on the card the rasteriser draws on,
-//   through any TextureUpscaler backend: an ONNX model on DirectML (onnx_runtime.h), or RTX Video
-//   in phase 4. Held to a share of the time - after a call that took t, it rests t (1 - share) /
-//   share - so the game keeps its speed while the queue runs.
+//   follows the nearest texel. A model's 4x is halved, a 2x2 average, for 2x.
+// - **On its own thread and its own Direct3D 12 device**, through any TextureUpscaler backend:
+//   an ONNX model on DirectML (onnx_runtime.h), or RTX Video Super Resolution (rtx_video.h) on an
+//   RTX card, which is asked for 2x or 4x as it is. Held to a share of the time - after a call
+//   that took t, it rests t (1 - share) / share - so the game keeps its speed while the queue
+//   runs.
 // - **Upscale All** feeds it a folder of dumps instead: each a source with every cell it has
 //   filled read.
 
@@ -92,8 +93,10 @@ namespace psxemu {
         void set_pack(emulation::psx::TexturePack* pack) override;
 
         // Upscale All: every dump in `folder` (a PNG named as a source), each with its filled cells
-        // read. Returns how many were queued.
-        size_t QueueFolder(const std::string& folder);
+        // read. With `only_new`, a dump whose upscaled image is as new as it is left out - what the
+        // app does by itself each time the upscaler starts, so dumps are upscaled in the
+        // background without reading every finished one again. Returns how many were queued.
+        size_t QueueFolder(const std::string& folder, bool only_new = false);
         // Waits until nothing is waiting or being worked on.
         void Drain();
         Counts counts() const;
@@ -170,5 +173,12 @@ namespace psxemu {
     std::unique_ptr<TextureUpscaler> MakeOnnxBackend(const std::wstring& runtime_folder,
                                                      const std::wstring& model, uint64_t adapter,
                                                      std::string* error);
+
+    // NVIDIA's RTX Video Super Resolution (rtx_video.h) the same way: `scale` times larger at
+    // `quality` 1-4, nvngx_vsr.dll from `folder`. Null, with `error`: a build without the SDK,
+    // the DLL missing, or not an RTX card.
+    std::unique_ptr<TextureUpscaler> MakeRtxVideoBackend(const std::wstring& folder, int scale,
+                                                         int quality, uint64_t adapter,
+                                                         std::string* error);
 
 }   // namespace psxemu

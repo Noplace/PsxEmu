@@ -880,7 +880,10 @@ look for. Each was looked for in the code and settings on 2026-10-14 and is not 
   - tiny pixel lettering comes out softer - no font list is skipped by default;
   - every palette of an animated texture is its own image.
 
-  Texture filtering is the plan's next phase, and RTX Video as a second backend.
+  NVIDIA's RTX Video Super Resolution is a second AI backend (phase 4), in the list on NVIDIA
+  cards: softer than either Real-ESRGAN model on the 26 discs' textures, and only in a build made
+  with NVIDIA's SDK. Texture filtering is the plan's
+  next phase.
 - **Overrides:** no region override (PAL or NTSC whatever the disc and BIOS say), no CPU
   overclock.
 - **Recording:** no video recording, and sound only through `boot_runner --wav`. Input movies
