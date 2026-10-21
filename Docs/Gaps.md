@@ -882,7 +882,8 @@ look for. Each was looked for in the code and settings on 2026-10-14 and is not 
   cards: softer than either Real-ESRGAN model on the 26 discs' textures, and only in a build made
   with NVIDIA's SDK. Texture filters are built too (phase F, Settings > Video > Textures > Texture
   filter): reviewed in game on Ridge Racer and, on dumped textures, on five discs; the 2D discs
-  in the game still to see.
+  in the game still to see. Everything left of texture upscaling is in one list:
+  [Texture-Upscaling-Plan.md, What is left](Texture-Upscaling-Plan.md#what-is-left-2026-10-21).
 - **Overrides:** no region override (PAL or NTSC whatever the disc and BIOS say), no CPU
   overclock.
 - **Recording:** no video recording, and sound only through `boot_runner --wav`. Input movies

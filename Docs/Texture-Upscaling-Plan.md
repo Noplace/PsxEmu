@@ -49,6 +49,57 @@ DLSS was the first idea, and it cannot do this; the first section says why.
 
 ---
 
+## What is left (2026-10-21)
+
+Every phase is built and committed. What remains, gathered from each phase's "left for later":
+
+**Planned, and not built**
+
+1. **Help > About credits** (phase 3's Settings and the menus): ONNX Runtime's MIT licence,
+   DirectML's licence and its data clause, Real-ESRGAN's BSD-3 notice for the two models, and
+   NVIDIA's marks for RTX Video. Only MMPX's notice is there now. Needed before anyone else is given
+   a copy. Small.
+2. **Emulation > Show Timings**: the upscaler's milliseconds a frame and its queue. Small.
+
+**Not yet seen**
+
+3. **AI textures in motion**, on both cards: only stills and speed were measured.
+4. **The texture filters in a 2D game in play**: reviewed on Ridge Racer and on five discs' dumped
+   textures drawn as sprites; Wild Arms' local copy only reaches its opening film.
+5. **The twelve-disc Nearest check** for phase F: run on Ridge Racer and Wild Arms only, the share
+   being offline. The 256 compiled shaders being the same byte for byte makes it a formality.
+
+**Known limits, each a piece of work of its own**
+
+6. **One card alone**: on the Radeon 780M at 4x the game dips to 88-92% while the AI queue runs -
+   about the first minute of a game. A half-float model, or the NPU through Windows ML, may make a
+   call short enough.
+7. **Pixel lettering and HUDs** come out softer through Real-ESRGAN. No default list of textures
+   never to upscale (`pack.ini`'s `[never]` does it per game); a pixel-art model whose licence
+   allows it would do better - PixelPerfect (WTFPL) is 20-45 times the cost.
+8. **The queue's order**: first come, first served, not nearest the middle of the screen first.
+9. **2x** is a 4x model's picture halved; a 2x model would be quicker.
+10. **Palette animation**: each palette of an animated texture is an image of its own (57 of the
+    26 discs' 4,303).
+11. **Upscale All on huge, mostly empty sheets** is slow: Spyro 3's 388 take 82 s, 5 s of it the
+    model.
+12. **RTX Video's quality levels 1-3** have not been set beside 4.
+13. **A state saved before 2026-10-17**, or with textures off, has no `.textures` file beside it:
+    loaded in a new session, its textures are the game's own until it uploads them again.
+14. **Changing the texture filter** compiles the shaders again: 2-3.5 s for JINC2, xBR and MMPX.
+    Kept compiled, a change would be instant.
+15. **The texture memory budget** is `texture_budget_mb` in psxemu.ini only.
+16. **Dumps in the app** are written as each source closes; a game that patches a font glyph by
+    glyph (Ridge Racer) writes many small files.
+
+**By design, not to do**
+
+- Textures the GPU drew itself (Metal Gear Solid's screen effects - why it names 63.5%) are never
+  replaced or upscaled.
+- The software rasteriser draws no replacements and no filters: it is the console's picture.
+
+---
+
 ## The conclusion first
 
 - **DLSS cannot upscale textures.** DLSS Super Resolution, DLAA and DLSS 5 all work on the
