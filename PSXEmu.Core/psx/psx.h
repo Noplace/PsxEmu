@@ -38,7 +38,7 @@
 #include "emucore/timing/speed_resampler.h"
 
 #include "psx/types.h"
-#include "emu/state.h"
+#include "psx/state_format.h"
 #include "emu/emuconfig.h"
 #include "debug/debug.h"
 #include "psx/component.h"

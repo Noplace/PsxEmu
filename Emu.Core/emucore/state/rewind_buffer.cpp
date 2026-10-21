@@ -16,7 +16,7 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "emu/rewind_buffer.h"
+#include "emucore/state/rewind_buffer.h"
 
 #include "zlib.h"
 
@@ -25,7 +25,7 @@
 #include <cstring>
 
 namespace emulation {
-namespace psx {
+namespace state {
 
 namespace {
 
@@ -251,5 +251,5 @@ void RewindBuffer::TrimLocked() {
   }
 }
 
-}  // namespace psx
+}  // namespace state
 }  // namespace emulation

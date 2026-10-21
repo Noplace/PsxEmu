@@ -37,11 +37,13 @@ namespace emulation {
 namespace psx {
 class System;
 struct EmuConfig;
-class RewindBuffer;
 class TextureTracker;
 class TexturePack;
 class TextureUpscaleQueue;
 }  // namespace psx
+namespace state {
+class RewindBuffer;
+}  // namespace state
 
 namespace host {
 
@@ -339,7 +341,7 @@ class Machine {
   std::unique_ptr<Ahead> ahead_;
   // Rewind's store, made when rewind is turned on and freed when it is turned off, and where the
   // machine is in its interval.
-  std::unique_ptr<psx::RewindBuffer> rewind_;
+  std::unique_ptr<state::RewindBuffer> rewind_;
   int rewind_countdown_ = 0;
   bool rewinding_ = false;
   bool was_rewinding_ = false;

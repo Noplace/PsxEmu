@@ -255,7 +255,7 @@ struct EmuConfig {
   // Rewind (Docs/Rewind-and-Run-Ahead-Plan.md): a state kept in memory every this many frames, 0
   // for none, and held Backspace steps back through them, one a frame shown. The store keeps as
   // many as rewind_budget_mb holds, each older one a compressed difference from the one after
-  // (emu/rewind_buffer.h). Off while the debugger is armed or a movie plays; never touches the
+  // (emucore/state/rewind_buffer.h). Off while the debugger is armed or a movie plays; never touches the
   // memory cards. The person's preference, not a game's.
   int rewind_interval = 0;
   static const std::array<int, 6> kValidRewindIntervals;

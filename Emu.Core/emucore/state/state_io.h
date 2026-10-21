@@ -34,21 +34,10 @@
 #include <vector>
 
 namespace emulation {
-namespace psx {
+namespace state {
 
-// A save-state file: magic, then a version (bumped whenever any component's
-// Serialise changes - old files are refused outright, never migrated), then
-// an FNV-1a hash of the BIOS image the state was made against, then the
-// mounted disc's path (empty for none - a courtesy copy for a future save
-// browser; System::LoadState restores the real one from the payload, not
-// from here), then the payload itself: every component's Serialise, called
-// in the same fixed order on both sides. See System::SaveState/LoadState.
-constexpr char kStateMagic[8] = {'P', 'S', 'X', 'S', 'T', 'A', 'T', 'E'};
-constexpr uint32_t kStateVersion = 8;   // 4: Sio gained a per-slot Mouse array.
-                                         // 5: Sio's Pad became polymorphic (Multitap).
-                                         // 6: Multitap keeps method 1's replies.
-                                         // 7: Dma feeds channel 0 a block at a time.
-                                         // 8: SIO1, the serial port, has registers to save.
+// What a file holds around the payload - its magic, its version, what it was made against - is
+// each console's own (PSXEmu: psx/state_format.h).
 
 // FNV-1a, 64-bit. Same algorithm boot_runner.cpp's framebuffer Checksum()
 // already used - given a shared home here so the BIOS-identity hash in a
@@ -246,5 +235,5 @@ class StateIO {
   std::string error_;
 };
 
-}  // namespace psx
+}  // namespace state
 }  // namespace emulation

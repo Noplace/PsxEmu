@@ -188,9 +188,15 @@
     <!-- The front end's threads: what keeps a sound device fed and shows the newest frame. -->
     <ClCompile Include="emucore\host\audio_output.cpp" />
     <ClCompile Include="emucore\host\video_output.cpp" />
+    <!-- Save states: the serialiser, and rewind's store, which compresses its deltas with zlib. -->
+    <ClCompile Include="emucore\state\state_io.cpp" />
+    <ClCompile Include="emucore\state\rewind_buffer.cpp">
+      <AdditionalIncludeDirectories>$(ProjectDir)emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="emucore\audio\iaudioengine.h" />
+    <ClInclude Include="emucore\config\settings_file.h" />
     <ClInclude Include="emucore\host\audio_output.h" />
     <ClInclude Include="emucore\host\doorbell.h" />
     <ClInclude Include="emucore\host\frame_mailbox.h" />
@@ -204,6 +210,8 @@
     <ClInclude Include="emucore\input\input_bindings.h" />
     <ClInclude Include="emucore\input\mouse_scaling.h" />
     <ClInclude Include="emucore\input\sony_pad_reports.h" />
+    <ClInclude Include="emucore\state\rewind_buffer.h" />
+    <ClInclude Include="emucore\state\state_io.h" />
     <ClInclude Include="emucore\timing\display_sync.h" />
     <ClInclude Include="emucore\timing\frame_limiter.h" />
     <ClInclude Include="emucore\timing\speed_resampler.h" />

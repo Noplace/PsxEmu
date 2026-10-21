@@ -436,7 +436,7 @@ uint64_t Checksum(const uint32_t* pixels, int count) {
 uint64_t StateHash(System& system) {
   System::MemoryState state;
   system.SaveMemoryState(&state, false);
-  return emulation::psx::Fnv1a64(state.payload.data(), state.payload.size());
+  return emulation::state::Fnv1a64(state.payload.data(), state.payload.size());
 }
 
 uint64_t FramebufferChecksum(System& system) {

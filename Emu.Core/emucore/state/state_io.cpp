@@ -16,10 +16,10 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "emu/state.h"
+#include "emucore/state/state_io.h"
 
 namespace emulation {
-namespace psx {
+namespace state {
 
 uint64_t Fnv1a64(const void* data, size_t size) {
   const uint8_t* bytes = static_cast<const uint8_t*>(data);
@@ -31,5 +31,5 @@ uint64_t Fnv1a64(const void* data, size_t size) {
   return hash;
 }
 
-}  // namespace psx
+}  // namespace state
 }  // namespace emulation

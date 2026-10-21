@@ -162,7 +162,7 @@
 #include "emu/recompiler_bridge.h"
 #include "debug/disasm.h"
 #include "emu/movie.h"
-#include "emu/rewind_buffer.h"
+#include "emucore/state/rewind_buffer.h"
 #include "render/texture_pack.h"
 #include "render/texture_tracker.h"
 #ifdef PSXEMU_HW_RASTER
@@ -1656,7 +1656,7 @@ void Run(System* system, int n) {
         }
       }
       Save(system, &scratch);
-      return emulation::psx::Fnv1a64(scratch.data(), scratch.size());
+      return emulation::state::Fnv1a64(scratch.data(), scratch.size());
     };
     const char* modes[6] = {"no load", "a load, the disc reopened", "a load, the disc kept open",
                             "a save and load after every frame",
@@ -2290,11 +2290,11 @@ int main(int argc, char** argv) {
   // --run-ahead: the state the real frame is kept in, and what the frames ahead cost.
   System::MemoryState ahead_state;
   // --rewind-test: the store, a state a frame, and the one n frames before the end kept aside.
-  std::unique_ptr<emulation::psx::RewindBuffer> rewind;
+  std::unique_ptr<emulation::state::RewindBuffer> rewind;
   System::MemoryState rewind_state;
   std::vector<uint8_t> rewind_target;
   if (options.rewind_test > 0)
-    rewind.reset(new emulation::psx::RewindBuffer(size_t(4) << 30));
+    rewind.reset(new emulation::state::RewindBuffer(size_t(4) << 30));
   uint64_t ahead_frames = 0;
   uint64_t ahead_instructions = 0;
   double ahead_save_ms = 0.0;
@@ -3578,7 +3578,7 @@ int main(int argc, char** argv) {
   // last is the frame kept aside, byte for byte; then load it and play n frames on, which must
   // come to the run's own end exactly, as a rewind released there would.
   if (rewind != nullptr) {
-    const emulation::psx::RewindBuffer::Stats stats = rewind->stats();
+    const emulation::state::RewindBuffer::Stats stats = rewind->stats();
     const size_t held = rewind->count();
     const size_t held_bytes = rewind->bytes();
     System::MemoryState end;

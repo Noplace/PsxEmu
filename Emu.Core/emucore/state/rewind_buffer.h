@@ -42,7 +42,7 @@
 #include <vector>
 
 namespace emulation {
-namespace psx {
+namespace state {
 
 class RewindBuffer {
  public:
@@ -120,5 +120,5 @@ class RewindBuffer {
   std::thread worker_;
 };
 
-}  // namespace psx
+}  // namespace state
 }  // namespace emulation

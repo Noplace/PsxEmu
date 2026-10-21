@@ -1,7 +1,7 @@
 #include "host/machine.h"
 
 #include "psx/psx.h"
-#include "emu/rewind_buffer.h"
+#include "emucore/state/rewind_buffer.h"
 #include "render/texture_pack.h"
 #include "render/texture_tracker.h"
 
@@ -367,7 +367,7 @@ void Machine::KeepForRewind() {
     return;
   const size_t budget = static_cast<size_t>(config.rewind_budget_mb) << 20;
   if (rewind_ == nullptr)
-    rewind_.reset(new psx::RewindBuffer(budget));
+    rewind_.reset(new state::RewindBuffer(budget));
   else
     rewind_->set_budget(budget);
   if (--rewind_countdown_ > 0)

@@ -111,15 +111,10 @@
     <ClCompile Include="emu\movie.cpp">
       <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
-    <!-- Rewind's store compresses its deltas with the same zlib. -->
-    <ClCompile Include="emu\rewind_buffer.cpp">
-      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-    </ClCompile>
     <ClCompile Include="psx\root_counter.cpp" />
     <ClCompile Include="psx\sio.cpp" />
     <ClCompile Include="psx\sio1.cpp" />
     <ClCompile Include="psx\spu.cpp" />
-    <ClCompile Include="emu\state.cpp" />
     <ClCompile Include="psx\system.cpp" />
   </ItemGroup>
   <ItemGroup>
@@ -154,7 +149,6 @@
     <ClInclude Include="psx\mc.h" />
     <ClInclude Include="media\mc_directory.h" />
     <ClInclude Include="emu\movie.h" />
-    <ClInclude Include="emu\rewind_buffer.h" />
     <ClInclude Include="debug\debugger.h" />
     <ClInclude Include="debug\disasm.h" />
     <ClInclude Include="bios\bios_calls.h" />
@@ -165,7 +159,7 @@
     <ClInclude Include="psx\sio.h" />
     <ClInclude Include="psx\sio1.h" />
     <ClInclude Include="psx\spu.h" />
-    <ClInclude Include="emu\state.h" />
+    <ClInclude Include="psx\state_format.h" />
     <ClInclude Include="psx\system.h" />
     <ClInclude Include="psx\types.h" />
     <ClInclude Include="rec\block_cache.h" />
