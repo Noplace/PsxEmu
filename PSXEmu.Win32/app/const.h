@@ -268,6 +268,20 @@ namespace psxemu {
         { 8, L"8x" },
     };
 
+    // How the hardware rasteriser samples the game's own textures (Settings > Video > Textures,
+    // Docs/Texture-Upscaling-Plan.md, phase F), in EmuConfig::kValidTextureFilters' order.
+    struct TextureFilterChoice { const char* key; const wchar_t* label; };
+
+    inline constexpr TextureFilterChoice kTextureFilterChoices[] = {
+        { "nearest",  L"Nearest (as the console)" },
+        { "bilinear", L"Bilinear" },
+        { "jinc2",    L"JINC2 (smooth, sharper)" },
+        { "xbr",      L"xBR (pixel art, smoothed edges)" },
+        { "scale2x",  L"Scale2x (pixel art)" },
+        { "scale3x",  L"Scale3x (pixel art)" },
+        { "mmpx",     L"MMPX (pixel art)" },
+    };
+
     // The Video Settings window's NVIDIA DLSS lists, in the order EmuConfig::kValidDlssModes,
     // kValidDlssFrameGenerations and kValidDlssPresets hold them.
     struct DlssModeChoice { const char* key; const wchar_t* label; };

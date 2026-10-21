@@ -296,6 +296,9 @@ namespace psx {
     bool replacements_as_console = false;
     // The most video memory replacement textures may take, in bytes.
     uint64_t replacement_budget = 512ull << 20;
+    // How the game's own textures are sampled: an index into EmuConfig::kValidTextureFilters,
+    // 0 nearest - which draws exactly as without (Docs/Texture-Upscaling-Plan.md, phase F).
+    int texture_filter = 0;
   };
 
   // Makes a hardware rasteriser for `vram` - Gpu's native VRAM, which it must keep in step

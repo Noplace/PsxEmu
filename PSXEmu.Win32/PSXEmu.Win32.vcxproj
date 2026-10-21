@@ -76,6 +76,7 @@ if exist "%SL%\sl.interposer.dll" copy /y "%SL%\..\..\license.txt" "$(OutDir)str
 set AMD=$(SolutionDir)Temp\fidelityfx\v2.3.0
 if exist "%AMD%\amd_fidelityfx_loader_dx12.dll" for %%f in (amd_fidelityfx_loader_dx12.dll amd_fidelityfx_upscaler_dx12.dll amd_fidelityfx_framegeneration_dx12.dll) do xcopy /y /d /q "%AMD%\%%f" "$(OutDir)." &gt;nul
 if exist "%AMD%\amd_fidelityfx_loader_dx12.dll" copy /y "$(ProjectDir)graphics\third_party\fidelityfx\LICENSE.txt" "$(OutDir)fidelityfx.license.txt" &gt;nul
+copy /y "$(ProjectDir)graphics\third_party\mmpx\LICENSE.md" "$(OutDir)mmpx.license.txt" &gt;nul
 set ORT=$(SolutionDir)Temp\onnxruntime\1.24.4
 if exist "%ORT%\onnxruntime.dll" for %%f in (onnxruntime.dll onnxruntime_providers_shared.dll DirectML.dll onnxruntime.license.txt directml.license.txt) do xcopy /y /d /q "%ORT%\%%f" "$(OutDir)." &gt;nul
 set VSR=$(SolutionDir)Temp\rtxvideo\bin\Windows\x64\rel

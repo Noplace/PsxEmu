@@ -320,6 +320,13 @@ struct EmuConfig {
   // The most video memory replacements may take, in MB; past it, the longest unused are let go
   // and read again when next drawn.
   int texture_budget_mb = 512;
+  // How the hardware rasteriser samples the game's own textures (Docs/Texture-Upscaling-Plan.md,
+  // phase F): "nearest" as the console does, or filtered over the texels round each sample -
+  // "bilinear", "jinc2", "xbr", "scale2x", "scale3x" or "mmpx" - each held to the
+  // primitive's own texels, transparency as coverage. Per game; a replacement samples as its
+  // pack says.
+  std::string texture_filter = "nearest";
+  static const std::array<const char*, 7> kValidTextureFilters;
   // The AI texture upscaler (phase 3): every texture drawn made 2 or 4 times larger by a model on
   // the graphics card as it is first drawn, kept in textures\<game>\ai\, and drawn in its place by
   // the hardware rasteriser - 0 for off. Per game. The model: "anime" (Real-ESRGAN animevideo-v3,
@@ -577,6 +584,8 @@ inline const std::array<int, 4> EmuConfig::kValidRewindBudgets = { 128, 256, 512
 inline const std::array<const char*, 6> EmuConfig::kValidDlssModes = {
     "off", "dlaa", "quality", "balanced", "performance", "ultra_performance" };
 inline const std::array<const char*, 4> EmuConfig::kValidDlssPresets = { "auto", "k", "l", "m" };
+inline const std::array<const char*, 7> EmuConfig::kValidTextureFilters = {
+    "nearest", "bilinear", "jinc2", "xbr", "scale2x", "scale3x", "mmpx" };
 inline const std::array<const char*, 3> EmuConfig::kValidTextureAiModels = { "anime", "general",
                                                                          "rtx_video" };
 inline const std::array<const char*, 7> EmuConfig::kValidDlssFrameGenerations = {

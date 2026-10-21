@@ -95,6 +95,7 @@ namespace psxemu {
             std::string texture_ai_model;        // EmuConfig::kValidTextureAiModels
             bool ai_files_missing = false;       // ONNX Runtime or the model not beside PSXEmu
             bool rtx_video_available = false;    // built with RTX Video, and an NVIDIA card here
+            std::string texture_filter;          // a kTextureFilterChoices key
             int stats_mode = 0;               // the performance panel: off, compact, full
             bool notifications = true;
             bool controllers_always = false;
@@ -132,6 +133,7 @@ namespace psxemu {
             std::function<void(bool on)> set_texture_replacement;
             std::function<void(int scale, const std::string& model)> set_texture_ai;
             std::function<void()> get_ai_files;
+            std::function<void(const std::string& key)> set_texture_filter;
             std::function<void(int mode)> set_stats;
             std::function<void(bool on)> set_notifications;
             std::function<void(bool on)> set_controllers_always;
@@ -218,6 +220,7 @@ namespace psxemu {
         HWND texture_replace_ = nullptr;
         HWND texture_status_ = nullptr;
         HWND texture_ai_ = nullptr;
+        HWND texture_filter_ = nullptr;
         HWND stats_ = nullptr;
         HWND notifications_ = nullptr;
         HWND controllers_ = nullptr;

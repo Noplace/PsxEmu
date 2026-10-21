@@ -78,7 +78,8 @@ void Machine::ApplyConfig(const psx::EmuConfig& config) {
   const bool rasteriser_changed = current.gpu_rasteriser != config.gpu_rasteriser ||
                                   current.resolution_scale != config.resolution_scale ||
                                   current.true_color != config.true_color ||
-                                  current.texture_budget_mb != config.texture_budget_mb;
+                                  current.texture_budget_mb != config.texture_budget_mb ||
+                                  current.texture_filter != config.texture_filter;
   current = config;
   if (rasteriser_changed)
     system_->gpu().ChooseRasteriser();

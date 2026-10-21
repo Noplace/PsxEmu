@@ -185,7 +185,8 @@ namespace psxemu {
                     ID3D12Device* device)
             : vram_(vram), scale_(options.scale), true_color_(options.true_color),
               adapter_(options.adapter), share_(options.shared_picture),
-              as_console_(options.replacements_as_console), device_(device),
+              as_console_(options.replacements_as_console), filter_(options.texture_filter),
+              device_(device),
               one_device_(device != nullptr), atlas_(options.replacement_budget) {}
         bool Initialize(bool warp, std::string* error);
         bool CreatePipelines(std::string* error);
@@ -286,6 +287,7 @@ namespace psxemu {
         const uint64_t adapter_;
         const bool share_;
         const bool as_console_;   // RasterOptions::replacements_as_console
+        const int filter_;        // RasterOptions::texture_filter
 
         Microsoft::WRL::ComPtr<ID3D12Device> device_;
         // Drawing on the renderer's device rather than one of its own: pictures go to it as

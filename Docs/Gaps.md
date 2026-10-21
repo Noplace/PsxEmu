@@ -857,8 +857,6 @@ look for. Each was looked for in the code and settings on 2026-10-14 and is not 
   - no aspect ratio choice - the picture is shown at 4:3, letterboxed;
   - no deinterlacing modes to choose between (bob, weave, blend) for 480-line games: a picture
     is shown one way, as VRAM holds it;
-  - no texture filtering in the hardware rasteriser - "Bilinear" is a filter over the whole
-    picture, not over textures.
 
   Texture dumping and replacement packs are built (2026-10-17,
   [Texture-Upscaling-Plan.md](Texture-Upscaling-Plan.md), phase 2): Settings > Video > Textures,
@@ -882,8 +880,9 @@ look for. Each was looked for in the code and settings on 2026-10-14 and is not 
 
   NVIDIA's RTX Video Super Resolution is a second AI backend (phase 4), in the list on NVIDIA
   cards: softer than either Real-ESRGAN model on the 26 discs' textures, and only in a build made
-  with NVIDIA's SDK. Texture filtering is the plan's
-  next phase.
+  with NVIDIA's SDK. Texture filters are built too (phase F, Settings > Video > Textures > Texture
+  filter): reviewed in game on Ridge Racer and, on dumped textures, on five discs; the 2D discs
+  in the game still to see.
 - **Overrides:** no region override (PAL or NTSC whatever the disc and BIOS say), no CPU
   overclock.
 - **Recording:** no video recording, and sound only through `boot_runner --wav`. Input movies

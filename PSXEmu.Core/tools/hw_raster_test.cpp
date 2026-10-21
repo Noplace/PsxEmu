@@ -1175,6 +1175,106 @@ void SceneReplacements() {
   raster->set_texture_replacer(nullptr);
 }
 
+// Texture filters (Docs/Texture-Upscaling-Plan.md, phase F), on a raw 4-bit sprite at 4x: a
+// sheet whose sprite is clear in its first four columns, red in the next four and blue in the
+// last eight, and whose next sprite along is green.
+void SceneTextureFilters() {
+  printf("texture filters\n");
+  std::vector<uint16_t> vram(1024 * 512, 0);
+  // Texels 0-3 index 0 (clear), 4-7 index 1 (red), 8-15 index 2 (blue), 16-23 index 3 (green):
+  // four 4-bit texels to a halfword.
+  for (int y = 0; y < 16; ++y) {
+    vram[y * 1024 + 640] = 0x0000;
+    vram[y * 1024 + 641] = 0x1111;
+    vram[y * 1024 + 642] = 0x2222;
+    vram[y * 1024 + 643] = 0x2222;
+    vram[y * 1024 + 644] = 0x3333;
+    vram[y * 1024 + 645] = 0x3333;
+  }
+  vram[480 * 1024 + 1] = 31;                // red
+  vram[480 * 1024 + 2] = 31 << 10;          // blue
+  vram[480 * 1024 + 3] = 31 << 5;           // green
+  for (int y = 100; y < 116; ++y)
+    for (int x = 100; x < 116; ++x)
+      vram[y * 1024 + x] = 0x4210;          // a grey background
+  DrawJob sprite = Job(DrawJob::kRectangle);
+  sprite.state.textured = true;
+  sprite.state.raw_texture = true;
+  sprite.state.texpage_x = 640;
+  sprite.state.texpage_colors = 0;
+  sprite.state.clut_x = 0;
+  sprite.state.clut_y = 480;
+  sprite.x = 100;
+  sprite.y = 100;
+  sprite.w = 16;
+  sprite.h = 16;
+  sprite.r = sprite.g = sprite.b = 128;
+
+  // Each filter's picture of it, 64x64.
+  std::vector<uint32_t> drawn[7];
+  for (int filter = 0; filter < 7; ++filter) {
+    std::vector<uint16_t> copy = vram;
+    emulation::psx::RasterOptions options;
+    options.scale = 4;
+    options.texture_filter = filter;
+    std::string error;
+    std::unique_ptr<psxemu::HardwareRaster> raster =
+        psxemu::HardwareRaster::Create(g_api, copy.data(), options, true, &error);
+    if (!raster) {
+      Check(false, std::string("WARP makes a rasteriser with texture filter ") +
+                       emulation::psx::EmuConfig::kValidTextureFilters[filter] + ": " + error);
+      continue;
+    }
+    raster->Written(0, 0, 1024, 512);
+    raster->Apply(sprite);
+    emulation::psx::SharedPicture none;
+    int scale = 0;
+    // A picture read back is the one before; the second read is this one.
+    raster->ResolveDisplay(100, 100, 16, 16, &drawn[filter], &none, &scale);
+    raster->ResolveDisplay(100, 100, 16, 16, &drawn[filter], &none, &scale);
+    if (scale != 4 || drawn[filter].size() != 64u * 64u)
+      drawn[filter].clear();
+  }
+  auto at = [&](int filter, int x, int y) {
+    return drawn[filter].empty() ? 0xFFFFFFFFu : drawn[filter][y * 64 + x] & 0xFFFFFF;
+  };
+  const uint32_t red = 0xFF0000, blue = 0x0000FF, grey = 0x848484;
+  if (g_verbose)
+    for (int filter = 0; filter < 7; ++filter)
+      printf("  %-8s x 15 %06x 16 %06x 17 %06x  x 30 %06x 31 %06x 32 %06x 33 %06x  x 63 %06x\n",
+             emulation::psx::EmuConfig::kValidTextureFilters[filter], at(filter, 15, 8),
+             at(filter, 16, 8), at(filter, 17, 8), at(filter, 30, 8), at(filter, 31, 8),
+             at(filter, 32, 8), at(filter, 33, 8), at(filter, 63, 8));
+  Check(at(0, 15, 8) == grey && at(0, 16, 8) == red && at(0, 31, 8) == red &&
+            at(0, 32, 8) == blue && at(0, 63, 8) == blue,
+        "nearest: each sub-pixel its texel's colour, clear texels not drawn");
+  const uint32_t mixed = at(1, 31, 8);
+  Check((mixed >> 16) > 0x20 && (mixed >> 16) < 0xFF && (mixed & 0xFF) > 0x20 &&
+            (mixed & 0xFF) < 0xFF && ((mixed >> 8) & 0xFF) == 0,
+        "bilinear: red and blue mixed where the two meet");
+  bool own = true;
+  for (int filter = 1; filter < 7; ++filter)
+    for (int y = 0; y < 64; ++y)
+      own = own && ((at(filter, 63, y) >> 8) & 0xFF) == 0 && ((at(filter, 62, y) >> 8) & 0xFF) == 0;
+  Check(own, "no filter takes in the next sprite along the sheet: no green at the sprite's edge");
+  bool fringe = false;
+  for (int filter = 1; filter < 7; ++filter)
+    for (int x = 0; x < 24; ++x) {
+      const uint32_t c = at(filter, x, 8);
+      fringe = fringe || (c != grey && c != red && (c >> 16) < 0xF0);
+    }
+  Check(!fringe,
+        "a clear texel beside a drawn one leaves no dark fringe: grey or red, nothing between");
+  bool kept = true;
+  for (int filter : { 4, 5, 6 })
+    for (int y = 0; y < 64; ++y)
+      for (int x = 0; x < 64; ++x) {
+        const uint32_t c = at(filter, x, y);
+        kept = kept && (c == grey || c == red || c == blue);
+      }
+  Check(kept, "Scale2x, Scale3x and MMPX make up no colour: every sub-pixel a texel's own");
+}
+
 int main(int argc, char** argv) {
   uint32_t seed = 1;
   int scale = 1;
@@ -1311,6 +1411,7 @@ int main(int argc, char** argv) {
   SceneFilledField();
   SceneJitter();
   SceneReplacements();
+  SceneTextureFilters();
 
   printf("\n%d checks, %d failures\n", g_checks, g_failures);
   delete m.hardware;

@@ -1,6 +1,9 @@
 # Texture upscaling: a texture cache, replacement packs, and an AI upscaler
 
-**Status: phases 0 to 4 done (2026-10-16 to -17).** The emulator upscales a game's
+**Status: every phase done - 0 to 4 (2026-10-16 to -17) and F (2026-10-21).** The hardware
+rasteriser filters a game's own textures as it draws them - Bilinear, JINC2, xBR, Scale2x, Scale3x
+or MMPX, each held to the primitive's own texels, at full speed at 4x on the Radeon; Nearest draws
+exactly as before ([Phase F, as built](#phase-f-as-built-2026-10-21)). The emulator upscales a game's
 textures itself as they are read, 2x or 4x with Real-ESRGAN on DirectML, and draws them like a
 hand-made pack: Settings > Video > Textures > AI upscaling, per game, the files fetched by the
 emulator. It runs on a card the game is not drawing on when there is one, at full speed on Ridge
@@ -325,12 +328,15 @@ planned, the plan's words follow in italics.
 Independent of everything above: a filter over the texels `PsDraw` already decodes.
 
 - **Modes**: Nearest (today), Bilinear, JINC2, xBR, Scale2x, Scale3x, MMPX, each with a
-  "binary alpha" variant that thresholds coverage rather than blending it.
+  "binary alpha" variant that thresholds coverage rather than blending it. *Built: the
+  rasteriser never blends a texel's coverage - a pixel is drawn or not - so every mode is binary
+  alpha already, and there are no variants (Phase F, as built).*
 - **Neighbours are decoded the same way as the texel itself** - through the CLUT for 4- and 8-bit
   modes - with the texture window's wrapping. Up to 12 taps for xBR.
 - **Clamped to the primitive's own UV bounds**, so a sprite never pulls in its neighbour on the
   sheet. The bounds go to the shader with the job, as the sources' slot does in phase 2; the two
-  phases share that word.
+  phases share that word. *Built: a triangle's come from its corners' own texture coordinates,
+  which the shader has already; a rectangle's size goes in a word of its own (p[10]).*
 - **Transparent texels** are filtered as coverage. A pixel whose filtered coverage is under half is
   not drawn, and the colour is the average of the opaque taps only, so no dark fringe appears.
 - **Semi-transparency** follows the nearest texel's bit 15, so blending does not flicker along an
@@ -345,8 +351,7 @@ Independent of everything above: a filter over the texels `PsDraw` already decod
   on-screen display's:
   - **Dump textures as they are drawn**
   - **Draw replacements from the game's pack** - which needs the hardware rasteriser
-  - **Texture filter**: Nearest, Bilinear, JINC2, xBR, Scale2x, Scale3x, MMPX (and binary-alpha
-    variants)
+  - **Texture filter**: Nearest, Bilinear, JINC2, xBR, Scale2x, Scale3x, MMPX (phase F)
   - **AI upscaling**: Off, 2x, 4x; model (RTX Video on NVIDIA cards - phase 4)
   - A line saying what is running: textures named and written, replacements and the draws they
     replaced, or why nothing is - later the upscaler's queue.
@@ -369,7 +374,7 @@ Independent of everything above: a filter over the texels `PsDraw` already decod
 | 2 (**done**) | Replacement: the slot in `PsDraw`, atlas pages, the loader thread, `pack.ini`, the menus | **the identity check**: a dump loaded back as its own pack at 1x, and nearest-upscaled at 2x-8x, draws every picture of the table bit for bit as without it on WARP (with the replacement cut to 15 bits and the console's colour path, a debug switch); a hand-edited texture seen in game | Radeon, WARP | 2-3 |
 | 3 (**done**) | The AI upscaler on ONNX Runtime and DirectML: thread, device, queue, dilation, padding, atlases, alpha, cache folder, Upscale All | full speed with the queue running on Ridge Racer and two 2D discs, on both cards; reviewed on the 26 discs' dumps; no halo on cut-out sprites | Radeon, then 4060 for a few long runs | 2-3 |
 | 4 (**done**) | RTX Video as the second backend, and the comparison | the side-by-side reviewed; RTX Video either on the menu or left in psxemu.ini only, and this plan says why | 4060 | 1-2 |
-| F | Texture filtering in the shader: the modes, UV bounds, coverage | Nearest identical to today on the whole table; each mode reviewed on five discs; full speed at 4x on the Radeon | Radeon, WARP | 1-2 |
+| F (**done**) | Texture filtering in the shader: the modes, UV bounds, coverage | Nearest identical to today on the whole table; each mode reviewed on five discs; full speed at 4x on the Radeon | Radeon, WARP | 1-2 |
 
 Phase F can come at any point. If it comes before phase 2, it adds the UV-bounds word that phase
 2's slot then shares.
@@ -887,6 +892,81 @@ step back, and the machine the frame kept aside, byte for byte, as before. `text
 73 checks.
 
 **Not done**: RTX Video's quality levels 1-3, set beside 4 on the same textures.
+
+### Phase F, as built (2026-10-21)
+
+**What was built:**
+
+- **The filters, in the hardware rasteriser's shader** (`raster_common.h`), chosen when it is
+  made, as its scale is - `TEXTURE_FILTER`, so with Nearest none of it is compiled. Each texel is
+  filtered over the game's own texels round the sample point, read as the texel itself is - through
+  its palette, with the texture window - and held inside the primitive's own texels: a triangle's
+  corners' range, its far edge's texel left out as the console's fill rule leaves it; a
+  rectangle's from its corner and size. A clear texel counts as coverage: under half covered is not
+  drawn, and the colour is the drawn taps' alone. Semi-transparency is the nearest texel's, or the
+  texel taken where that is clear. Drawn at eight bits a channel, as a replacement is.
+  - **Bilinear**: the four texels round the point.
+  - **JINC2**: 4x4 texels, a radial windowed-sinc approximation of the jinc, reined halfway
+    towards the nearest four's range so edges do not ring; coverage the nearest four's.
+  - **xBR**: the corner of the texel nearest the point cut along an edge the texels round it make
+    - at 45 degrees, or 2:1 either way - and taken from across it, softened over a sub-pixel; 12
+    taps, luma counted most.
+  - **Scale2x, Scale3x**: EPX and its 3x, each texel as 2x2 or 3x3 taken from neighbours.
+  - **MMPX** (McGuire and Gagiu, JCGT 2021): its rules for 1:1 and 2:1 slopes and crossings, as
+    their C++ and Kyle Moore's Rust port have them - MIT, the notice in
+    `graphics/third_party/mmpx/LICENSE.md`, copied beside the executable and linked from Help >
+    About; up to 24 taps.
+- **A 15-bit texture** is filtered over its texels as the console has them - each texel's first
+  sub-pixel - so a picture the game drew at the rasteriser's scale is filtered at the console's.
+- **Settings > Video > Textures > Texture filter**, `texture_filter` in psxemu.ini, per game;
+  changing it makes the rasteriser again, a second or two longer for JINC2, xBR and MMPX, whose
+  shaders take 2-3.5 s to compile against 0.2 s for Nearest. `boot_runner --texture-filter`.
+- **`hw_raster_test`**: a scene of a 4-bit sprite at 4x in every mode (91 checks; 94 on Direct3D
+  12) - Nearest each sub-pixel its texel's; Bilinear mixing where two colours meet; no mode taking
+  in the next sprite on the sheet; no dark fringe beside a clear texel; Scale2x, Scale3x and MMPX
+  making up no colour.
+
+**Nearest draws as before**: every shader the rasterisers compile - each entry point, at 1x, 2x,
+4x and 8x, true colour or not, with the plane or not, shader models 4 and 5, 256 in all - is the
+same byte for byte as before phase F; the rectangle's new word is read by nothing then. Ridge
+Racer and Wild Arms at 4x, 3,000 frames: every frame log line and checksum the same as the build
+before, the same sectors read. *Planned: the twelve-disc table; the share holding the other ten
+was offline, and the identical shaders make it unnecessary.*
+
+**Full speed at 4x on the Radeon**: the app on Ridge Racer's attract mode, a minute each, the AI
+upscaler off - the lowest of Show Timings' samples after the first 4 s, and the mean:
+
+| Filter | Lowest | Mean |
+|---|---|---|
+| Nearest (before and after) | 100% | 100.4% |
+| Bilinear | 100% | 100.4% |
+| JINC2 (three runs) | 90%, 95%, 100% | 99.7-100.4% |
+| xBR | 100% | 100% |
+| MMPX | 100% | 100% |
+
+JINC2's two dips each came straight after a sample over 100% (103 then 90, 104 then 95): the
+pacing catching up, not the filter - its third run held 100% throughout. Scale2x and Scale3x take
+fewer taps than xBR and MMPX.
+
+**Reviewed** - Ridge Racer's road at 4x in every mode, and, with the share offline, five discs'
+dumped textures drawn as sprites through the rasteriser at 4x (Vandal Hearts' monsters, Valkyrie
+Profile's sprite, Castlevania's background, Crash 3's lettering, Wild Arms 2's font) over magenta:
+
+- **Bilinear and JINC2** are for the 3D discs' textures: Ridge Racer's blocky road comes out smooth,
+  JINC2 a little crisper. On sprites and lettering they blur.
+- **xBR** rounds pixel art's outlines into smooth curves - Wild Arms 2's font, Vandal Hearts'
+  monsters - and softens a photographic texture's blocks; the most painted of the pixel-art three.
+- **MMPX** is the cleanest on pixel art: the art's own texels, diagonals rounded, nothing added.
+- **Scale2x and Scale3x** round diagonals too, with EPX's odd single-texel speck where two diagonals
+  meet.
+- **No fringe** in any mode, beside clear texels or at a sprite's edge, and nothing from the next
+  sprite on the sheet.
+
+**Left for later**:
+- a review in the game on the 2D discs - Wild Arms' 3,000 frames are its opening film, which no
+  texture filter touches - and on the ten discs on the share;
+- the shaders compiled again whenever the filter changes; kept compiled, a change would be
+  instant.
 
 ---
 

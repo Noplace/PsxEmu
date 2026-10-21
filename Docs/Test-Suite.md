@@ -823,9 +823,13 @@ fixed seed, and then compares all of VRAM:
   block the image left clear drawing the game's own texel; alpha 128 drawn and
   setting the mask bit, alpha 0 not drawn, inside a texel too; and an image at 4x
   sampled nearest and bilinear
+- texture filters (Docs/Texture-Upscaling-Plan.md, phase F), a 4-bit sprite at 4x
+  in each of the seven: nearest each sub-pixel its texel's, bilinear mixing where
+  two colours meet, no filter taking in the next sprite on the sheet, no dark
+  fringe beside a clear texel, and Scale2x, Scale3x and MMPX making up no colour
 
 At native size the two do the same integer arithmetic, so **every pixel must
-match** - 86 checks, two a scene, the lost card's own, six for the shared picture, sixteen for the plane, six for its motion, five for the filled field, six for jitter and eight for replacement textures. A scene that does not says how many pixels
+match** - 91 checks, two a scene, the lost card's own, six for the shared picture, sixteen for the plane, six for its motion, five for the filled field, six for jitter, eight for replacement textures and five for texture filters. A scene that does not says how many pixels
 differ and how many by more than one 5-bit step, which tells rounding from a
 wrong texel. `--bisect` compares after every primitive and stops at the first
 one to differ, printing its GP0 words. `--scale n` draws the hardware side at n
@@ -940,8 +944,8 @@ BizHawk `.bk2` input movies read and played into the ports; its own section abov
 `timing_test` (19 checks,
 bus timing against a real console - its own section above, and not a
 correctness count: it records how far off the timing is), `host_test` (34 checks, the
-threads and the channels between them - its own section above), and `hw_raster_test` (86
-checks, 89 with `--d3d12`, bugs 122-123, 127, 137 and 138 - the hardware rasteriser against the software one, every pixel of VRAM
+threads and the channels between them - its own section above), and `hw_raster_test` (91
+checks, 94 with `--d3d12`, bugs 122-123, 127, 137 and 138 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
 which runs gpu_test's 98 through it), and `dlss_choice_test` (42 checks, the
 arithmetic of sizes around DLSS in `graphics/upscale/dlss/dlss_choice.h` - the rasteriser's
@@ -1056,7 +1060,8 @@ as the front end does, on `--gpu`'s card, and waits for the queue at the end; `-
 `--texture-ai-share` and `--texture-ai-grid` set what the front end's settings set.
 `--texture-ai rtx-video` uses NVIDIA's RTX Video Super Resolution instead, at
 `--texture-ai-quality` 1-4 (4), on an RTX card, in a boot_runner built with NVIDIA's SDK in
-`Temp\rtxvideo\` (phase 4). With textures on, `--save-state <f>` writes `<f>.textures` beside the
+`Temp\rtxvideo\` (phase 4). `--texture-filter <f>` draws with a texture filter (phase F): nearest,
+bilinear, jinc2, xbr, scale2x, scale3x or mmpx. With textures on, `--save-state <f>` writes `<f>.textures` beside the
 state, the live texture uploads, as the front end does, and `--load-state <f>` reads it back;
 `--rewind-test` says how many texture records its step back brought back.
 

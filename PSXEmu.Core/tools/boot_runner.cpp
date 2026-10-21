@@ -88,6 +88,9 @@
 //                        the same pictures every run
 //     --scale <n>        ...at n times the console's resolution (1-8); --ppm writes that
 //                        picture, and everything measured stays the native one
+//     --texture-filter <f>  ...the game's textures sampled through a filter - nearest (as without),
+//                        bilinear, jinc2, xbr, scale2x, scale3x or mmpx (Docs/Texture-Upscaling-
+//                        Plan.md, phase F)
 //     --no-true-color    ...at the console's colours exactly, dithered: then an upscaled run's
 //                        checksums are the software rasteriser's too
 //     --shown-only       ...keeping only the sharper picture, as the front end does - for
@@ -388,6 +391,7 @@ struct Options {
   // --scale n: its internal resolution; --no-true-color: at it, the console's colours exactly,
   // dithering and all - which keeps even the upscaled run's checksums the software ones.
   int scale;
+  const char* texture_filter;       // --texture-filter: EmuConfig::kValidTextureFilters
   bool shown_only;   // --shown-only: the front end's path, for timing it
   bool shared_picture;   // --shared-picture: the picture left on the card
   const char* gpu;       // --gpu <part of a card's name>: which card the rasteriser draws on
@@ -789,6 +793,7 @@ bool ParseOptions(int argc, char** argv, Options* options) {
   options->d3d12 = false;
   options->one_device = false;
   options->scale = 1;
+  options->texture_filter = nullptr;
   options->shown_only = false;
   options->shared_picture = false;
   options->gpu = nullptr;
@@ -949,6 +954,16 @@ bool ParseOptions(int argc, char** argv, Options* options) {
       options->one_device = true;
     } else if (strcmp(arg, "--warp") == 0) {
       options->warp = true;
+    } else if (strcmp(arg, "--texture-filter") == 0 && i + 1 < argc) {
+      options->texture_filter = argv[++i];
+      bool known = false;
+      for (const char* name : emulation::psx::EmuConfig::kValidTextureFilters)
+        known = known || strcmp(name, options->texture_filter) == 0;
+      if (!known) {
+        fprintf(stderr, "--texture-filter is nearest, bilinear, jinc2, xbr, scale2x, scale3x "
+                        "or mmpx\n");
+        return false;
+      }
     } else if (strcmp(arg, "--scale") == 0 && i + 1 < argc) {
       options->scale = atoi(argv[++i]);
       if (options->scale < 1 || options->scale > 8) {
@@ -1881,6 +1896,8 @@ int main(int argc, char** argv) {
     system->config().gpu_rasteriser = "hardware";
     system->config().resolution_scale = options.scale;
     system->config().true_color = options.true_color;
+    if (options.texture_filter != nullptr)
+      system->config().texture_filter = options.texture_filter;
     // As the front end does: no native picture beside the sharper one. The checksums are then
     // of whatever the native picture last was - this is for timing the front end's path.
     system->gpu().set_native_picture(!options.shown_only);
@@ -2021,10 +2038,12 @@ int main(int argc, char** argv) {
       fprintf(stderr, "--hw-raster: %s\n", system->gpu().raster_error().c_str());
       return 1;
     }
-    printf("gpu            hardware rasteriser (Direct3D %s%s, %s), %dx%s\n",
+    printf("gpu            hardware rasteriser (Direct3D %s%s, %s), %dx%s%s%s\n",
            options.d3d12 ? "12" : "11", options.one_device ? " on one device" : "",
            system->gpu().raster_device().c_str(), options.scale,
-           options.scale > 1 && options.true_color ? ", true colour" : "");
+           options.scale > 1 && options.true_color ? ", true colour" : "",
+           options.texture_filter != nullptr ? ", textures " : "",
+           options.texture_filter != nullptr ? options.texture_filter : "");
     if (options.planes || options.view != emulation::psx::PlaneView::kPicture) {
       system->gte().set_motion_key(options.motion_key);
       if (options.motion_reach > 0.0f)

@@ -242,6 +242,7 @@ inline void StoreConfig(SettingsFile& f, const EmuConfig& c) {
   f.SetBool("texture_dump", c.texture_dump);
   f.SetBool("texture_replacement", c.texture_replacement);
   f.SetInt("texture_budget_mb", c.texture_budget_mb);
+  f.SetString("texture_filter", c.texture_filter);
   f.SetInt("texture_ai_scale", c.texture_ai_scale);
   f.SetString("texture_ai_model", c.texture_ai_model);
   f.SetInt("texture_ai_share", c.texture_ai_share);
@@ -367,6 +368,9 @@ inline void LoadConfig(const SettingsFile& f, EmuConfig& c) {
   c.pgxp_culling = f.GetBool("pgxp_culling", c.pgxp_culling);
   c.texture_dump = f.GetBool("texture_dump", c.texture_dump);
   c.texture_replacement = f.GetBool("texture_replacement", c.texture_replacement);
+  const std::string texture_filter = f.GetString("texture_filter", c.texture_filter);
+  if (IsValidChoice(texture_filter, EmuConfig::kValidTextureFilters))
+    c.texture_filter = texture_filter;
   const int budget = f.GetInt("texture_budget_mb", c.texture_budget_mb);
   if (budget >= 64 && budget <= 32768)
     c.texture_budget_mb = budget;
@@ -486,6 +490,7 @@ inline std::vector<std::string> GameSettingKeys() {
       // ...and textures dumped and replaced, which are a game's own (Docs/Texture-Upscaling-
       // Plan.md).
       "texture_dump",       "texture_replacement", "texture_ai_scale",   "texture_ai_model",
+      "texture_filter",
       // ...and DLSS off, or in another mode, for a game it does badly or well
       // (Docs/DLSS-Plan.md).
       "dlss_mode",          "dlss_frame_generation",

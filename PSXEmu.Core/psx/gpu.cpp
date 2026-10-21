@@ -165,6 +165,10 @@ namespace emulation {
                 options.replacement_budget =
                     static_cast<uint64_t>(system().config().texture_budget_mb) << 20;
                 options.d3d12 = system().config().gpu_rasteriser == "hardware_d3d12";
+                const auto& filters = EmuConfig::kValidTextureFilters;
+                for (size_t i = 0; i < filters.size(); ++i)
+                    if (system().config().texture_filter == filters[i])
+                        options.texture_filter = static_cast<int>(i);
                 if (!factory)
                     raster_error_ = "no hardware rasteriser in this build";
                 else if ((next = factory(vram_, options, &raster_error_)) != nullptr)

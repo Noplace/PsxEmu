@@ -513,7 +513,7 @@ namespace psxemu {
 
         auto compile = [&](const char* entry, const char* target, bool planes, ComPtr<ID3DBlob>* blob) {
             return CompileShader("d3d12_raster", entry, target, scale_, true_color_, planes, blob,
-                                 error, as_console_);
+                                 error, as_console_, filter_);
         };
         ComPtr<ID3DBlob> vertex, pixels[raster::kShaderCount], plane_draw, plane_copy;
         if (!compile("VsMain", "vs_5_0", false, &vertex))
@@ -1497,6 +1497,9 @@ namespace psxemu {
                      (state.flip_y ? 0x200u : 0);
         payload[8] = Attributes(state, kKindRectangle, state.textured, false);   // never dithered
         payload[9] = (state.clut_x & 1023) | ((state.clut_y & 511) << 10);
+        // Its size, which a texture filter keeps its taps inside (raster_common.h).
+        payload[10] =
+            (static_cast<uint32_t>(job.w) & 0xFFFFu) | (static_cast<uint32_t>(job.h) << 16);
         if (job.moved) {
             payload[16] = PackMotion(job.mx, job.my);
             payload[19] = 7;

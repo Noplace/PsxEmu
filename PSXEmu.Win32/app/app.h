@@ -161,6 +161,7 @@ namespace psxemu {
         void SetRasteriser(const std::string& key);
         void SetResolutionScale(int scale);
         void SetTrueColour(bool on);
+        void SetTextureFilter(const std::string& filter);
         void RemakeRasteriser(const std::wstring& done);
         void SetPgxp(bool* setting, bool on, const std::wstring& done);
         // Textures (Docs/Texture-Upscaling-Plan.md, phase 2): dumped and replaced, a game's own

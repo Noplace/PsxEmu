@@ -332,6 +332,9 @@ namespace psxemu {
             host.set_texture_ai = [this](int scale, const std::string& model) {
                 SetTextureAi(scale, model);
             };
+            host.set_texture_filter = [this](const std::string& filter) {
+                SetTextureFilter(filter);
+            };
             host.get_ai_files = [this] { ShowAiFiles(); };
             host.set_stats = [this](int mode) { SetStatsMode(static_cast<StatsMode>(mode)); };
             host.set_notifications = [this](bool on) { SetOverlayNotifications(on); };
@@ -1601,6 +1604,19 @@ namespace psxemu {
         RemakeRasteriser(on ? L"True colour on" : L"True colour off");
     }
 
+    // Settings > Video > Textures > Texture filter (Docs/Texture-Upscaling-Plan.md, phase F): the
+    // rasteriser made again with its shaders for it - a second or two for the heavier filters.
+    void App::SetTextureFilter(const std::string& filter) {
+        if (filter == config_.texture_filter)
+            return;
+        config_.texture_filter = filter;
+        std::wstring label = Wide(filter);
+        for (const TextureFilterChoice& choice : kTextureFilterChoices)
+            if (filter == choice.key)
+                label = choice.label;
+        RemakeRasteriser(L"Texture filter: " + label);
+    }
+
     // PGXP's three switches. The machine takes them up at its next instruction (System::StepImpl)
     // without remaking anything; precise vertices take the recompiler's place while on.
     void App::SetPgxp(bool* setting, bool on, const std::wstring& done) {
@@ -2059,6 +2075,7 @@ namespace psxemu {
         state.texture_status = TextureStatus();
         state.texture_ai_scale = config_.texture_ai_scale;
         state.texture_ai_model = config_.texture_ai_model;
+        state.texture_filter = config_.texture_filter;
         state.ai_files_missing = config_.texture_ai_scale != 0 && !MissingAiFiles().empty();
         // RTX Video in the list: a build with NVIDIA's SDK, and an NVIDIA card to run it on.
         state.rtx_video_available =
@@ -4677,6 +4694,12 @@ namespace psxemu {
             INVALID_FILE_ATTRIBUTES)
             nvidia += L" Its licence: <a href=\"" + folder + L"fidelityfx.license.txt\">"
                       L"fidelityfx.license.txt</a>.";
+        // The MMPX texture filter's rules are MIT-licensed code's (graphics/third_party/mmpx).
+        nvidia += L"\n\nThe MMPX texture filter follows MMPX, copyright 2020 Morgan McGuire & Mara "
+                  L"Gagiu, as Kyle Moore's port has it, copyright 2021, under the MIT licence";
+        if (GetFileAttributesW((folder + L"mmpx.license.txt").c_str()) != INVALID_FILE_ATTRIBUTES)
+            nvidia += L": <a href=\"" + folder + L"mmpx.license.txt\">mmpx.license.txt</a>";
+        nvidia += L".";
 
         TASKDIALOGCONFIG config = {};
         config.cbSize = sizeof(config);

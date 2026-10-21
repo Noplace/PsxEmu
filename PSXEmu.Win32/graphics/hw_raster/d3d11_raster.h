@@ -134,7 +134,7 @@ namespace psxemu {
         D3D11Raster(uint16_t* vram, const emulation::psx::RasterOptions& options)
             : vram_(vram), scale_(options.scale), true_color_(options.true_color),
               adapter_(options.adapter), share_(options.shared_picture),
-              as_console_(options.replacements_as_console),
+              as_console_(options.replacements_as_console), filter_(options.texture_filter),
               atlas_(options.replacement_budget) {}
         bool Initialize(bool warp, std::string* error);
         // The textures and fence shared pictures need; without them the picture is read back.
@@ -230,6 +230,7 @@ namespace psxemu {
         const uint64_t adapter_;  // the LUID asked for, or 0
         const bool share_;        // asked to hand pictures over on the card
         const bool as_console_;   // RasterOptions::replacements_as_console
+        const int filter_;        // RasterOptions::texture_filter
         // Replacement textures (Docs/Texture-Upscaling-Plan.md, phase 2): where to ask for them,
         // what is on the card (replacement_atlas.h), its pages - a texture array grown a slice at
         // a time - and its block table, a buffer of words grown by doubling.

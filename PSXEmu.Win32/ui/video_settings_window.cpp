@@ -64,6 +64,7 @@ namespace psxemu {
         const int kIdTextureAi = 134;
         const int kIdTextureStatus = 135;
         const int kIdPages = 136;
+        const int kIdTextureFilter = 137;
 
         // The pages, in the list's order.
         enum Page { kPageRenderer, kPageRasteriser, kPageDlss, kPageFsr, kPageTextures, kPageOsd };
@@ -395,18 +396,21 @@ namespace psxemu {
         texture_replace_ = switch_row(textures, L"Draw the pac&k: the PNGs in replace\\ in their place",
                                       BS_AUTOCHECKBOX, kIdTextureReplace);
         textures.y += 4;
+        texture_filter_ = list_row(textures, L"Texture fi&lter:", kIdTextureFilter);
         texture_ai_ = list_row(textures, L"A&I upscaling:", kIdTextureAi);
         // What it is doing - and, while the upscaler's files are not here, the way to them.
         texture_status_ = make(WC_LINK, L"", WS_TABSTOP, kIdTextureStatus, textures.x + kInset,
                                textures.y + 2, textures.width - kInset * 2, kHintLine * 2,
                                small_font_);
         textures.y += 2 + kHintLine * 2 + 4;
-        text_row(textures, 4,
+        text_row(textures, 5,
                  L"Each game's are in Documents\\My Games\\PSXEmu\\textures\\<game>: dump\\, "
-                 L"replace\\ and ai\\. Packs and AI upscaling need the hardware rasteriser, above "
-                 L"1x to be seen. AI upscaling runs on a card the game is not drawing on, if there "
-                 L"is one: a texture is upscaled a moment after it is first drawn, and kept for "
-                 L"every run after; dumped ones not yet upscaled are done in the background.",
+                 L"replace\\ and ai\\. Packs, AI upscaling and the texture filter need the hardware "
+                 L"rasteriser, above 1x to be seen. The filter smooths the game's own textures as "
+                 L"they are drawn; a pack's and the AI's images are drawn as they are. AI upscaling "
+                 L"runs on a card the game is not drawing on, if there is one: a texture is "
+                 L"upscaled a moment after it is first drawn, and kept for every run after; dumped "
+                 L"ones not yet upscaled are done in the background.",
                  hint_id++);
         feet.push_back(textures);
 
@@ -477,6 +481,10 @@ namespace psxemu {
             for (const ResolutionChoice& choice : kResolutionChoices)
                 items.push_back(choice.label);
             SetItems(resolution_, items);
+            items.clear();
+            for (const TextureFilterChoice& choice : kTextureFilterChoices)
+                items.push_back(choice.label);
+            SetItems(texture_filter_, items);
             items.clear();
             for (const DlssModeChoice& choice : kDlssModeChoices)
                 items.push_back(choice.label);
@@ -662,6 +670,9 @@ namespace psxemu {
         Select(texture_ai_, static_cast<int>(std::find(ai_items_.begin(), ai_items_.end(), set) -
                                              ai_items_.begin()));
         EnableWindow(texture_ai_, state.game_running);
+        // The filter is the rasteriser's, so it can be chosen with no game running.
+        Select(texture_filter_, IndexOf(kTextureFilterChoices, state.texture_filter));
+        EnableWindow(texture_filter_, state.hardware);
         EnableWindow(texture_dump_, state.game_running);
         EnableWindow(texture_replace_, state.game_running);
         // A link's text is markup: the status as text, and the way to the files as a link.
@@ -825,6 +836,11 @@ namespace psxemu {
                     if (index < static_cast<int>(generation_items_.size()) &&
                         host_.set_dlss_generation)
                         host_.set_dlss_generation(generation_items_[index]);
+                    break;
+                case kIdTextureFilter:
+                    if (index < static_cast<int>(std::size(kTextureFilterChoices)) &&
+                        host_.set_texture_filter)
+                        host_.set_texture_filter(kTextureFilterChoices[index].key);
                     break;
                 case kIdTextureAi:
                     if (index < static_cast<int>(ai_items_.size()) && host_.set_texture_ai)
