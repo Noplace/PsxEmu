@@ -53,7 +53,7 @@ namespace psxemu {
     inline constexpr GLenum kGlArrayBuffer = 0x8892;
     inline constexpr GLenum kGlElementArrayBuffer = 0x8893;
     inline constexpr GLenum kGlStreamDraw = 0x88E0;
-    // The hardware rasteriser's shared picture (render/shared_picture.h): a sync object to know when
+    // The hardware rasteriser's shared picture (emucore/image/shared_picture.h): a sync object to know when
     // a frame that read one is done, and GL_EXT_memory_object_win32 to open a Direct3D 11
     // texture as a GL one. Its values are the Khronos registry's, and were checked against
     // glad's gl.h, generated from it.

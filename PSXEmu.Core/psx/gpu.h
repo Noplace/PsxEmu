@@ -85,7 +85,7 @@ class Gpu : public GpuCore {
     return picture_.data();
   }
   // This frame's picture on the graphics card, if the rasteriser left it there; empty if not.
-  const SharedPicture& shared_picture() const { return shared_picture_; }
+  const image::SharedPicture& shared_picture() const { return shared_picture_; }
   int picture_scale() const { return picture_scale_; }
   // Whether framebuffer() is kept when picture() is sharper than it - on unless a front end that
   // only shows picture() says otherwise, since keeping it waits for the hardware rasteriser to
@@ -110,7 +110,7 @@ class Gpu : public GpuCore {
   // Carries on with the software rasteriser when the hardware one says it is lost.
   void FallBackToSoftware(const char* reason);
   // Keeps the plane beside VRAM that DLSS needs, and shows it in place of the picture or not
-  // (render/shared_picture.h, Docs/DLSS-Plan.md). The hardware rasteriser's alone, and kept across a
+  // (emucore/image/shared_picture.h, Docs/DLSS-Plan.md). The hardware rasteriser's alone, and kept across a
   // change of rasteriser; nothing the machine sees changes. Machine thread, between frames.
   // Keeping it works out motion too (phase 2): the GTE's, with PGXP on, and 2D primitives'.
   void SetPlanes(bool keep, PlaneView view);
@@ -593,7 +593,7 @@ class Gpu : public GpuCore {
   // there is none and the framebuffer is what is shown. It is in shared_picture_ instead of
   // picture_ when the rasteriser left it on the graphics card.
   std::vector<uint32_t> picture_;
-  SharedPicture shared_picture_;
+  image::SharedPicture shared_picture_;
   int picture_scale_ = 1;
   bool native_picture_ = true;
   bool keep_motion_on_load_ = false;

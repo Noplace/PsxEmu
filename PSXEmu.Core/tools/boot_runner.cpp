@@ -95,7 +95,7 @@
 //                        checksums are the software rasteriser's too
 //     --shown-only       ...keeping only the sharper picture, as the front end does - for
 //                        timing that path; the checksums are then of a stale native picture
-//     --shared-picture   ...handing that picture over on the card (render/shared_picture.h), as
+//     --shared-picture   ...handing that picture over on the card (emucore/image/shared_picture.h), as
 //                        to a presenter that can take it there, rather than reading it back
 //     --planes           ...keeping the plane beside VRAM that DLSS will use - depth and
 //                        motion - and handing it over with a shared picture (Docs/DLSS-Plan.md)
@@ -2530,7 +2530,7 @@ int main(int argc, char** argv) {
       ++frames;
       // --shared-picture: as a presenter that takes each picture the moment it comes and is
       // done with the one before, which is what frees a texture for the next.
-      if (const emulation::psx::SharedPicture& shared = system->gpu().shared_picture()) {
+      if (const emulation::image::SharedPicture& shared = system->gpu().shared_picture()) {
         if (shared.serial != last_shared_serial) {
           ++shared_pictures;
           if (shared.planes != nullptr)
@@ -3482,7 +3482,7 @@ int main(int argc, char** argv) {
 #ifdef PSXEMU_HW_RASTER
     // Left on the card, it is read back the way a screenshot is.
     std::vector<uint32_t> shared_pixels;
-    if (const emulation::psx::SharedPicture& shared = system->gpu().shared_picture()) {
+    if (const emulation::image::SharedPicture& shared = system->gpu().shared_picture()) {
       if (psxemu::HardwareRaster::ReadSharedPicture(shared, &shared_pixels)) {
         shown = shared_pixels.data();
         shown_width = shared.width;

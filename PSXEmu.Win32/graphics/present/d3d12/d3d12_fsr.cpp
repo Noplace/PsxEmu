@@ -366,7 +366,7 @@ bool D3D12GraphicsEngine::ChooseFsrOutput(int width, int height, const Letterbox
            *out_height <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION;
 }
 
-bool D3D12GraphicsEngine::EvaluateFsr(const emulation::psx::SharedPicture& picture,
+bool D3D12GraphicsEngine::EvaluateFsr(const emulation::image::SharedPicture& picture,
                                       ID3D12Resource* planes, int out_width, int out_height) {
     const int width = picture.width;
     const int height = picture.height;

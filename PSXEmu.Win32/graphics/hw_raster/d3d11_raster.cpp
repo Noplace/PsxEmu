@@ -45,12 +45,12 @@ namespace psxemu {
     // them, and the arithmetic around both (raster_common.h).
     using namespace raster;
 
-    // Shared pictures, the part any thread may touch (render/shared_picture.h): each texture's NT
+    // Shared pictures, the part any thread may touch (emucore/image/shared_picture.h): each texture's NT
     // handle and bookkeeping, and the fence the rasteriser signals once it has drawn a picture.
     // Frames carry a reference to this, so it outlives the rasteriser while any are in flight -
     // and with it the handles, which keep the textures themselves alive after the rasteriser has
     // let go of them.
-    class CardPictures : public emulation::psx::SharedPictureSource {
+    class CardPictures : public emulation::image::SharedPictureSource {
      public:
         // See D3D11Raster::kSharedPictures. A picture with none free is read back instead, so
         // this is a number for speed, not for being right.
@@ -170,7 +170,7 @@ namespace psxemu {
 
     D3D11Raster::~D3D11Raster() = default;
 
-    bool D3D11Raster::ReadSharedPicture(const emulation::psx::SharedPicture& picture,
+    bool D3D11Raster::ReadSharedPicture(const emulation::image::SharedPicture& picture,
                                         std::vector<uint32_t>* pixels) {
         if (!picture || picture.width <= 0 || picture.height <= 0 ||
             !picture.source->WaitReady(picture.serial, 1000))
@@ -471,7 +471,7 @@ namespace psxemu {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The plane beside VRAM (render/shared_picture.h, Docs/DLSS-Plan.md)
+    // The plane beside VRAM (emucore/image/shared_picture.h, Docs/DLSS-Plan.md)
     // ------------------------------------------------------------------------------------------
 
     void D3D11Raster::SetPlanes(bool keep, emulation::psx::PlaneView view) {
@@ -548,7 +548,7 @@ namespace psxemu {
     }
 
     void D3D11Raster::ForgetPlanes(int32_t x, int32_t y, int32_t w, int32_t h) {
-        const float unknown[4] = { emulation::psx::kUnknownMotion, emulation::psx::kUnknownMotion,
+        const float unknown[4] = { emulation::image::kUnknownMotion, emulation::image::kUnknownMotion,
                                    0.0f, 1.0f };
         const D3D11_RECT rect = { x * scale_, y * scale_, (x + w) * scale_, (y + h) * scale_ };
         context1_->ClearView(plane_target_view_.Get(), unknown, &rect, 1);
@@ -1615,11 +1615,11 @@ namespace psxemu {
         context_->RSSetViewports(1, &viewport);
     }
 
-    // The picture left on the card for the presenter's device (render/shared_picture.h). Nothing
+    // The picture left on the card for the presenter's device (emucore/image/shared_picture.h). Nothing
     // here waits: the fence is signalled behind the drawing and the work sent to the card, and
     // the presenter waits for the fence - on its own thread - before it draws from the texture.
     bool D3D11Raster::ShareDisplay(uint32_t x, uint32_t y, UINT width, UINT height,
-                                   emulation::psx::SharedPicture* shared) {
+                                   emulation::image::SharedPicture* shared) {
         static_assert(kPictureSlots == CardPictures::kSlots, "one view per shared texture");
         CardPictures& pictures = *pictures_;
         const int slot = pictures.Pick(width, height);
@@ -1727,7 +1727,7 @@ namespace psxemu {
     // presenter takes it there and a texture is free, and otherwise read back.
     bool D3D11Raster::ResolveDisplay(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                                      std::vector<uint32_t>* picture,
-                                     emulation::psx::SharedPicture* shared, int* scale) {
+                                     emulation::image::SharedPicture* shared, int* scale) {
         if (scale_ == 1 || !lost_.empty() || w == 0 || h == 0 || x + w > kWidth ||
             y + h > kHeight)
             return false;

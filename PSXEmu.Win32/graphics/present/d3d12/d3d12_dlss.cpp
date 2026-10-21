@@ -35,7 +35,7 @@ namespace {
     using psxemu::DlssMode;
     using psxemu::DlssPreset;
 
-    // The plane (render/shared_picture.h) into DLSS's three inputs, a thread a pixel:
+    // The plane (emucore/image/shared_picture.h) into DLSS's three inputs, a thread a pixel:
     //   motion  where the pixel was in the last picture minus where it is, in the picture's own
     //           pixels - DLSS's convention and scale (mvecScale 1/size) - and 0 where unknown
     //   depth   1/w as it is: nearer is larger (depthInverted), unknown 0 is infinitely far
@@ -770,7 +770,7 @@ bool D3D12GraphicsEngine::EnsureDlssTargets(int in_width, int in_height, int out
 }
 
 // As OpenSharedPicture, by the plane's own ids.
-ID3D12Resource* D3D12GraphicsEngine::OpenPlanes(const emulation::psx::SharedPicture& picture) {
+ID3D12Resource* D3D12GraphicsEngine::OpenPlanes(const emulation::image::SharedPicture& picture) {
     // Drawn on this device: the resource itself (RenderSharedPicture has checked whose).
     if (picture.source->device() != nullptr)
         return static_cast<ID3D12Resource*>(picture.planes);
@@ -780,7 +780,7 @@ ID3D12Resource* D3D12GraphicsEngine::OpenPlanes(const emulation::psx::SharedPict
     // A new rasteriser's, or a handful open already: the old let go of, once the card is done.
     if (!opened_planes_.empty() &&
         (planes_source_ != picture.source.get() ||
-         opened_planes_.size() >= emulation::psx::kMaxOpenedPictures)) {
+         opened_planes_.size() >= emulation::image::kMaxOpenedPictures)) {
         FlushGPU();
         opened_planes_.clear();
     }
@@ -796,7 +796,7 @@ ID3D12Resource* D3D12GraphicsEngine::OpenPlanes(const emulation::psx::SharedPict
 // The plane into the upscaler's three inputs, a thread a pixel, on this frame's own descriptors -
 // which the fence says the card has finished with since this slot's frame last came round. The
 // inputs are left readable by DLSS and FSR alike (kDlssInputState).
-void D3D12GraphicsEngine::MakeUpscalerInputs(const emulation::psx::SharedPicture& picture,
+void D3D12GraphicsEngine::MakeUpscalerInputs(const emulation::image::SharedPicture& picture,
                                              ID3D12Resource* planes, float unknown,
                                              float translucent) {
     const UINT increment =
@@ -896,7 +896,7 @@ void D3D12GraphicsEngine::FinishUpscalerInputs(bool ran) {
     command_list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
 }
 
-bool D3D12GraphicsEngine::EvaluateDlss(const emulation::psx::SharedPicture& picture,
+bool D3D12GraphicsEngine::EvaluateDlss(const emulation::image::SharedPicture& picture,
                                        ID3D12Resource* planes, int out_width, int out_height) {
     const int width = picture.width;
     const int height = picture.height;
@@ -1044,7 +1044,7 @@ void D3D12GraphicsEngine::NoteUpscaler(const std::string& line) {
         NoteDlss(line);
 }
 
-bool D3D12GraphicsEngine::DrawUpscaled(const emulation::psx::SharedPicture& picture) {
+bool D3D12GraphicsEngine::DrawUpscaled(const emulation::image::SharedPicture& picture) {
     const bool fsr = FsrRunning();
     const char* const name = fsr ? "FSR" : "DLSS";
     auto give_up = [this](const std::string& why) {

@@ -22,7 +22,7 @@
 // name the same wherever the image is, strips joined, patches and partial uploads, every reason a
 // draw names nothing, and a dumped PNG read back texel by texel.
 
-#include "render/png_file.h"
+#include "emucore/image/png_file.h"
 #include "render/texture_tracker.h"
 
 #include "zlib.h"
@@ -666,12 +666,12 @@ void TestDumping() {
   // The tracker's own reader agrees with this test's on every byte.
   int dw = 0, dh = 0;
   std::vector<uint8_t> decoded;
-  Check(emulation::psx::ReadPngFile(path, &dw, &dh, &decoded) && dw == 64 && dh == 32 &&
+  Check(emulation::image::ReadPngFile(path, &dw, &dh, &decoded) && dw == 64 && dh == 32 &&
             decoded == merged,
         "ReadPngFile reads a dump back byte for byte");
 
   const std::vector<uint8_t> tiny = { 1, 2, 3, 4 };
-  Check(emulation::psx::EncodePng(1, 1, tiny.data()).size() > 40,
+  Check(emulation::image::EncodePng(1, 1, tiny.data()).size() > 40,
         "EncodePng makes a whole file of one pixel");
   fs::remove_all(folder);
 }
@@ -820,7 +820,7 @@ void TestPngReading() {
                                              plte, trns);
     int w = 0, h = 0;
     std::vector<uint8_t> rgba;
-    bool ok = emulation::psx::DecodePng(png.data(), png.size(), &w, &h, &rgba) &&
+    bool ok = emulation::image::DecodePng(png.data(), png.size(), &w, &h, &rgba) &&
               w == static_cast<int>(t.w) && h == static_cast<int>(t.h);
     auto eight = [&](uint32_t s) {
       return static_cast<uint8_t>(t.depth == 16 ? s >> 8 : t.depth == 8 ? s : s * 255 / most);
@@ -852,7 +852,7 @@ void TestPngReading() {
   const std::vector<uint8_t> junk = { 0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n', 0, 0, 0, 1 };
   int w = 0, h = 0;
   std::vector<uint8_t> rgba;
-  Check(!emulation::psx::DecodePng(junk.data(), junk.size(), &w, &h, &rgba),
+  Check(!emulation::image::DecodePng(junk.data(), junk.size(), &w, &h, &rgba),
         "a cut-off file is not read");
 }
 

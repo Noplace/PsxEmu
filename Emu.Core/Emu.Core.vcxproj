@@ -181,6 +181,16 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <!-- PNGs, deflated with the zlib above. -->
+    <ClCompile Include="emucore\image\png_file.cpp">
+      <AdditionalIncludeDirectories>$(ProjectDir)emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="emucore\image\png_file.h" />
+    <ClInclude Include="emucore\image\shared_picture.h" />
+  </ItemGroup>
+  <ItemGroup>
     <None Include="emucore\lib\README-chd.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

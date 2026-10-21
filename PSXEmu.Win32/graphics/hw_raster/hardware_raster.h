@@ -25,7 +25,7 @@
 // tools ask of them.
 
 #include "render/raster.h"
-#include "render/shared_picture.h"
+#include "emucore/image/shared_picture.h"
 
 #include <cstdint>
 #include <memory>
@@ -59,12 +59,12 @@ namespace psxemu {
         // the picture's card - or, for one on the renderer's device, through that device - for
         // a screenshot now and then, from any thread, whichever rasteriser made it. False if it
         // cannot be opened, or is not drawn within a second.
-        static bool ReadSharedPicture(const emulation::psx::SharedPicture& picture,
+        static bool ReadSharedPicture(const emulation::image::SharedPicture& picture,
                                       std::vector<uint32_t>* pixels);
 
-        // How many textures a shared picture can be in at once (render/shared_picture.h). With none
+        // How many textures a shared picture can be in at once (emucore/image/shared_picture.h). With none
         // free the picture is read back.
-        static constexpr int kSharedPictures = emulation::psx::kSharedTextureCount;
+        static constexpr int kSharedPictures = emulation::image::kSharedTextureCount;
 
         // Which API it draws with.
         virtual Api api() const = 0;
@@ -74,7 +74,7 @@ namespace psxemu {
         // The jitter being drawn with now, in the target's pixels (RasterBackend::SetJitter).
         virtual float jitter_x() const = 0;
         virtual float jitter_y() const = 0;
-        // Whether the plane beside VRAM is being drawn (render/shared_picture.h).
+        // Whether the plane beside VRAM is being drawn (emucore/image/shared_picture.h).
         virtual bool planes() const = 0;
         // The plane over a rectangle of VRAM, every sub-pixel of it as four floats - R, G, B, A,
         // rows of w x scale - read back, for hw_raster_test. False if it is not being drawn.

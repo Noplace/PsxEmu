@@ -31,7 +31,7 @@ namespace psxemu {
         return D3D11Raster::Create(vram, options, warp, error);
     }
 
-    bool HardwareRaster::ReadSharedPicture(const emulation::psx::SharedPicture& picture,
+    bool HardwareRaster::ReadSharedPicture(const emulation::image::SharedPicture& picture,
                                            std::vector<uint32_t>* pixels) {
         if (!picture)
             return false;

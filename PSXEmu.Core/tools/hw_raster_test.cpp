@@ -434,13 +434,13 @@ void SceneFillsAndCopies(Machines& m, Random& random, int count) {
 
 // A shared picture read back as a screenshot reads it - through a device of its own - against
 // pixels.
-bool SharedMatches(const emulation::psx::SharedPicture& picture,
+bool SharedMatches(const emulation::image::SharedPicture& picture,
                    const std::vector<uint32_t>& pixels) {
   std::vector<uint32_t> read;
   return psxemu::HardwareRaster::ReadSharedPicture(picture, &read) && read == pixels;
 }
 
-// Phase 6 (render/shared_picture.h): the picture left on the card, against the one read back. Two
+// Phase 6 (emucore/image/shared_picture.h): the picture left on the card, against the one read back. Two
 // rasterisers at 2x over the same native VRAM, one made to share its pictures and one not, each
 // resolving the display area; the shared one is read back the way a screenshot reads it.
 void SceneSharedPicture(Random& random) {
@@ -465,7 +465,7 @@ void SceneSharedPicture(Random& random) {
 
   // The first read-back has nothing behind it and waits, so it is this picture too.
   std::vector<uint32_t> pixels, unused;
-  emulation::psx::SharedPicture none, shared;
+  emulation::image::SharedPicture none, shared;
   int scale = 0;
   reading->ResolveDisplay(16, 8, 320, 240, &pixels, &none, &scale);
   const bool made = sharing->ResolveDisplay(16, 8, 320, 240, &unused, &shared, &scale);
@@ -477,29 +477,29 @@ void SceneSharedPicture(Random& random) {
 
   // A fixed number of textures: with every picture still held, the next comes back as pixels.
   const int kTextures = psxemu::HardwareRaster::kSharedPictures;
-  std::vector<emulation::psx::SharedPicture> held = { shared };
+  std::vector<emulation::image::SharedPicture> held = { shared };
   bool all_shared = true;
   for (int i = 1; i < kTextures; ++i) {
-    emulation::psx::SharedPicture next;
+    emulation::image::SharedPicture next;
     all_shared = all_shared && sharing->ResolveDisplay(16, 8, 320, 240, &unused, &next, &scale) &&
                  next && next.serial == held.back().serial + 1;
     held.push_back(next);
   }
   std::vector<uint32_t> over_pixels;
-  emulation::psx::SharedPicture over;
+  emulation::image::SharedPicture over;
   const bool resolved = sharing->ResolveDisplay(16, 8, 320, 240, &over_pixels, &over, &scale);
   Check(all_shared && resolved && !over && over_pixels == pixels,
         "every texture held, the next picture is read back instead - and is the same picture");
 
   // A frame the presenter never took gives its texture back at once.
   shared.source->Dropped(held[2].serial);
-  emulation::psx::SharedPicture again;
+  emulation::image::SharedPicture again;
   sharing->ResolveDisplay(16, 8, 320, 240, &unused, &again, &scale);
   Check(again && again.texture_id == held[2].texture_id,
         "a dropped frame's texture is drawn into again at once");
   // And the presenter's card finishing with pictures gives theirs back.
   shared.source->Release(held[4].serial);
-  emulation::psx::SharedPicture after;
+  emulation::image::SharedPicture after;
   sharing->ResolveDisplay(16, 8, 320, 240, &unused, &after, &scale);
   Check(after && after.texture_id != held[4].texture_id && after.texture_id != again.texture_id,
         "one the presenter has moved past is drawn into again, and the one it is on is not");
@@ -544,7 +544,7 @@ void SceneOneDevice(Random& random) {
   given->Written(0, 0, 1024, 512);
 
   std::vector<uint32_t> pixels, unused;
-  emulation::psx::SharedPicture none, shared;
+  emulation::image::SharedPicture none, shared;
   int scale = 0;
   reading->ResolveDisplay(16, 8, 320, 240, &pixels, &none, &scale);
   given->ResolveDisplay(16, 8, 320, 240, &unused, &shared, &scale);
@@ -567,7 +567,7 @@ void SceneOneDevice(Random& random) {
 
 using emulation::psx::DrawJob;
 using emulation::psx::PlaneView;
-using emulation::psx::kUnknownMotion;
+using emulation::image::kUnknownMotion;
 
 DrawJob Job(DrawJob::Kind kind) {
   DrawJob job = {};
@@ -670,7 +670,7 @@ void SceneFilledField() {
       for (int x = 0; x < 320; ++x)
         console = console && vram[y * 1024 + x] == ((y & 1) ? second : first);
     std::vector<uint32_t> unused, pixels;
-    emulation::psx::SharedPicture shared;
+    emulation::image::SharedPicture shared;
     int scale = 0;
     raster->ResolveDisplay(0, 0, 320, 480, &unused, &shared, &scale);
     const bool read = shared && psxemu::HardwareRaster::ReadSharedPicture(shared, &pixels) &&
@@ -823,7 +823,7 @@ void ScenePlanes() {
 
   // Handed over beside the shared picture while kept for DLSS, not when only shown.
   std::vector<uint32_t> pixels;
-  emulation::psx::SharedPicture shared;
+  emulation::image::SharedPicture shared;
   int scale = 0;
   const bool resolved = raster->ResolveDisplay(0, 0, 640, 480, &pixels, &shared, &scale);
   Check(resolved && shared && shared.planes != nullptr && shared.planes_id != 0 &&
@@ -833,7 +833,7 @@ void ScenePlanes() {
   const bool read = psxemu::HardwareRaster::ReadSharedPicture(shared, &picture);
   shared.source->Release(shared.serial + 1);
   raster->SetPlanes(false, PlaneView::kDepth);
-  emulation::psx::SharedPicture shown;
+  emulation::image::SharedPicture shown;
   raster->ResolveDisplay(0, 0, 640, 480, &pixels, &shown, &scale);
   Check(read && shown && shown.planes == nullptr &&
             psxemu::HardwareRaster::ReadSharedPicture(shown, &depth) && depth != picture,
@@ -1024,7 +1024,7 @@ void SceneJitter() {
   const float drawn_x = raster->jitter_x(), drawn_y = raster->jitter_y();
   raster->NewPicture(false);
   std::vector<uint32_t> pixels;
-  emulation::psx::SharedPicture shared;
+  emulation::image::SharedPicture shared;
   int scale = 0;
   raster->ResolveDisplay(0, 0, 640, 480, &pixels, &shared, &scale);
   Check(shared && shared.jitter_x == drawn_x && shared.jitter_y == drawn_y &&
@@ -1035,7 +1035,7 @@ void SceneJitter() {
   // Off, nothing is jittered and a picture says so.
   raster->SetJitter(0);
   raster->NewPicture(false);
-  emulation::psx::SharedPicture plain;
+  emulation::image::SharedPicture plain;
   raster->ResolveDisplay(0, 0, 640, 480, &pixels, &plain, &scale);
   Check(plain && plain.jitter_x == 0.0f && plain.jitter_y == 0.0f && raster->jitter_x() == 0.0f,
         "not jittering, nothing is");
@@ -1121,7 +1121,7 @@ void SceneReplacements() {
   raster->Apply(sprite);
 
   std::vector<uint32_t> picture;
-  emulation::psx::SharedPicture none;
+  emulation::image::SharedPicture none;
   int scale = 0;
   const bool resolved = raster->ResolveDisplay(100, 100, 16, 16, &picture, &none, &scale) &&
                         scale == 2 && picture.size() == 32u * 32u;
@@ -1227,7 +1227,7 @@ void SceneTextureFilters() {
     }
     raster->Written(0, 0, 1024, 512);
     raster->Apply(sprite);
-    emulation::psx::SharedPicture none;
+    emulation::image::SharedPicture none;
     int scale = 0;
     // A picture read back is the one before; the second read is this one.
     raster->ResolveDisplay(100, 100, 16, 16, &drawn[filter], &none, &scale);

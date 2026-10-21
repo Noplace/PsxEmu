@@ -556,7 +556,7 @@ void D3D12GraphicsEngine::RenderFramebuffer(const void* data, int width, int hei
 // as it reads fb_texture_. Any other is copied on the card into fb_texture_ - a few hundred
 // microseconds at 8x, against reading it back and uploading it again - and drawn from there as
 // any frame is; its source has already said it is drawn.
-bool D3D12GraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
+bool D3D12GraphicsEngine::RenderSharedPicture(const emulation::image::SharedPicture& picture) {
     if (!command_list_ || !render_targets_[frame_index_] || !picture || picture.width <= 0 ||
         picture.height <= 0 || picture.source->adapter() != adapter_luid_)
         return false;
@@ -629,7 +629,7 @@ bool D3D12GraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPictur
 
 // What drawing a shared picture is, wherever frame_texture_ has it: its hand-back, its frame for
 // Reflex and Frame Generation, and DLSS's picture of it or the picture itself.
-bool D3D12GraphicsEngine::ShowPicture(const emulation::psx::SharedPicture& picture) {
+bool D3D12GraphicsEngine::ShowPicture(const emulation::image::SharedPicture& picture) {
     // Every picture before this one is the rasteriser's again once this frame is done.
     pending_releases_.push_back({ fence_values_[frame_index_], picture.source, picture.serial });
     trail_source_ = picture.source;   // see RenderFramebuffer
@@ -649,7 +649,7 @@ bool D3D12GraphicsEngine::ShowPicture(const emulation::psx::SharedPicture& pictu
 }
 
 ID3D12Resource* D3D12GraphicsEngine::OpenSharedPicture(
-    const emulation::psx::SharedPicture& picture) {
+    const emulation::image::SharedPicture& picture) {
     for (const OpenedPicture& opened : opened_pictures_)
         if (opened.id == picture.texture_id)
             return opened.resource.Get();
@@ -657,7 +657,7 @@ ID3D12Resource* D3D12GraphicsEngine::OpenSharedPicture(
     // before is let go of - once the card has finished with it - rather than kept alive.
     if (!opened_pictures_.empty() &&
         (opened_source_ != picture.source.get() ||
-         opened_pictures_.size() >= emulation::psx::kMaxOpenedPictures)) {
+         opened_pictures_.size() >= emulation::image::kMaxOpenedPictures)) {
         FlushGPU();
         opened_pictures_.clear();
     }

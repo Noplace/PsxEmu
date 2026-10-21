@@ -63,7 +63,7 @@ namespace psxemu {
         void EndFrame() override;
 
         // Drawn straight from the rasteriser's texture, opened on this device.
-        bool RenderSharedPicture(const emulation::psx::SharedPicture& picture) override;
+        bool RenderSharedPicture(const emulation::image::SharedPicture& picture) override;
         uint64_t SharedPictureAdapter() const override { return adapter_luid_; }
 
         // Called when the window is resized; the back buffer follows the client area.
@@ -135,7 +135,7 @@ namespace psxemu {
         // picture's view. Not owned.
         ID3D11ShaderResourceView* shown_view_ = nullptr;
 
-        // Shared pictures (render/shared_picture.h): the adapter this device is on; the
+        // Shared pictures (emucore/image/shared_picture.h): the adapter this device is on; the
         // rasteriser's textures opened here, by their ids - one source's at a time, a handful at
         // most; and for each frame drawn from one, a query that says when the card is done with
         // it, and the picture to hand back then.
@@ -147,17 +147,17 @@ namespace psxemu {
             ID3D11ShaderResourceView* view;
         };
         std::vector<OpenedPicture> opened_pictures_;
-        const emulation::psx::SharedPictureSource* opened_source_ = nullptr;
+        const emulation::image::SharedPictureSource* opened_source_ = nullptr;
         struct PendingRelease {
             ID3D11Query* done;
-            std::shared_ptr<emulation::psx::SharedPictureSource> source;
+            std::shared_ptr<emulation::image::SharedPictureSource> source;
             uint64_t serial;
         };
         std::vector<PendingRelease> pending_releases_;
         // The last shared picture drawn, until a frame of pixels hands it back (HandBackTrail).
-        std::shared_ptr<emulation::psx::SharedPictureSource> trail_source_;
+        std::shared_ptr<emulation::image::SharedPictureSource> trail_source_;
         uint64_t trail_serial_ = 0;
-        void HandBack(const std::shared_ptr<emulation::psx::SharedPictureSource>& source,
+        void HandBack(const std::shared_ptr<emulation::image::SharedPictureSource>& source,
                       uint64_t serial);
         void HandBackTrail();
         std::vector<ID3D11Query*> spare_queries_;

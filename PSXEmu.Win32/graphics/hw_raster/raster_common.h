@@ -23,7 +23,7 @@
 // the arithmetic around both. One copy, so the two cannot come to draw differently.
 
 #include "render/raster.h"
-#include "render/shared_picture.h"
+#include "emucore/image/shared_picture.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -137,7 +137,7 @@ namespace raster {
     // TRUE_COLOR (above 1x only): no dithering, and eight bits a channel kept rather than
     // five, the pixel underneath included. It gives up the sub-pixel exactness above.
     //
-    // PLANES: PsDraw and PsCopy write the plane beside VRAM too (render/shared_picture.h), as a
+    // PLANES: PsDraw and PsCopy write the plane beside VRAM too (emucore/image/shared_picture.h), as a
     // second target - which is what DLSS will need to know of each sub-pixel. Compiled both
     // ways, so with the plane not kept the shaders are exactly what they were.
     //
@@ -1033,8 +1033,8 @@ namespace raster {
                               Microsoft::WRL::ComPtr<ID3DBlob>* blob, std::string* error,
                               bool as_console = false, int texture_filter = 0) {
         const std::string scale_text = std::to_string(scale);
-        const std::string unknown_text = std::to_string(emulation::psx::kUnknownMotion);
-        const std::string depth_text = std::to_string(emulation::psx::kPlaneDepthScale);
+        const std::string unknown_text = std::to_string(emulation::image::kUnknownMotion);
+        const std::string depth_text = std::to_string(emulation::image::kPlaneDepthScale);
         const std::string filter_text = std::to_string(texture_filter);
         const D3D_SHADER_MACRO macros[] = {
             { "SCALE", scale_text.c_str() },
@@ -1222,7 +1222,7 @@ namespace raster {
         // edges, the same in each.
         double moved_error = 0.0, still_error = 0.0;
         uint64_t moved_pixels = 0;
-        const float unknown = emulation::psx::kUnknownMotion * 0.5f;
+        const float unknown = emulation::image::kUnknownMotion * 0.5f;
         for (uint32_t row = 0; row < height; ++row) {
             const uint16_t* motion = reinterpret_cast<const uint16_t*>(plane + row * plane_pitch);
             for (uint32_t col = 0; col < width; ++col) {

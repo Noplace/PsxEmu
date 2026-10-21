@@ -115,7 +115,7 @@ namespace psxemu {
         const std::string& renderer() const { return renderer_; }
         const std::string& filter() const { return filter_; }
         // The graphics adapter (LUID) whose shared pictures the running engine can draw, or 0 if
-        // it takes none (render/shared_picture.h) - for the hardware rasteriser to draw there.
+        // it takes none (emucore/image/shared_picture.h) - for the hardware rasteriser to draw there.
         uint64_t shared_adapter() const {
             return engine_ != nullptr ? engine_->SharedPictureAdapter() : 0;
         }
@@ -177,7 +177,7 @@ namespace psxemu {
         // Draws `pixels` with the overlay over it.
         void Draw(const uint32_t* pixels, int width, int height);
         // Draws a picture left on the card, with the overlay over it.
-        void DrawShared(const emulation::psx::SharedPicture& picture);
+        void DrawShared(const emulation::image::SharedPicture& picture);
         // Present, but a repeat under Frame Generation too when `again` - the overlay over a
         // paused picture.
         void PresentFrame(const emulation::host::VideoFrame& frame, bool again);

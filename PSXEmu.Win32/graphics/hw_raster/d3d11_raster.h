@@ -46,7 +46,7 @@
 // rasteriser's thread or the machine's, one at a time - Gpu makes sure of that - which is all
 // an immediate context needs. Above 1x the picture it shows is handed over either as pixels read
 // back, or - for a presenter that can open it, on the same card - left on the card in a texture
-// the two devices share (render/shared_picture.h), which costs nothing to hand over.
+// the two devices share (emucore/image/shared_picture.h), which costs nothing to hand over.
 
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/hw_raster/raster_common.h"
@@ -77,14 +77,14 @@ namespace psxemu {
 
         bool ResolveDisplay(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                             std::vector<uint32_t>* picture,
-                            emulation::psx::SharedPicture* shared, int* scale) override;
+                            emulation::image::SharedPicture* shared, int* scale) override;
 
         Api api() const override { return Api::kD3D11; }
         bool sharing_pictures() const override { return pictures_ != nullptr; }
 
         // A picture this rasteriser shared, read back through a Direct3D 11 device of its own
         // (HardwareRaster::ReadSharedPicture).
-        static bool ReadSharedPicture(const emulation::psx::SharedPicture& picture,
+        static bool ReadSharedPicture(const emulation::image::SharedPicture& picture,
                                       std::vector<uint32_t>* pixels);
 
         void Apply(const emulation::psx::DrawJob& job) override;
@@ -147,7 +147,7 @@ namespace psxemu {
         // Above 1x: the display area drawn into a texture the presenter's device opens. False if
         // every one is still in use, and the picture has to be read back this time.
         bool ShareDisplay(uint32_t x, uint32_t y, UINT width, UINT height,
-                          emulation::psx::SharedPicture* shared);
+                          emulation::image::SharedPicture* shared);
 
         // The plane's textures, made when it is first asked for: false, and none, if the card
         // cannot hold them.
@@ -292,7 +292,7 @@ namespace psxemu {
         // stored, saying so. Blending each target its own way needs feature level 10.1.
         Microsoft::WRL::ComPtr<ID3D11BlendState> plane_blend_state_;
 
-        // The plane beside VRAM (render/shared_picture.h, Docs/DLSS-Plan.md): VRAM's layout at
+        // The plane beside VRAM (emucore/image/shared_picture.h, Docs/DLSS-Plan.md): VRAM's layout at
         // scale_, RGBA16F. Made the first time it is asked for, and kept after. Its read copy is
         // what copies and 15-bit texels carry along, made current tile by tile with VRAM's.
         bool keep_planes_ = false;

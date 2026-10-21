@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #include "render/texture_tracker.h"
 
-#include "render/png_file.h"
+#include "emucore/image/png_file.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -1301,7 +1301,7 @@ void TextureTracker::Store(const Dump& given) {
   // filled in over it; one of another size is not this source's, and is left alone.
   int there_w = 0, there_h = 0;
   std::vector<uint8_t> there;
-  if (ReadPngFile(dump.path, &there_w, &there_h, &there)) {
+  if (image::ReadPngFile(dump.path, &there_w, &there_h, &there)) {
     if (there_w != w || there_h != h)
       return;
     const std::vector<uint8_t> before = there;
@@ -1319,13 +1319,13 @@ void TextureTracker::Store(const Dump& given) {
       }
     if (there == before)
       return;   // it had them all already
-    if (WritePngFile(dump.path, w, h, there.data()))
+    if (image::WritePngFile(dump.path, w, h, there.data()))
       counted(&DumpCounts::merged, 1);
     else
       counted(&DumpCounts::failures, 1);
     return;
   }
-  if (WritePngFile(dump.path, w, h, dump.rgba.data())) {
+  if (image::WritePngFile(dump.path, w, h, dump.rgba.data())) {
     std::lock_guard<std::mutex> lock(write_mutex_);
     ++dump_counts_.written;
     dump_counts_.texels += static_cast<uint64_t>(dump.width) * dump.height;

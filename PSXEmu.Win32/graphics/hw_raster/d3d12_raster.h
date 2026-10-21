@@ -73,7 +73,7 @@ namespace psxemu {
 
         // A picture this rasteriser shared, read back through a Direct3D 12 device of its own
         // (HardwareRaster::ReadSharedPicture).
-        static bool ReadSharedPicture(const emulation::psx::SharedPicture& picture,
+        static bool ReadSharedPicture(const emulation::image::SharedPicture& picture,
                                       std::vector<uint32_t>* pixels);
 
         // RasterBackend.
@@ -83,7 +83,7 @@ namespace psxemu {
         void Reloaded() override;
         bool ResolveDisplay(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                             std::vector<uint32_t>* picture,
-                            emulation::psx::SharedPicture* shared, int* scale) override;
+                            emulation::image::SharedPicture* shared, int* scale) override;
         void SetPlanes(bool keep, emulation::psx::PlaneView view) override;
         void NewPicture(bool reset) override;
         void set_motion_check(bool on) override { motion_check_ = on; }
@@ -178,7 +178,7 @@ namespace psxemu {
         // Render-target views, by what they draw into.
         enum Rtv {
             kRtvTarget, kRtvPlane, kRtvNative, kRtvDisplay, kRtvPicture,
-            kRtvCount = kRtvPicture + emulation::psx::kSharedTextureCount
+            kRtvCount = kRtvPicture + emulation::image::kSharedTextureCount
         };
 
         D3D12Raster(uint16_t* vram, const emulation::psx::RasterOptions& options,
@@ -236,7 +236,7 @@ namespace psxemu {
         void DrawDisplay(D3D12_CPU_DESCRIPTOR_HANDLE into, Texture& texture, uint32_t x,
                          uint32_t y, UINT width, UINT height);
         bool ShareDisplay(uint32_t x, uint32_t y, UINT width, UINT height,
-                          emulation::psx::SharedPicture* shared);
+                          emulation::image::SharedPicture* shared);
         bool MakePlanes();
         void ForgetPlanes(int32_t x, int32_t y, int32_t w, int32_t h);
         void Flush();

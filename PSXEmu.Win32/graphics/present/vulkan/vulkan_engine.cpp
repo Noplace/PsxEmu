@@ -970,14 +970,14 @@ namespace psxemu {
             DrawFrame(data, nullptr, width, height);
     }
 
-    bool VulkanGraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
+    bool VulkanGraphicsEngine::RenderSharedPicture(const emulation::image::SharedPicture& picture) {
         if (adapter_luid_ == 0 || !picture || picture.source->adapter() != adapter_luid_)
             return false;
         return DrawFrame(nullptr, &picture, picture.width, picture.height);
     }
 
     bool VulkanGraphicsEngine::DrawFrame(const void* pixels,
-                                         const emulation::psx::SharedPicture* shared, int width,
+                                         const emulation::image::SharedPicture* shared, int width,
                                          int height) {
         if (device_ == nullptr || width <= 0 || height <= 0)
             return false;
@@ -1198,7 +1198,7 @@ namespace psxemu {
         return true;
     }
 
-    VkImage VulkanGraphicsEngine::ImportShared(const emulation::psx::SharedPicture& picture) {
+    VkImage VulkanGraphicsEngine::ImportShared(const emulation::image::SharedPicture& picture) {
         for (const Imported& imported : imported_)
             if (imported.id == picture.texture_id)
                 return imported.image;
@@ -1206,7 +1206,7 @@ namespace psxemu {
         // of rather than kept alive.
         if (!imported_.empty() &&
             (imported_source_ != picture.source.get() ||
-             imported_.size() >= emulation::psx::kMaxOpenedPictures))
+             imported_.size() >= emulation::image::kMaxOpenedPictures))
             ForgetImported();
         imported_source_ = picture.source.get();
 

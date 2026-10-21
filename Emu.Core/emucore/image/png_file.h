@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #pragma once
 
-// A picture as a PNG file, with the core's own zlib: the texture tracker's dumps
+// A picture as a PNG file, with Emu.Core's own zlib: in PSXEmu, the texture tracker's dumps
 // (render/texture_tracker.h) and the replacements read back (render/texture_pack.h). The core
 // knows no operating system, so this is the format by hand rather than a call into Windows:
 // written as signature, IHDR, one IDAT, IEND; read in any of its colour types and depths,
@@ -29,7 +29,7 @@
 #include <vector>
 
 namespace emulation {
-namespace psx {
+namespace image {
 
   // `rgba` is `width` x `height` pixels, four bytes each, rows top to bottom. False if the file
   // cannot be written. `level` is zlib's, 1 (fastest, and run-length only) to 9; -1 its default.
@@ -45,5 +45,5 @@ namespace psx {
   bool DecodePng(const uint8_t* data, size_t size, int* width, int* height,
                  std::vector<uint8_t>* rgba);
 
-}  // namespace psx
+}  // namespace image
 }  // namespace emulation

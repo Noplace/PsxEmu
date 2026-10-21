@@ -75,13 +75,13 @@ namespace psxemu {
 
     }   // namespace
 
-    // Shared pictures, the part any thread may touch (render/shared_picture.h) - D3D11's
+    // Shared pictures, the part any thread may touch (emucore/image/shared_picture.h) - D3D11's
     // CardPictures, with a Direct3D 12 fence: each texture's NT handle and bookkeeping, and the
     // fence the rasteriser's queue signals once it has drawn a picture. Frames carry a reference
     // to this, so it outlives the rasteriser while any are in flight - and with it the handles,
     // which keep the textures themselves alive after the rasteriser has let go of them. On the
     // renderer's own device there are no handles: the textures themselves are kept here instead.
-    class D3D12Pictures : public emulation::psx::SharedPictureSource {
+    class D3D12Pictures : public emulation::image::SharedPictureSource {
      public:
         static constexpr int kSlots = HardwareRaster::kSharedPictures;
 
@@ -220,7 +220,7 @@ namespace psxemu {
     // Reading a shared picture back, for a screenshot
     // ------------------------------------------------------------------------------------------
 
-    bool D3D12Raster::ReadSharedPicture(const emulation::psx::SharedPicture& picture,
+    bool D3D12Raster::ReadSharedPicture(const emulation::image::SharedPicture& picture,
                                         std::vector<uint32_t>* pixels) {
         if (!picture || picture.width <= 0 || picture.height <= 0 ||
             !picture.source->WaitReady(picture.serial, 1000))
@@ -872,7 +872,7 @@ namespace psxemu {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The plane beside VRAM (render/shared_picture.h, Docs/DLSS-Plan.md)
+    // The plane beside VRAM (emucore/image/shared_picture.h, Docs/DLSS-Plan.md)
     // ------------------------------------------------------------------------------------------
 
     void D3D12Raster::SetPlanes(bool keep, emulation::psx::PlaneView view) {
@@ -919,7 +919,7 @@ namespace psxemu {
     }
 
     void D3D12Raster::ForgetPlanes(int32_t x, int32_t y, int32_t w, int32_t h) {
-        const float unknown[4] = { emulation::psx::kUnknownMotion, emulation::psx::kUnknownMotion,
+        const float unknown[4] = { emulation::image::kUnknownMotion, emulation::image::kUnknownMotion,
                                    0.0f, 1.0f };
         const D3D12_RECT rect = { x * scale_, y * scale_, (x + w) * scale_, (y + h) * scale_ };
         Use(plane_target_, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -1998,7 +1998,7 @@ namespace psxemu {
         list->DrawInstanced(6, 1, 0, 0);
     }
 
-    // The picture left on the card for the presenter's device (render/shared_picture.h). Nothing
+    // The picture left on the card for the presenter's device (emucore/image/shared_picture.h). Nothing
     // here waits: the picture's commands are sent and the fence signalled behind them, and the
     // presenter waits for the fence - on its own thread, or on the renderer's own device on the
     // card - before it draws from the texture.
@@ -2008,7 +2008,7 @@ namespace psxemu {
     // would have the card unpack them at every hand-off. Otherwise each is made to be opened by
     // another device, and handed over in the common state, the one that device may open it in.
     bool D3D12Raster::ShareDisplay(uint32_t x, uint32_t y, UINT width, UINT height,
-                                   emulation::psx::SharedPicture* shared) {
+                                   emulation::image::SharedPicture* shared) {
         static_assert(kPictureSlots == D3D12Pictures::kSlots, "one texture per shared slot");
         constexpr D3D12_RESOURCE_STATES kHandedOver = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
         const D3D12_HEAP_FLAGS heap_flags = one_device_ ? D3D12_HEAP_FLAG_NONE
@@ -2119,7 +2119,7 @@ namespace psxemu {
 
     bool D3D12Raster::ResolveDisplay(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
                                      std::vector<uint32_t>* picture,
-                                     emulation::psx::SharedPicture* shared, int* scale) {
+                                     emulation::image::SharedPicture* shared, int* scale) {
         if (scale_ == 1 || !lost_.empty() || w == 0 || h == 0 || x + w > kWidth ||
             y + h > kHeight)
             return false;

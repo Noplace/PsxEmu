@@ -524,7 +524,7 @@ namespace psxemu {
 
     // The hardware rasteriser's picture, drawn from its own texture: nothing is copied at all.
     // The source has already said it is drawn.
-    bool D3D11GraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
+    bool D3D11GraphicsEngine::RenderSharedPicture(const emulation::image::SharedPicture& picture) {
         if (device_ == nullptr || render_target_ == nullptr || !picture || picture.width <= 0 ||
             picture.height <= 0 || picture.source->adapter() != adapter_luid_)
             return false;
@@ -539,7 +539,7 @@ namespace psxemu {
             // of rather than kept alive. Direct3D 11 keeps one alive itself while queued work
             // still reads it.
             if (opened_source_ != picture.source.get() ||
-                opened_pictures_.size() >= emulation::psx::kMaxOpenedPictures)
+                opened_pictures_.size() >= emulation::image::kMaxOpenedPictures)
                 ForgetOpenedPictures();
             opened_source_ = picture.source.get();
             ID3D11Device1* device1 = nullptr;
@@ -572,7 +572,7 @@ namespace psxemu {
 
     // Gives pictures before `serial` back to `source` when the card has finished the frame just
     // drawn. A query per frame, kept for reuse.
-    void D3D11GraphicsEngine::HandBack(const std::shared_ptr<emulation::psx::SharedPictureSource>& source,
+    void D3D11GraphicsEngine::HandBack(const std::shared_ptr<emulation::image::SharedPictureSource>& source,
                                   uint64_t serial) {
         ID3D11Query* done = nullptr;
         if (!spare_queries_.empty()) {

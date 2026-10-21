@@ -21,7 +21,7 @@
 #include "graphics/adapters.h"
 #include "graphics/upscale/texture/onnx_runtime.h"
 #include "graphics/upscale/texture/rtx_video.h"
-#include "render/png_file.h"
+#include "emucore/image/png_file.h"
 #include "render/texture_pack.h"
 #include "render/texture_tracker.h"
 
@@ -148,7 +148,7 @@ namespace psxemu {
                 uint64_t image, clut;
                 uint32_t mode;
                 const std::string name = std::filesystem::path(file).stem().string();
-                if (emulation::psx::ReadPngFile(file, &w, &h, &picture->rgba) &&
+                if (emulation::image::ReadPngFile(file, &w, &h, &picture->rgba) &&
                     emulation::psx::TextureTracker::ParseName(name, &image, &clut, &mode)) {
                     picture->name = name;
                     picture->key = emulation::psx::TextureTracker::Key(image, clut, mode);
@@ -224,7 +224,7 @@ namespace psxemu {
         int w = 0, h = 0;
         std::vector<uint8_t> rgba;
         const int s = options_.scale;
-        if (!emulation::psx::ReadPngFile(path, &w, &h, &rgba) ||
+        if (!emulation::image::ReadPngFile(path, &w, &h, &rgba) ||
             w != static_cast<int>(output->width) * s || h != static_cast<int>(output->height) * s)
             return;
         const int side = 8 * s;
@@ -601,7 +601,7 @@ namespace psxemu {
                            &pixels[static_cast<size_t>(y) * side * 4], static_cast<size_t>(span) * 4);
                 }
             }
-            if (!emulation::psx::WritePngFile(path, w, h, canvas.data(), 1)) {
+            if (!emulation::image::WritePngFile(path, w, h, canvas.data(), 1)) {
                 std::lock_guard<std::mutex> lock(mutex_);
                 counts_.last_error = "could not write " + path;
             }

@@ -931,7 +931,7 @@ namespace psxemu {
             // setting has to come out of.
             if (config_.show_timings && !report_.paused) {
                 // "on card": the hardware rasteriser's picture handed to the renderer where it
-                // was drawn, with nothing copied (render/shared_picture.h).
+                // was drawn, with nothing copied (emucore/image/shared_picture.h).
                 wchar_t timings[208] = {};
                 swprintf(timings, std::size(timings),
                          L"  |  emulate %.1f  hand-off %.2f%s  idle %.1f  present %.2f ms"

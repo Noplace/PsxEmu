@@ -79,7 +79,7 @@ struct MachineReport {
   bool hardware_raster = false;
   std::string raster_error;
   // Whether the last frame's picture was handed over on the graphics card rather than in memory
-  // (render/shared_picture.h).
+  // (emucore/image/shared_picture.h).
   bool shared_picture = false;
   // Settings > Video > Frame Pacing, "Match the display" (platform/display_sync.h): the display's
   // refresh as the front end last gave it, 0 if it gave none; and the refreshes each frame is

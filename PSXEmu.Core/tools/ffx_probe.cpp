@@ -31,7 +31,7 @@
 //
 // --jitter-test settles the two signs the emulator gives FSR, on the first card asked about (or
 // --card n): frames of a sharp-edged pattern, each pixel showing what is at itself plus the jitter
-// - the rasteriser's own rule (render/shared_picture.h) - go through FSR Quality for 48 frames with
+// - the rasteriser's own rule (emucore/image/shared_picture.h) - go through FSR Quality for 48 frames with
 // each sign of the jitter each way, then with the pattern moving and each sign of its motion, each
 // output scored against the pattern drawn at the output's size. --cost does that too, then times
 // FSR on the card at the sizes the emulator gives it. --version picks the upscaler by AMD's name

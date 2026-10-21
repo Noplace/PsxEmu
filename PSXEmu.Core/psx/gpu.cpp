@@ -183,7 +183,7 @@ namespace emulation {
                 hardware_raster_ = hardware;
             }
             picture_scale_ = 1;   // until the new one resolves a frame
-            shared_picture_ = SharedPicture();
+            shared_picture_ = image::SharedPicture();
             PushWatch();
             backend_->set_texture_replacer(replacer_);
             backend_->SetPlanes(planes_keep_, plane_view_);
@@ -310,7 +310,7 @@ namespace emulation {
                 hardware_raster_ = false;
             }
             picture_scale_ = 1;
-            shared_picture_ = SharedPicture();
+            shared_picture_ = image::SharedPicture();
             raster_error_ = std::move(why);
             PushWatch();
             UpdateMotion();
@@ -1710,7 +1710,7 @@ namespace emulation {
             // area as it drew it. Not in 24-bit mode, which is films arriving by CPU upload at
             // native size anyway, and read here byte by byte.
             picture_scale_ = 1;
-            shared_picture_ = SharedPicture();
+            shared_picture_ = image::SharedPicture();
             // Motion (Docs/DLSS-Plan.md, phase 2): whether this is a new picture, and a fresh
             // start, for DLSS - worked out before the rasteriser resolves it, which it tells.
             bool new_picture = false, reset = false;

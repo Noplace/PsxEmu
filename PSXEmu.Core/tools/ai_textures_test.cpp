@@ -25,7 +25,7 @@
 // written, and read back by the next run.
 
 #include "graphics/upscale/texture/ai_textures.h"
-#include "render/png_file.h"
+#include "emucore/image/png_file.h"
 #include "render/texture_pack.h"
 #include "render/texture_tracker.h"
 
@@ -223,7 +223,7 @@ void TestQueue() {
     Check(written, "...and written to the output folder");
     int w = 0, h = 0;
     std::vector<uint8_t> rgba;
-    Check(emulation::psx::ReadPngFile((folder / "ai" / (std::string(names[0]) + ".png")).string(), &w, &h, &rgba) &&
+    Check(emulation::image::ReadPngFile((folder / "ai" / (std::string(names[0]) + ".png")).string(), &w, &h, &rgba) &&
               w == 96 && h == 64 && rgba[3] == 255 && rgba[0] == 100,
           "...at 4x, as the model made them");
 
@@ -251,7 +251,7 @@ void TestQueue() {
   // A texture the pack has its own image for is the pack's.
   fs::create_directories(folder / "replace");
   std::vector<uint8_t> own(24 * 16 * 4, 255);
-  emulation::psx::WritePngFile((folder / "replace" / (std::string(names[2]) + ".png")).string(), 24, 16, own.data());
+  emulation::image::WritePngFile((folder / "replace" / (std::string(names[2]) + ".png")).string(), 24, 16, own.data());
   TexturePack hand(nullptr);
   hand.Open((folder / "replace").string(), &error, (folder / "ai").string());
   AiTextures fresh(std::make_unique<Repeat>(), options);

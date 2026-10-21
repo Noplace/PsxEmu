@@ -16,7 +16,7 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "render/png_file.h"
+#include "emucore/image/png_file.h"
 
 #include "zlib.h"
 
@@ -24,7 +24,7 @@
 #include <cstring>
 
 namespace emulation {
-namespace psx {
+namespace image {
 
 namespace {
 
@@ -310,5 +310,5 @@ bool ReadPngFile(const std::string& path, int* width, int* height, std::vector<u
   return DecodePng(bytes.data(), bytes.size(), width, height, rgba);
 }
 
-}  // namespace psx
+}  // namespace image
 }  // namespace emulation

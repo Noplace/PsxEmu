@@ -617,7 +617,7 @@ namespace psxemu {
         std::string presenter_renderer_;   // which renderer that is, for saying so
         // What the hardware rasteriser's factory reads, on the machine's thread, when it makes
         // one: the card to draw on (0: Windows' default) and whether to hand pictures over on it
-        // (render/shared_picture.h). Written here, then the machine is told to make it again.
+        // (emucore/image/shared_picture.h). Written here, then the machine is told to make it again.
         std::atomic<uint64_t> raster_adapter_{ 0 };
         std::atomic<bool> raster_shared_{ false };
         // ...and written back by it: the count of renderer devices published when it made the

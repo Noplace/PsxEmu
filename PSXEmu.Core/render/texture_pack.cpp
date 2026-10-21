@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #include "render/texture_pack.h"
 
-#include "render/png_file.h"
+#include "emucore/image/png_file.h"
 
 #include <algorithm>
 #include <atomic>
@@ -366,7 +366,7 @@ void TexturePack::Load(uint64_t key, uint64_t generation) {
   std::vector<uint8_t> rgba;
   auto image = std::make_shared<ReplacementImage>();
   std::string why;
-  bool read = ReadPngFile(path, &w, &h, &rgba);
+  bool read = image::ReadPngFile(path, &w, &h, &rgba);
   const int times = test_scale_;
   if (read && times > 1) {
     std::vector<uint8_t> larger(static_cast<size_t>(w) * times * h * times * 4);

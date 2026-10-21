@@ -63,7 +63,7 @@ namespace psxemu {
         // The rasteriser's Direct3D 11 texture, its memory opened as a GL memory object
         // (GL_EXT_memory_object_win32) and drawn on the card into the frame's own texture, from
         // which everything is drawn as an uploaded frame is.
-        bool RenderSharedPicture(const emulation::psx::SharedPicture& picture) override;
+        bool RenderSharedPicture(const emulation::image::SharedPicture& picture) override;
         uint64_t SharedPictureAdapter() const override { return adapter_luid_; }
         void Resize(int width, int height) override;
 
@@ -166,7 +166,7 @@ namespace psxemu {
         float rect_x_ = 0.0f, rect_y_ = 0.0f, rect_width_ = 0.0f, rect_height_ = 0.0f;
         int scissor_x_ = 0, scissor_y_ = 0, scissor_width_ = 0, scissor_height_ = 0;
 
-        // Shared pictures (render/shared_picture.h). Whether they can be opened, and the card this
+        // Shared pictures (emucore/image/shared_picture.h). Whether they can be opened, and the card this
         // context is on as its LUID; the rasteriser's textures opened so far - one source's, a
         // few of them; the program and framebuffer that draw one into frame_texture_; which
         // picture frame_texture_ holds; and for each frame drawn from one, a sync object that
@@ -179,7 +179,7 @@ namespace psxemu {
             GLuint texture = 0;   // a texture over it
         };
         std::vector<OpenedPicture> opened_pictures_;
-        const emulation::psx::SharedPictureSource* opened_source_ = nullptr;
+        const emulation::image::SharedPictureSource* opened_source_ = nullptr;
         void ForgetOpenedPictures();
         Program copy_;
         GLuint copy_framebuffer_ = 0;
@@ -187,12 +187,12 @@ namespace psxemu {
         uint64_t shown_serial_ = 0;
         struct PendingRelease {
             GLsync done;
-            std::shared_ptr<emulation::psx::SharedPictureSource> source;
+            std::shared_ptr<emulation::image::SharedPictureSource> source;
             uint64_t serial;
         };
         std::vector<PendingRelease> pending_releases_;
         // The last shared picture drawn, until a frame of pixels hands it back.
-        std::shared_ptr<emulation::psx::SharedPictureSource> trail_source_;
+        std::shared_ptr<emulation::image::SharedPictureSource> trail_source_;
         uint64_t trail_serial_ = 0;
     };
 

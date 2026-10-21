@@ -17,7 +17,7 @@
 #include <memory>
 
 namespace emulation {
-namespace psx {
+namespace image {
 
 // How many textures a source rotates through: the one on the screen, those still in a queue or the
 // mailbox, and the presenter's release trailing a few frames behind. Five ran out often enough to
@@ -144,5 +144,5 @@ struct SharedPicture {
   explicit operator bool() const { return source != nullptr; }
 };
 
-}  // namespace psx
+}  // namespace image
 }  // namespace emulation

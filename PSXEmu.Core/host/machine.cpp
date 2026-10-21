@@ -529,10 +529,10 @@ void Machine::PublishFrame() {
     const uint16_t* vram = system_->gpu().vram();
     frame.vram.assign(vram, vram + static_cast<size_t>(width) * height);
     frame.is_vram = true;
-    frame.shared = psx::SharedPicture();
+    frame.shared = image::SharedPicture();
     frame.width = width;
     frame.height = height;
-  } else if (const psx::SharedPicture& shared = system_->gpu().shared_picture()) {
+  } else if (const image::SharedPicture& shared = system_->gpu().shared_picture()) {
     // Left on the graphics card by the hardware rasteriser: nothing to copy.
     frame.pixels.clear();
     frame.shared = shared;
@@ -545,7 +545,7 @@ void Machine::PublishFrame() {
     // At the hardware rasteriser's resolution, when that is higher than native.
     const uint32_t* pixels = system_->gpu().picture(width, height);
     frame.pixels.assign(pixels, pixels + static_cast<size_t>(width) * height);
-    frame.shared = psx::SharedPicture();
+    frame.shared = image::SharedPicture();
     frame.is_vram = false;
     frame.width = width;
     frame.height = height;
@@ -558,7 +558,7 @@ void Machine::PublishFrame() {
   VideoFrame& returned = video_->back();
   if (dropped && returned.shared)
     returned.shared.source->Dropped(returned.shared.serial);
-  returned.shared = psx::SharedPicture();
+  returned.shared = image::SharedPicture();
 }
 
 // The SPU makes 44,100 samples per *emulated* second and the device drains

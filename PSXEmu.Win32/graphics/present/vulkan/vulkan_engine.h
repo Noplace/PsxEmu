@@ -69,7 +69,7 @@ namespace psxemu {
         // The rasteriser's Direct3D 11 texture, imported through VK_KHR_external_memory_win32
         // and copied on the card into the frame's own image, from which everything is drawn as
         // an uploaded frame is.
-        bool RenderSharedPicture(const emulation::psx::SharedPicture& picture) override;
+        bool RenderSharedPicture(const emulation::image::SharedPicture& picture) override;
         uint64_t SharedPictureAdapter() const override { return adapter_luid_; }
         void Resize(int width, int height) override;
 
@@ -142,10 +142,10 @@ namespace psxemu {
         bool CreateDevice();
         // Records and submits one frame: `pixels` uploaded, or `shared` copied on the card.
         // False if nothing was submitted.
-        bool DrawFrame(const void* pixels, const emulation::psx::SharedPicture* shared, int width,
+        bool DrawFrame(const void* pixels, const emulation::image::SharedPicture* shared, int width,
                        int height);
         // The shared picture's texture as an image of this device, imported the first time.
-        VkImage ImportShared(const emulation::psx::SharedPicture& picture);
+        VkImage ImportShared(const emulation::image::SharedPicture& picture);
         void ForgetImported();
         bool CreateRenderPasses();
         bool CreatePipelineObjects();
@@ -232,7 +232,7 @@ namespace psxemu {
         // The overlay's atlas (see the overlay's members above).
         Image overlay_atlas_;
 
-        // Shared pictures (render/shared_picture.h). The adapter this device is on, when it can
+        // Shared pictures (emucore/image/shared_picture.h). The adapter this device is on, when it can
         // import them; the rasteriser's textures imported so far - one source's, a handful at
         // most; which picture frame_ holds; and the picture the frame in flight read, handed
         // back once the fence says that frame is done.
@@ -245,13 +245,13 @@ namespace psxemu {
             VkDeviceMemory memory = nullptr;
         };
         std::vector<Imported> imported_;
-        const emulation::psx::SharedPictureSource* imported_source_ = nullptr;
+        const emulation::image::SharedPictureSource* imported_source_ = nullptr;
         uint64_t shown_texture_id_ = 0;
         uint64_t shown_serial_ = 0;
-        std::shared_ptr<emulation::psx::SharedPictureSource> in_flight_source_;
+        std::shared_ptr<emulation::image::SharedPictureSource> in_flight_source_;
         uint64_t in_flight_serial_ = 0;
         // The last shared picture drawn, until a frame of pixels hands it back.
-        std::shared_ptr<emulation::psx::SharedPictureSource> trail_source_;
+        std::shared_ptr<emulation::image::SharedPictureSource> trail_source_;
         uint64_t trail_serial_ = 0;
     };
 

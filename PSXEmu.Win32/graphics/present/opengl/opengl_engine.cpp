@@ -488,7 +488,7 @@ void main() {
     // goes through the letterbox, the filter or the chain as any frame does. The source has
     // already said it is drawn, and nothing here can be running on the rasteriser's card behind
     // that: the wait was on the CPU.
-    bool OpenGLGraphicsEngine::RenderSharedPicture(const emulation::psx::SharedPicture& picture) {
+    bool OpenGLGraphicsEngine::RenderSharedPicture(const emulation::image::SharedPicture& picture) {
         if (context_ == nullptr || !sharing_ || !picture || picture.width <= 0 ||
             picture.height <= 0 || picture.source->adapter() != adapter_luid_)
             return false;
@@ -502,7 +502,7 @@ void main() {
             // A new rasteriser's pictures, or a handful already open: the old ones are let go of
             // rather than kept alive.
             if (opened_source_ != picture.source.get() ||
-                opened_pictures_.size() >= emulation::psx::kMaxOpenedPictures)
+                opened_pictures_.size() >= emulation::image::kMaxOpenedPictures)
                 ForgetOpenedPictures();
             opened_source_ = picture.source.get();
             OpenedPicture fresh;

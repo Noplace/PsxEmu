@@ -221,7 +221,7 @@ namespace psxemu {
             std::chrono::duration<double, std::milli>(Overlay::Clock::now() - start).count());
     }
 
-    void VideoPresenter::DrawShared(const emulation::psx::SharedPicture& picture) {
+    void VideoPresenter::DrawShared(const emulation::image::SharedPicture& picture) {
         const auto start = Overlay::Clock::now();
         if (stats_ != nullptr)
             stats_->Drain([this](const emulation::host::FrameSample& s) { overlay_.AddSample(s); });

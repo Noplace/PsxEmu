@@ -35,7 +35,7 @@ if errorlevel 1 exit /b 1
 
 set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp ^
  PSXEmu.Core\render\software_raster.cpp PSXEmu.Core\render\texture_tracker.cpp ^
- PSXEmu.Core\render\png_file.cpp PSXEmu.Core\render\texture_pack.cpp ^
+ Emu.Core\emucore\image\png_file.cpp PSXEmu.Core\render\texture_pack.cpp ^
  PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\bios\kernel.cpp ^
  PSXEmu.Core\psx\mc.cpp PSXEmu.Core\media\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
  PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\media\disc.cpp PSXEmu.Core\psx\sio.cpp PSXEmu.Core\psx\sio1.cpp ^
@@ -260,14 +260,14 @@ rem on a VRAM of its own, its dumps read back, and PNGs of every kind read.
 if not exist Temp\tools\obj_ttracker mkdir Temp\tools\obj_ttracker
 cl %FLAGS% /Fo:Temp\tools\obj_ttracker\ /Fe:Temp\tools\texture_tracker_test.exe ^
    PSXEmu.Core\tools\texture_tracker_test.cpp PSXEmu.Core\render\texture_tracker.cpp ^
-   PSXEmu.Core\render\png_file.cpp %LIBS%
+   Emu.Core\emucore\image\png_file.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem The AI texture upscaler's own work, with a model that only repeats pixels - phase 3.
 if not exist Temp\tools\obj_aitextures mkdir Temp\tools\obj_aitextures
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_aitextures\ /Fe:Temp\tools\ai_textures_test.exe ^
    PSXEmu.Core\tools\ai_textures_test.cpp %AITEXTURES% PSXEmu.Core\render\texture_pack.cpp ^
-   PSXEmu.Core\render\texture_tracker.cpp PSXEmu.Core\render\png_file.cpp %LIBS%
+   PSXEmu.Core\render\texture_tracker.cpp Emu.Core\emucore\image\png_file.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem What AMD's FidelityFX runtime says about each card - Docs/FSR-Plan.md, phase 0. Needs

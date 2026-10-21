@@ -75,7 +75,7 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     // after - filters, chains, the overlay's glass - reads as it reads an uploaded frame. A
     // picture drawn on this device (graphics/shared_device.h) is not copied: everything reads
     // the rasteriser's texture itself, and the queue waits for it on the card.
-    bool RenderSharedPicture(const emulation::psx::SharedPicture& picture) override;
+    bool RenderSharedPicture(const emulation::image::SharedPicture& picture) override;
     uint64_t SharedPictureAdapter() const override { return adapter_luid_; }
     void* SharedPictureDevice() const override { return device_.Get(); }
     void Idle() override { FlushGPU(); }
@@ -141,9 +141,9 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     void DrawTexture(ID3D12DescriptorHeap* heap, D3D12_GPU_DESCRIPTOR_HANDLE table, int width,
                      int height, const LetterboxRect& rect);
     // The rasteriser's texture for `picture`, opened on this device, or null.
-    ID3D12Resource* OpenSharedPicture(const emulation::psx::SharedPicture& picture);
+    ID3D12Resource* OpenSharedPicture(const emulation::image::SharedPicture& picture);
     // RenderSharedPicture's end, once frame_texture_ holds the picture.
-    bool ShowPicture(const emulation::psx::SharedPicture& picture);
+    bool ShowPicture(const emulation::image::SharedPicture& picture);
     // Hands back to their sources the pictures whose frames the card has finished.
     void ReleasePictures(UINT64 completed);
     bool CreatePipelineState(const void* bytecode, size_t size,
@@ -246,7 +246,7 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     UINT fb_num_rows_ = 0;
     UINT64 fb_row_size_in_bytes_ = 0;
 
-    // Shared pictures (render/shared_picture.h). The adapter this device is on; the rasteriser's
+    // Shared pictures (emucore/image/shared_picture.h). The adapter this device is on; the rasteriser's
     // textures opened here, by their ids - one source's at a time, and a handful at most; which
     // picture fb_texture_ holds, so one shown again is not copied again; and the pictures each
     // frame drew from, handed back once the fence passes that frame.
@@ -257,17 +257,17 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
         ComPtr<ID3D12Resource> resource;
     };
     std::vector<OpenedPicture> opened_pictures_;
-    const emulation::psx::SharedPictureSource* opened_source_ = nullptr;
+    const emulation::image::SharedPictureSource* opened_source_ = nullptr;
     uint64_t shown_texture_id_ = 0;
     uint64_t shown_serial_ = 0;
     struct PendingRelease {
         UINT64 fence_value;
-        std::shared_ptr<emulation::psx::SharedPictureSource> source;
+        std::shared_ptr<emulation::image::SharedPictureSource> source;
         uint64_t serial;
     };
     std::vector<PendingRelease> pending_releases_;
     // The last shared picture drawn, until a frame of pixels hands it back.
-    std::shared_ptr<emulation::psx::SharedPictureSource> trail_source_;
+    std::shared_ptr<emulation::image::SharedPictureSource> trail_source_;
     uint64_t trail_serial_ = 0;
 
     // What this frame shows, which everything after reads: fb_texture_, holding an uploaded
@@ -301,21 +301,21 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     bool ChooseDlssOutput(int width, int height, const LetterboxRect& screen, int* out_width,
                           int* out_height);
     bool EnsureDlssTargets(int in_width, int in_height, int out_width, int out_height);
-    ID3D12Resource* OpenPlanes(const emulation::psx::SharedPicture& picture);
+    ID3D12Resource* OpenPlanes(const emulation::image::SharedPicture& picture);
     // The plane into the upscaler's inputs - motion, depth and the hint, which is DLSS's
     // bias-current-colour hint or FSR's reactive mask: `unknown` where the motion is not known,
     // `translucent` where the last thing drawn was - left in kDlssInputState, with Show Timings'
     // first timestamp taken before. FinishUpscalerInputs puts them back and takes the second.
-    void MakeUpscalerInputs(const emulation::psx::SharedPicture& picture, ID3D12Resource* planes,
+    void MakeUpscalerInputs(const emulation::image::SharedPicture& picture, ID3D12Resource* planes,
                             float unknown, float translucent);
     void FinishUpscalerInputs(bool ran);
     // DLSS on the picture in fb_texture_, into dlss_output_. False if it could not run.
-    bool EvaluateDlss(const emulation::psx::SharedPicture& picture, ID3D12Resource* planes,
+    bool EvaluateDlss(const emulation::image::SharedPicture& picture, ID3D12Resource* planes,
                       int out_width, int out_height);
     // Draws the upscaler's picture of `picture` - DLSS's or FSR's, whichever runs, made now if
     // it is a new one - in place of the picture. False, drawing nothing, when it cannot take it:
     // no plane, interlaced, a size it will not take, or any step failing.
-    bool DrawUpscaled(const emulation::psx::SharedPicture& picture);
+    bool DrawUpscaled(const emulation::image::SharedPicture& picture);
     // A line for whichever upscaler's log runs: dlss.log or fsr.log.
     void NoteUpscaler(const std::string& line);
     // The picture's 4:3 rectangle of the window in whole pixels, where an upscaler's output lands
@@ -380,7 +380,7 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     int dlss_out_width_ = 0, dlss_out_height_ = 0;
     // The planes' textures opened here, as the pictures' are (opened_pictures_).
     std::vector<OpenedPicture> opened_planes_;
-    const emulation::psx::SharedPictureSource* planes_source_ = nullptr;
+    const emulation::image::SharedPictureSource* planes_source_ = nullptr;
     // Whether dlss_output_ holds a picture at all (dlss_picture_ says which).
     bool dlss_output_valid_ = false;
     // The next evaluation starts afresh: a picture DLSS did not see came between.
@@ -432,7 +432,7 @@ class D3D12GraphicsEngine : public IGraphicsEngine {
     bool ChooseFsrOutput(int width, int height, const LetterboxRect& screen, int* out_width,
                          int* out_height) const;
     // FSR on the picture in frame_texture_, into dlss_output_. False if it could not run.
-    bool EvaluateFsr(const emulation::psx::SharedPicture& picture, ID3D12Resource* planes,
+    bool EvaluateFsr(const emulation::image::SharedPicture& picture, ID3D12Resource* planes,
                      int out_width, int out_height);
     // The version id to ask for (ffxOverrideVersion), 0 for AMD's own choice, from fsr_versions_.
     uint64_t FsrVersionId(std::string* note) const;
