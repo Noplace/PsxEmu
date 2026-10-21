@@ -31,7 +31,7 @@
 // What it does not do: RSP-relative addressing beyond what the SIB rule needs, AVX, anything
 // floating point. Nothing here wants them.
 
-#include "rec/emitter.h"
+#include "emucore/rec/emitter.h"
 
 #include <cstdint>
 #include <vector>

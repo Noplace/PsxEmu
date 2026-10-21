@@ -25,7 +25,7 @@
 // RecCore lacked - it had ADD, AND, OR, MOV, CMP and RET, and no SUB, XOR, NOT,
 // SHR, SAR, SETcc or MOVZX - and by the time memory, branches, calls and
 // linking were compiled, all of it was here and none of its assembler was used.
-// The library is no longer built; rec/emitter.h supplies the executable memory
+// The library is no longer built; emucore/rec/emitter.h supplies the executable memory
 // and the cursor, which was the only part ever worth having.
 //
 // Everything is the 32-bit form on the low half of a register, which is what
@@ -37,7 +37,7 @@
 // register file of 32 words needs: the furthest is at offset 124, and the
 // block's own state is smaller than that again.
 
-#include "rec/emitter.h"
+#include "emucore/rec/emitter.h"
 
 #include <cstdint>
 

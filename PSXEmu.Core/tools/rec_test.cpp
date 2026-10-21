@@ -12,7 +12,7 @@
 // Nothing here touches PSXEmu.Core/psx. The recompiler is being built beside
 // the interpreter, not into it.
 
-#include "rec/block_cache.h"
+#include "emucore/rec/block_cache.h"
 #include "rec/block_decoder.h"
 #include "rec/block_compiler.h"
 #include "rec/recompiler.h"

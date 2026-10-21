@@ -162,13 +162,10 @@
     <ClInclude Include="psx\state_format.h" />
     <ClInclude Include="psx\system.h" />
     <ClInclude Include="psx\types.h" />
-    <ClInclude Include="rec\block_cache.h" />
-    <ClInclude Include="rec\emitter.h" />
     <ClInclude Include="rec\block_compiler.h" />
     <ClInclude Include="rec\block_decoder.h" />
     <ClInclude Include="rec\recompiler.h" />
     <ClInclude Include="rec\runtime.h" />
-    <ClInclude Include="rec\x86_extras.h" />
   </ItemGroup>
   <ItemGroup>
     <!-- Built first. Not merged into this library: whatever links this one

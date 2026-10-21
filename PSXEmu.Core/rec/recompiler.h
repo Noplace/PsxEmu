@@ -78,8 +78,8 @@
 //     when it is null, so switching costs nothing; recompiling on every change
 //     would cost more than the reads save.
 
-#include "rec/emitter.h"
-#include "rec/block_cache.h"
+#include "emucore/rec/emitter.h"
+#include "emucore/rec/block_cache.h"
 #include "rec/block_compiler.h"
 #include "rec/block_decoder.h"
 #include "rec/runtime.h"

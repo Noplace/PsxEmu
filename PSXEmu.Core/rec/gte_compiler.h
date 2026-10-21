@@ -47,9 +47,9 @@
 // is a leaf and touches only volatile registers: R10 holds the GTE, R11 the FLAG being built, and
 // RAX, RCX, RDX, R8 and R9 are scratch.
 
-#include "rec/emitter.h"
+#include "emucore/rec/emitter.h"
 #include "rec/runtime.h"
-#include "rec/x64_asm.h"
+#include "emucore/rec/x64_asm.h"
 
 #include <cstdint>
 #include <unordered_map>

@@ -84,12 +84,12 @@
 //     code would stop halfway through an effect the interpreter has no way to
 //     be told about.
 
-#include "rec/block_cache.h"
-#include "rec/emitter.h"
+#include "emucore/rec/block_cache.h"
+#include "emucore/rec/emitter.h"
 #include "rec/block_decoder.h"
 #include "rec/runtime.h"
 #include "rec/gte_compiler.h"
-#include "rec/x86_extras.h"
+#include "emucore/rec/x86_extras.h"
 
 #include <cstddef>
 #include <cstdint>
