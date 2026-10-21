@@ -1,6 +1,6 @@
 // bindings_test - which key or pad control presses which PSX button.
 //
-// Two layers. platform/input_bindings.h is the arithmetic: a gamepad's
+// Two layers. emucore/input/input_bindings.h is the arithmetic: a gamepad's
 // controls as bits, a stick pushed far enough counting as a press, a map
 // turning what is held into buttons, one input per button, and a map as one
 // line of text. The front end's controller_bindings.h puts those together:
@@ -11,8 +11,8 @@
 // Nothing here opens a device or a window. The front end's headers are
 // included for their inline code only.
 
-#include "platform/input_bindings.h"
-#include "platform/sony_pad_reports.h"
+#include "emucore/input/input_bindings.h"
+#include "emucore/input/sony_pad_reports.h"
 #include "../../PSXEmu.Win32/input/controller_bindings.h"
 
 #include <cstdio>
@@ -20,7 +20,7 @@
 #include <string>
 #include <vector>
 
-using namespace utilities;
+using namespace emulation::input;
 using emulation::psx::Sio;
 using psxemu::ControllerBindings;
 using psxemu::KeyMap;
@@ -265,7 +265,7 @@ void TestSettingsFile() {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// DualShock 4 and DualSense reports (platform/sony_pad_reports.h)
+// DualShock 4 and DualSense reports (emucore/input/sony_pad_reports.h)
 // ---------------------------------------------------------------------------
 
 // A DualShock 4 USB report (or a short Bluetooth one): sticks, three button

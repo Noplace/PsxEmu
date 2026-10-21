@@ -17,7 +17,8 @@
 #include <chrono>
 #include <cmath>
 
-namespace utilities {
+namespace emulation {
+namespace timing {
 
 // What the front end knows of the display the picture is on.
 struct DisplayTiming {
@@ -104,4 +105,5 @@ inline std::chrono::steady_clock::duration PhaseCorrection(
   return Duration(step);
 }
 
-}  // namespace utilities
+}  // namespace timing
+}  // namespace emulation

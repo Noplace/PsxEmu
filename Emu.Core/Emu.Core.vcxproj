@@ -201,6 +201,12 @@
     <ClInclude Include="emucore\host\video_output.h" />
     <ClInclude Include="emucore\image\png_file.h" />
     <ClInclude Include="emucore\image\shared_picture.h" />
+    <ClInclude Include="emucore\input\input_bindings.h" />
+    <ClInclude Include="emucore\input\mouse_scaling.h" />
+    <ClInclude Include="emucore\input\sony_pad_reports.h" />
+    <ClInclude Include="emucore\timing\display_sync.h" />
+    <ClInclude Include="emucore\timing\frame_limiter.h" />
+    <ClInclude Include="emucore\timing\speed_resampler.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="emucore\lib\README-chd.md" />

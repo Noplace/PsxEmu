@@ -19,7 +19,7 @@
 #pragma once
 
 // The display the picture is on, as Settings > Video > Frame Pacing's "Match the display" needs
-// it (platform/display_sync.h): its refresh rate, exactly, and when its vblanks fall.
+// it (emucore/timing/display_sync.h): its refresh rate, exactly, and when its vblanks fall.
 //
 // The rate is the display mode's own, from Windows' display configuration - 59.951 Hz where
 // the monitor's settings page says 60 - since the machine is to run at it for minutes on end,
@@ -36,7 +36,7 @@
 
 #include "app/framework.h"
 
-#include "platform/display_sync.h"
+#include "emucore/timing/display_sync.h"
 
 #include <atomic>
 #include <chrono>
@@ -63,7 +63,7 @@ namespace psxemu {
 
         // What is known now. False if nothing is: not running, or no rate found for the monitor.
         // Any thread.
-        bool Sample(utilities::DisplayTiming* timing) const;
+        bool Sample(emulation::timing::DisplayTiming* timing) const;
 
         // The rate as last read, 0 if none - for the Video Settings window. Any thread.
         double refresh_hz() const;

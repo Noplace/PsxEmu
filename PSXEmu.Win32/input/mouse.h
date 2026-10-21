@@ -23,9 +23,9 @@
 // port a mouse's buttons and motion feed is not a player choice - it is always the real mouse,
 // whichever port is set to Sio::kMouse - see App::ApplyInput in PSXEmu.Win32/app/app.cpp.
 //
-// Where the movement comes from depends on which of utilities::MouseMotion the person picked, and
+// Where the movement comes from depends on which of emulation::input::MouseMotion the person picked, and
 // that choice is the whole of what this file is about - see the enum's own comment in
-// platform/mouse_scaling.h for why there are three of them and what each is for.
+// emucore/input/mouse_scaling.h for why there are three of them and what each is for.
 //
 //   kWindows and kHardware read raw input (WM_INPUT): relative counts, untouched by the pointer
 //   speed slider or the acceleration curve, and not clamped at a screen edge the way the visible
@@ -49,7 +49,7 @@
 
 #include "app/framework.h"
 
-#include "platform/mouse_scaling.h"
+#include "emucore/input/mouse_scaling.h"
 
 #include <atomic>
 #include <cmath>
@@ -100,7 +100,7 @@ namespace psxemu {
         // Which of the three scalings to apply, and what the person's mouse is set to in counts
         // per inch (kHardware's only input). Called from the UI thread whenever the setting
         // changes and once at startup; read on the input thread, hence the atomics.
-        void SetMotion(utilities::MouseMotion motion, int host_dpi) {
+        void SetMotion(emulation::input::MouseMotion motion, int host_dpi) {
             motion_.store(static_cast<int>(motion), std::memory_order_relaxed);
             host_dpi_.store(host_dpi, std::memory_order_relaxed);
         }
@@ -146,12 +146,12 @@ namespace psxemu {
                                                  &y_size) == ERROR_SUCCESS;
             RegCloseKey(key);
 
-            utilities::WindowsCurve::Curve curve;
+            emulation::input::WindowsCurve::Curve curve;
             if (have_x && have_y)
-                curve = utilities::WindowsCurve::Parse(x_bytes, x_size, y_bytes, y_size);
+                curve = emulation::input::WindowsCurve::Parse(x_bytes, x_size, y_bytes, y_size);
 
             std::lock_guard<std::mutex> lock(pointer_lock_);
-            slider_ = utilities::WindowsCurve::SliderMultiplier(sensitivity);
+            slider_ = emulation::input::WindowsCurve::SliderMultiplier(sensitivity);
             curve_ = curve;
             enhanced_ = enhanced;
         }
@@ -203,15 +203,15 @@ namespace psxemu {
         // publishes, so nothing here is lost between the machine's frames.
         State Poll(bool focused) {
             State state;
-            const utilities::MouseMotion motion =
-                static_cast<utilities::MouseMotion>(motion_.load(std::memory_order_relaxed));
+            const emulation::input::MouseMotion motion =
+                static_cast<emulation::input::MouseMotion>(motion_.load(std::memory_order_relaxed));
 
             switch (motion) {
-                case utilities::MouseMotion::kDesktop:
+                case emulation::input::MouseMotion::kDesktop:
                     PollDesktop(focused, &state);
                     break;
 
-                case utilities::MouseMotion::kWindows: {
+                case emulation::input::MouseMotion::kWindows: {
                     // Already in pointer units - the whole point of the curve - so one for one,
                     // with the fraction carried the way Windows carries its own.
                     StopCapture();
@@ -232,11 +232,11 @@ namespace psxemu {
                     break;
                 }
 
-                case utilities::MouseMotion::kHardware:
+                case emulation::input::MouseMotion::kHardware:
                 default: {
                     StopCapture();
                     const float scale =
-                        utilities::HardwareScale(host_dpi_.load(std::memory_order_relaxed));
+                        emulation::input::HardwareScale(host_dpi_.load(std::memory_order_relaxed));
                     int32_t dx = 0, dy = 0;
                     accumulator_.Add(static_cast<float>(accumulated_dx_),
                                      static_cast<float>(accumulated_dy_), scale, &dx, &dy);
@@ -341,7 +341,7 @@ namespace psxemu {
 
             std::lock_guard<std::mutex> lock(pointer_lock_);
             const float gain = enhanced_
-                                   ? utilities::WindowsCurve::Gain(curve_, magnitude, milliseconds)
+                                   ? emulation::input::WindowsCurve::Gain(curve_, magnitude, milliseconds)
                                    : 1.0f;
             accelerated_dx_ += static_cast<float>(dx) * gain * slider_;
             accelerated_dy_ += static_cast<float>(dy) * gain * slider_;
@@ -365,19 +365,19 @@ namespace psxemu {
         int32_t accumulated_dy_ = 0;
         BYTE raw_buffer_[64] = {};
 
-        std::atomic<int> motion_{ static_cast<int>(utilities::MouseMotion::kDesktop) };
+        std::atomic<int> motion_{ static_cast<int>(emulation::input::MouseMotion::kDesktop) };
         std::atomic<int> host_dpi_{ 800 };
         std::atomic<void*> capture_window_{ nullptr };
         std::atomic<bool> capture_enabled_{ false };
         std::atomic<bool> capturing_{ false };
         POINT centre_ = {};
-        utilities::MouseAccumulator accumulator_;
+        emulation::input::MouseAccumulator accumulator_;
 
         // The curve, the slider and what the curve has produced so far. Written on the input
         // thread from OnRawInput and on the UI thread by ReadWindowsPointerSettings, so they
         // share a lock rather than being read half-updated.
         std::mutex pointer_lock_;
-        utilities::WindowsCurve::Curve curve_;
+        emulation::input::WindowsCurve::Curve curve_;
         float slider_ = 1.0f;
         bool enhanced_ = true;
         float accelerated_dx_ = 0.0f;

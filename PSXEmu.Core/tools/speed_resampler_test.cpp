@@ -7,13 +7,13 @@
 // backs up - and the continuity across blocks, since it is called once per
 // frame for as long as a game runs.
 
-#include "platform/speed_resampler.h"
+#include "emucore/timing/speed_resampler.h"
 
 #include <cmath>
 #include <cstdio>
 #include <vector>
 
-using utilities::SpeedResampler;
+using emulation::timing::SpeedResampler;
 
 namespace {
 

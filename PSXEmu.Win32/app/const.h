@@ -33,7 +33,7 @@
 // silently remaps the settings file.
 
 #include "app/framework.h"
-#include "platform/input_bindings.h"   // PadInput, the gamepad defaults in kKeyBindings
+#include "emucore/input/input_bindings.h"   // PadInput, the gamepad defaults in kKeyBindings
 
 namespace psxemu {
 
@@ -482,7 +482,7 @@ namespace psxemu {
 
     struct KeyBinding {
         int key;           // the keyboard default
-        int pad;           // the gamepad default, a utilities::PadInput
+        int pad;           // the gamepad default, a emulation::input::PadInput
         uint32_t button;   // a Sio::k* bit, or kAnalogKey
         const char* setting;
         const wchar_t* label;
@@ -495,23 +495,23 @@ namespace psxemu {
     // rather than beside L1/L2.
     // clang-format off
     inline constexpr KeyBinding kKeyBindings[] = {
-        { VK_UP,     utilities::kPadDpadUp,    emulation::psx::Sio::kUp,       "key_up",       L"Up" },
-        { VK_DOWN,   utilities::kPadDpadDown,  emulation::psx::Sio::kDown,     "key_down",     L"Down" },
-        { VK_LEFT,   utilities::kPadDpadLeft,  emulation::psx::Sio::kLeft,     "key_left",     L"Left" },
-        { VK_RIGHT,  utilities::kPadDpadRight, emulation::psx::Sio::kRight,    "key_right",    L"Right" },
-        { 'X',       utilities::kPadA,         emulation::psx::Sio::kCross,    "key_cross",    L"Cross" },
-        { 'Z',       utilities::kPadX,         emulation::psx::Sio::kSquare,   "key_square",   L"Square" },
-        { 'S',       utilities::kPadB,         emulation::psx::Sio::kCircle,   "key_circle",   L"Circle" },
-        { 'A',       utilities::kPadY,         emulation::psx::Sio::kTriangle, "key_triangle", L"Triangle" },
-        { 'Q',       utilities::kPadLB,        emulation::psx::Sio::kL1,       "key_l1",       L"L1" },
-        { 'W',       utilities::kPadRB,        emulation::psx::Sio::kR1,       "key_r1",       L"R1" },
-        { '1',       utilities::kPadLT,        emulation::psx::Sio::kL2,       "key_l2",       L"L2" },
-        { '2',       utilities::kPadRT,        emulation::psx::Sio::kR2,       "key_r2",       L"R2" },
-        { VK_RETURN, utilities::kPadStart,     emulation::psx::Sio::kStart,    "key_start",    L"Start" },
-        { VK_SHIFT,  utilities::kPadBack,      emulation::psx::Sio::kSelect,   "key_select",   L"Select" },
-        { 'E',       utilities::kPadNone,      kAnalogKey,                     "key_analog",   L"ANALOG" },
-        { 0,         utilities::kPadLS,        emulation::psx::Sio::kL3,       "key_l3",       L"L3" },
-        { 0,         utilities::kPadRS,        emulation::psx::Sio::kR3,       "key_r3",       L"R3" },
+        { VK_UP,     emulation::input::kPadDpadUp,    emulation::psx::Sio::kUp,       "key_up",       L"Up" },
+        { VK_DOWN,   emulation::input::kPadDpadDown,  emulation::psx::Sio::kDown,     "key_down",     L"Down" },
+        { VK_LEFT,   emulation::input::kPadDpadLeft,  emulation::psx::Sio::kLeft,     "key_left",     L"Left" },
+        { VK_RIGHT,  emulation::input::kPadDpadRight, emulation::psx::Sio::kRight,    "key_right",    L"Right" },
+        { 'X',       emulation::input::kPadA,         emulation::psx::Sio::kCross,    "key_cross",    L"Cross" },
+        { 'Z',       emulation::input::kPadX,         emulation::psx::Sio::kSquare,   "key_square",   L"Square" },
+        { 'S',       emulation::input::kPadB,         emulation::psx::Sio::kCircle,   "key_circle",   L"Circle" },
+        { 'A',       emulation::input::kPadY,         emulation::psx::Sio::kTriangle, "key_triangle", L"Triangle" },
+        { 'Q',       emulation::input::kPadLB,        emulation::psx::Sio::kL1,       "key_l1",       L"L1" },
+        { 'W',       emulation::input::kPadRB,        emulation::psx::Sio::kR1,       "key_r1",       L"R1" },
+        { '1',       emulation::input::kPadLT,        emulation::psx::Sio::kL2,       "key_l2",       L"L2" },
+        { '2',       emulation::input::kPadRT,        emulation::psx::Sio::kR2,       "key_r2",       L"R2" },
+        { VK_RETURN, emulation::input::kPadStart,     emulation::psx::Sio::kStart,    "key_start",    L"Start" },
+        { VK_SHIFT,  emulation::input::kPadBack,      emulation::psx::Sio::kSelect,   "key_select",   L"Select" },
+        { 'E',       emulation::input::kPadNone,      kAnalogKey,                     "key_analog",   L"ANALOG" },
+        { 0,         emulation::input::kPadLS,        emulation::psx::Sio::kL3,       "key_l3",       L"L3" },
+        { 0,         emulation::input::kPadRS,        emulation::psx::Sio::kR3,       "key_r3",       L"R3" },
     };
     // clang-format on
     inline constexpr int kPadButtons = static_cast<int>(std::size(kKeyBindings));

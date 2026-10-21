@@ -49,7 +49,7 @@ namespace psxemu {
     }
 
     // The gamepad's own defaults, in the same button order. A pad's map is a KeyMap too: the
-    // codes are utilities::PadInput values rather than virtual keys.
+    // codes are emulation::input::PadInput values rather than virtual keys.
     inline KeyMap DefaultPadMap() {
         KeyMap map = {};
         for (int i = 0; i < kPadButtons; ++i)

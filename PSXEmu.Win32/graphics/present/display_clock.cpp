@@ -145,7 +145,7 @@ namespace psxemu {
         has_anchor_ = false;
     }
 
-    bool DisplayClock::Sample(utilities::DisplayTiming* timing) const {
+    bool DisplayClock::Sample(emulation::timing::DisplayTiming* timing) const {
         std::lock_guard<std::mutex> hold(lock_);
         if (!running_.load() || refresh_hz_ <= 0.0)
             return false;

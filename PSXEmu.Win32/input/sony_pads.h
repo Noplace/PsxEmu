@@ -23,8 +23,8 @@
 //
 // Windows has no XInput driver for them, so a pad plugged in on its own (nothing like Steam or
 // DS4Windows presenting it as an Xbox pad) was simply not seen. This opens the pads, reads their
-// input reports and writes their motor reports - platform/sony_pad_reports.h has the layouts - and
-// hands them on as the same controls an XInput pad has (utilities::PadInput): Cross is A,
+// input reports and writes their motor reports - emucore/input/sony_pad_reports.h has the layouts - and
+// hands them on as the same controls an XInput pad has (emulation::input::PadInput): Cross is A,
 // L1 is LB, L2 is LT, Share or Create is Back, Options is Start. So a binding means the same
 // button on either kind, and the defaults work unchanged. The PS button, the touchpad and the
 // motion sensors are not read.

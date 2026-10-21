@@ -4,7 +4,8 @@
 #include <cstdint>
 #include <cstddef>
 
-namespace utilities {
+namespace emulation {
+namespace input {
 
 // How much a host mouse's movement moves a PlayStation mouse.
 //
@@ -189,4 +190,5 @@ class WindowsCurve {
   WindowsCurve() = delete;
 };
 
-}  // namespace utilities
+}  // namespace input
+}  // namespace emulation

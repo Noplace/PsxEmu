@@ -7,7 +7,8 @@
 #include <cstring>
 #include <string>
 
-namespace utilities {
+namespace emulation {
+namespace input {
 
 // What a controller binding is made of, without anything that needs Windows.
 //
@@ -242,4 +243,5 @@ void ParseMap(const std::string& line, const char* const* button_names, size_t c
   }
 }
 
-}  // namespace utilities
+}  // namespace input
+}  // namespace emulation

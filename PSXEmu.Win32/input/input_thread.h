@@ -73,7 +73,7 @@ namespace psxemu {
         // Any thread: how a host mouse's movement is turned into a PSX mouse's counts, and
         // whether the mode that captures the cursor is allowed to right now - which is the
         // App's call, not this thread's (App::SendMouseSettingsToInput). See mouse.h.
-        void SetMouseMotion(utilities::MouseMotion motion, int host_dpi, bool may_capture) {
+        void SetMouseMotion(emulation::input::MouseMotion motion, int host_dpi, bool may_capture) {
             mouse_.SetMotion(motion, host_dpi);
             mouse_.SetCaptureEnabled(may_capture);
         }

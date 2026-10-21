@@ -43,7 +43,8 @@
 #endif
 #endif
 
-namespace utilities {
+namespace emulation {
+namespace timing {
 
 class FrameLimiter {
  public:
@@ -85,7 +86,7 @@ class FrameLimiter {
   void Reset() { have_deadline_ = false; }
 
   // When the next frame is due, once Wait has set a deadline - for the display sync
-  // (platform/display_sync.h) to see where it falls against the refresh.
+  // (emucore/timing/display_sync.h) to see where it falls against the refresh.
   bool has_deadline() const { return have_deadline_; }
   Clock::time_point deadline() const { return deadline_; }
 
@@ -182,4 +183,5 @@ class FrameLimiter {
   bool have_deadline_ = false;
 };
 
-}  // namespace utilities
+}  // namespace timing
+}  // namespace emulation

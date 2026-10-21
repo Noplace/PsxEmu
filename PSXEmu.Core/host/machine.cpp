@@ -618,7 +618,7 @@ void Machine::PumpAudio() {
 // limiter off it is paced by nothing, and the deadline is dropped so turning it
 // back on starts a fresh one rather than owing however long it ran unpaced.
 //
-// Matching the display (EmuConfig::frame_pacing, platform/display_sync.h) changes the rate to
+// Matching the display (EmuConfig::frame_pacing, emucore/timing/display_sync.h) changes the rate to
 // the display's, or a whole fraction of it, when that is near enough the console's - and then
 // moves each deadline a little towards a fixed point after the display's vblank, so the frames
 // stay where the refreshes are rather than only as many. Only at 100%: any other speed is not
@@ -626,18 +626,18 @@ void Machine::PumpAudio() {
 void Machine::Pace() {
   const psx::EmuConfig& config = system_->config();
   if (!config.frame_limiter) {
-    display_match_ = utilities::DisplayMatch();
+    display_match_ = timing::DisplayMatch();
     limiter_.Reset();
     return;
   }
   const double console_hz = system_->gpu().refresh_hz();
-  utilities::DisplayTiming display;
-  utilities::DisplayMatch match;
+  timing::DisplayTiming display;
+  timing::DisplayMatch match;
   if (config.frame_pacing == "display" && hooks_.display_timing &&
       hooks_.display_timing(&display)) {
     display_hz_ = display.refresh_hz;
     if (config.emulation_speed == 1.0f)
-      match = utilities::MatchDisplay(console_hz, display.refresh_hz);
+      match = timing::MatchDisplay(console_hz, display.refresh_hz);
   } else {
     display_hz_ = 0.0;
   }
@@ -652,7 +652,7 @@ void Machine::Pace() {
   const Clock::duration refresh = std::chrono::duration_cast<Clock::duration>(
       std::chrono::duration<double>(1.0 / display.refresh_hz));
   if (display.has_vblank && limiter_.has_deadline()) {
-    limiter_.Shift(utilities::PhaseCorrection(
+    limiter_.Shift(timing::PhaseCorrection(
         limiter_.deadline(), display.last_vblank, refresh,
         std::chrono::duration_cast<Clock::duration>(kDisplayPhase), 0.1,
         std::chrono::duration_cast<Clock::duration>(std::chrono::microseconds(250))));

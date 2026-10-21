@@ -36,7 +36,7 @@
 #include "app/const.h"
 #include "input/keyboard.h"
 #include "app/win32_paths.h"   // Widen
-#include "platform/input_bindings.h"
+#include "emucore/input/input_bindings.h"
 
 namespace psxemu {
 
@@ -74,11 +74,11 @@ namespace psxemu {
     }
 
     inline std::string BindingCodeName(int device, int code) {
-        return device == kKeyboardDevice ? KeyName(code) : utilities::PadInputKey(code);
+        return device == kKeyboardDevice ? KeyName(code) : emulation::input::PadInputKey(code);
     }
 
     inline int BindingCodeFromName(int device, const std::string& name) {
-        return device == kKeyboardDevice ? KeyFromName(name) : utilities::PadInputFromKey(name);
+        return device == kKeyboardDevice ? KeyFromName(name) : emulation::input::PadInputFromKey(name);
     }
 
     // What the bindings window shows for a code - a pad's controls by their PlayStation names
@@ -87,7 +87,7 @@ namespace psxemu {
         if (code == 0)
             return L"(none)";
         return Widen(device == kKeyboardDevice ? KeyName(code)
-                                               : utilities::PadInputLabel(code, playstation));
+                                               : emulation::input::PadInputLabel(code, playstation));
     }
 
     inline std::string BindingSettingKey(int slot, int device) {
@@ -126,7 +126,7 @@ namespace psxemu {
                     settings.GetString(BindingSettingKey(slot, device).c_str(), std::string());
                 if (line.empty())
                     continue;
-                utilities::ParseMap(line, BindingButtonNames(), kPadButtons,
+                emulation::input::ParseMap(line, BindingButtonNames(), kPadButtons,
                                     [device](const std::string& name) {
                                         return BindingCodeFromName(device, name);
                                     },
@@ -151,7 +151,7 @@ namespace psxemu {
                     continue;
                 }
                 settings->SetString(key.c_str(),
-                                    utilities::SerialiseMap(map.data(), BindingButtonNames(),
+                                    emulation::input::SerialiseMap(map.data(), BindingButtonNames(),
                                                             kPadButtons, [device](int code) {
                                                                 return BindingCodeName(device, code);
                                                             }));
@@ -176,13 +176,13 @@ namespace psxemu {
 
     // The pad buttons, and kAnalogKey above them, that the keys held press through `map`.
     inline uint32_t MapKeyboard(const KeyMap& map, const uint32_t keys[8]) {
-        return utilities::MapKeys(map.data(), BindingButtonBits(), kPadButtons, keys);
+        return emulation::input::MapKeys(map.data(), BindingButtonBits(), kPadButtons, keys);
     }
 
     // The same for a pad. The left stick also works as the d-pad, as it always has - except in a
     // direction some button is bound to, where it presses only that button.
     inline uint32_t MapGamepad(const KeyMap& map, uint32_t inputs) {
-        using namespace utilities;
+        using namespace emulation::input;
         uint32_t buttons = MapPad(map.data(), BindingButtonBits(), kPadButtons, inputs);
         uint32_t bound = 0;
         for (int i = 0; i < kPadButtons; ++i)

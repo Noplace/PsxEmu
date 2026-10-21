@@ -159,7 +159,7 @@ namespace psxemu {
             for (int key = 1; key < 256; ++key) {
                 if (keys_in_use_[key].load(std::memory_order_relaxed) &&
                     (GetAsyncKeyState(key) & 0x8000) != 0)
-                    utilities::SetKeyHeld(reading.keys, key);
+                    emulation::input::SetKeyHeld(reading.keys, key);
             }
             std::array<bool, emulation::host::HostInput::kPads> xinput = {};
             for (int i = 0; i < emulation::host::HostInput::kPads; ++i) {

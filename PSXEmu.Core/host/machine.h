@@ -19,9 +19,9 @@
 #include "emucore/host/latency_markers.h"
 #include "emucore/host/request_queue.h"
 #include "emucore/host/sample_ring.h"
-#include "platform/display_sync.h"
-#include "platform/frame_limiter.h"
-#include "platform/speed_resampler.h"
+#include "emucore/timing/display_sync.h"
+#include "emucore/timing/frame_limiter.h"
+#include "emucore/timing/speed_resampler.h"
 #include "render/raster.h"
 
 #include <atomic>
@@ -81,7 +81,7 @@ struct MachineReport {
   // Whether the last frame's picture was handed over on the graphics card rather than in memory
   // (emucore/image/shared_picture.h).
   bool shared_picture = false;
-  // Settings > Video > Frame Pacing, "Match the display" (platform/display_sync.h): the display's
+  // Settings > Video > Frame Pacing, "Match the display" (emucore/timing/display_sync.h): the display's
   // refresh as the front end last gave it, 0 if it gave none; and the refreshes each frame is
   // shown for while the machine runs in step with it, 0 while it does not - another mode, a
   // display too far from the game's rate, another speed. `pace_ratio` is how much faster than
@@ -149,7 +149,7 @@ class Machine {
     // Settings > Video > Frame Pacing, "Match the display": what the front end knows of the
     // display the picture is on, asked once a frame on the machine's thread. False when it knows
     // nothing, and the console's own clock paces the machine.
-    std::function<bool(utilities::DisplayTiming*)> display_timing;
+    std::function<bool(timing::DisplayTiming*)> display_timing;
   };
 
   // `video` and `audio` are the output threads' inboxes. `system` must outlive
@@ -294,15 +294,15 @@ class Machine {
   LatencyMarkers* latency_ = nullptr;
   // The picture whose simulation is under way, 0 before the first starts (latency_ only).
   uint32_t latency_picture_ = 0;
-  utilities::FrameLimiter limiter_;
-  utilities::SpeedResampler resampler_;
+  timing::FrameLimiter limiter_;
+  timing::SpeedResampler resampler_;
   // The speed the machine is actually managing, in multiples of real time,
   // smoothed over about a fifth of a second and never above the setting. Only
   // used for the sound while falling_behind_ is set - see PumpAudio.
   double achieved_speed_ = 1.0;
-  // The display the machine was last in step with (platform/display_sync.h), and the refresh
+  // The display the machine was last in step with (emucore/timing/display_sync.h), and the refresh
   // it saw. Its ratio is the speed the sound is resampled for, beside the setting's.
-  utilities::DisplayMatch display_match_;
+  timing::DisplayMatch display_match_;
   double display_hz_ = 0.0;
   // Where in a refresh each frame starts once in step: just after a vblank, so the frame is
   // drawn and handed over long before the next one, whatever it costs to emulate.

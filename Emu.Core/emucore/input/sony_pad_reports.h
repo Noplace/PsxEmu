@@ -39,13 +39,14 @@
 // DualSense's adaptive triggers alone). Over Bluetooth they end in a CRC-32 taken over the
 // byte 0xA2 - Bluetooth HID's header for an output report - and then the report.
 
-#include "platform/input_bindings.h"
+#include "emucore/input/input_bindings.h"
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 
-namespace utilities {
+namespace emulation {
+namespace input {
 
 // A pad's controls as PadInput bits, and its sticks in the PSX pad's own convention - 0x00 left
 // or up, 0xFF right or down - which is the PlayStation pads' convention too.
@@ -189,4 +190,5 @@ inline bool BuildSonyRumbleReport(bool dualsense, bool bluetooth, uint8_t sequen
   return true;
 }
 
-}  // namespace utilities
+}  // namespace input
+}  // namespace emulation

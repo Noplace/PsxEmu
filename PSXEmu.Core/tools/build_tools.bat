@@ -164,7 +164,7 @@ cl %FLAGS% /Fo:Temp\tools\obj_mousescale\ /Fe:Temp\tools\mouse_scaling_test.exe 
    PSXEmu.Core\tools\mouse_scaling_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
-rem Controller bindings: platform\input_bindings.h, and the front end's
+rem Controller bindings: Emu.Core's emucore\input\input_bindings.h, and the front end's
 rem controller_bindings.h on top of it, for its inline code only - nothing of
 rem the front end is linked.
 if not exist Temp\tools\obj_bindings mkdir Temp\tools\obj_bindings

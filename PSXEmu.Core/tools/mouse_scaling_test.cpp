@@ -2,7 +2,7 @@
 //
 // The device itself is not in question here: it reports raw counts and any
 // acceleration is the game's own (psx-spx), which is what makes the scaling a
-// host-side choice with three answers - see utilities::MouseMotion. What can
+// host-side choice with three answers - see emulation::input::MouseMotion. What can
 // be got wrong, and is what this checks, is the arithmetic underneath them:
 // the fraction that has to survive between polls (or slow movement vanishes),
 // the linear scale for the era's coarser sensor, and the reading of Windows'
@@ -11,15 +11,15 @@
 // Nothing here needs Windows: the front end reads the registry and the cursor,
 // and hands the numbers to the pure code this tests.
 
-#include "platform/mouse_scaling.h"
+#include "emucore/input/mouse_scaling.h"
 
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 
-using utilities::HardwareScale;
-using utilities::MouseAccumulator;
-using utilities::WindowsCurve;
+using emulation::input::HardwareScale;
+using emulation::input::MouseAccumulator;
+using emulation::input::WindowsCurve;
 
 namespace {
 

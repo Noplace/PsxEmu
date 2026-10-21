@@ -732,7 +732,7 @@ namespace psxemu {
         hooks.halted = [this](Machine& machine) {
             SendDebuggerSnapshot(machine, DebuggerWindow::kAtPc, true);
         };
-        hooks.display_timing = [this](utilities::DisplayTiming* timing) {
+        hooks.display_timing = [this](emulation::timing::DisplayTiming* timing) {
             return display_clock_.Sample(timing);
         };
         // Still the only thread: the boot already set up is the one the console starts in, and
@@ -2564,11 +2564,11 @@ namespace psxemu {
     void App::SendMouseSettingsToInput() {
         if (input_ == nullptr)
             return;
-        utilities::MouseMotion motion = utilities::MouseMotion::kDesktop;
+        emulation::input::MouseMotion motion = emulation::input::MouseMotion::kDesktop;
         if (config_.mouse_motion == "windows")
-            motion = utilities::MouseMotion::kWindows;
+            motion = emulation::input::MouseMotion::kWindows;
         else if (config_.mouse_motion == "hardware")
-            motion = utilities::MouseMotion::kHardware;
+            motion = emulation::input::MouseMotion::kHardware;
         const bool port_is_mouse = (config_.controller_type[0] == "mouse" ||
                                     config_.controller_type[1] == "mouse");
         const bool may_capture = port_is_mouse && !paused_by_user_ && menu_depth_ == 0;

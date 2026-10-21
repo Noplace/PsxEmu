@@ -22,7 +22,8 @@
 #include <cstdint>
 #include <vector>
 
-namespace utilities {
+namespace emulation {
+namespace timing {
 
 // Stretches or squeezes a stereo stream by the speed the machine is being run
 // at, so a fixed-rate sound device stays fed.
@@ -115,4 +116,5 @@ class SpeedResampler {
   bool have_last_ = false;
 };
 
-}  // namespace utilities
+}  // namespace timing
+}  // namespace emulation

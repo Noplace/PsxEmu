@@ -33,7 +33,7 @@ enum class PadKind : uint8_t { kXInput, kDualShock4, kDualSense };
 struct PadReading {
   bool connected = false;
   PadKind kind = PadKind::kXInput;
-  uint32_t inputs = 0;    // the controls held: bit n is utilities::PadInput n+1
+  uint32_t inputs = 0;    // the controls held: bit n is input::PadInput n+1
   uint8_t left_x = 0x80;
   uint8_t left_y = 0x80;
   uint8_t right_x = 0x80;
@@ -45,7 +45,7 @@ struct HostInput {
   // in whichever of them no XInput pad holds (the front end's SonyPads).
   static const int kPads = 4;
 
-  // The keys held, one bit per virtual-key code (utilities::KeyHeld). Only
+  // The keys held, one bit per virtual-key code (input::KeyHeld). Only
   // the keys some binding uses are read; the rest stay clear.
   uint32_t keys[8] = {};
   PadReading pads[kPads];

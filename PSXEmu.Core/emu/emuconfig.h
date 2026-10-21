@@ -491,7 +491,7 @@ struct EmuConfig {
   // How a host mouse's movement becomes a PlayStation mouse's counts, when a
   // port is set to Sio::kMouse. The device itself has no say in this - it
   // reports raw counts and any acceleration is the game's - so this is a
-  // choice about the host, and utilities::MouseMotion (platform/
+  // choice about the host, and input::MouseMotion (platform/
   // mouse_scaling.h) has what each one means:
   //
   //   "desktop"   the cursor's own movement, exactly as Windows accelerated
@@ -615,7 +615,7 @@ inline const std::array<float, 6> EmuConfig::kValidSpeeds = {
 };
 
 // In the same order PSXEmu.Win32's Input > Mouse menus offer them, and the
-// same order utilities::MouseMotion declares them.
+// same order input::MouseMotion declares them.
 inline const std::array<const char*, 3> EmuConfig::kValidMouseMotions = {
     "desktop", "windows", "hardware",
 };

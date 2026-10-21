@@ -593,8 +593,8 @@ namespace psxemu {
         pad_baseline_ &= inputs;
         if (pressed == 0)
             return;
-        for (int code = 1; code <= utilities::kPadInputCount; ++code) {
-            if (pressed & utilities::PadInputBit(code)) {
+        for (int code = 1; code <= emulation::input::kPadInputCount; ++code) {
+            if (pressed & emulation::input::PadInputBit(code)) {
                 Bind(capturing_, code);
                 return;
             }
@@ -624,7 +624,7 @@ namespace psxemu {
     void ControllerBindingsWindow::Bind(int button, int code) {
         KeyMap& map = bindings_.map[slot_][device_];
         const int taken_from =
-            utilities::BindTakingFromOthers(map.data(), kPadButtons, button, code);
+            emulation::input::BindTakingFromOthers(map.data(), kPadButtons, button, code);
         std::wstring status;
         if (code == 0) {
             status = std::wstring(kKeyBindings[button].label) + L" is now unbound.";

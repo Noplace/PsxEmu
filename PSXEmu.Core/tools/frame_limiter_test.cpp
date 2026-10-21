@@ -1,4 +1,4 @@
-// frame_limiter_test - checks that platform/frame_limiter.h actually holds a
+// frame_limiter_test - checks that emucore/timing/frame_limiter.h actually holds a
 // loop to a rate, which is the thing that decides how fast the emulator runs
 // for anyone using it.
 //
@@ -7,8 +7,8 @@
 // device, neither of which exists here. What *can* be checked here is the
 // piece that takes that decision away from both of them.
 
-#include "platform/display_sync.h"
-#include "platform/frame_limiter.h"
+#include "emucore/timing/display_sync.h"
+#include "emucore/timing/frame_limiter.h"
 
 #include <algorithm>
 #include <chrono>
@@ -32,7 +32,7 @@ void Check(bool ok, const char* what) {
 // Runs `frames` iterations through the limiter at `hz`, with `work_ms` of
 // pretend emulation in each, and returns the rate actually achieved.
 double MeasureRate(double hz, int frames, int work_ms) {
-  utilities::FrameLimiter limiter;
+  emulation::timing::FrameLimiter limiter;
   // One warm-up frame: the first Wait only starts the deadline, so counting it
   // would report a rate one frame short over a short run.
   limiter.Wait(hz);
@@ -57,7 +57,7 @@ double MeasureRate(double hz, int frames, int work_ms) {
 // delivers audio in bursts 0 to 30 ms apart. That is what this one did, on a
 // machine where Sleep(1) really takes 15 ms, and every rate check passed.
 std::vector<double> MeasureSpacing(double hz, int frames) {
-  utilities::FrameLimiter limiter;
+  emulation::timing::FrameLimiter limiter;
   limiter.Wait(hz);
   std::vector<double> spacing;
   auto last = std::chrono::steady_clock::now();
@@ -73,33 +73,33 @@ std::vector<double> MeasureSpacing(double hz, int frames) {
 
 }  // namespace
 
-// Frame Pacing's "Match the display" (platform/display_sync.h): which displays a game can be run
+// Frame Pacing's "Match the display" (emucore/timing/display_sync.h): which displays a game can be run
 // in step with, and at what rate.
 void TestDisplayMatch() {
   printf("display match\n");
   const double ntsc = 59.8261;   // 53.693175 MHz / (3413 x 263)
   const double pal = 49.7607;
-  using utilities::MatchDisplay;
+  using emulation::timing::MatchDisplay;
 
-  const utilities::DisplayMatch at60 = MatchDisplay(ntsc, 60.0);
+  const emulation::timing::DisplayMatch at60 = MatchDisplay(ntsc, 60.0);
   printf("    NTSC at 60 Hz: %d refresh(es), %.4f Hz, ratio %.5f\n", at60.refreshes,
          at60.frame_hz, at60.ratio);
   Check(at60.locked && at60.refreshes == 1 && std::fabs(at60.frame_hz - 60.0) < 1e-9 &&
             at60.ratio > 1.002 && at60.ratio < 1.003,
         "NTSC on a 60 Hz display runs at 60, one refresh a frame, 0.3% fast");
-  const utilities::DisplayMatch at5994 = MatchDisplay(ntsc, 59.94);
+  const emulation::timing::DisplayMatch at5994 = MatchDisplay(ntsc, 59.94);
   Check(at5994.locked && at5994.refreshes == 1 && at5994.ratio > 1.0,
         "and on a 59.94 Hz display, at 59.94");
-  const utilities::DisplayMatch at120 = MatchDisplay(ntsc, 119.88);
+  const emulation::timing::DisplayMatch at120 = MatchDisplay(ntsc, 119.88);
   Check(at120.locked && at120.refreshes == 2 && std::fabs(at120.frame_hz - 59.94) < 1e-9,
         "at 119.88 Hz, two refreshes a frame");
-  const utilities::DisplayMatch at240 = MatchDisplay(ntsc, 240.0);
+  const emulation::timing::DisplayMatch at240 = MatchDisplay(ntsc, 240.0);
   Check(at240.locked && at240.refreshes == 4, "at 240 Hz, four");
   Check(!MatchDisplay(ntsc, 144.0).locked && !MatchDisplay(ntsc, 165.0).locked,
         "144 and 165 Hz are no whole multiple: not matched");
   Check(!MatchDisplay(pal, 60.0).locked,
         "PAL on a 60 Hz display is 20% off: left to the console's clock");
-  const utilities::DisplayMatch pal50 = MatchDisplay(pal, 50.0);
+  const emulation::timing::DisplayMatch pal50 = MatchDisplay(pal, 50.0);
   Check(pal50.locked && pal50.refreshes == 1 && pal50.ratio < 1.005,
         "PAL on a 50 Hz display runs at 50, 0.5% fast");
   Check(MatchDisplay(pal, 100.0).refreshes == 2, "and on a 100 Hz display, two refreshes a frame");
@@ -121,7 +121,7 @@ void TestPhaseCorrection() {
   const Clock::duration most = microseconds(250);
   const Clock::time_point vblank = Clock::time_point() + std::chrono::seconds(100);
   auto step = [&](Clock::time_point deadline) {
-    return utilities::PhaseCorrection(deadline, vblank, period, target, 0.1, most);
+    return emulation::timing::PhaseCorrection(deadline, vblank, period, target, 0.1, most);
   };
 
   Check(step(vblank + target) == Clock::duration::zero() &&
@@ -135,7 +135,7 @@ void TestPhaseCorrection() {
         "never more than the step's limit at once");
   Check(step(vblank + target + period - microseconds(500)) > Clock::duration::zero(),
         "just short of the next refresh's target is pulled on to it, not back a whole refresh");
-  Check(utilities::PhaseCorrection(vblank, vblank, Clock::duration::zero(), target, 0.1, most) ==
+  Check(emulation::timing::PhaseCorrection(vblank, vblank, Clock::duration::zero(), target, 0.1, most) ==
             Clock::duration::zero(),
         "no refresh period, no correction");
 
@@ -153,7 +153,7 @@ void TestPhaseCorrection() {
   for (int frame = 0; frame < 600; ++frame) {
     const Clock::time_point seen = vblank + period * frame + noise();
     const Clock::duration move =
-        utilities::PhaseCorrection(deadline, seen, period, target, 0.1, most);
+        emulation::timing::PhaseCorrection(deadline, seen, period, target, 0.1, most);
     deadline += period + move;
     if (frame >= 60) {
       long long phase = (deadline - vblank - target).count() % period.count();
@@ -172,7 +172,7 @@ void TestPhaseCorrection() {
 // FrameLimiter::Shift, which the correction goes through.
 void TestShift() {
   printf("limiter shift\n");
-  utilities::FrameLimiter limiter;
+  emulation::timing::FrameLimiter limiter;
   limiter.Shift(std::chrono::milliseconds(5));
   Check(!limiter.has_deadline(), "nothing to move before the first frame");
   limiter.Wait(60.0);
@@ -251,7 +251,7 @@ int main() {
   // to ask passes. It must return at once rather than dividing by zero.
   {
     const auto start = std::chrono::steady_clock::now();
-    utilities::FrameLimiter limiter;
+    emulation::timing::FrameLimiter limiter;
     for (int i = 0; i < 1000; ++i)
       limiter.Wait(0.0);
     const double elapsed =
@@ -262,7 +262,7 @@ int main() {
 
   // Reset must not leave the next frame trying to make up the gap.
   {
-    utilities::FrameLimiter limiter;
+    emulation::timing::FrameLimiter limiter;
     limiter.Wait(59.2926);
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     limiter.Reset();

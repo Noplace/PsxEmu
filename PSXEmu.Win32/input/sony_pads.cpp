@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #include "input/sony_pads.h"
 
-#include "platform/sony_pad_reports.h"
+#include "emucore/input/sony_pad_reports.h"
 
 #include <algorithm>
 #include <cwctype>
@@ -169,7 +169,7 @@ namespace psxemu {
         // Windows wants every output report written at exactly the length of the longest one. A
         // pad whose longest is too short for the report that sets its motors just never rumbles.
         const size_t needed =
-            utilities::SonyRumbleReportLength(kind == PadKind::kDualSense, pad->bluetooth);
+            emulation::input::SonyRumbleReportLength(kind == PadKind::kDualSense, pad->bluetooth);
         if (caps.OutputReportByteLength >= needed)
             pad->out.assign(caps.OutputReportByteLength, 0);
         pad->read.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -300,8 +300,8 @@ namespace psxemu {
 
     // One input report; ParseSonyPadReport knows the layouts.
     void SonyPads::Parse(Pad& pad, const uint8_t* report, size_t length) {
-        utilities::SonyPadState state;
-        if (!utilities::ParseSonyPadReport(pad.kind == PadKind::kDualSense, pad.bluetooth, report,
+        emulation::input::SonyPadState state;
+        if (!emulation::input::ParseSonyPadReport(pad.kind == PadKind::kDualSense, pad.bluetooth, report,
                                            length, &state))
             return;
         pad.state.inputs = state.inputs;
@@ -330,7 +330,7 @@ namespace psxemu {
 
     // The motors only - see BuildSonyRumbleReport - at the length Windows wants.
     void SonyPads::WriteRumble(Pad& pad) {
-        if (!utilities::BuildSonyRumbleReport(pad.kind == PadKind::kDualSense, pad.bluetooth,
+        if (!emulation::input::BuildSonyRumbleReport(pad.kind == PadKind::kDualSense, pad.bluetooth,
                                               pad.output_sequence, pad.small_motor,
                                               pad.large_motor, pad.out.data(), pad.out.size()))
             return;

@@ -48,7 +48,7 @@
 // real console would not.
 
 #include "psx/psx.h"
-#include "platform/input_bindings.h"
+#include "emucore/input/input_bindings.h"
 
 #include <chrono>
 #include <windows.h>
@@ -60,7 +60,7 @@ namespace psxemu {
 
     class Gamepad {
      public:
-        // What one poll produced - the controls held as utilities::PadInput bits,
+        // What one poll produced - the controls held as emulation::input::PadInput bits,
         // and the axes in the PSX pad's own convention, 0x00=left/up,
         // 0xFF=right/down, 0x80=centred.
         struct State {
@@ -120,11 +120,11 @@ namespace psxemu {
             XInputSetState(static_cast<DWORD>(player_index_), &vibration);
         }
 
-        // The controls an XInput reading holds, as utilities::PadInput bits.
+        // The controls an XInput reading holds, as emulation::input::PadInput bits.
         // Public, and static, because the bindings window reads a pad itself
         // while it waits for a button to be pressed.
         static uint32_t Inputs(const XINPUT_GAMEPAD& pad) {
-            using namespace utilities;
+            using namespace emulation::input;
             // clang-format off
             static constexpr struct { WORD mask; int input; } kButtons[] = {
                 { XINPUT_GAMEPAD_A,              kPadA },

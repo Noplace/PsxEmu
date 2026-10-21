@@ -31,10 +31,11 @@
 #include <eh.h>
 #include <functional>
 
-#include "platform/types.h"
-#include "platform/util.h"
-#include "platform/frame_limiter.h"
-#include "platform/speed_resampler.h"
+#include <cstddef>
+#include <cstdint>
+
+#include "emucore/timing/frame_limiter.h"
+#include "emucore/timing/speed_resampler.h"
 
 #include "psx/types.h"
 #include "emu/state.h"

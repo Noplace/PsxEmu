@@ -6,7 +6,7 @@
 #pragma comment(lib, "avrt.lib")
 
 // Windows 10 1803 and later; an older one refuses the flag and WaitForRoom
-// falls back to Sleep. See platform/frame_limiter.h for why the plain timer is
+// falls back to Sleep. See emucore/timing/frame_limiter.h for why the plain timer is
 // not good enough: its 15 ms granularity is half this engine's lead.
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
