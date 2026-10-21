@@ -130,7 +130,7 @@ class Gpu : public GpuCore {
   };
   const PictureMotion& last_picture_motion() const { return last_picture_motion_; }
   // How many new pictures there have been while the plane was kept: SharedPicture::picture's
-  // count, and NVIDIA Reflex's frames (host/latency_markers.h). Never goes back.
+  // count, and NVIDIA Reflex's frames (emucore/host/latency_markers.h). Never goes back.
   uint32_t picture_number() const { return picture_number_; }
 
   // Whether the hardware rasteriser is drawing, and if it was asked for but is

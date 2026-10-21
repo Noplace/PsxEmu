@@ -12,7 +12,7 @@
 // this holds one, which is the least latency there is.
 #pragma once
 
-#include "host/doorbell.h"
+#include "emucore/host/doorbell.h"
 #include "emucore/image/shared_picture.h"
 
 #include <atomic>

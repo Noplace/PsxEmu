@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #pragma once
 
-// NVIDIA Reflex's markers from the machine's thread (host/latency_markers.h), passed to whichever
+// NVIDIA Reflex's markers from the machine's thread (emucore/host/latency_markers.h), passed to whichever
 // renderer's Streamline runs Frame Generation (Docs/DLSS-Plan.md, phase 5).
 //
 // One for the process: the machine keeps the pointer across renderers made and remade, and a
@@ -26,7 +26,7 @@
 // Streamline stops - under the lock every marker is sent under, so none reaches one shutting down.
 // Without one attached every call does nothing.
 
-#include "host/latency_markers.h"
+#include "emucore/host/latency_markers.h"
 
 #include <atomic>
 #include <cstdint>

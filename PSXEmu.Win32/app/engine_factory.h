@@ -28,7 +28,7 @@
 #include "app/framework.h"
 
 #include "graphics/present/igraphicsengine.h"
-#include "audio/iaudioengine.h"
+#include "emucore/audio/iaudioengine.h"
 
 namespace psxemu {
 

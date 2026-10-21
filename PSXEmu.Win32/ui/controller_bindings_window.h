@@ -37,7 +37,7 @@
 #include "app/framework.h"
 #include "input/controller_bindings.h"
 #include "ui/game_scope.h"
-#include "host/input_exchange.h"
+#include "emucore/host/input_exchange.h"
 
 #include <functional>
 #include <span>

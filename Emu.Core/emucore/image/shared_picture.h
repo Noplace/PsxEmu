@@ -121,7 +121,7 @@ struct SharedPicture {
   // same in every repeat of it. A presenter that takes only new pictures goes by this rather
   // than `new_picture`: a new picture replaced in the mailbox by its own repeat is still new to
   // it, and a number skipped is a picture it never saw. It is also the picture's frame for
-  // NVIDIA Reflex (host/latency_markers.h).
+  // NVIDIA Reflex (emucore/host/latency_markers.h).
   uint32_t picture = 0;
   // 480 lines interlaced, drawn a field at a time and not filled: half of each picture is the
   // last field's lines, which no motion describes (Gpu::MixesFields). DLSS leaves such

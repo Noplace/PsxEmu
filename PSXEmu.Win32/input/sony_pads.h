@@ -36,7 +36,7 @@
 // The input thread's alone: every call is from it.
 
 #include "app/framework.h"
-#include "host/input_exchange.h"
+#include "emucore/host/input_exchange.h"
 
 #include <array>
 #include <memory>

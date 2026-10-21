@@ -79,9 +79,7 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="host\audio_output.cpp" />
     <ClCompile Include="host\machine.cpp" />
-    <ClCompile Include="host\video_output.cpp" />
     <ClCompile Include="psx\cdrom.cpp" />
     <ClCompile Include="psx\cpu.cpp" />
     <ClCompile Include="debug\debug_assist.cpp" />
@@ -125,16 +123,7 @@
     <ClCompile Include="psx\system.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="audio\iaudioengine.h" />
-    <ClInclude Include="host\audio_output.h" />
-    <ClInclude Include="host\doorbell.h" />
-    <ClInclude Include="host\frame_mailbox.h" />
-    <ClInclude Include="host\latency_markers.h" />
-    <ClInclude Include="host\input_exchange.h" />
     <ClInclude Include="host\machine.h" />
-    <ClInclude Include="host\request_queue.h" />
-    <ClInclude Include="host\sample_ring.h" />
-    <ClInclude Include="host\video_output.h" />
     <ClInclude Include="platform\display_sync.h" />
     <ClInclude Include="platform\frame_limiter.h" />
     <ClInclude Include="platform\input_bindings.h" />

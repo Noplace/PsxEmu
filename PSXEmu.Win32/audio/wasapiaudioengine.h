@@ -1,6 +1,6 @@
 #pragma once
 
-#include "audio/iaudioengine.h"
+#include "emucore/audio/iaudioengine.h"
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <Audioclient.h>

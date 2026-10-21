@@ -185,8 +185,20 @@
     <ClCompile Include="emucore\image\png_file.cpp">
       <AdditionalIncludeDirectories>$(ProjectDir)emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
+    <!-- The front end's threads: what keeps a sound device fed and shows the newest frame. -->
+    <ClCompile Include="emucore\host\audio_output.cpp" />
+    <ClCompile Include="emucore\host\video_output.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="emucore\audio\iaudioengine.h" />
+    <ClInclude Include="emucore\host\audio_output.h" />
+    <ClInclude Include="emucore\host\doorbell.h" />
+    <ClInclude Include="emucore\host\frame_mailbox.h" />
+    <ClInclude Include="emucore\host\input_exchange.h" />
+    <ClInclude Include="emucore\host\latency_markers.h" />
+    <ClInclude Include="emucore\host\request_queue.h" />
+    <ClInclude Include="emucore\host\sample_ring.h" />
+    <ClInclude Include="emucore\host\video_output.h" />
     <ClInclude Include="emucore\image\png_file.h" />
     <ClInclude Include="emucore\image\shared_picture.h" />
   </ItemGroup>

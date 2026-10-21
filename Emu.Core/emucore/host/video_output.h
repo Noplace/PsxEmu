@@ -11,9 +11,9 @@
 // going to use it and must only ever be used by one.
 #pragma once
 
-#include "host/doorbell.h"
-#include "host/frame_mailbox.h"
-#include "host/request_queue.h"
+#include "emucore/host/doorbell.h"
+#include "emucore/host/frame_mailbox.h"
+#include "emucore/host/request_queue.h"
 
 #include <atomic>
 #include <chrono>

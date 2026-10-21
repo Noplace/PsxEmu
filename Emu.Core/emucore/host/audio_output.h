@@ -12,10 +12,10 @@
 // the thread that created them.
 #pragma once
 
-#include "audio/iaudioengine.h"
-#include "host/doorbell.h"
-#include "host/request_queue.h"
-#include "host/sample_ring.h"
+#include "emucore/audio/iaudioengine.h"
+#include "emucore/host/doorbell.h"
+#include "emucore/host/request_queue.h"
+#include "emucore/host/sample_ring.h"
 
 #include <atomic>
 #include <functional>

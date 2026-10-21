@@ -30,7 +30,7 @@
 #include "app/framework.h"
 
 #include "app/engine_factory.h"
-#include "host/video_output.h"
+#include "emucore/host/video_output.h"
 #include "ui/overlay/frame_stats_ring.h"
 #include "ui/overlay/overlay.h"
 

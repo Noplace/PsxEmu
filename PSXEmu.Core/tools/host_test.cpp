@@ -9,14 +9,14 @@
 // duplicated, nothing out of order, nothing torn, and the edge counters
 // counting what went over the edge.
 
-#include "host/audio_output.h"
-#include "host/doorbell.h"
-#include "host/frame_mailbox.h"
-#include "host/input_exchange.h"
+#include "emucore/host/audio_output.h"
+#include "emucore/host/doorbell.h"
+#include "emucore/host/frame_mailbox.h"
+#include "emucore/host/input_exchange.h"
 #include "host/machine.h"
-#include "host/request_queue.h"
-#include "host/sample_ring.h"
-#include "host/video_output.h"
+#include "emucore/host/request_queue.h"
+#include "emucore/host/sample_ring.h"
+#include "emucore/host/video_output.h"
 #include "psx/psx.h"
 
 #include <algorithm>

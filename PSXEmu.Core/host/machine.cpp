@@ -148,7 +148,7 @@ void Machine::Run() {
       rewind_countdown_ = 0;
       Resume();
     }
-    // NVIDIA Reflex, while DLSS Frame Generation runs (host/latency_markers.h): the next
+    // NVIDIA Reflex, while DLSS Frame Generation runs (emucore/host/latency_markers.h): the next
     // picture's simulation starts at the first vblank after the last one was drawn.
     if (latency_ != nullptr && latency_picture_ <= system_->gpu().picture_number()) {
       latency_picture_ = system_->gpu().picture_number() + 1;

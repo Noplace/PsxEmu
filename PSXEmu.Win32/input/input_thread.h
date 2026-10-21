@@ -35,7 +35,7 @@
 #include "input/gamepad.h"
 #include "input/sony_pads.h"
 #include "input/controller_bindings.h"
-#include "host/input_exchange.h"
+#include "emucore/host/input_exchange.h"
 #include "input/mouse.h"
 
 #include <array>

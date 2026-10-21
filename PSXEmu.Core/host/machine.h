@@ -13,12 +13,12 @@
 // same instruction and the same checksum as boot_runner.
 #pragma once
 
-#include "host/doorbell.h"
-#include "host/frame_mailbox.h"
-#include "host/input_exchange.h"
-#include "host/latency_markers.h"
-#include "host/request_queue.h"
-#include "host/sample_ring.h"
+#include "emucore/host/doorbell.h"
+#include "emucore/host/frame_mailbox.h"
+#include "emucore/host/input_exchange.h"
+#include "emucore/host/latency_markers.h"
+#include "emucore/host/request_queue.h"
+#include "emucore/host/sample_ring.h"
 #include "platform/display_sync.h"
 #include "platform/frame_limiter.h"
 #include "platform/speed_resampler.h"
@@ -210,7 +210,7 @@ class Machine {
   // motion, for every picture, and the triangles jittered through `jitter_phases` offsets.
   // Nothing the machine sees changes. Off: neither.
   void set_dlss(bool on, int jitter_phases);
-  // NVIDIA Reflex's markers while DLSS Frame Generation runs (host/latency_markers.h), null for
+  // NVIDIA Reflex's markers while DLSS Frame Generation runs (emucore/host/latency_markers.h), null for
   // none. Outlives the machine, or is set to null first; the machine's thread calls it.
   void set_latency_markers(LatencyMarkers* markers) { latency_ = markers; }
   // Textures (Docs/Texture-Upscaling-Plan.md, phases 2 and 3): every texture named as it is drawn,

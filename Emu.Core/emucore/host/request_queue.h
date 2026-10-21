@@ -11,7 +11,7 @@
 // that has the Machine.
 #pragma once
 
-#include "host/doorbell.h"
+#include "emucore/host/doorbell.h"
 
 #include <functional>
 #include <mutex>
