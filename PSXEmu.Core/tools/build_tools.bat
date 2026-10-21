@@ -17,6 +17,11 @@ if not exist "%VCVARS%" (
 call "%VCVARS%" >nul
 
 cd /d "%~dp0..\.."
+
+rem Emu.Core's own harnesses, the ones that test nothing of the PlayStation.
+call Emu.Core\tools\build_tools.bat Temp\tools
+if errorlevel 1 exit /b 1
+
 if not exist Temp\tools\obj_boot mkdir Temp\tools\obj_boot
 
 rem The vendored C libraries under Emu.Core\emucore\lib that disc.cpp reads CHD
@@ -147,21 +152,6 @@ if errorlevel 1 exit /b 1
 if not exist Temp\tools\obj_letterbox mkdir Temp\tools\obj_letterbox
 cl %FLAGS% /Fo:Temp\tools\obj_letterbox\ /Fe:Temp\tools\letterbox_test.exe ^
    PSXEmu.Core\tools\letterbox_test.cpp %LIBS%
-if errorlevel 1 exit /b 1
-
-if not exist Temp\tools\obj_framelimit mkdir Temp\tools\obj_framelimit
-cl %FLAGS% /Fo:Temp\tools\obj_framelimit\ /Fe:Temp\tools\frame_limiter_test.exe ^
-   PSXEmu.Core\tools\frame_limiter_test.cpp %LIBS%
-if errorlevel 1 exit /b 1
-
-if not exist Temp\tools\obj_speedres mkdir Temp\tools\obj_speedres
-cl %FLAGS% /Fo:Temp\tools\obj_speedres\ /Fe:Temp\tools\speed_resampler_test.exe ^
-   PSXEmu.Core\tools\speed_resampler_test.cpp %LIBS%
-if errorlevel 1 exit /b 1
-
-if not exist Temp\tools\obj_mousescale mkdir Temp\tools\obj_mousescale
-cl %FLAGS% /Fo:Temp\tools\obj_mousescale\ /Fe:Temp\tools\mouse_scaling_test.exe ^
-   PSXEmu.Core\tools\mouse_scaling_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem Controller bindings: Emu.Core's emucore\input\input_bindings.h, and the front end's
