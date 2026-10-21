@@ -1,9 +1,10 @@
 # CHD support: the vendored libraries
 
-`media/disc.cpp` reads CHD disc images through these. They are other projects'
-code, copied in unchanged and built as C with warnings off - by
-`PSXEmu.Core.vcxproj` for the emulator, and into `Temp\tools\thirdparty.lib`
-by `tools\build_tools.bat` for the harnesses.
+PSXEmu's `media/disc.cpp` reads CHD disc images through these. They are other
+projects' code, copied in unchanged and built as C with warnings off - by
+`Emu.Core.vcxproj` for the emulator, and into `Temp\tools\thirdparty.lib` by
+`PSXEmu.Core\tools\build_tools.bat` for the harnesses. Moved here from
+`PSXEmu.Core\lib\` in phase 1 of Docs/Shared-Libraries-Plan.md.
 
 | Directory | What | Licence | Taken from |
 |---|---|---|---|

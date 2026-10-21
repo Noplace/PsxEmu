@@ -6,6 +6,8 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PSXEmu.Core", "PSXEmu.Core\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PSXEmu.Win32", "PSXEmu.Win32\PSXEmu.Win32.vcxproj", "{5F2A1B47-9C3E-4D18-8A6B-1E7C4D9F2033}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Emu.Core", "Emu.Core\Emu.Core.vcxproj", "{14FCEEDF-673E-4B07-A60C-2B90C1342F10}"
+EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Docs", "Docs", "{E5107D62-B4E3-4872-95CA-25AD731CBA65}"
 	ProjectSection(SolutionItems) = preProject
 		Docs\Architecture-components.png = Docs\Architecture-components.png
@@ -52,6 +54,14 @@ Global
 		{5F2A1B47-9C3E-4D18-8A6B-1E7C4D9F2033}.Release|Win32.Build.0 = Release|Win32
 		{5F2A1B47-9C3E-4D18-8A6B-1E7C4D9F2033}.Release|x64.ActiveCfg = Release|x64
 		{5F2A1B47-9C3E-4D18-8A6B-1E7C4D9F2033}.Release|x64.Build.0 = Release|x64
+		{14FCEEDF-673E-4B07-A60C-2B90C1342F10}.Debug|Win32.ActiveCfg = Debug|Win32
+		{14FCEEDF-673E-4B07-A60C-2B90C1342F10}.Debug|Win32.Build.0 = Debug|Win32
+		{14FCEEDF-673E-4B07-A60C-2B90C1342F10}.Debug|x64.ActiveCfg = Debug|x64
+		{14FCEEDF-673E-4B07-A60C-2B90C1342F10}.Debug|x64.Build.0 = Debug|x64
+		{14FCEEDF-673E-4B07-A60C-2B90C1342F10}.Release|Win32.ActiveCfg = Release|Win32
+		{14FCEEDF-673E-4B07-A60C-2B90C1342F10}.Release|Win32.Build.0 = Release|Win32
+		{14FCEEDF-673E-4B07-A60C-2B90C1342F10}.Release|x64.ActiveCfg = Release|x64
+		{14FCEEDF-673E-4B07-A60C-2B90C1342F10}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

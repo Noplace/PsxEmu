@@ -56,8 +56,9 @@
       <LanguageStandard>stdcpp20</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
       <!-- The core folder is the include root: every include, here and in every
-           consumer, is written relative to it. -->
-      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+           consumer, is written relative to it. Emu.Core's is the second, its
+           headers all under "emucore/". -->
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)Emu.Core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
@@ -78,103 +79,6 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <!-- CHD images: libchdr and the codecs it needs, vendored under lib\ as
-         they came (see lib\README-chd.md) and built as C, warnings off. -->
-    <ClCompile Include="lib\libchdr\src\libchdr_bitstream.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\libchdr\src\libchdr_cdrom.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\libchdr\src\libchdr_chd.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\libchdr\src\libchdr_flac.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\libchdr\src\libchdr_huffman.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\lzma\CpuArch.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\lzma\LzFind.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\lzma\LzFindOpt.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\lzma\LzmaDec.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\lzma\LzmaEnc.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\zlib\adler32.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\zlib\crc32.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\zlib\deflate.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\zlib\inffast.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\zlib\inflate.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\zlib\inftrees.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\zlib\trees.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\zlib\zutil.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
-    <ClCompile Include="lib\zstd_stub\zstd_stub.c">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;$(ProjectDir)lib\zlib;$(ProjectDir)lib\lzma;$(ProjectDir)lib\zstd_stub;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <PreprocessorDefinitions>Z7_ST;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <WarningLevel>TurnOffAllWarnings</WarningLevel>
-    </ClCompile>
     <ClCompile Include="host\audio_output.cpp" />
     <ClCompile Include="host\machine.cpp" />
     <ClCompile Include="host\video_output.cpp" />
@@ -182,7 +86,7 @@
     <ClCompile Include="psx\cpu.cpp" />
     <ClCompile Include="debug\debug_assist.cpp" />
     <ClCompile Include="media\disc.cpp">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\libchdr\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\libchdr\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="psx\dma.cpp" />
     <ClCompile Include="psx\gpu.cpp" />
@@ -191,7 +95,7 @@
     <ClCompile Include="render\texture_pack.cpp" />
     <!-- Texture dumps are PNGs, deflated with the same zlib CHD images bring. -->
     <ClCompile Include="render\png_file.cpp">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="psx\gte.cpp" />
     <ClCompile Include="psx\io_interface.cpp" />
@@ -211,11 +115,11 @@
     <ClCompile Include="media\ecm.cpp" />
     <!-- A .bk2 movie is a zip: read with the zlib that CHD images already bring. -->
     <ClCompile Include="emu\movie.cpp">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <!-- Rewind's store compresses its deltas with the same zlib. -->
     <ClCompile Include="emu\rewind_buffer.cpp">
-      <AdditionalIncludeDirectories>$(ProjectDir)lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="psx\root_counter.cpp" />
     <ClCompile Include="psx\sio.cpp" />
@@ -298,7 +202,12 @@
     <ClInclude Include="rec\x86_extras.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="lib\reccore\README.md" />
+    <!-- Built first. Not merged into this library: whatever links this one
+         links Emu.Core too. -->
+    <ProjectReference Include="..\Emu.Core\Emu.Core.vcxproj">
+      <Project>{14fceedf-673e-4b07-a60c-2b90c1342f10}</Project>
+      <LinkLibraryDependencies>false</LinkLibraryDependencies>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
 </Project>

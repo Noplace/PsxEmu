@@ -1,6 +1,6 @@
 # Shared libraries: Emu.Core and Emu.Frontend.Win32
 
-> **Status: phase 0 done, 2026-10-21**: the baseline is recorded at `5babf24`, with builds, every harness, seven local CHDs on both CPUs, run-ahead and rewind, all repeated identically. Nothing has moved yet; phase 1 is next. Every phase is a move, not a
+> **Status: phase 1 done, 2026-10-21**: the Emu.Core project exists and holds the vendored libraries. The baseline of phase 0 is recorded at `5babf24`. Phase 2 is next. Every phase is a move, not a
 > change: it ends with the same twelve-disc table, the same harness counts and the same pictures
 > as before it, and a phase that changes a single checksum is wrong, however tidy it looks.
 
@@ -253,6 +253,15 @@ back, the twelve-disc table is run once against `Temp\p0\boot_runner.exe` and ad
 
 **Gate:** both projects build, and the harnesses that read CHDs (`media_test`, `boot_runner` on
 a `.chd` disc) pass.
+
+**Done 2026-10-21.** Emu.Core holds the four libraries, built with the same per-file settings
+PSXEmu.Core had. PSXEmu.Core references it for build order (not merged into its .lib), and
+PSXEmu.Win32 links it. Release x64 builds, and every harness and the seven-disc batch give
+phase 0's results exactly. Visual Studio, open on the solution, held `lib\libchdr`'s directory,
+so its files were `git mv`'d one at a time. Release Win32 does not link on this machine either
+before or after the move: the RTX Video SDK's block in PSXEmu.Win32.vcxproj applied on any
+platform, and NVIDIA ships its library for x64 and arm64 only. That is fixed in a commit of its
+own.
 
 ## Phase 2: what is already generic
 

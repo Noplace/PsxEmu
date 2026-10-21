@@ -5,6 +5,13 @@ Follows section 1 of [Emulator-Project-Standards.md](Emulator-Project-Standards.
 ```
 PsxEmu/
   PSXEmu.sln
+  Emu.Core/                    static library - what any emulator shares, nothing of the PSX
+                               (Docs/Shared-Libraries-Plan.md); the include root, everything
+                               under emucore/
+    Emu.Core.vcxproj
+    emucore/lib/libchdr/ lzma/ zlib/ zstd_stub/
+                               CHD reading, vendored unchanged and built as C (README-chd.md);
+                               zlib also for PNGs, .bk2 movies, rewind and the AI downloads
   PSXEmu.Core/                 static library - all emulation, no UI framework
     PSXEmu.Core.vcxproj
     platform/                  stands in for the WinCore library this repo does not have
@@ -94,9 +101,6 @@ PsxEmu/
       runtime.h                what compiled code calls back into
       emitter.h                executable memory and a byte cursor
       x86_extras.h             the instruction encodings
-    lib/reccore/               the RecCore emitter, vendored and since replaced; built by nothing
-    lib/libchdr/ lib/lzma/ lib/zlib/ lib/zstd_stub/
-                               CHD reading, vendored unchanged and built as C (lib/README-chd.md)
     utilities/
       cdrom/iso9660.h          ISO9660 structures
       cdrom/cdrom.cpp          old host CD read, superseded by disc.cpp; not built

@@ -37,7 +37,7 @@ namespace psx {
     .cue          a sheet naming one or more binary files and their tracks
     .mds .mdf     Alcohol 120%'s descriptor and the sectors it describes
     .ccd .img     CloneCD's table of contents and the sectors it describes
-    .chd          MAME's compressed format, read through libchdr (lib/libchdr):
+    .chd          MAME's compressed format, read through libchdr (Emu.Core's emucore/lib/libchdr):
                   the track list from its metadata, a hunk decompressed at a
                   time
     .bin .img     raw sectors, sector size detected from the file length

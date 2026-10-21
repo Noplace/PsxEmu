@@ -19,11 +19,11 @@ call "%VCVARS%" >nul
 cd /d "%~dp0..\.."
 if not exist Temp\tools\obj_boot mkdir Temp\tools\obj_boot
 
-rem The vendored C libraries under PSXEmu.Core\lib that disc.cpp reads CHD
+rem The vendored C libraries under Emu.Core\emucore\lib that disc.cpp reads CHD
 rem images through - libchdr, and the zlib, LZMA and (stub) zstd it decodes
 rem with - compiled once into one library every harness links. Warnings off:
 rem they are other people's code, kept as it came.
-set THIRD=PSXEmu.Core\lib
+set THIRD=Emu.Core\emucore\lib
 if not exist Temp\tools\obj_thirdparty mkdir Temp\tools\obj_thirdparty
 cl /nologo /c /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /DZ7_ST /W0 ^
    /I %THIRD%\libchdr\include /I %THIRD%\zlib /I %THIRD%\lzma /I %THIRD%\zstd_stub ^
@@ -45,8 +45,8 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  PSXEmu.Core\bios\hle\hle_bios_io.cpp PSXEmu.Core\bios\hle\hle_bios_timing.cpp PSXEmu.Core\bios\hle\hle_shell.cpp PSXEmu.Core\bios\hle\hle_font_data.cpp PSXEmu.Core\media\ecm.cpp PSXEmu.Core\emu\movie.cpp PSXEmu.Core\emu\rewind_buffer.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
- /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I PSXEmu.Core\lib\libchdr\include ^
- /I PSXEmu.Core\lib\zlib /I PSXEmu.Core\lib\lzma
+ /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I Emu.Core /I %THIRD%\libchdr\include ^
+ /I %THIRD%\zlib /I %THIRD%\lzma
 set LIBS=/link /SUBSYSTEM:CONSOLE user32.lib psapi.lib Temp\tools\thirdparty.lib
 
 rem The front end's hardware rasterisers, Direct3D 11's and 12's, for the tools that draw with

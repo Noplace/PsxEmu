@@ -50,8 +50,8 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
-      <!-- Own headers first, core headers second. -->
-      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)PSXEmu.Core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- Own headers first, core headers second, the shared library's third. -->
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)PSXEmu.Core;$(SolutionDir)Emu.Core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
@@ -147,9 +147,9 @@ exit /b 0</Command>
     <ClCompile Include="graphics\upscale\fsr\fidelityfx.cpp" />
     <ClCompile Include="graphics\upscale\fsr\fsr_download.cpp" />
     <ClCompile Include="graphics\upscale\texture\ai_textures.cpp" />
-    <!-- The packages' entries are inflated with the core's zlib. -->
+    <!-- The packages' entries are inflated with Emu.Core's zlib. -->
     <ClCompile Include="graphics\upscale\texture\ai_download.cpp">
-      <AdditionalIncludeDirectories>$(SolutionDir)PSXEmu.Core\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="graphics\upscale\texture\onnx_runtime.cpp" />
     <ClCompile Include="graphics\upscale\texture\torch_model.cpp" />
@@ -253,6 +253,9 @@ exit /b 0</Command>
   <ItemGroup>
     <ProjectReference Include="..\PSXEmu.Core\PSXEmu.Core.vcxproj">
       <Project>{93c78be1-472f-495c-9e4f-37cb8da7e8c9}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\Emu.Core\Emu.Core.vcxproj">
+      <Project>{14fceedf-673e-4b07-a60c-2b90c1342f10}</Project>
     </ProjectReference>
   </ItemGroup>
   <ItemGroup>
