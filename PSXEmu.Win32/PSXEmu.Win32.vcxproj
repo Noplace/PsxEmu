@@ -80,7 +80,7 @@ copy /y "$(ProjectDir)graphics\third_party\mmpx\LICENSE.md" "$(OutDir)mmpx.licen
 set ORT=$(SolutionDir)Temp\onnxruntime\1.24.4
 if exist "%ORT%\onnxruntime.dll" for %%f in (onnxruntime.dll onnxruntime_providers_shared.dll DirectML.dll onnxruntime.license.txt directml.license.txt) do xcopy /y /d /q "%ORT%\%%f" "$(OutDir)." &gt;nul
 set VSR=$(SolutionDir)Temp\rtxvideo\bin\Windows\x64\rel
-if exist "%VSR%\nvngx_vsr.dll" xcopy /y /d /q "%VSR%\nvngx_vsr.dll" "$(OutDir)." &gt;nul
+if "$(Platform)"=="x64" if exist "%VSR%\nvngx_vsr.dll" xcopy /y /d /q "%VSR%\nvngx_vsr.dll" "$(OutDir)." &gt;nul
 set MODELS=$(SolutionDir)Temp\models\onnx
 if exist "%MODELS%\realesr-animevideov3.onnx" (
   if not exist "$(OutDir)models" mkdir "$(OutDir)models"
@@ -92,8 +92,9 @@ exit /b 0</Command>
   </ItemDefinitionGroup>
   <!-- NVIDIA's RTX Video SDK, a second backend for the AI texture upscaler, is behind NVIDIA's
        sign-in and may not be committed: unpacked by hand into Temp\rtxvideo, it is built in and its
-       release DLL copied beside the executable; without it rtx_video.cpp is a backend that says so. -->
-  <ItemDefinitionGroup Condition="Exists('$(SolutionDir)Temp\rtxvideo\include\nvsdk_ngx.h')">
+       release DLL copied beside the executable; without it rtx_video.cpp is a backend that says so.
+       x64 only: NVIDIA ships the SDK's library for x64 and arm64, so a Win32 build is one without. -->
+  <ItemDefinitionGroup Condition="Exists('$(SolutionDir)Temp\rtxvideo\include\nvsdk_ngx.h') And '$(Platform)'=='x64'">
     <ClCompile>
       <PreprocessorDefinitions>PSXEMU_RTX_VIDEO=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <AdditionalIncludeDirectories>$(SolutionDir)Temp\rtxvideo\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
