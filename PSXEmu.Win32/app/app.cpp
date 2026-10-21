@@ -4793,7 +4793,7 @@ namespace psxemu {
         video_->Post([this, path](VideoOutput& video) {
             const emulation::host::VideoFrame* frame = video.frames().current();
             std::vector<uint32_t> pixels;
-            if (frame != nullptr && !frame->is_vram) {
+            if (frame != nullptr && !frame->is_raw()) {
                 // The hardware rasteriser's picture may still be on the card - on the renderer's
                 // own device, read once the renderer has finished with it.
                 if (frame->shared) {
@@ -4805,7 +4805,7 @@ namespace psxemu {
                 }
             }
             if (pixels.empty()) {
-                PostToUi([this, vram = frame != nullptr && frame->is_vram] {
+                PostToUi([this, vram = frame != nullptr && frame->is_raw()] {
                     Notify(OverlayIcon::kScreen, ToastKind::kWarning, L"No screenshot",
                            vram ? L"Turn off View VRAM to capture the picture"
                                 : L"Nothing has been shown yet");
@@ -4977,7 +4977,7 @@ namespace psxemu {
         video_->Post([this, path](VideoOutput& video) {
             const emulation::host::VideoFrame* frame = video.frames().current();
             std::vector<uint32_t> pixels;
-            if (frame != nullptr && !frame->is_vram) {
+            if (frame != nullptr && !frame->is_raw()) {
                 if (frame->shared) {
                     // As for a screenshot (TakeScreenshot).
                     if (frame->shared.source->device() != nullptr && video.presenter() != nullptr)

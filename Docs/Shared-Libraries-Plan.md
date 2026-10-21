@@ -1,6 +1,6 @@
 # Shared libraries: Emu.Core and Emu.Frontend.Win32
 
-> **Status: phase 1 done, 2026-10-21**: the Emu.Core project exists and holds the vendored libraries. The baseline of phase 0 is recorded at `5babf24`. Phase 2 is next. Every phase is a move, not a
+> **Status: phase 2 done, 2026-10-21**: Emu.Core holds the vendored libraries and everything that was already generic - images, the threads' channels, pacing, host input, save-state plumbing, the settings file and the recompiler's back end. The baseline of phase 0 is recorded at `5babf24`. Phase 3 is next. Every phase is a move, not a
 > change: it ends with the same twelve-disc table, the same harness counts and the same pictures
 > as before it, and a phase that changes a single checksum is wrong, however tidy it looks.
 
@@ -284,6 +284,26 @@ build script of their own. `host_test` stays, because it checks a threaded `Syst
 
 **Gate:** phase 0's numbers, unchanged. In `git diff -M` every moved file should show as a rename
 of at least 90%, so `git log --follow` still finds its history.
+
+**Done 2026-10-21**, in six commits, each built (Release x64 and all 36 harnesses) before it
+was made, and the gate run once at the end. Where it went otherwise than written above:
+
+- **`platform/types.h` and `util.h` are deleted, not moved.** None of their typedefs or macros
+  was used. `psx/psx.h` includes `<cstdint>` and `<cstddef>`, which was all it took from them.
+- **`SettingsFile` takes the line a file opens with**, and `psx::SettingsFile` is a subclass
+  that gives PSXEmu's (`# PSXEmu settings. ...`). So psxemu.ini is written byte for byte as
+  before, and the front end, which names `psx::SettingsFile`, did not change.
+- **`psx/state_format.h`** holds the magic and version, and imports `StateIO` and `Fnv1a64` into
+  `emulation::psx` with `using` declarations, so none of the 28 files that serialise changed.
+- **The raw plane** is `raw` and `raw_format` (`kNone` or `kBgr555`) with `is_raw()`. A view
+  uses the frame's own `width` and `height`, so there is no `raw_width` or `raw_height`.
+- **Not done, until a second emulator wants them:** `mouse_scaling.h`'s hardware counts per
+  inch as a parameter, the "playstation" label column in `input_bindings.h`, and the block
+  cache's 29-bit address mask as a parameter. Each is a change of behaviour rather than a
+  move, and has no second user yet. `bindings_test` stays whole in PSXEmu.Core: it tests the
+  front end's `controller_bindings.h` alongside the shared header.
+- **`Emu.Core/tools/build_tools.bat`** builds the three moved harnesses into `Temp\tools` or a
+  folder it is given. PSXEmu.Core's script calls it first.
 
 ## Phase 3: disc images
 

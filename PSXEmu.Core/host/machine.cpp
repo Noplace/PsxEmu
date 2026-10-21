@@ -527,8 +527,8 @@ void Machine::PublishFrame() {
     const int width = psx::GpuCore::kVramWidth;
     const int height = psx::GpuCore::kVramHeight;
     const uint16_t* vram = system_->gpu().vram();
-    frame.vram.assign(vram, vram + static_cast<size_t>(width) * height);
-    frame.is_vram = true;
+    frame.raw.assign(vram, vram + static_cast<size_t>(width) * height);
+    frame.raw_format = VideoFrame::RawFormat::kBgr555;
     frame.shared = image::SharedPicture();
     frame.width = width;
     frame.height = height;
@@ -536,7 +536,7 @@ void Machine::PublishFrame() {
     // Left on the graphics card by the hardware rasteriser: nothing to copy.
     frame.pixels.clear();
     frame.shared = shared;
-    frame.is_vram = false;
+    frame.raw_format = VideoFrame::RawFormat::kNone;
     frame.width = shared.width;
     frame.height = shared.height;
   } else {
@@ -546,7 +546,7 @@ void Machine::PublishFrame() {
     const uint32_t* pixels = system_->gpu().picture(width, height);
     frame.pixels.assign(pixels, pixels + static_cast<size_t>(width) * height);
     frame.shared = image::SharedPicture();
-    frame.is_vram = false;
+    frame.raw_format = VideoFrame::RawFormat::kNone;
     frame.width = width;
     frame.height = height;
   }

@@ -31,11 +31,17 @@ struct VideoFrame {
   // width x height, and `pixels` empty. Only for a presenter that said it can take one.
   image::SharedPicture shared;
 
-  // Or, for View > VRAM, all of VRAM as the GPU holds it: 1024x512
-  // 16-bit pixels, converted by the video thread, which has the time to spare
-  // where the machine's thread has none.
-  std::vector<uint16_t> vram;
-  bool is_vram = false;
+  // Or a plane of 16-bit pixels as the console holds them, width x height - a view of its video
+  // memory (PSXEmu: View > VRAM, all 1024x512 of it) - converted by the video thread, which has
+  // the time to spare where the machine's thread has none. `raw_format` says how its pixels are
+  // packed, and is kNone when the frame is a picture.
+  enum class RawFormat : uint8_t {
+    kNone,
+    kBgr555,   // red in bits 0-4, green 5-9, blue 10-14: the PlayStation's, and the GBA's
+  };
+  std::vector<uint16_t> raw;
+  RawFormat raw_format = RawFormat::kNone;
+  bool is_raw() const { return raw_format != RawFormat::kNone; }
 
   int width = 0;
   int height = 0;

@@ -189,10 +189,10 @@ namespace psxemu {
 
         // View > VRAM: all 1024x512 of it, converted the same way the display area already
         // is. Done here rather than on the machine's thread - this one has the time.
-        if (frame.is_vram) {
-            vram_scratch_.resize(frame.vram.size());
-            for (size_t i = 0; i < frame.vram.size(); ++i) {
-                const uint16_t p = frame.vram[i];
+        if (frame.raw_format == VideoFrame::RawFormat::kBgr555) {
+            vram_scratch_.resize(frame.raw.size());
+            for (size_t i = 0; i < frame.raw.size(); ++i) {
+                const uint16_t p = frame.raw[i];
                 const uint32_t r = ((p & 0x1F) << 3) | ((p & 0x1F) >> 2);
                 const uint32_t g = (((p >> 5) & 0x1F) << 3) | (((p >> 5) & 0x1F) >> 2);
                 const uint32_t b = (((p >> 10) & 0x1F) << 3) | (((p >> 10) & 0x1F) >> 2);
