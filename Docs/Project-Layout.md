@@ -3,11 +3,15 @@
 Follows section 1 of [Emulator-Project-Standards.md](Emulator-Project-Standards.md). Four
 projects: two shared libraries that know nothing of the PlayStation
 ([Shared-Libraries-Plan.md](Shared-Libraries-Plan.md)), and PSXEmu's own two on top of them.
+The shared libraries are in their own repository, EmuLib (github.com/Noplace/EmuLib), a git
+submodule at `EmuLib/` pinned to the commit PSXEmu was checked with: after cloning, or in a new
+worktree, run `git submodule update --init`. How to change them without breaking another
+emulator: `EmuLib/Emu.Core/README.md`, "Changing it without breaking another emulator".
 
 | Project | Kind | What | Guide |
 |---|---|---|---|
-| `Emu.Core` | static library | What any emulator shares: the machine's thread, pacing, save states, rewind, settings, disc images, PNGs, host input, an x64 emitter | `Emu.Core/README.md`, `CLAUDE.md` |
-| `Emu.Frontend.Win32` | static library | What any Windows front end shares: the four renderers, filters, DLSS and FSR, the texture upscaler's backends, audio devices, pads and mouse, the overlay, DPI, dialogs | `Emu.Frontend.Win32/README.md`, `CLAUDE.md` |
+| `Emu.Core` | static library | What any emulator shares: the machine's thread, pacing, save states, rewind, settings, disc images, PNGs, host input, an x64 emitter | `EmuLib/Emu.Core/README.md`, `CLAUDE.md` |
+| `Emu.Frontend.Win32` | static library | What any Windows front end shares: the four renderers, filters, DLSS and FSR, the texture upscaler's backends, audio devices, pads and mouse, the overlay, DPI, dialogs | `EmuLib/Emu.Frontend.Win32/README.md`, `CLAUDE.md` |
 | `PSXEmu.Core` | static library | The PlayStation: its hardware, the HLE BIOS, the recompiler, its enhancements, and `PsxCore`, which the shared machine runs | this file |
 | `PSXEmu.Win32` | executable | PSXEmu's front end: the app, its windows and menus, the hardware rasteriser, the PSX controller bindings | this file |
 
@@ -17,9 +21,13 @@ nothing of PSXEmu's; `PSXEmu.Core` includes `Emu.Core`; `PSXEmu.Win32` includes 
 ```
 PsxEmu/
   PSXEmu.sln
-  Emu.Core/                    static library - what any emulator shares, nothing of the PSX;
+  .gitmodules                  EmuLib, from github.com/Noplace/EmuLib, branch main
+  EmuLib/                      git submodule: the two shared libraries below, and README.md,
+                               CLAUDE.md, CHANGELOG.md (what a newer pin breaks)
+  EmuLib/Emu.Core/             static library - what any emulator shares, nothing of the PSX;
                                the include root, everything under emucore/
     Emu.Core.vcxproj
+    Emu.Core.props             imported by a project that uses it: the include path, $(EmuCoreDir)
     README.md  CLAUDE.md       the developer guide, and instructions for Claude in another project
     emucore/
       core.h                   ICore and MemoryState: what the machine's thread asks of a console
@@ -64,9 +72,11 @@ PsxEmu/
                                zlib also for PNGs, .bk2 movies, rewind and the AI downloads
     tools/                     Emu.Core's own harnesses, built by build_tools.bat [out folder]
       frame_limiter_test.cpp  speed_resampler_test.cpp  mouse_scaling_test.cpp
-  Emu.Frontend.Win32/          static library - what any Windows front end shares; the include
+  EmuLib/Emu.Frontend.Win32/   static library - what any Windows front end shares; the include
                                root, everything under emuwin32/, in emulation::win32
     Emu.Frontend.Win32.vcxproj
+    Emu.Frontend.Win32.props   imported by a front end: Emu.Core.props, its own include path,
+                               $(EmuFrontendSdkDir) - the hand-fetched SDKs, the solution's Temp\
     Emu.Frontend.Win32.targets imported by an executable: the fetched DLLs and models beside it
     README.md  CLAUDE.md       the developer guide, and instructions for Claude in another project
     emuwin32/
@@ -355,9 +365,11 @@ dependency order**. A type used inline in another header must be included
 before it: putting `gpu.h` after `system.h` will not compile, because `System`
 holds a `Gpu` by value.
 
-PSXEmu.Core has `$(ProjectDir);$(SolutionDir)Emu.Core` on its include path;
-PSXEmu.Win32 has `$(ProjectDir);$(SolutionDir)PSXEmu.Core;$(SolutionDir)Emu.Core;$(SolutionDir)Emu.Frontend.Win32`,
-so its own headers resolve first.
+PSXEmu.Core has `$(ProjectDir)` on its include path and imports
+`EmuLib\Emu.Core\Emu.Core.props`, which adds Emu.Core's folder after it;
+PSXEmu.Win32 has `$(ProjectDir);$(SolutionDir)PSXEmu.Core` and imports
+`EmuLib\Emu.Frontend.Win32\Emu.Frontend.Win32.props`, which adds Emu.Frontend.Win32's and
+Emu.Core's after them, so its own headers resolve first.
 
 Namespaces follow: `emulation::psx` for the console, `emulation::host`,
 `emulation::state`, `emulation::media` and the rest for Emu.Core, and
@@ -413,8 +425,8 @@ PSXEmu.Core\tools\build_tools.bat
 
 Compiles the sources directly rather than through MSBuild, so they stay
 independent of the solution configuration, and drops binaries in `Temp\tools\`.
-It calls `Emu.Core\tools\build_tools.bat` first, for Emu.Core's own three, which
-also runs alone and takes an output folder. Edit the `vcvars64.bat` path at the
+It calls `EmuLib\Emu.Core\tools\build_tools.bat` first, for Emu.Core's own three, which
+also runs alone (into EmuLib's `Temp\tools`) and takes an output folder. Edit the `vcvars64.bat` path at the
 top if your Visual Studio install differs. It builds about 36 harnesses one after
 another; for a quick build, a copy with `/MP` added to its `cl` lines takes about
 five minutes.

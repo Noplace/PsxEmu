@@ -61,8 +61,11 @@ were taken out of it):
 | `Emu.Core` | Static library. What any emulator shares: the machine's thread (`host::Machine`, which runs a console through `ICore`), pacing, save states and rewind, the settings file, disc images, PNGs, host input, an x64 emitter. Knows no console. |
 | `Emu.Frontend.Win32` | Static library. What any Windows front end shares: Direct3D 11/12, OpenGL and Vulkan presenters, filters, DLSS and FSR, sound devices, pads and mouse, the overlay, DPI, dialogs. Knows Emu.Core, no console. |
 
-A new emulator's `<Name>.Core` implements `ICore` and links Emu.Core; its
-`<Name>.Win32` links both and imports `Emu.Frontend.Win32.targets`. Each library
+Both live in the EmuLib repository (github.com/Noplace/EmuLib), which every emulator has as a
+git submodule at `EmuLib/`, pinned to the commit it was checked with. A new emulator's
+`<Name>.Core` implements `ICore`, imports `Emu.Core.props` and links Emu.Core; its
+`<Name>.Win32` imports `Emu.Frontend.Win32.props`, links both and imports
+`Emu.Frontend.Win32.targets`. Each library
 has a `README.md` (the developer guide) and a `CLAUDE.md` (how Claude should use
 it from another project). The same rule holds one level down: **the shared
 libraries never know which console is running**, and code moves into them the

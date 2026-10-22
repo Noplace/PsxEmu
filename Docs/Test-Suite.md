@@ -656,7 +656,7 @@ this tool gets pointed at. It depends on nothing, not even the core.
     frame_limiter_test
 
 Emu.Core's own, like `speed_resampler_test` and `mouse_scaling_test`: its source is
-`Emu.Core/tools/`, built by `Emu.Core\tools\build_tools.bat`, which PSXEmu's
+`EmuLib/Emu.Core/tools/`, built by `EmuLib\Emu.Core\tools\build_tools.bat`, which PSXEmu's
 `build_tools.bat` calls first. Eight checks on `emucore/timing/frame_limiter.h`: that a loop is held to 59.29 Hz and
 to PAL's 49.76 rather than run flat out, that work done inside the frame comes
 out of the wait rather than on top of it, that a host too slow to make the
@@ -922,7 +922,7 @@ not a game's key.)
 Smaller harnesses cover the host-side headers the front end leans on and
 are not counted above, since they test no emulation (most of what they test is Emu.Core's or
 Emu.Frontend.Win32's now; `frame_limiter_test`, `speed_resampler_test` and `mouse_scaling_test`
-live in `Emu.Core/tools/`): `letterbox_test` (12
+live in `EmuLib/Emu.Core/tools/`): `letterbox_test` (12
 checks, aspect ratio), `frame_limiter_test` (30 checks - the average rate, since bug 62 the
 spacing between frames too, and since bug 148 matching the display), `filter_chain_test` (27
 checks, bug 148 - the custom filter chain's passes in `emuwin32/filters/filter_chain.h`: each stage's

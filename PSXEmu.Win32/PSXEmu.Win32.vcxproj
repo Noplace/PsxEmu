@@ -40,7 +40,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
-    <Import Project="..\Emu.Frontend.Win32\Emu.Frontend.Win32.props" />
+    <Import Project="..\EmuLib\Emu.Frontend.Win32\Emu.Frontend.Win32.props" />
   </ImportGroup>
   <PropertyGroup>
     <OutDir>$(SolutionDir)Build\$(Platform)\$(Configuration)\</OutDir>
@@ -156,10 +156,10 @@
     <ProjectReference Include="..\PSXEmu.Core\PSXEmu.Core.vcxproj">
       <Project>{93c78be1-472f-495c-9e4f-37cb8da7e8c9}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\Emu.Core\Emu.Core.vcxproj">
+    <ProjectReference Include="..\EmuLib\Emu.Core\Emu.Core.vcxproj">
       <Project>{14fceedf-673e-4b07-a60c-2b90c1342f10}</Project>
     </ProjectReference>
-    <ProjectReference Include="..\Emu.Frontend.Win32\Emu.Frontend.Win32.vcxproj">
+    <ProjectReference Include="..\EmuLib\Emu.Frontend.Win32\Emu.Frontend.Win32.vcxproj">
       <Project>{52395c63-31f3-4f44-8fa1-6daa76b64d9f}</Project>
     </ProjectReference>
   </ItemGroup>
@@ -170,5 +170,5 @@
     <ResourceCompile Include="Resource\psxemu.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
-  <Import Project="..\Emu.Frontend.Win32\Emu.Frontend.Win32.targets" />
+  <Import Project="..\EmuLib\Emu.Frontend.Win32\Emu.Frontend.Win32.targets" />
 </Project>

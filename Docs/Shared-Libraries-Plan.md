@@ -56,7 +56,8 @@ third-party headers.
    and `PsxEmu/Emu.Frontend.Win32/`, so every move is guarded by this emulator's gates in the
    same commit. When a second emulator takes them on, split them into a repository of their own
    (`C:\dev\Noplace\Emu`, history kept with `git subtree split`) and have both solutions use it
-   as a submodule or a sibling path.
+   as a submodule or a sibling path. **Done 2026-10-23, before a second emulator took them on**:
+   the repository is EmuLib, a submodule (phase 8).
 2. **The name `Emu.Core` is taken.** GBEmu has a small project of that name
    (`GBEmu/Solution/Emu.Core`: `Emulator`, `ring_buffer`, `timer`, `io`, `hash_table`). It is
    older than and smaller than what moves here. This one becomes Emu.Core, and GBEmu's
@@ -627,6 +628,32 @@ the machine in six steps - **and a `CLAUDE.md`**, telling Claude in another emul
 to use the library, the rules for changing it, how to check a change, and the gotchas that cost
 time here. Emu.Frontend.Win32 also has the `.clang-format` its code came with, and an ignore list
 for its vendored headers and generated shaders.
+
+## Phase 8: EmuLib, a repository of their own
+
+**Done 2026-10-23.** Both libraries are in EmuLib (github.com/Noplace/EmuLib,
+`C:\dev\Noplace\EmuLib`), with their history (`git subtree split` of each folder, then
+`git subtree add` into EmuLib; the trees matched this repository's at `b478235` exactly), and
+PSXEmu has EmuLib as a git submodule at `EmuLib/`, branch `main`.
+
+- **A submodule, not a sibling path, and one for both libraries.** Each emulator pins the EmuLib
+  commit it was checked with, so a change made in one reaches another only when that one moves
+  its pin and runs its own checks; a sibling path would hand every emulator every change at once.
+  Emu.Frontend.Win32 builds on Emu.Core, so they move together.
+- **Found through `.props` files.** `Emu.Core.props` and `Emu.Frontend.Win32.props` put each
+  library on the include path relative to themselves and name `$(EmuCoreDir)`,
+  `$(EmuFrontendWin32Dir)` and `$(EmuFrontendSdkDir)` (the hand-fetched SDKs, the solution's
+  `Temp\` unless a project sets it), so nothing says `$(SolutionDir)Emu.Core` any more. The fetch
+  scripts put the SDKs in the `Temp\` of the repository that has EmuLib as its submodule, and
+  PSXEmu's `build_tools.bat` names the two folders once (`%EMUCORE%`, `%EMUWIN32%`).
+- **Changing EmuLib**: on a branch inside `EmuLib/` (a submodule is checked out at a bare commit),
+  commit and push there, then commit PSXEmu's new pin. A change that breaks a caller goes in
+  EmuLib's `CHANGELOG.md`. Emu.Core's README, "Changing it without breaking another emulator".
+- **Checked**: the solution, Release x64, built from the submodule (every file recompiled); all 36
+  harnesses built through `build_tools.bat` (a copy with `/MP`), and the 24 that need no disc run
+  from the repository root, every check passing; Emu.Core's three harnesses also build and pass in
+  EmuLib on its own. No source file changed, only where the projects find them, so the disc batch
+  was not rerun.
 
 ## What a second emulator would take on day one
 

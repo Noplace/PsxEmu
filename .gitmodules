@@ -1,0 +1,4 @@
+[submodule "EmuLib"]
+	path = EmuLib
+	url = https://github.com/Noplace/EmuLib.git
+	branch = main

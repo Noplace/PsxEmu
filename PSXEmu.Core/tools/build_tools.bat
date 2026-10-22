@@ -18,9 +18,9 @@ call "%VCVARS%" >nul
 
 cd /d "%~dp0..\.."
 
-rem The shared libraries, from the repository root.
-set EMUCORE=Emu.Core
-set EMUWIN32=Emu.Frontend.Win32
+rem The shared libraries, in the EmuLib submodule (git submodule update --init).
+set EMUCORE=EmuLib\Emu.Core
+set EMUWIN32=EmuLib\Emu.Frontend.Win32
 
 rem Emu.Core's own harnesses, the ones that test nothing of the PlayStation.
 call %EMUCORE%\tools\build_tools.bat Temp\tools

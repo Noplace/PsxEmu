@@ -42,7 +42,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
-    <Import Project="..\Emu.Core\Emu.Core.props" />
+    <Import Project="..\EmuLib\Emu.Core\Emu.Core.props" />
   </ImportGroup>
   <PropertyGroup>
     <!-- MSBuild puts x64 output under $(SolutionDir)x64\ but Win32 output
@@ -163,7 +163,7 @@
   <ItemGroup>
     <!-- Built first. Not merged into this library: whatever links this one
          links Emu.Core too. -->
-    <ProjectReference Include="..\Emu.Core\Emu.Core.vcxproj">
+    <ProjectReference Include="..\EmuLib\Emu.Core\Emu.Core.vcxproj">
       <Project>{14fceedf-673e-4b07-a60c-2b90c1342f10}</Project>
       <LinkLibraryDependencies>false</LinkLibraryDependencies>
     </ProjectReference>

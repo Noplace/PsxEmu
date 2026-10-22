@@ -6,9 +6,9 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PSXEmu.Core", "PSXEmu.Core\
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "PSXEmu.Win32", "PSXEmu.Win32\PSXEmu.Win32.vcxproj", "{5F2A1B47-9C3E-4D18-8A6B-1E7C4D9F2033}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Emu.Core", "Emu.Core\Emu.Core.vcxproj", "{14FCEEDF-673E-4B07-A60C-2B90C1342F10}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Emu.Core", "EmuLib\Emu.Core\Emu.Core.vcxproj", "{14FCEEDF-673E-4B07-A60C-2B90C1342F10}"
 EndProject
-Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Emu.Frontend.Win32", "Emu.Frontend.Win32\Emu.Frontend.Win32.vcxproj", "{52395C63-31F3-4F44-8FA1-6DAA76B64D9F}"
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "Emu.Frontend.Win32", "EmuLib\Emu.Frontend.Win32\Emu.Frontend.Win32.vcxproj", "{52395C63-31F3-4F44-8FA1-6DAA76B64D9F}"
 EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Docs", "Docs", "{E5107D62-B4E3-4872-95CA-25AD731CBA65}"
 	ProjectSection(SolutionItems) = preProject
