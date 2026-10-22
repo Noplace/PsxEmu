@@ -8,7 +8,7 @@ message boxes and file pickers; screenshots.
 
 It is the Windows half of `Emu.Core` (read its guide first: this library plugs into its
 `host::Machine`, `VideoOutput` and `AudioOutput`). It was taken out of PSXEmu.Win32
-(`Docs/Shared-Libraries-Plan.md`, phase 6), which is its first user and the reference for
+(PSXEmu's `Docs/Shared-Libraries-Plan.md` records how), which is its first user and the reference for
 everything below: `PSXEmu.Win32/app/app.cpp`, `App::StartThreads`, wires all of it.
 
 ## The rules

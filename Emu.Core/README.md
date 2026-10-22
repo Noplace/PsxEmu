@@ -5,7 +5,8 @@ the machine's thread and the channels around it, frame pacing, save states in me
 disk, rewind, the settings file, disc images, PNGs, host input, the x64 code emitter, and the
 compression libraries under all of it.
 
-It was taken out of PSXEmu (`Docs/Shared-Libraries-Plan.md` has how and why). PSXEmu is its first
+It was taken out of PSXEmu in October 2026 (PSXEmu's `Docs/Shared-Libraries-Plan.md` records how
+and why, phase by phase). PSXEmu is its first
 user and the reference for every pattern below. Its Windows front-end half is
 `Emu.Frontend.Win32`, which has a guide of its own.
 
@@ -222,8 +223,9 @@ The decoder and compiler for a guest CPU are that console's (PSXEmu: `rec/`).
 
 ## Still the PlayStation's, until a second user wants otherwise
 
-Moving these was a change of behaviour, not a move, so they wait for a second emulator to need
-them (`Docs/Shared-Libraries-Plan.md`, phase 2):
+These came here with PlayStation details still in them. Taking the details out would change
+behaviour rather than just move code, so each waits for a second emulator to need it, and then
+becomes a parameter:
 
 - `BlockCache::Normalise` masks addresses to 29 bits (the R3000A's KSEG mirrors), and its fast
   lookup assumes 4-byte instructions.
@@ -235,5 +237,18 @@ them (`Docs/Shared-Libraries-Plan.md`, phase 2):
   `CreateAudioEngine`); a core with another rate passes its own.
 - `IAudioEngine` is in the global namespace.
 
-Phase 5 of the plan lists what else could come here once a second emulator needs it: BizHawk
-`.bk2` movies, texture packs and the AI upscaler's queue, and the debugger's breakpoints.
+## Candidates to move here, when a second emulator needs them
+
+Three parts of PSXEmu are generic in shape but tied to the PlayStation in detail. They stay in
+PSXEmu.Core until a second emulator wants one: splitting them sooner would mean guessing at an
+interface with only one user to check it against. When one is wanted, the generic half comes here
+and the PlayStation's half stays behind as a thin layer over it.
+
+| Candidate (in PSXEmu.Core) | What would come to Emu.Core | What would stay the console's |
+|---|---|---|
+| Input movies (`emu/movie`) | Reading BizHawk's `.bk2` (a zip of text files: the header, the input log's key and one line a frame), which is the same for every console, and stepping through it by frame | Which column is which control: mapping the log onto the console's own pads and ports (for the PlayStation, two BizHawk cores that name the same controls differently, and the multitap) |
+| Texture replacement (`render/texture_pack`, `render/texture_upscale.h`) | The pack: a folder of PNGs read on a loader thread, `pack.ini` (filters, aliases, textures never replaced), images 1x-8x; and the AI upscaler's queue, with the texels it is handed | How a texture is named: from the uploads into the console's video memory and its palettes (`render/texture_tracker`), which is the PlayStation's GPU |
+| Debugger breakpoints (`debug/debugger`) | The rule that a halt runs nothing - stopped before a step, so a run that halts a thousand times computes what one that never halts does - and the breakpoints, watchpoints and stepping around it | How addresses match (the R3000A's 29-bit mask, one instruction seen through three windows) and the PlayStation BIOS's calls as a reason to break |
+
+The AI upscaler's own thread (`ai_textures`, in PSXEmu.Win32) would follow the texture pack into
+Emu.Frontend.Win32.

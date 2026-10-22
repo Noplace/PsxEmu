@@ -37,8 +37,11 @@ header explains itself at the top).
   - it must print nothing (`emucore/` paths are fine).
 - **No change in what a machine computes.** A move or refactor here must leave every user's
   results identical. In PSXEmu that means: build every harness, run them, run the disc batch, and
-  diff both against the recorded baseline (`Docs/Shared-Libraries-Plan.md`, phase 0, describes
-  the scripts and `Temp\p0\`). Only then commit.
+  diff both against the recorded baseline (PSXEmu's `Docs/Shared-Libraries-Plan.md`, phase 0,
+  describes the scripts and `Temp\p0\`). Only then commit.
+- **Moving more code here**: when a second emulator wants movies, texture packs or breakpoints,
+  start from the README's "Candidates" table: it says which half of each comes here and which
+  stays the console's.
 - **Every user builds.** After changing a header, build PSXEmu.Win32 Release x64 (which builds
   Emu.Core, PSXEmu.Core and Emu.Frontend.Win32) and the harnesses (`PSXEmu.Core\tools\build_tools.bat`,
   or a copy of it with `/MP` added).
