@@ -27,7 +27,7 @@
 // the machine reach it only through requests posted to that thread, which is why nothing here
 // takes a lock.
 
-#include "host/machine.h"
+#include "emucore/host/machine.h"
 #include "ui/overlay/memory_usage.h"
 #include "ui/overlay/overlay_atlas.h"
 #include "ui/overlay/overlay_draw.h"

@@ -187,6 +187,7 @@
     </ClCompile>
     <!-- The front end's threads: what keeps a sound device fed and shows the newest frame. -->
     <ClCompile Include="emucore\host\audio_output.cpp" />
+    <ClCompile Include="emucore\host\machine.cpp" />
     <ClCompile Include="emucore\host\video_output.cpp" />
     <!-- Disc images, CHDs read through libchdr, and their ISO9660 filesystem. -->
     <ClCompile Include="emucore\media\disc.cpp">
@@ -209,6 +210,7 @@
     <ClInclude Include="emucore\host\frame_mailbox.h" />
     <ClInclude Include="emucore\host\input_exchange.h" />
     <ClInclude Include="emucore\host\latency_markers.h" />
+    <ClInclude Include="emucore\host\machine.h" />
     <ClInclude Include="emucore\host\request_queue.h" />
     <ClInclude Include="emucore\host\sample_ring.h" />
     <ClInclude Include="emucore\host\video_output.h" />

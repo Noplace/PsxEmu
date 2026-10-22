@@ -9,7 +9,7 @@
 #pragma once
 
 #include "emucore/core.h"
-#include "host/machine.h"
+#include "emucore/host/machine.h"
 #include "render/raster.h"
 
 #include <cstdint>

@@ -14,7 +14,7 @@
 #include "emucore/host/frame_mailbox.h"
 #include "emucore/host/input_exchange.h"
 #include "emu/psx_core.h"
-#include "host/machine.h"
+#include "emucore/host/machine.h"
 #include "emucore/host/request_queue.h"
 #include "emucore/host/sample_ring.h"
 #include "emucore/host/video_output.h"

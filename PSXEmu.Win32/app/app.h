@@ -55,7 +55,7 @@
 #include "emu/movie.h"
 #include "app/engine_factory.h"
 #include "emucore/host/audio_output.h"
-#include "host/machine.h"
+#include "emucore/host/machine.h"
 #include "emu/psx_core.h"
 #include "emucore/host/video_output.h"
 #include "input/input_thread.h"

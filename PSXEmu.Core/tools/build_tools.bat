@@ -196,11 +196,11 @@ cl %FLAGS% /Fo:Temp\tools\obj_bench\ /Fe:Temp\tools\rec_bench.exe ^
    PSXEmu.Core\tools\rec_bench.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
-rem host\, the part of the cores that knows about threads (Emu.Core's emucore\host
-rem and PSXEmu.Core's machine): the channels between the front end's threads,
-rem stress-tested with a thread on each side, and the machine, audio and video
-rem threads run for real against a BIOS.
-set HOST=PSXEmu.Core\host\machine.cpp PSXEmu.Core\emu\psx_core.cpp Emu.Core\emucore\host\audio_output.cpp ^
+rem Emu.Core's emucore\host, the part of the cores that knows about threads, with
+rem PSXEmu's psx_core for the machine to run: the channels between the front end's
+rem threads, stress-tested with a thread on each side, and the machine, audio and
+rem video threads run for real against a BIOS.
+set HOST=Emu.Core\emucore\host\machine.cpp PSXEmu.Core\emu\psx_core.cpp Emu.Core\emucore\host\audio_output.cpp ^
  Emu.Core\emucore\host\video_output.cpp
 if not exist Temp\tools\obj_host mkdir Temp\tools\obj_host
 cl %FLAGS% /Fo:Temp\tools\obj_host\ /Fe:Temp\tools\host_test.exe ^

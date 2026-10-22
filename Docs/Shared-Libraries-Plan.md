@@ -1,6 +1,6 @@
 # Shared libraries: Emu.Core and Emu.Frontend.Win32
 
-> **Status: phase 3 done, 2026-10-22**: Emu.Core holds the vendored libraries, everything that was already generic (images, the threads' channels, pacing, host input, save-state plumbing, the settings file, the recompiler's back end) and disc images. The baseline of phase 0 is recorded at `5babf24`. Phase 4, `ICore`, is next. Every phase is a move, not a
+> **Status: phase 4 done, 2026-10-22**: Emu.Core holds the vendored libraries, everything that was already generic, disc images, and `host::Machine`, which runs any console through `ICore` (emucore/core.h); PSXEmu.Core's `psx::PsxCore` is the PlayStation's. Emu.Core includes nothing from either PSX project. The baseline of phase 0 is recorded at `5babf24`. Phase 6, the front-end library, is next (phase 5 waits for a second emulator). Every phase is a move, not a
 > change: it ends with the same twelve-disc table, the same harness counts and the same pictures
 > as before it, and a phase that changes a single checksum is wrong, however tidy it looks.
 
@@ -424,6 +424,52 @@ behaviour:
 - In the app on the Radeon: a game played with run-ahead and rewind, a debugger breakpoint hit
   and stepped, a save state saved and loaded with texture replacement on, and FSR on.
 - DLSS once on the RTX 4060, in one run (one device per run there).
+
+**Done 2026-10-22, in two commits:** `ICore` with `Machine` switched to it, then `Machine` moved
+to `emucore/host/`. Emu.Core now includes nothing from either PSX project. How it differs from
+the sketch above:
+
+- **The states in memory are named for what they are for.** `SaveBeforeRunAhead` and
+  `LoadAfterRunAhead`, and `SaveForRewind` and `LoadForRewind`, each returning whether the load
+  was made, instead of one `Save`/`Load` pair with flags. That way the PSX core can keep its
+  texture tracker's `Hold` and `Release` around run-ahead, where `Machine` had them, without
+  `Machine` knowing there is a tracker. `MemoryState` gives rewind's store its payload by
+  `payload()`.
+- **`halted()` and `debugger_armed()`** are on the interface beside `RunFrame`: the machine
+  asks both between frames.
+- **`MachineReport` keeps its fields.** The core fills the rasteriser's and the textures' part
+  (`ICore::FillReport`), so the front end, which reads them, did not change.
+- **`MachineConfig`** is speed, limiter, Frame Pacing, run-ahead and rewind. `Machine` is given
+  one when it is made (`psx::MachineConfigFrom(system.config())`, since the front end sets the
+  System's config before the threads start), and `psx::ApplyConfig(machine, config)` gives each
+  half its share from then on.
+- **The front end asks the console through `psx::CoreOf(machine)` and `psx::SystemOf(machine)`**,
+  so its requests kept their shape: `machine.system()` became `SystemOf(machine)`, and the
+  texture, DLSS and plane-view calls went to `CoreOf(machine)`. `set_view_vram` is
+  `set_raw_view`.
+- **The audio buffers follow the core's sample rate**: 44,100 / 30 and 44,100 x 40 ms, the same
+  1,470 and 1,764 frames as before. The audio device itself still opens at 44,100, which a core
+  with another rate will have to change.
+
+**Checked:**
+
+- Every harness, the seven CHDs and the two `.cue` discs, on both CPUs, with run-ahead and
+  rewind, as phase 0.
+- `host_test`'s log, line by line, as phase 0's, apart from counts that follow thread timing:
+  the mailbox's dropped frames, how many pause requests a run posts, the ring's low water. The
+  phase 0 binary varies the same way between its own runs. Its frame-rate and sound checks fail
+  under load from other work, with either binary, and passed when it ran alone.
+- In the app, a scratch copy on the Radeon with its own settings and the sound off: Ridge Racer
+  (PAL, so 49.7 fps is 100%) from a uniquely named `.cue`, with the recompiler, run-ahead 2,
+  rewind, texture dumping and the Direct3D 12 hardware rasteriser at 2x. It ran, and a state
+  saved with its `.textures` beside it and loaded back. View > VRAM showed both framebuffers and
+  the texture pages, and it closed cleanly. 160 textures were dumped. The phase 0 build, run the
+  same way, gave the same speeds and the same counts of sound made up. Everything the runs wrote
+  was deleted afterwards.
+- **Not done:** FSR, since AMD's DLLs were not fetched beside this build, and DLSS on the 4060.
+  Both reach the console only through `PsxCore::set_dlss`, whose body is `Machine::set_dlss`'s
+  unchanged. A breakpoint hit and stepped in the app was not tried either: `host_test` runs 60
+  halts, 31 at a breakpoint, each let go from another thread, through `Machine` as before.
 
 ## Phase 5: on demand, when a second emulator needs it
 

@@ -2169,7 +2169,7 @@ int main(int argc, char** argv) {
   }
 
   if (options.load_state != nullptr) {
-    // The state's texture uploads, beside it, as the front end keeps them (host/machine.h).
+    // The state's texture uploads, beside it, as the front end keeps them (emucore/host/machine.h).
     std::vector<emulation::psx::TextureTracker::Upload> uploads;
     if (textures && emulation::psx::TextureTracker::ReadUploads(
                         std::string(options.load_state) + ".textures", &uploads)) {

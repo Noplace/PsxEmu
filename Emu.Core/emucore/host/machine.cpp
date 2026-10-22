@@ -1,4 +1,4 @@
-#include "host/machine.h"
+#include "emucore/host/machine.h"
 
 #include "emucore/state/rewind_buffer.h"
 

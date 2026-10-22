@@ -22,7 +22,7 @@
 // writer, one reader, no lock. A frame the reader is too slow to take is dropped rather than
 // waited for - the machine must never stall on a graph.
 
-#include "host/machine.h"
+#include "emucore/host/machine.h"
 
 #include <array>
 #include <atomic>
