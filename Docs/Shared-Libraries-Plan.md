@@ -572,8 +572,15 @@ names split out of `keyboard.h`). The library includes nothing of PSXEmu's. How 
   picture right. The phase 0 build, run the same way on Vulkan and with DLSS, gave the same
   speeds and the same dropped and short counts (each has some at start-up), and the 4060 stayed
   healthy throughout. Everything the runs wrote was deleted.
-- **Not done:** FSR and Frame Generation (AMD's DLLs are not fetched here), the AI upscaler in the
-  app (`ai_textures_test` passes), and the pads and the mouse, which need a person holding them.
+- **FSR, checked afterwards (2026-10-22):** AMD's DLLs fetched with `fetch_fidelityfx.ps1` (v2.3.0,
+  each file checked against the release), and copied beside the build by
+  `Emu.Frontend.Win32.targets` with AMD's licence, the first time its AMD half had files to copy.
+  On the Radeon, with the Direct3D 12 renderer and rasteriser: FSR Quality at 5.8 ms a picture,
+  and FSR with Frame Generation at 4.2 ms and "frame gen 2.0x", each picture right and the overlay
+  kept out of the generated frames. The phase 0 build, given the same DLLs, gave Frame Generation
+  at 2.0x and 4.2-4.5 ms, with the same start-up counts.
+- **Not done:** the AI upscaler in the app (`ai_textures_test` passes), and the pads and the
+  mouse, which need a person holding them.
 
 ## Phase 7: the documents
 
