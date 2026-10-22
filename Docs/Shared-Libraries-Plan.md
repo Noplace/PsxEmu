@@ -579,8 +579,13 @@ names split out of `keyboard.h`). The library includes nothing of PSXEmu's. How 
   and FSR with Frame Generation at 4.2 ms and "frame gen 2.0x", each picture right and the overlay
   kept out of the generated frames. The phase 0 build, given the same DLLs, gave Frame Generation
   at 2.0x and 4.2-4.5 ms, with the same start-up counts.
-- **Not done:** the AI upscaler in the app (`ai_textures_test` passes), and the pads and the
-  mouse, which need a person holding them.
+- **The AI texture upscaler, checked afterwards (2026-10-22):** ONNX Runtime, DirectML and the
+  Real-ESRGAN models copied beside the build by the targets file. Ridge Racer for a minute with
+  2x AI upscaling (the anime model), the hardware rasteriser at 2x and the upscaler on the same
+  Radeon at its 10% share: 100% speed, 210 textures upscaled into `textures\SCES-00001\ai\anime-2x`,
+  and the attract race drawn with them. The phase 0 build, from an empty folder, gave the same
+  speed and the same 210. Everything the runs wrote was deleted.
+- **Not done:** the pads and the mouse, which need a person holding them.
 
 ## Phase 7: the documents
 
