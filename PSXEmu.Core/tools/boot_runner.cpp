@@ -1473,16 +1473,16 @@ void Line(const char* what, double total_ms, int n) {
 
 // The disc reads a stretch made, per try: reads that went to the image, how many of them
 // stepped back, and the time they took.
-void ReadsLine(const char* what, const emulation::psx::Disc::ReadStats& total, int n) {
+void ReadsLine(const char* what, const emulation::media::Disc::ReadStats& total, int n) {
   if (n <= 0)
     return;
   printf("bench    %-46s %6.2f reads (%.2f back) %7.3f ms\n", what,
          static_cast<double>(total.reads) / n, static_cast<double>(total.backward) / n,
          total.ms / n);
 }
-emulation::psx::Disc::ReadStats Since(const emulation::psx::Disc::ReadStats& now,
-                                      const emulation::psx::Disc::ReadStats& then) {
-  emulation::psx::Disc::ReadStats d;
+emulation::media::Disc::ReadStats Since(const emulation::media::Disc::ReadStats& now,
+                                      const emulation::media::Disc::ReadStats& then) {
+  emulation::media::Disc::ReadStats d;
   d.reads = now.reads - then.reads;
   d.backward = now.backward - then.backward;
   d.bytes = now.bytes - then.bytes;
@@ -1491,7 +1491,7 @@ emulation::psx::Disc::ReadStats Since(const emulation::psx::Disc::ReadStats& now
 }
 
 void Run(System* system, int n) {
-  const emulation::psx::Disc::ReadStats& disc = system->cdrom().disc().read_stats();
+  const emulation::media::Disc::ReadStats& disc = system->cdrom().disc().read_stats();
   printf("bench  recompiler %s, rasteriser %s, %d tries each\n",
          system->config().recompiler ? "on" : "off",
          system->gpu().hardware_raster() ? "hardware" : "software", n);
@@ -1504,7 +1504,7 @@ void Run(System* system, int n) {
   printf("bench  payload                                          %10zu bytes\n", state.size());
 
   Clock::time_point t;
-  emulation::psx::Disc::ReadStats before = disc;
+  emulation::media::Disc::ReadStats before = disc;
   t = Clock::now();
   for (int i = 0; i < n; ++i)
     RunFrame(system);
@@ -1588,7 +1588,7 @@ void Run(System* system, int n) {
     double ms[4] = {};
     double part[4][4] = {};   // the first frame, the save, the second frame, the load
     uint64_t steps[4] = {};
-    emulation::psx::Disc::ReadStats reads[4];
+    emulation::media::Disc::ReadStats reads[4];
     std::vector<uint8_t> start;
     Save(system, &start);
     for (int s = 0; s < stretches; ++s) {
@@ -1617,7 +1617,7 @@ void Run(System* system, int n) {
           for (int p = 0; p < 4; ++p)
             part[k][p] += Ms(marks[p + 1] - marks[p]);
         }
-        const emulation::psx::Disc::ReadStats d = Since(disc, before);
+        const emulation::media::Disc::ReadStats d = Since(disc, before);
         reads[k].reads += d.reads;
         reads[k].backward += d.backward;
         reads[k].ms += d.ms;

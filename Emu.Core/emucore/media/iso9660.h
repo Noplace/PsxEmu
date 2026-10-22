@@ -18,11 +18,14 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
 namespace emulation {
-namespace psx {
+namespace media {
+
+class Disc;
 
 /*
   The ISO9660 filesystem on a mounted disc.

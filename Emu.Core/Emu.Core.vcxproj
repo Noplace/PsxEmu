@@ -188,6 +188,12 @@
     <!-- The front end's threads: what keeps a sound device fed and shows the newest frame. -->
     <ClCompile Include="emucore\host\audio_output.cpp" />
     <ClCompile Include="emucore\host\video_output.cpp" />
+    <!-- Disc images, CHDs read through libchdr, and their ISO9660 filesystem. -->
+    <ClCompile Include="emucore\media\disc.cpp">
+      <AdditionalIncludeDirectories>$(ProjectDir)emucore\lib\libchdr\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <ClCompile Include="emucore\media\ecm.cpp" />
+    <ClCompile Include="emucore\media\iso9660.cpp" />
     <!-- Save states: the serialiser, and rewind's store, which compresses its deltas with zlib. -->
     <ClCompile Include="emucore\state\state_io.cpp" />
     <ClCompile Include="emucore\state\rewind_buffer.cpp">
@@ -210,6 +216,9 @@
     <ClInclude Include="emucore\input\input_bindings.h" />
     <ClInclude Include="emucore\input\mouse_scaling.h" />
     <ClInclude Include="emucore\input\sony_pad_reports.h" />
+    <ClInclude Include="emucore\media\disc.h" />
+    <ClInclude Include="emucore\media\ecm.h" />
+    <ClInclude Include="emucore\media\iso9660.h" />
     <ClInclude Include="emucore\rec\block_cache.h" />
     <ClInclude Include="emucore\rec\emitter.h" />
     <ClInclude Include="emucore\rec\x64_asm.h" />

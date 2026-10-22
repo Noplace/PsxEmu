@@ -1,6 +1,6 @@
 # Shared libraries: Emu.Core and Emu.Frontend.Win32
 
-> **Status: phase 2 done, 2026-10-21**: Emu.Core holds the vendored libraries and everything that was already generic - images, the threads' channels, pacing, host input, save-state plumbing, the settings file and the recompiler's back end. The baseline of phase 0 is recorded at `5babf24`. Phase 3 is next. Every phase is a move, not a
+> **Status: phase 3 done, 2026-10-22**: Emu.Core holds the vendored libraries, everything that was already generic (images, the threads' channels, pacing, host input, save-state plumbing, the settings file, the recompiler's back end) and disc images. The baseline of phase 0 is recorded at `5babf24`. Phase 4, `ICore`, is next. Every phase is a move, not a
 > change: it ends with the same twelve-disc table, the same harness counts and the same pictures
 > as before it, and a phase that changes a single checksum is wrong, however tidy it looks.
 
@@ -317,6 +317,19 @@ that twice.
 
 **Gate:** `media_test` 564, the twelve-disc table (which covers `.cue`, `.chd` and `.ecm`
 images), and a `.mds` and a `.ccd` disc booted once.
+
+**Done 2026-10-22.** The three files are `emucore/media/` in `emulation::media`. `disc.h`
+includes the `StateIO` it serialises with, which it had relied on `psx/psx.h` to include first.
+`iso9660.h` declares the `Disc` it opens. `disc.cpp` includes `windows.h` itself, for a physical
+drive. `psx/types.h` declares both classes in `emulation::media` and imports them into
+`emulation::psx`, so the CD-ROM, the HLE BIOS and the movie player did not change. Uses
+qualified from outside the console's code (the front end, the tools) say `emulation::media::`.
+
+The share was still unreachable, so the disc gate was the seven CHDs plus the two `.cue` images
+kept locally in `Temp\discs` (Ridge Racer, Wild Arms), run on both CPUs, with run-ahead and
+rewind, on phase 0's binary and this one: identical. Interpreted, those two give Test-Suite.md's
+twelve-disc rows for them exactly. `media_test` covers `.mds`, `.ccd` and `.ecm` with images it
+builds itself, 564 checks as before. Booting a real `.mds`, `.ccd` and `.ecm` waits on the share.
 
 ## Phase 4: `ICore`, and `Machine` moved
 

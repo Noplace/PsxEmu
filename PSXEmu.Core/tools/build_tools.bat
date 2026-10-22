@@ -43,11 +43,11 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  Emu.Core\emucore\image\png_file.cpp PSXEmu.Core\render\texture_pack.cpp ^
  PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\bios\kernel.cpp ^
  PSXEmu.Core\psx\mc.cpp PSXEmu.Core\media\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
- PSXEmu.Core\psx\cdrom.cpp PSXEmu.Core\media\disc.cpp PSXEmu.Core\psx\sio.cpp PSXEmu.Core\psx\sio1.cpp ^
- PSXEmu.Core\media\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
+ PSXEmu.Core\psx\cdrom.cpp Emu.Core\emucore\media\disc.cpp PSXEmu.Core\psx\sio.cpp PSXEmu.Core\psx\sio1.cpp ^
+ Emu.Core\emucore\media\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
  Emu.Core\emucore\state\state_io.cpp PSXEmu.Core\debug\debug_assist.cpp PSXEmu.Core\debug\debugger.cpp ^
  PSXEmu.Core\bios\bios_calls.cpp PSXEmu.Core\bios\hle\hle_bios.cpp PSXEmu.Core\bios\hle\hle_bios_libc.cpp ^
- PSXEmu.Core\bios\hle\hle_bios_io.cpp PSXEmu.Core\bios\hle\hle_bios_timing.cpp PSXEmu.Core\bios\hle\hle_shell.cpp PSXEmu.Core\bios\hle\hle_font_data.cpp PSXEmu.Core\media\ecm.cpp PSXEmu.Core\emu\movie.cpp Emu.Core\emucore\state\rewind_buffer.cpp
+ PSXEmu.Core\bios\hle\hle_bios_io.cpp PSXEmu.Core\bios\hle\hle_bios_timing.cpp PSXEmu.Core\bios\hle\hle_shell.cpp PSXEmu.Core\bios\hle\hle_font_data.cpp Emu.Core\emucore\media\ecm.cpp PSXEmu.Core\emu\movie.cpp Emu.Core\emucore\state\rewind_buffer.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
  /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I Emu.Core /I %THIRD%\libchdr\include ^

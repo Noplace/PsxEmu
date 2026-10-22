@@ -16,13 +16,14 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "psx/psx.h"
+#include "emucore/media/iso9660.h"
+#include "emucore/media/disc.h"
 
 #include <cctype>
 #include <cstring>
 
 namespace emulation {
-namespace psx {
+namespace media {
 
 namespace {
 

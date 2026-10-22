@@ -1,6 +1,6 @@
 // chd_writer.h - writes a CD image as a CHD, the way chdman createcd does.
 //
-// For the harnesses and tools/make_chd.cpp, not the emulator: media/disc.cpp only
+// For the harnesses and tools/make_chd.cpp, not the emulator: emucore/media/disc.cpp only
 // ever reads CHDs, through libchdr. This exists so the reading can be tested
 // without MAME's chdman, which is not on this machine - and so that a test
 // can build exactly the CHD it needs, a stored pregap or a zstd header

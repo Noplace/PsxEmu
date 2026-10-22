@@ -2,7 +2,7 @@
 //
 //   make_chd <image> <out.chd> [best|none|lzma|zlib|flac]
 //
-// Reads through psx::Disc, so a .cue, .mds, .ccd, .bin or .iso all work, and
+// Reads through media::Disc, so a .cue, .mds, .ccd, .bin or .iso all work, and
 // writes with tools/chd_writer.h - chdman's format and default codecs, see
 // there. For testing CHD reading without chdman: mount the original and the
 // CHD and compare them (media_test does, sector by sector), or boot both
@@ -20,7 +20,7 @@
 #include <cstdio>
 #include <cstring>
 
-using emulation::psx::Disc;
+using emulation::media::Disc;
 
 int main(int argc, char** argv) {
   if (argc < 3) {

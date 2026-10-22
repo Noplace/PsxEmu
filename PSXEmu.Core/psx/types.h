@@ -21,7 +21,18 @@
 #define BIT(x,bit) (((unsigned __int64)x&((unsigned __int64)1<<bit))>>bit)
 
 namespace emulation {
+
+// Disc images and their filesystem are Emu.Core's (emucore/media/); the console's parts take
+// them by their short names.
+namespace media {
+class Disc;
+class Iso9660;
+}  // namespace media
+
 namespace psx {
+
+using media::Disc;
+using media::Iso9660;
 
 class Component;
 class Cpu;
@@ -33,9 +44,7 @@ class Pio;
 class IOInterface;
 class Kernel;
 class Cdrom;
-class Disc;
 class Sio;
-class Iso9660;
 class System;
 class DebugAssist;
 class Dma;

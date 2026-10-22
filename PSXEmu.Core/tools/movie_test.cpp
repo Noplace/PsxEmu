@@ -424,7 +424,7 @@ void TestDiscCheck() {
   Movie movie;
   // No disc is mounted, which is still a disc as far as its id goes: no tracks, and 26 sectors
   // that read as nothing.
-  emulation::psx::Disc disc;
+  emulation::media::Disc disc;
   char none[16];
   snprintf(none, sizeof(none), "%08x", emulation::psx::BizHawkDiscId(disc));
 

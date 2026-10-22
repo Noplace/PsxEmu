@@ -83,9 +83,6 @@
     <ClCompile Include="psx\cdrom.cpp" />
     <ClCompile Include="psx\cpu.cpp" />
     <ClCompile Include="debug\debug_assist.cpp" />
-    <ClCompile Include="media\disc.cpp">
-      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\libchdr\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-    </ClCompile>
     <ClCompile Include="psx\dma.cpp" />
     <ClCompile Include="psx\gpu.cpp" />
     <ClCompile Include="render\software_raster.cpp" />
@@ -93,7 +90,6 @@
     <ClCompile Include="render\texture_pack.cpp" />
     <ClCompile Include="psx\gte.cpp" />
     <ClCompile Include="psx\io_interface.cpp" />
-    <ClCompile Include="media\iso9660.cpp" />
     <ClCompile Include="psx\mdec.cpp" />
     <ClCompile Include="bios\kernel.cpp" />
     <ClCompile Include="psx\mc.cpp" />
@@ -106,7 +102,6 @@
     <ClCompile Include="bios\hle\hle_bios_timing.cpp" />
     <ClCompile Include="bios\hle\hle_shell.cpp" />
     <ClCompile Include="bios\hle\hle_font_data.cpp" />
-    <ClCompile Include="media\ecm.cpp" />
     <!-- A .bk2 movie is a zip: read with the zlib that CHD images already bring. -->
     <ClCompile Include="emu\movie.cpp">
       <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
@@ -126,9 +121,7 @@
     <ClInclude Include="psx\cpu_context.h" />
     <ClInclude Include="debug\debug.h" />
     <ClInclude Include="debug\debug_assist.h" />
-    <ClInclude Include="media\disc.h" />
     <ClInclude Include="psx\dma.h" />
-    <ClInclude Include="media\ecm.h" />
     <ClInclude Include="psx\gpu.h" />
     <ClInclude Include="psx\gpu_core.h" />
     <ClInclude Include="render\raster.h" />
@@ -141,7 +134,6 @@
     <ClInclude Include="enhance\vertex_motion.h" />
     <ClInclude Include="psx\io_interface.h" />
     <ClInclude Include="bios\kernel.h" />
-    <ClInclude Include="media\iso9660.h" />
     <ClInclude Include="emu\emuconfig.h" />
     <ClInclude Include="emu\recompiler_bridge.h" />
     <ClInclude Include="emu\settings.h" />

@@ -2935,7 +2935,7 @@ namespace psxemu {
             // A LibCrypt patch found beside the image: said, since a protected game without one
             // runs normally until it breaks itself, and with one the difference is invisible.
             // Short, to fit the toast's line: "SCES-01420 · Europe · LibCrypt .sbi".
-            const emulation::psx::Disc& disc = system.cdrom().disc();
+            const emulation::media::Disc& disc = system.cdrom().disc();
             if (disc.subchannel_patch_sectors() > 0) {
                 const std::string& patch = disc.subchannel_patch_path();
                 const size_t dot = patch.find_last_of('.');
@@ -3495,10 +3495,10 @@ namespace psxemu {
         // which the emulated drive never notices. Empty if the disc has none (a few boot PSX.EXE
         // instead) or it cannot be read.
         std::string DiscSerial(System& system) {
-            emulation::psx::Iso9660 iso;
+            emulation::media::Iso9660 iso;
             if (!iso.Open(&system.cdrom().disc()))
                 return std::string();
-            emulation::psx::Iso9660::File file;
+            emulation::media::Iso9660::File file;
             std::vector<uint8_t> contents;
             std::string boot;
             if (!iso.Find("SYSTEM.CNF", &file) || !iso.Read(file, &contents) ||

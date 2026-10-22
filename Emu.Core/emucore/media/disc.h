@@ -18,7 +18,10 @@
 *****************************************************************************************************************/
 #pragma once
 
+#include "emucore/state/state_io.h"
+
 #include <array>
+#include <cstdint>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -26,7 +29,7 @@
 #include <vector>
 
 namespace emulation {
-namespace psx {
+namespace media {
 
 /*
   A mounted disc.
@@ -95,7 +98,7 @@ class Disc {
   // derived by Open() and is re-derived by it on load, not saved. Reopening
   // itself, and reporting a moved image as a failure, is the caller's job
   // (Cdrom::Serialise) - this only moves the one field that is real state.
-  void Serialise(StateIO& io) { io.Str(path_); }
+  void Serialise(state::StateIO& io) { io.Str(path_); }
 
   // Reads one sector as 2352 raw bytes. `lba` is absolute, so the first sector
   // of track 1 is kLeadInSectors.
@@ -202,7 +205,7 @@ class Disc {
     // several frames each, decompressed whole, and the last one is kept -
     // the CHD's own read-ahead, a hunk being eight sectors in a typical one.
     void* chd = nullptr;
-    // An ECM image, when this is one (media/ecm.h): the image it holds is read through it, and
+    // An ECM image, when this is one (emucore/media/ecm.h): the image it holds is read through it, and
     // `file` is null. Shared because a Source is copied about while the disc is being laid out.
     std::shared_ptr<class EcmImage> ecm;
     uint32_t chd_hunk_bytes = 0;

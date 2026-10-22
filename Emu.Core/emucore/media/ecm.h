@@ -19,7 +19,7 @@
 #include <vector>
 
 namespace emulation {
-namespace psx {
+namespace media {
 
 class EcmImage {
  public:
@@ -66,5 +66,5 @@ class EcmImage {
   std::vector<uint8_t> stored_;   // a request's sectors as the file has them
 };
 
-}  // namespace psx
+}  // namespace media
 }  // namespace emulation

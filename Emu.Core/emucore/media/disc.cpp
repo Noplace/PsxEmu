@@ -16,8 +16,15 @@
 * WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
 * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
 *****************************************************************************************************************/
-#include "psx/psx.h"
+#include "emucore/media/disc.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <winioctl.h>   // DISK_GEOMETRY, for a physical drive; WIN32_LEAN_AND_MEAN excludes it
 
 #include <algorithm>
@@ -25,13 +32,13 @@
 #include <chrono>
 #include <cstring>
 #include <map>
-#include "media/ecm.h"
+#include "emucore/media/ecm.h"
 
 #include <libchdr/cdrom.h>
 #include <libchdr/chd.h>
 
 namespace emulation {
-namespace psx {
+namespace media {
 
 namespace {
 
@@ -563,7 +570,7 @@ bool Disc::Open(const char* path) {
 // without sync or header by 2336; a cooked ISO by 2048.
 bool Disc::AddFileSource(const std::string& path, Source* out,
                          uint32_t sector_size) const {
-  // An ECM image (media/ecm.h) - named as one, or standing in for the image a descriptor names,
+  // An ECM image (emucore/media/ecm.h) - named as one, or standing in for the image a descriptor names,
   // which is how one is usually kept: "game.bin.ecm" beside a cue sheet that says "game.bin".
   FILE* fp = nullptr;
   std::string ecm_path;

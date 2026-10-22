@@ -18,11 +18,11 @@
 #include <string>
 #include <vector>
 
-#include "media/ecm.h"
+#include "emucore/media/ecm.h"
 #include "tools/chd_writer.h"
 
 using emulation::psx::Cdrom;
-using emulation::psx::Disc;
+using emulation::media::Disc;
 
 namespace {
 
@@ -2485,13 +2485,13 @@ void TestIso9660(const std::string& directory) {
   BeginTest("opening the filesystem");
   Check(disc.Open(path.c_str()), "mount the image");
 
-  emulation::psx::Iso9660 iso;
+  emulation::media::Iso9660 iso;
   Check(iso.Open(&disc), "open the filesystem");
   Check(iso.volume_id() == "TEST VOLUME", "the volume identifier");
   // "." and ".." plus the three files.
   CheckEqual(static_cast<uint32_t>(iso.root().size()), 5u, "root entry count");
 
-  emulation::psx::Iso9660::File found;
+  emulation::media::Iso9660::File found;
 
   BeginTest("finding a file by the forms software actually writes");
   Check(iso.Find("SYSTEM.CNF", &found), "a bare name");
@@ -2525,7 +2525,7 @@ void TestIso9660(const std::string& directory) {
   if (WriteImage(audio, 2352, 40)) {
     Disc raw;
     Check(raw.Open(audio.c_str()), "mount a data-less image");
-    emulation::psx::Iso9660 empty;
+    emulation::media::Iso9660 empty;
     Check(!empty.Open(&raw), "no CD001 signature, so no filesystem");
     raw.Close();
     remove(audio.c_str());
@@ -3359,12 +3359,12 @@ void TestChd(const std::string& directory) {
   }
 }
 
-// An ECM image (media/ecm.h), made here from a disc of every kind of sector the format has a record
+// An ECM image (emucore/media/ecm.h), made here from a disc of every kind of sector the format has a record
 // for, and read back three ways: by the decoder itself, by Disc mounting the .ecm, and by Disc
 // mounting a cue sheet that names the image the .ecm stands in for.
 void TestEcm(const std::string& directory) {
   printf("an ECM image\n");
-  using emulation::psx::EcmImage;
+  using emulation::media::EcmImage;
   const uint32_t kSector = 2352;
 
   // The disc: thirty Mode 2 Form 1 sectors, five Form 2, five of audio, two of Mode 1.
