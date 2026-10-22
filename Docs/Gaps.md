@@ -59,9 +59,9 @@ that watches STAT's request bits closely rather than using DMA would not.
 
 ### Every harness is green
 
-cpu 341, gte 197, timer 80, sio 224, spu 199, gpu 106, mdec 85, media 564, mc 112, debug 174 - 2,082
+cpu 341, gte 197, timer 80, sio 224, spu 199, gpu 110, mdec 85, media 564, mc 112, debug 174 - 2,086
 checks, no failures (the ten Test-Suite.md counts, 2026-10-14; sio, spu, media and mc 2026-10-16, with
-rewind, run-ahead and the Justifier). Of the rest, those run that day all
+rewind, run-ahead and the Justifier; gpu 2026-10-23, bug 166). Of the rest, those run that day all
 pass too: rec_test 2,059, hle_test 81 (which had stopped compiling when HleBios moved into
 `psx::hle`), hw_raster_test 78 and 81 (Direct3D 11 and 12), gpu_test 106 through either hardware
 rasteriser, dlss_choice_test 42, fsr_choice_test 36, filter_chain_test 27. Earlier: 2,433 across
@@ -242,15 +242,13 @@ What is left, smaller:
 - **ADPCM prediction rounds**, `(old*f0 + older*f1 + 32) / 64`, as psx-spx gives it. DuckStation
   floors each product separately. One unit either way, fed back through the filter.
 
-### Flat polygons are dithered; the console leaves them plain
+### Flat polygons were dithered - fixed
 
-Noticed with bug 152, which made a textured draw's tint the console's (the texel shifted up, not
-widened by replication, before the multiply - Silent Hill's trail behind Harry had never faded)
-and moved a dithered textured polygon's dither to after the tint. What it left: a flat, untextured
-polygon is dithered here whenever the draw mode's dither bit is set, where on the console - by
-DuckStation's rule, `shading || (textured && !raw)` - only a shaded or texture-tinted one is. A
-flat polygon drawn with dithering on picks up the 4x4 pattern it should not have. One line in
-`Gpu`'s polygon setup, and the twelve-disc table to re-record after it.
+Bug 166. Noticed with bug 152: a flat, untextured polygon was dithered whenever the draw mode's
+dither bit was set, where the console - psx-spx and DuckStation agree, `shading || (textured &&
+!raw)` - dithers only a shaded or texture-tinted one. It is drawn plain now, and so is a textured
+polygon whose texpage turns texturing off. Of the twelve discs only Vandal Hearts' licence-screen
+logo moved.
 
 ### Cause's interrupt-pending bits - fixed
 

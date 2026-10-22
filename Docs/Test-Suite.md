@@ -96,11 +96,15 @@ Register-level tests for the GPU's command and status handling. No BIOS, no
 window: commands go straight to GP0/GP1 the way the memory-mapped registers
 would, and GPUSTAT and I_STAT are read back.
 
-**Current: 106 checks, 0 failures.**
+**Current: 110 checks, 0 failures.**
 
 Eight check a textured draw's tint as the console does it (bug 152): 7Fh over 31, 16 and 1 is 30, 15 and 0;
 80h leaves 31 and 1; 40h over 31 and 16 is 15 and 8; and a dithered textured quad dithers the tinted texel, so a
 step comes off exactly where the matrix is negative.
+
+Four check which polygons the dither bit dithers (bug 166): a shaded one is, and a flat untextured one, a
+raw-textured one and a textured one whose texpage turns texturing off are drawn plain. Before the fix the first
+and last of those three failed; the raw one passed either way, the rasteriser already leaving a raw texel alone.
 
 The last three are one test: the software rasteriser's triangle and rectangle loops against a plain per-pixel
 reference, on random primitives that spill off every side of the drawing area, are wound either way or are
@@ -861,7 +865,7 @@ was, and the console has a texture cache - there is no right answer to check.
 
 **`gpu_test --hw-raster`** runs gpu_test's own scenes through the hardware
 rasteriser the same way, and **`gpu_test --d3d12`** through the Direct3D 12 one:
-all 106 checks pass on each.
+all 110 checks pass on each.
 
 ## Baselines
 
@@ -883,13 +887,13 @@ the most likely answer is the network share rather than the emulator.
 
 | Harness | Checks | | Harness | Checks |
 |---|---|---|---|---|
-| `cpu_test` | 341 | | `gpu_test` | 106 |
+| `cpu_test` | 341 | | `gpu_test` | 110 |
 | `gte_test` | 197 | | `mdec_test` | 85 |
 | `timer_test` | 80 | | `media_test` | 564 |
 | `sio_test` | 224 | | `spu_test` | 199 |
 | `mc_test` | 112 | | `debug_test` | 174 |
 
-**2,082 checks, 0 failures**, all ten green. Each harness's own section above
+**2,086 checks, 0 failures**, all ten green. Each harness's own section above
 says what its groups cover. (`media_test` gained two when the front end's
 `pause_in_menus` and `show_timings` settings arrived, and four more with the
 multitap players' types and the GunCon (and one later with the Justifier, bug 162), six with the rasteriser, its resolution and true colour,
@@ -1280,7 +1284,7 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 | Air Combat | `a1e228e8a2ee662c` | `51080ad999e88621` | `5109d78c91007c12` | 51,200 | 320x240 | 241,800 | 5,262 |
 | Wild Arms | `6a116b7b35d6b3d5` | `e53c89cb43c0075b` | `b828d822ec27badf` | 61,440 | 320x240 | 92,363 | 3,716 |
 | Wild Arms 2 (cd1) | `3a206dba9fbf1757` | `0c5f55ee67830974` | `843b77d5038c35cd` | 76,800 | 320x240 | 0 | 100 |
-| Vandal Hearts | `1c5f5bb46a9f60d9` | `bfe5fadefb61e2e4` | `e80a7b8eb0b41ca6` | 76,772 | 320x240 | 127,200 | 5,219 |
+| Vandal Hearts | `6a57891176dc4f04` | `bfe5fadefb61e2e4` | `e80a7b8eb0b41ca6` | 76,772 | 320x240 | 127,200 | 5,219 |
 | Legend of Mana | `45d5d2b44c07b562` | `9797912c492383e1` | `b16eaf3906c9d6dd` | 76,312 | 320x240 | 154,465 | 5,310 |
 | Ridge Racer | `f265695832f0679b` | `5c9a6b7384609a7b` | `b9dcc4bf74f90a89` | 76,458 | 320x240 | 0 | 1,578 |
 | Bomberman Party Ed. | `4a31d7a6c52734a4` | `45e058b70ed827c2` | `3ba049eea7e64970` | 68,913 | 320x240 | 145,800 | 4,652 |
@@ -1289,6 +1293,15 @@ Checksums are the visible framebuffer at frames 1000, 2000 and 3000.
 | Final Fantasy VIII | `aedac3154f8a0383` | `f3ee4d06bf3e0383` | `c184351a7e528d32` | 4,002 | 640x480 | 0 | 1,187 |
 | Ace Combat 3 | `389ceccacfb632d1` | `fb65d8a672a9fa31` | `2e6db11119920d31` | 51,183 | 320x240 | 79,268 | 2,229 |
 | Captain Tsubasa J | `f0779890ee9b1bb0` | `add4d55f3196ad03` | `816d516f2ba1d3f8` | 76,800 | 320x240 | 59,100 | 3,763 |
+
+**Re-recorded after bug 166, 2026-10-23.** A polygon is dithered only when it is shaded or its
+texture is tinted, so a flat untextured one is drawn plain. One checkpoint moved: Vandal Hearts at
+1000, the licence screen, whose PlayStation logo is built of flat polygons with the dither bit on -
+9,888 of its 305,920 pixels, none by more than one 5-bit step. Checked by eye against the build
+before: the logo's faces lose the 4x4 pattern and show their facets' flat colours instead, which is
+what psx-spx and DuckStation both say a console draws. Built from the commit before, the table
+gave every checksum above; every other line of every report - instructions, flips, GP0 words,
+sectors, non-black pixels - and the BIOS boot are unchanged.
 
 **Re-recorded after bug 152, 2026-10-14.** A textured draw's tint is now the console's - the
 texel shifted up, not widened by replication, before the multiply, and a dithered textured

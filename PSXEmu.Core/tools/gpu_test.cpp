@@ -744,6 +744,70 @@ void TestATintJustUnderOneTakesAStepOff(System* system) {
   CheckEqual(static_cast<uint32_t>(dither_wrong), 0u, "a dithered textured quad dithers the tinted texel");
 }
 
+// The dither bit dithers a polygon only where its colour is computed - shaded, or a texel tinted -
+// by DuckStation's rule, `shading || (textured && !raw)`. A flat untextured polygon, a raw texture
+// and a textured one with texturing turned off by its texpage are drawn plain. All four used to
+// follow the bit alone.
+void TestOnlyAComputedColourIsDithered(System* system) {
+  printf("the dither bit dithers a shaded or tinted polygon, and leaves a flat, raw or untextured one plain\n");
+  Gpu& gpu = system->gpu();
+  gpu.WriteStatus(0x00000000);
+  gpu.WriteData(0xE3000000);
+  gpu.WriteData(0xE4000000 | (300u << 10) | 300u);
+  gpu.WriteData(0xE5000000);
+
+  // A 4x4 15-bit texture of 16s (4210h) at (64,256): page 1 x, 256 y, 15-bit is 111h.
+  gpu.WriteData(0xA0000000);
+  gpu.WriteData((256u << 16) | 64u);
+  gpu.WriteData((4u << 16) | 4u);
+  for (int i = 0; i < 8; ++i)
+    gpu.WriteData(0x42104210u);
+
+  // Four 4x4 quads at (48 + 8n, 48), every colour 80h, with the dither bit (E1 bit 9) on: x and
+  // y multiples of four, so the matrix starts at its corner.
+  gpu.WriteData(0xE1000311);
+  auto xy = [](uint32_t x, uint32_t y) { return (y << 16) | x; };
+  gpu.WriteData(0x28808080);                                      // flat, untextured
+  gpu.WriteData(xy(48, 48)); gpu.WriteData(xy(52, 48));
+  gpu.WriteData(xy(48, 52)); gpu.WriteData(xy(52, 52));
+  gpu.WriteData(0x38808080);                                      // shaded, untextured
+  gpu.WriteData(xy(56, 48)); gpu.WriteData(0x808080); gpu.WriteData(xy(60, 48));
+  gpu.WriteData(0x808080); gpu.WriteData(xy(56, 52)); gpu.WriteData(0x808080);
+  gpu.WriteData(xy(60, 52));
+  gpu.WriteData(0x2D808080);                                      // flat, raw texture
+  gpu.WriteData(xy(64, 48)); gpu.WriteData(0u);
+  gpu.WriteData(xy(68, 48)); gpu.WriteData((0x111u << 16) | 4u);
+  gpu.WriteData(xy(64, 52)); gpu.WriteData(4u << 8);
+  gpu.WriteData(xy(68, 52)); gpu.WriteData((4u << 8) | 4u);
+  gpu.WriteData(0x2C808080);                                      // tinted, texturing off (bit 11)
+  gpu.WriteData(xy(72, 48)); gpu.WriteData(0u);
+  gpu.WriteData(xy(76, 48)); gpu.WriteData((0x911u << 16) | 4u);
+  gpu.WriteData(xy(72, 52)); gpu.WriteData(4u << 8);
+  gpu.WriteData(xy(76, 52)); gpu.WriteData((4u << 8) | 4u);
+  RunGpu(system);
+  gpu.WriteData(0xE1000000);
+
+  const VramView vram{system};
+  auto red = [&](uint32_t x, uint32_t y) { return static_cast<uint32_t>(vram[y * 1024 + x] & 0x1F); };
+  // 80h is 128, 16 in five bits; dithered, rows 0 and 1 are 15 16 15 16 and 16 15 16 15.
+  const uint32_t row0[4] = { 15, 16, 15, 16 };
+  const uint32_t row1[4] = { 16, 15, 16, 15 };
+  int flat_wrong = 0, shaded_wrong = 0, raw_wrong = 0, off_wrong = 0;
+  for (uint32_t y = 0; y < 4; ++y) {
+    for (uint32_t x = 0; x < 4; ++x) {
+      flat_wrong += red(48 + x, 48 + y) != 16;
+      raw_wrong += red(64 + x, 48 + y) != 16;
+      off_wrong += red(72 + x, 48 + y) != 16;
+    }
+  }
+  for (uint32_t x = 0; x < 4; ++x)
+    shaded_wrong += (red(56 + x, 48) != row0[x]) + (red(56 + x, 49) != row1[x]);
+  CheckEqual(static_cast<uint32_t>(flat_wrong), 0u, "a flat untextured polygon is not dithered");
+  CheckEqual(static_cast<uint32_t>(shaded_wrong), 0u, "a shaded one is");
+  CheckEqual(static_cast<uint32_t>(raw_wrong), 0u, "a raw-textured one is not");
+  CheckEqual(static_cast<uint32_t>(off_wrong), 0u, "nor a textured one its texpage turns texturing off for");
+}
+
 // A polyline's terminator word (GP0, X and Y fields both 0x5000..0x5FFF)
 // used to be pushed into the vertex fifo like one more point instead of
 // being discarded, and CmdLine decoded it as a bogus final vertex - X=Y=0
@@ -1510,6 +1574,7 @@ int main(int argc, char** argv) {
   TestGp0QueueFillsAndDrains(system);
   TestTextureBit15BecomesTheMaskBit(system);
   TestATintJustUnderOneTakesAStepOff(system);
+  TestOnlyAComputedColourIsDithered(system);
   TestPolylineTerminatorIsNotAVertex(system);
   TestOpaqueAdjacentQuadsShareNoColumn(system);
   TestOpaqueSharedDiagonalIgnoresDrawOrder(system);

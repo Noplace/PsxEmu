@@ -10014,3 +10014,30 @@ rewind is as before.
   `rec_test` 2,059; `psxtest_cpu` 3,000 frames the same picture both ways.
 - The seven local CHDs and the twelve-disc table from `Temp\discs`, on both CPUs with run-ahead
   and rewind: identical to the baseline.
+
+## 166. A flat polygon was dithered whenever the dither bit was set
+
+`psx/gpu.cpp`, `tools/gpu_test.cpp`
+
+Noticed with bug 152 and listed in Gaps.md since. `Gpu::CmdPolygon` set a polygon's dither from
+GP0(E1h) bit 9 alone, so every polygon drawn with the bit on picked up the 4x4 pattern. On the
+console the bit dithers a polygon only where its colour is computed: psx-spx says polygons "are
+dithered ONLY if they do use gouraud shading or modulation", and DuckStation's rule is
+`dither && (shading || (textured && !raw))`. A flat untextured polygon is drawn plain, and so is a
+textured one whose texpage word sets bit 11 and turns its texturing off. Lines, which follow the bit
+whatever their shading, and rectangles, which are never dithered, were already right.
+
+**The fix.** The polygon's dither is decided after its texpage word has been read, from the bit,
+its shading, and whether it is still textured and tinted. Both hardware rasterisers take it from
+the same `DrawState`, so one line covers all three. A raw texel was already left undithered by the
+rasteriser, so only the flat and texturing-off cases change a pixel.
+
+**Checked.**
+- `gpu_test` 110/0 (four new checks: shaded dithered; flat, raw and texturing-off plain), on the
+  software rasteriser and through Direct3D 11 and 12 on WARP. The same test on the old `gpu.cpp`
+  fails the flat and texturing-off checks. `hw_raster_test` 91 and 94 (Direct3D 11 and 12).
+- The twelve-disc table, built before and after: one checkpoint of 36 moved, Vandal Hearts at frame
+  1000 - the licence screen's PlayStation logo, flat polygons with the dither bit on, 9,888 pixels
+  by one 5-bit step each. By eye, its faces lose the checkered pattern and show their facets' own
+  flat colours, banded where the pattern used to blur them. Every other report line, and the BIOS
+  boot (`4a65781bfb98db5a`, 92,822,656 instructions), unchanged.

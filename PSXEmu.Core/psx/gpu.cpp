@@ -1159,7 +1159,7 @@ namespace emulation {
             state.texpage_y = status_.texpage_y * 256;
             state.texpage_colors = status_.texpage_colors;
             state.semi_mode = status_.semi_mode;
-            state.dither = status_.dither != 0;
+            state.dither = false;   // set once the texpage word has said whether it is textured
             state.flip_x = false;
             state.flip_y = false;
 
@@ -1245,6 +1245,11 @@ namespace emulation {
                     }
                 }
             }
+
+            // A polygon is dithered only where its colour is computed: shaded, or a texel tinted
+            // by its colour. A flat untextured one, or a raw texture, is drawn plain whatever the
+            // dither bit says - DuckStation's rule, `shading || (textured && !raw)`.
+            state.dither = status_.dither != 0 && (gouraud || (state.textured && !raw));
 
             RecordSetup(command, state, raw_page, raw_clut);
 
