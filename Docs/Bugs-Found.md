@@ -9966,3 +9966,51 @@ too now; the user's FF7 folder was moved across by hand.
 
 **Checked** on the scratch front end at 192 DPI: each page captured, its controls where they
 should be and no other page's showing through; the FSR link on the FSR page only.
+
+## 165. The parallel port's last byte was never cleared, so two runs of one machine could differ
+
+`psx/io_interface.cpp`; and two harness checks that assumed too much, `tools/cpu_test.cpp`,
+`tools/host_test.cpp`, `emucore/host/machine.h`
+
+Three checks failed now and then on unchanged binaries: `cpu_test`'s two recompiled
+`overflowslot` delay-slot checks, and in `host_test` "two frames of run-ahead leave a recompiled
+boot's frames exactly as they were" and "rewinding 50 frames and letting go plays on exactly as if
+from that frame". Determinism is the gate for everything here, so each was chased to its cause
+with a probe built from `host_test`'s own code: it looped the same run and, when a run ended
+elsewhere, said which component's bytes of the saved state differed (each component serialised
+alone, through a `#define private public` forced include).
+
+**The defect.** `IOInterface::Initialize` cleared the 64 KB expansion-region buffer with
+`memset(parallel_port_buffer.u8, 0, 0xFFFF)` - a byte short, since 2012. `1F00FFFF` kept whatever
+the heap held, and every state carries the buffer. Nothing the machine runs reads it, so no
+picture or instruction count ever moved; but a check that hashes a state could differ from one
+run to the next: recompiled 400-frame BIOS boots, plain and with run-ahead, ended one byte apart
+in 6 of 160 runs, always that byte, `80` against `00`. More likely after other machines in the
+same process had used the heap, which is why `host_test` saw it and a fresh boot_runner did not.
+The fix clears all 64 KB.
+
+**`cpu_test`'s pair was the test's assumption.** It expected one recompiled step to stop at the
+branch's target. Since `139b358` (2026-10-07) a step runs its chain of blocks to the devices' next
+event, on through the NOPs after the test program, so where it stops depends on the event
+schedule - fixed for a build, different from one build to another (`8000110C` and `8000140C`
+here, `8000170C` and `80001C0C` on another). It now checks what ran - the instruction the branch
+skips (`t3`) untouched and its target (`t4`) run - and runs the interpreter two steps for the
+same, so the check means the same on both CPUs.
+
+**The rewind check's other failure was its assumption too.** With the frame limiter off, the
+rewind store's worker can fall a frame behind; the machine never waits for it, by design, so the
+state it had not reached is replaced by the next (`RewindBuffer::Stats::replaced`) and 50 steps
+back are 51 frames. Caught once in 150 runs, ending exactly on a straight run's frame-350 state.
+`Machine::set_rewind_keeps_every_state` now has every state wait for the store, as
+`boot_runner --rewind-test` already did with `WaitIdle`; only harnesses set it, so the front end's
+rewind is as before.
+
+**Checked.**
+- `cpu_test` 341/0 and `host_test` 38/0, ten runs each in a row (`host_test` alone: its
+  real-time frame-limiter and sound checks still fail under load from other work).
+- The probe: recompiled boots 0 of 160 different (6 before); the rewind sequence 0 of 150 (1 of
+  150 before).
+- Every harness as the shared-libraries baseline (`Temp\p0`) but those two now clean;
+  `rec_test` 2,059; `psxtest_cpu` 3,000 frames the same picture both ways.
+- The seven local CHDs and the twelve-disc table from `Temp\discs`, on both CPUs with run-ahead
+  and rewind: identical to the baseline.

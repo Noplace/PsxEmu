@@ -36,8 +36,9 @@ int IOInterface::Initialize() {
   memset(bios_buffer.u8, 0, 0x80000);
   memset(ram_buffer.u8, 0, 0x200000);
   memset(scratchpad.u8, 0, 0x400);
-
-  memset(parallel_port_buffer.u8,0,0xFFFF);
+  // All 64 KB. This cleared 0xFFFF bytes from 2012 until bug 165, leaving 1F00FFFF as the heap
+  // left it - and every state carries the buffer, so two runs of one machine could differ there.
+  memset(parallel_port_buffer.u8, 0, 64 * 1024);
 
   
   io.exp1_base_addr = 0;

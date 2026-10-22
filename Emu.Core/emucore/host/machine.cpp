@@ -323,6 +323,8 @@ void Machine::KeepForRewind() {
     rewind_state_ = core_->NewMemoryState();
   core_->SaveForRewind(rewind_state_.get());
   rewind_->Push(rewind_state_->payload());
+  if (rewind_keeps_every_state_)
+    rewind_->WaitIdle();
 }
 
 // One step back: the newest state kept is loaded and shown, and the one before becomes the

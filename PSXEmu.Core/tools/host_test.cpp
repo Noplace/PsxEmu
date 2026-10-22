@@ -704,6 +704,9 @@ void MachineChecks(const std::string& bios) {
   // held, and let go after exactly 50 steps back (counted by the rewound hook, so the test does
   // not depend on timing). The steps show frames 300, 299 ... 251, so the machine plays on from
   // 251, and 100 frames shown later is at frame 351 - where a run that never rewound must be.
+  // Every state is kept (set_rewind_keeps_every_state): with the limiter off the store's worker
+  // could fall a frame behind and drop one, and then 50 steps were 51 frames - one run in a few
+  // dozen ended on frame 350's state (2026-10-22).
   {
     const int kBack = 50;
     std::unique_ptr<System> system_owner = std::make_unique<System>();
@@ -731,6 +734,7 @@ void MachineChecks(const std::string& bios) {
       };
       emulation::psx::PsxCore core(&system);
       Machine machine(&core, emulation::psx::MachineConfigFrom(system.config()), &mailbox, &ring, hooks);
+      machine.set_rewind_keeps_every_state(true);
       machine.Start(0);
       const Clock::time_point start = Clock::now();
       while (!reached.load() && MsSince(start) < 120000.0)

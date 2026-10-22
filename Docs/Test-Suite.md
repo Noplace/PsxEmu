@@ -740,15 +740,12 @@ instructions, and `kBaselineChecksum` still said `435bad9a6c5e4004`, so four che
 every build in between. Brought up to date 2026-10-22, after the picture was checked by eye; the
 run-ahead checks compare runs with each other and never depended on it.
 
-**Two determinism checks are flaky (seen 2026-10-22), not yet chased:** in eight runs, "two frames
-of run-ahead leave a recompiled boot's frames exactly as they were" failed once (on the phase 0
-binary, so older than the shared libraries), and "rewinding 50 frames and letting go plays on
-exactly" failed once. The rewind one may be the test's own assumption: with the frame limiter
-off, the rewind store's worker can fall behind and replace a state it never got to
-(`RewindBuffer::Stats::replaced`), and then 50 steps back are more than 50 frames. The run-ahead
-one is recompiled, like `cpu_test`'s flaky `overflowslot` pair. The real-time checks (the frame
-limiter's rate, three seconds of sound) fail under load from anything else on the machine; run
-`host_test` alone.
+**Two determinism checks were flaky, fixed by bug 165 (2026-10-22):** the run-ahead check by
+clearing the parallel port's last byte, which no state had held the same twice; the rewind check
+by `Machine::set_rewind_keeps_every_state`, so a state the store's worker fell behind on is no
+longer dropped. Ten runs in a row since: 38 checks, no failures. The real-time checks (the frame
+limiter's rate, three seconds of sound) still fail under load from anything else on the machine;
+run `host_test` alone.
 - **Stopping.** Forty machines stopped mid-frame, mid-pace and paused; the
   slowest came back in 17 ms. A paused machine answers a request in under a
   millisecond, because it waits on its doorbell rather than polling.

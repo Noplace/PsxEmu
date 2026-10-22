@@ -1579,9 +1579,14 @@ void TestOverflowInADelaySlot(Machine& m) {
       m.set_reg(t1, 1);
       m.set_reg(t2, kUntouched);
       m.Load({ BEQ(zero, zero, 8), c.slot, ADDIU(t3, zero, 1), ADDIU(t4, zero, 2) });
-      m.Run(1);
+      // Through the branch and its slot, then the target. Where a compiled step stops is not
+      // this test's business: it runs its chain of blocks to the device's next event (139b358),
+      // on through the NOPs that follow, so the pc tells nothing. What ran does: the branch
+      // skips the instruction after the slot (t3) and lands on the one after that (t4).
+      m.Run(compiled ? 1 : 2);
       CheckEqual(m.reg(t2), 6, "the slot ran");
-      CheckEqual(m.pc(), kProgramBase + 12, "and the branch went to the instruction after the next");
+      Check(m.reg(t3) == 0 && m.reg(t4) == 2,
+            "and the branch went to the instruction after the next");
     }
   }
   m.system()->EnableRecompiler(false);

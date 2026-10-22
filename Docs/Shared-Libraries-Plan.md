@@ -190,7 +190,9 @@ carry both forward unchanged:
   should be `8000100C`, and three runs of one binary gave `8000170C`, `80001C0C` and
   `8000140C`. A compiled step runs on past its block, and not by the same amount each time. A
   `cpu_test` built on 2026-10-10 passes, so this came in after that. Bisecting it is a task
-  of its own, apart from this plan.
+  of its own, apart from this plan. **Fixed 2026-10-22 (bug 165):** the test's assumption - a
+  recompiled step runs its chain to the next device event since `139b358`, so the pc where it
+  stops changes with the build, not the run; the check now looks at what ran.
 - **`host_test`, 4 checks: a stale constant.** The threaded BIOS boot is checked against
   `kBaselineChecksum = 435bad9a6c5e4004` (`host_test.cpp:575`). The threaded run gives
   `4a65781bfb98db5a`, which is what `boot_runner` gives at HEAD, with the same 92,822,656
@@ -202,7 +204,8 @@ carry both forward unchanged:
   then on those four pass; the phase 0 binaries in `Temp\p0` still have the old constant, so
   compare the other 34 checks against them. Two determinism checks were then seen failing once
   each in eight runs - run-ahead recompiled on the phase 0 binary, rewind on the new one - so they
-  predate this plan's binaries or do not depend on them; see Test-Suite.md, host_test.
+  predate this plan's binaries or do not depend on them. Both fixed by bug 165: the parallel
+  port's last byte was never cleared, and the rewind check now keeps every state.
 
 **The twelve-disc table, run 2026-10-22 from local copies** (`Temp\discs`, copied from the share
 as asked; `Temp\discs\twelve.txt`): every checkpoint, sector and macroblock count exactly as

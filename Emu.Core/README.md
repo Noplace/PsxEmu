@@ -130,6 +130,13 @@ machine.Stop();                                 // before `core`, before the con
   `Presenter` the front end makes; `AudioOutput` (the audio thread) feeds an `IAudioEngine` from its
   `SampleRing`. Emu.Frontend.Win32 has both for Windows.
 - **Lifetime:** stop the machine, then the outputs, then destroy the core, then the console.
+- **In a harness that checks rewind exactly**, call `set_rewind_keeps_every_state(true)` before
+  `Start`. Without it the machine never waits for the rewind store's worker, so with the frame
+  limiter off a state can be dropped and a step back can cover two frames. That is right for
+  play and wrong for a test that counts steps.
+- **Every byte of a state must be the machine's.** A test that hashes `SaveForRewind`'s payload
+  will catch anything uninitialised your core serialises (PSXEmu's bug 165: a buffer cleared one
+  byte short). Zero every buffer you save, in full.
 
 ## Save states: `StateIO`
 

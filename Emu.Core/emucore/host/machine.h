@@ -223,6 +223,12 @@ class Machine {
   // The machine has jumped somewhere a step back would not lead - a reset, a boot, a state loaded
   // from a file, a movie started: the states kept so far are thrown away.
   void ForgetHistory();
+  // For a harness: every state kept for rewind waits until the store has it
+  // (state::RewindBuffer::WaitIdle), so none is replaced by the next before the store's worker
+  // gets to it, and each step back is exactly one kept state further. Without it - the front
+  // end's way - the machine never waits on the worker, and a state it falls behind on is dropped:
+  // the store keeps fewer, never a broken chain. Set before Start.
+  void set_rewind_keeps_every_state(bool on) { rewind_keeps_every_state_ = on; }
 
   // NVIDIA Reflex's markers while DLSS Frame Generation runs (emucore/host/latency_markers.h), null for
   // none. Outlives the machine, or is set to null first; the machine's thread calls it.
@@ -333,6 +339,7 @@ class Machine {
   std::unique_ptr<state::RewindBuffer> rewind_;
   int rewind_countdown_ = 0;
   bool rewinding_ = false;
+  bool rewind_keeps_every_state_ = false;
   bool was_rewinding_ = false;
   double ahead_ms_ = 0.0;      // the last frame's frames ahead, emulating them
   int run_ahead_now_ = 0;      // frames run ahead of the last frame shown
