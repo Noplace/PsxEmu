@@ -19,7 +19,7 @@
 #include "input/input_thread.h"
 
 #include "input/controller_bindings.h"
-#include "tools/letterbox.h"
+#include "emuwin32/present/letterbox.h"
 
 #include <dbt.h>
 #include <hidsdi.h>

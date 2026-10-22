@@ -32,11 +32,11 @@
 
 #include "app/framework.h"
 
-#include "input/gamepad.h"
-#include "input/sony_pads.h"
+#include "emuwin32/input/gamepad.h"
+#include "emuwin32/input/sony_pads.h"
 #include "input/controller_bindings.h"
 #include "emucore/host/input_exchange.h"
-#include "input/mouse.h"
+#include "emuwin32/input/mouse.h"
 
 #include <array>
 #include <atomic>

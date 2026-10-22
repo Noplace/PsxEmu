@@ -512,7 +512,7 @@ void SceneSharedPicture(Random& random) {
 }
 
 // Direct3D 12 only: the rasteriser on a device it is given - the renderer's own, in the front
-// end (graphics/shared_device.h), here one of WARP's - handing its pictures over as they are,
+// end (emuwin32/present/shared_device.h), here one of WARP's - handing its pictures over as they are,
 // with no handle, to be waited for on that device.
 void SceneOneDevice(Random& random) {
   printf("one device\n");

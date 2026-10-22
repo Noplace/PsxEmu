@@ -18,9 +18,9 @@
 *****************************************************************************************************************/
 #include "graphics/upscale/texture/ai_textures.h"
 
-#include "graphics/adapters.h"
-#include "graphics/upscale/texture/onnx_runtime.h"
-#include "graphics/upscale/texture/rtx_video.h"
+#include "emuwin32/present/adapters.h"
+#include "emuwin32/upscale/texture/onnx_runtime.h"
+#include "emuwin32/upscale/texture/rtx_video.h"
 #include "emucore/image/png_file.h"
 #include "render/texture_pack.h"
 #include "render/texture_tracker.h"

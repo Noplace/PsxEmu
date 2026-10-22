@@ -20,8 +20,8 @@
 #include "app/app_icon.h"
 
 #include "app/const.h"
-#include "app/win32_dialogs.h"
-#include "ui/dpi.h"
+#include "emuwin32/app/win32_dialogs.h"
+#include "emuwin32/ui/dpi.h"
 
 #include <algorithm>
 #include <commctrl.h>

@@ -28,6 +28,7 @@
 // readable from the top of that file.
 
 #include "psx/psx.h"   // also brings in windows.h, with WIN32_LEAN_AND_MEAN and NOMINMAX
+#include "emuwin32/framework.h"
 
 #include <array>
 #include <chrono>
@@ -37,3 +38,10 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+// What any Windows front end has - the presenters, the filters, DLSS and FSR, the audio devices,
+// the host's pads and the overlay - is Emu.Frontend.Win32's, in emulation::win32. The app's own
+// code takes it by its short names.
+namespace psxemu {
+    using namespace emulation::win32;
+}

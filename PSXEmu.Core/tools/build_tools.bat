@@ -50,7 +50,7 @@ set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp
  PSXEmu.Core\bios\hle\hle_bios_io.cpp PSXEmu.Core\bios\hle\hle_bios_timing.cpp PSXEmu.Core\bios\hle\hle_shell.cpp PSXEmu.Core\bios\hle\hle_font_data.cpp Emu.Core\emucore\media\ecm.cpp PSXEmu.Core\emu\movie.cpp Emu.Core\emucore\state\rewind_buffer.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
- /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I Emu.Core /I %THIRD%\libchdr\include ^
+ /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I Emu.Core /I Emu.Frontend.Win32 /I %THIRD%\libchdr\include ^
  /I %THIRD%\zlib /I %THIRD%\lzma
 set LIBS=/link /SUBSYSTEM:CONSOLE user32.lib psapi.lib Temp\tools\thirdparty.lib
 
@@ -65,8 +65,8 @@ rem phases 3 and 4), and its test. NVIDIA's RTX Video SDK cannot be fetched (it 
 rem sign-in) or committed: with it unpacked by hand into Temp\rtxvideo\ the RTX Video backend is
 rem built in, and its release DLL copied; without, rtx_video.cpp is a backend that says so.
 set AITEXTURES=PSXEmu.Win32\graphics\upscale\texture\ai_textures.cpp ^
- PSXEmu.Win32\graphics\upscale\texture\onnx_runtime.cpp ^
- PSXEmu.Win32\graphics\upscale\texture\rtx_video.cpp
+ Emu.Frontend.Win32\emuwin32\upscale\texture\onnx_runtime.cpp ^
+ Emu.Frontend.Win32\emuwin32\upscale\texture\rtx_video.cpp
 set RTXVIDEO=
 if exist Temp\rtxvideo\include\nvsdk_ngx.h set RTXVIDEO=/DPSXEMU_RTX_VIDEO=1 /I Temp\rtxvideo\include
 
@@ -220,26 +220,26 @@ cl %FLAGS% /Fo:Temp\tools\obj_ppm\ /Fe:Temp\tools\ppm_diff.exe ^
    PSXEmu.Core\tools\ppm_diff.cpp
 if errorlevel 1 exit /b 1
 
-rem The arithmetic of sizes around DLSS: graphics\upscale\dlss\dlss_choice.h, header-only.
+rem The arithmetic of sizes around DLSS: Emu.Frontend.Win32's emuwin32\upscale\dlss\dlss_choice.h, header-only.
 if not exist Temp\tools\obj_dlss mkdir Temp\tools\obj_dlss
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_dlss\ /Fe:Temp\tools\dlss_choice_test.exe ^
    PSXEmu.Core\tools\dlss_choice_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem What NVIDIA Streamline says about each card - Docs/DLSS-Plan.md, phase 0. Needs
-rem PSXEmu.Win32\graphics\upscale\dlss\fetch_streamline.ps1 run first to find anything, but builds without.
+rem Emu.Frontend.Win32\emuwin32\upscale\dlss\fetch_streamline.ps1 run first to find anything, but builds without.
 if not exist Temp\tools\obj_slprobe mkdir Temp\tools\obj_slprobe
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_slprobe\ /Fe:Temp\tools\sl_probe.exe ^
-   PSXEmu.Core\tools\sl_probe.cpp PSXEmu.Win32\graphics\upscale\dlss\streamline.cpp %LIBS%
+   PSXEmu.Core\tools\sl_probe.cpp Emu.Frontend.Win32\emuwin32\upscale\dlss\streamline.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
-rem The arithmetic of sizes around AMD FSR: graphics\upscale\fsr\fsr_choice.h, header-only.
+rem The arithmetic of sizes around AMD FSR: Emu.Frontend.Win32's emuwin32\upscale\fsr\fsr_choice.h, header-only.
 if not exist Temp\tools\obj_fsr mkdir Temp\tools\obj_fsr
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_fsr\ /Fe:Temp\tools\fsr_choice_test.exe ^
    PSXEmu.Core\tools\fsr_choice_test.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
-rem The custom filter chain's passes: graphics\filters\filter_chain.h and shader_pass.h, header-only, and
+rem The custom filter chain's passes: Emu.Frontend.Win32's emuwin32\filters\filter_chain.h and shader_pass.h, header-only, and
 rem the settings that hold the chain.
 if not exist Temp\tools\obj_filterchain mkdir Temp\tools\obj_filterchain
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_filterchain\ /Fe:Temp\tools\filter_chain_test.exe ^
@@ -262,12 +262,12 @@ cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_aitextures\ /Fe:Temp\tools\ai_text
 if errorlevel 1 exit /b 1
 
 rem What AMD's FidelityFX runtime says about each card - Docs/FSR-Plan.md, phase 0. Needs
-rem PSXEmu.Win32\graphics\upscale\fsr\fetch_fidelityfx.ps1 run first to find anything, but builds without;
+rem Emu.Frontend.Win32\emuwin32\upscale\fsr\fetch_fidelityfx.ps1 run first to find anything, but builds without;
 rem AMD's loader finds its effects only beside the executable, so they are copied here.
 if not exist Temp\tools\obj_ffxprobe mkdir Temp\tools\obj_ffxprobe
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_ffxprobe\ /Fe:Temp\tools\ffx_probe.exe ^
-   PSXEmu.Core\tools\ffx_probe.cpp PSXEmu.Win32\graphics\upscale\fsr\fidelityfx.cpp ^
-   PSXEmu.Win32\graphics\upscale\dlss\streamline.cpp %LIBS%
+   PSXEmu.Core\tools\ffx_probe.cpp Emu.Frontend.Win32\emuwin32\upscale\fsr\fidelityfx.cpp ^
+   Emu.Frontend.Win32\emuwin32\upscale\dlss\streamline.cpp %LIBS%
 if errorlevel 1 exit /b 1
 rem A block, not a caret: a caret at a line's end escapes the next line's first character too, and
 rem after "if exist x ^" that escaped space is taken for the command, so the copy never ran.
@@ -276,14 +276,14 @@ if exist Temp\fidelityfx\v2.3.0\amd_fidelityfx_loader_dx12.dll (
 )
 
 rem The AI texture upscaler's models, converted, checked and timed - Docs/Texture-Upscaling-Plan.md,
-rem phase 0. Needs PSXEmu.Win32\graphics\upscale\texture\fetch_onnxruntime.ps1 run first to load
+rem phase 0. Needs Emu.Frontend.Win32\emuwin32\upscale\texture\fetch_onnxruntime.ps1 run first to load
 rem anything, but builds without; DirectML must be beside ONNX Runtime, so both are copied here.
 rem RTX Video's backend as boot_runner's, above.
 if not exist Temp\tools\obj_aiprobe mkdir Temp\tools\obj_aiprobe
 cl %FLAGS% /I PSXEmu.Win32 %RTXVIDEO% /Fo:Temp\tools\obj_aiprobe\ /Fe:Temp\tools\ai_probe.exe ^
-   PSXEmu.Core\tools\ai_probe.cpp PSXEmu.Win32\graphics\upscale\texture\onnx_runtime.cpp ^
-   PSXEmu.Win32\graphics\upscale\texture\torch_model.cpp ^
-   PSXEmu.Win32\graphics\upscale\texture\rtx_video.cpp %LIBS% /LIBPATH:Temp\rtxvideo\lib\Windows\x64
+   PSXEmu.Core\tools\ai_probe.cpp Emu.Frontend.Win32\emuwin32\upscale\texture\onnx_runtime.cpp ^
+   Emu.Frontend.Win32\emuwin32\upscale\texture\torch_model.cpp ^
+   Emu.Frontend.Win32\emuwin32\upscale\texture\rtx_video.cpp %LIBS% /LIBPATH:Temp\rtxvideo\lib\Windows\x64
 if errorlevel 1 exit /b 1
 if exist Temp\onnxruntime\1.24.4\onnxruntime.dll (
    xcopy /y /d /q Temp\onnxruntime\1.24.4\*.dll Temp\tools\ >nul

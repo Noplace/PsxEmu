@@ -53,15 +53,15 @@
 #include "ui/cheats_window.h"
 #include "emu/cheats.h"
 #include "emu/movie.h"
-#include "app/engine_factory.h"
+#include "emuwin32/app/engine_factory.h"
 #include "emucore/host/audio_output.h"
 #include "emucore/host/machine.h"
 #include "emu/psx_core.h"
 #include "emucore/host/video_output.h"
 #include "input/input_thread.h"
-#include "graphics/adapters.h"
-#include "graphics/present/display_clock.h"
-#include "graphics/present/video_presenter.h"
+#include "emuwin32/present/adapters.h"
+#include "emuwin32/present/display_clock.h"
+#include "emuwin32/present/video_presenter.h"
 
 #include <atomic>
 #include <functional>
@@ -152,7 +152,7 @@ namespace psxemu {
 
         void SetVolume(float value);
         void SetFilter(const std::string& key);
-        // Settings > Video: the custom chain's stages (graphics/filters/filter_chain.h), which also makes
+        // Settings > Video: the custom chain's stages (emuwin32/filters/filter_chain.h), which also makes
         // the chain the filter; and Frame Pacing, a kFramePacingChoices key.
         void SetFilterChain(const std::vector<std::string>& stages);
         void SetFramePacing(const std::string& key);
@@ -613,7 +613,7 @@ namespace psxemu {
         bool have_report_ = false;
         // Whether the hardware rasteriser is drawing, as last ticked on the menu.
         bool drawing_hardware_ = false;
-        // The graphics cards, as found at startup (graphics/adapters.h), and the one chosen: its
+        // The graphics cards, as found at startup (emuwin32/present/adapters.h), and the one chosen: its
         // LUID, 0 for automatic - and also for a saved name that is not among them.
         std::vector<GraphicsAdapter> adapters_;
         uint64_t chosen_adapter_ = 0;
@@ -626,7 +626,7 @@ namespace psxemu {
         std::atomic<uint64_t> raster_adapter_{ 0 };
         std::atomic<bool> raster_shared_{ false };
         // ...and written back by it: the count of renderer devices published when it made the
-        // rasteriser there is now (graphics/shared_device.h). Another count since means the
+        // rasteriser there is now (emuwin32/present/shared_device.h). Another count since means the
         // Direct3D 12 rasteriser is on a device the renderer no longer has.
         std::atomic<uint64_t> raster_device_generation_{ 0 };
         double present_ms_ = 0.0;      // mean, from the video thread's own timing

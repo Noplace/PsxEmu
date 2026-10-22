@@ -87,26 +87,11 @@
     <ClCompile Include="ui\cheats_window.cpp">
       <Filter>ui</Filter>
     </ClCompile>
-    <ClCompile Include="ui\dpi.cpp">
-      <Filter>ui</Filter>
-    </ClCompile>
     <ClCompile Include="ui\video_settings_window.cpp">
       <Filter>ui</Filter>
     </ClCompile>
-    <ClCompile Include="ui\overlay\memory_usage.cpp">
-      <Filter>ui\overlay</Filter>
-    </ClCompile>
-    <ClCompile Include="ui\overlay\overlay.cpp">
-      <Filter>ui\overlay</Filter>
-    </ClCompile>
-    <ClCompile Include="ui\overlay\overlay_atlas.cpp">
-      <Filter>ui\overlay</Filter>
-    </ClCompile>
     <ClCompile Include="ui\debugger_window.cpp">
       <Filter>ui</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\present\d3d11\d3d11_engine.cpp">
-      <Filter>graphics\present\d3d11</Filter>
     </ClCompile>
     <ClCompile Include="graphics\hw_raster\d3d11_raster.cpp">
       <Filter>graphics\hw_raster</Filter>
@@ -117,73 +102,16 @@
     <ClCompile Include="graphics\hw_raster\hardware_raster.cpp">
       <Filter>graphics\hw_raster</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\present\d3d12\d3d12_engine.cpp">
-      <Filter>graphics\present\d3d12</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\present\d3d12\d3d12_dlss.cpp">
-      <Filter>graphics\present\d3d12</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\upscale\dlss\streamline.cpp">
-      <Filter>graphics\upscale\dlss</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\upscale\dlss\reflex_markers.cpp">
-      <Filter>graphics\upscale\dlss</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\present\d3d12\d3d12_fsr.cpp">
-      <Filter>graphics\present\d3d12</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\upscale\fsr\fidelityfx.cpp">
-      <Filter>graphics\upscale\fsr</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\upscale\fsr\fsr_download.cpp">
-      <Filter>graphics\upscale\fsr</Filter>
-    </ClCompile>
     <ClCompile Include="graphics\upscale\texture\ai_textures.cpp">
       <Filter>graphics\upscale\texture</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\upscale\texture\ai_download.cpp">
-      <Filter>graphics\upscale\texture</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\upscale\texture\onnx_runtime.cpp">
-      <Filter>graphics\upscale\texture</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\upscale\texture\torch_model.cpp">
-      <Filter>graphics\upscale\texture</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\upscale\texture\rtx_video.cpp">
-      <Filter>graphics\upscale\texture</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\present\opengl\opengl_engine.cpp">
-      <Filter>graphics\present\opengl</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\present\vulkan\vulkan_engine.cpp">
-      <Filter>graphics\present\vulkan</Filter>
-    </ClCompile>
-    <ClCompile Include="app\engine_factory.cpp">
-      <Filter>app</Filter>
-    </ClCompile>
     <ClCompile Include="input\input_thread.cpp">
-      <Filter>input</Filter>
-    </ClCompile>
-    <ClCompile Include="input\sony_pads.cpp">
       <Filter>input</Filter>
     </ClCompile>
     <ClCompile Include="app\main.cpp">
       <Filter>app</Filter>
     </ClCompile>
-    <ClCompile Include="graphics\present\video_presenter.cpp">
-      <Filter>graphics\present</Filter>
-    </ClCompile>
-    <ClCompile Include="graphics\present\display_clock.cpp">
-      <Filter>graphics\present</Filter>
-    </ClCompile>
     <ClCompile Include="app\menu.cpp">
-      <Filter>app</Filter>
-    </ClCompile>
-    <ClCompile Include="app\screenshot.cpp">
-      <Filter>app</Filter>
-    </ClCompile>
-    <ClCompile Include="app\win32_dialogs.cpp">
       <Filter>app</Filter>
     </ClCompile>
     <ClCompile Include="app\win32_paths.cpp">
@@ -224,41 +152,14 @@
     <ClInclude Include="ui\game_scope.h">
       <Filter>ui</Filter>
     </ClInclude>
-    <ClInclude Include="ui\dpi.h">
-      <Filter>ui</Filter>
-    </ClInclude>
     <ClInclude Include="ui\video_settings_window.h">
       <Filter>ui</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\overlay\memory_usage.h">
-      <Filter>ui\overlay</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\overlay\overlay.h">
-      <Filter>ui\overlay</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\overlay\overlay_atlas.h">
-      <Filter>ui\overlay</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\overlay\overlay_draw.h">
-      <Filter>ui\overlay</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\overlay\frame_stats_ring.h">
-      <Filter>ui\overlay</Filter>
     </ClInclude>
     <ClInclude Include="ui\debugger_window.h">
       <Filter>ui</Filter>
     </ClInclude>
     <ClInclude Include="app\const.h">
       <Filter>app</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\present\d3d11\d3d11_engine.h">
-      <Filter>graphics\present\d3d11</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\adapters.h">
-      <Filter>graphics</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\shared_device.h">
-      <Filter>graphics</Filter>
     </ClInclude>
     <ClInclude Include="graphics\hw_raster\d3d11_raster.h">
       <Filter>graphics\hw_raster</Filter>
@@ -275,100 +176,19 @@
     <ClInclude Include="graphics\hw_raster\replacement_atlas.h">
       <Filter>graphics\hw_raster</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\present\d3d12\d3d12_engine.h">
-      <Filter>graphics\present\d3d12</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\dlss\dlss_choice.h">
-      <Filter>graphics\upscale\dlss</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\dlss\dlss_timing.h">
-      <Filter>graphics\upscale\dlss</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\dlss\streamline.h">
-      <Filter>graphics\upscale\dlss</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\dlss\reflex_markers.h">
-      <Filter>graphics\upscale\dlss</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\fsr\fsr_choice.h">
-      <Filter>graphics\upscale\fsr</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\fsr\fidelityfx.h">
-      <Filter>graphics\upscale\fsr</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\fsr\fsr_download.h">
-      <Filter>graphics\upscale\fsr</Filter>
-    </ClInclude>
     <ClInclude Include="graphics\upscale\texture\ai_textures.h">
       <Filter>graphics\upscale\texture</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\texture\ai_download.h">
-      <Filter>graphics\upscale\texture</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\texture\onnx_runtime.h">
-      <Filter>graphics\upscale\texture</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\texture\texture_upscaler.h">
-      <Filter>graphics\upscale\texture</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\texture\torch_model.h">
-      <Filter>graphics\upscale\texture</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\upscale\texture\rtx_video.h">
-      <Filter>graphics\upscale\texture</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\present\opengl\opengl_engine.h">
-      <Filter>graphics\present\opengl</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\present\opengl\gl_functions.h">
-      <Filter>graphics\present\opengl</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\present\vulkan\vulkan_engine.h">
-      <Filter>graphics\present\vulkan</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\present\vulkan\vk_functions.h">
-      <Filter>graphics\present\vulkan</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\third_party\d3dx12.h">
-      <Filter>graphics\third_party</Filter>
-    </ClInclude>
-    <ClInclude Include="app\engine_factory.h">
-      <Filter>app</Filter>
     </ClInclude>
     <ClInclude Include="app\framework.h">
       <Filter>app</Filter>
     </ClInclude>
-    <ClInclude Include="input\gamepad.h">
-      <Filter>input</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\present\igraphicsengine.h">
-      <Filter>graphics\present</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\present\display_clock.h">
-      <Filter>graphics\present</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\filter_chain.h">
-      <Filter>graphics\filters</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\shader_pass.h">
-      <Filter>graphics\filters</Filter>
-    </ClInclude>
     <ClInclude Include="input\input_thread.h">
-      <Filter>input</Filter>
-    </ClInclude>
-    <ClInclude Include="input\sony_pads.h">
       <Filter>input</Filter>
     </ClInclude>
     <ClInclude Include="input\keyboard.h">
       <Filter>input</Filter>
     </ClInclude>
-    <ClInclude Include="graphics\present\video_presenter.h">
-      <Filter>graphics\present</Filter>
-    </ClInclude>
     <ClInclude Include="app\menu.h">
-      <Filter>app</Filter>
-    </ClInclude>
-    <ClInclude Include="app\screenshot.h">
       <Filter>app</Filter>
     </ClInclude>
     <ClInclude Include="app\disc_set.h">
@@ -377,73 +197,13 @@
     <ClInclude Include="app\bios_database.h">
       <Filter>app</Filter>
     </ClInclude>
-    <ClInclude Include="input\mouse.h">
-      <Filter>input</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\shaders\glsl_filters.h">
-      <Filter>graphics\filters\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\shaders\spirv_filters.h">
-      <Filter>graphics\filters\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\overlay\shaders\overlay_shaders.h">
-      <Filter>ui\overlay\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\overlay\shaders\spirv_overlay.h">
-      <Filter>ui\overlay\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\overlay\shaders\spirv_overlay_vert.h">
-      <Filter>ui\overlay\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="ui\overlay\shaders\spirv_overlay_frag.h">
-      <Filter>ui\overlay\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\shaders\legacy_shaders.h">
-      <Filter>graphics\filters\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\shaders\ps_scanline_filter.h">
-      <Filter>graphics\filters\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\shaders\ps_xbrz_filter.h">
-      <Filter>graphics\filters\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\shaders\superxbr_pass0.h">
-      <Filter>graphics\filters\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\shaders\superxbr_pass1.h">
-      <Filter>graphics\filters\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="graphics\filters\shaders\superxbr_pass2.h">
-      <Filter>graphics\filters\shaders</Filter>
-    </ClInclude>
-    <ClInclude Include="app\win32_dialogs.h">
-      <Filter>app</Filter>
-    </ClInclude>
     <ClInclude Include="app\win32_paths.h">
       <Filter>app</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
-    <FxCompile Include="graphics\filters\shaders\ps_scanline_filter.hlsl">
-      <Filter>graphics\filters\shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="graphics\filters\shaders\ps_xbrz_filter.hlsl">
-      <Filter>graphics\filters\shaders</Filter>
-    </FxCompile>
-    <FxCompile Include="graphics\filters\shaders\superxbr\superxbr_pass0.hlsl">
-      <Filter>graphics\filters\shaders\superxbr</Filter>
-    </FxCompile>
-    <FxCompile Include="graphics\filters\shaders\superxbr\superxbr_pass1.hlsl">
-      <Filter>graphics\filters\shaders\superxbr</Filter>
-    </FxCompile>
-    <FxCompile Include="graphics\filters\shaders\superxbr\superxbr_pass2.hlsl">
-      <Filter>graphics\filters\shaders\superxbr</Filter>
-    </FxCompile>
   </ItemGroup>
   <ItemGroup>
-    <None Include="graphics\filters\shaders\superxbr\superxbr_common.hlsli">
-      <Filter>graphics\filters\shaders\superxbr</Filter>
-    </None>
   </ItemGroup>
   <ItemGroup>
     <Image Include="Resource\app_icon.ico">

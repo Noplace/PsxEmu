@@ -35,7 +35,7 @@
 //     as they open Direct3D 11's, Vulkan and OpenGL by the Direct3D 12 handle type
 //     (SharedPictureSource::d3d12).
 //
-// It owns its own device - or, given the Direct3D 12 renderer's (graphics/shared_device.h),
+// It owns its own device - or, given the Direct3D 12 renderer's (emuwin32/present/shared_device.h),
 // draws on that one: then its pictures are ordinary textures handed to that renderer as they
 // are, compressed as the card likes, opened by no handle and never put in the common state; the
 // renderer waits for each on the card. Either way the queue is its own, and nothing of the

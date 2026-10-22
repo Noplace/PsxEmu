@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What a front end built on Emu.Frontend.Win32 needs beside its executable, imported by the
+     executable's project after Microsoft.Cpp.targets (PSXEmu: PSXEmu.Win32.vcxproj). Every file
+     here is fetched or unpacked by hand into Temp\ and never committed; a missing one is skipped,
+     and the emulator builds and runs without it and says what is missing.
+
+     - NVIDIA DLSS's DLLs, from Temp\streamline (emuwin32\upscale\dlss\fetch_streamline.ps1):
+       NVIDIA's, under NVIDIA's licence.
+     - AMD FSR's, from Temp\fidelityfx (emuwin32\upscale\fsr\fetch_fidelityfx.ps1): MIT, but 69 MB,
+       and AMD's loader finds its effect DLLs only beside the executable.
+     - ONNX Runtime and DirectML for the AI texture upscaler, from Temp\onnxruntime
+       (emuwin32\upscale\texture\fetch_onnxruntime.ps1), and its models into models\, converted in
+       Temp\models\onnx by ai_probe - the emulator fetches all of them itself otherwise.
+     - NVIDIA RTX Video's release DLL, where its SDK is unpacked in Temp\rtxvideo.
+
+     x64 only, as all of them are. -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Target Name="EmuFrontendCopyRuntime" AfterTargets="Build" Condition="'$(Platform)'=='x64'">
+    <Message Importance="high" Text="NVIDIA DLSS's and AMD FSR's DLLs, ONNX Runtime's, RTX Video's and the AI texture models, if fetched" />
+    <Exec Command="set SL=$(SolutionDir)Temp\streamline\v2.14.1\bin\x64
+if exist &quot;%SL%\sl.interposer.dll&quot; for %%f in (sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll nvngx_dlss.license.txt sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll reflex.license.txt) do xcopy /y /d /q &quot;%SL%\%%f&quot; &quot;$(OutDir).&quot; &gt;nul
+if exist &quot;%SL%\sl.interposer.dll&quot; copy /y &quot;%SL%\..\..\license.txt&quot; &quot;$(OutDir)streamline.license.txt&quot; &gt;nul
+set AMD=$(SolutionDir)Temp\fidelityfx\v2.3.0
+if exist &quot;%AMD%\amd_fidelityfx_loader_dx12.dll&quot; for %%f in (amd_fidelityfx_loader_dx12.dll amd_fidelityfx_upscaler_dx12.dll amd_fidelityfx_framegeneration_dx12.dll) do xcopy /y /d /q &quot;%AMD%\%%f&quot; &quot;$(OutDir).&quot; &gt;nul
+if exist &quot;%AMD%\amd_fidelityfx_loader_dx12.dll&quot; copy /y &quot;$(MSBuildThisFileDirectory)emuwin32\third_party\fidelityfx\LICENSE.txt&quot; &quot;$(OutDir)fidelityfx.license.txt&quot; &gt;nul
+set ORT=$(SolutionDir)Temp\onnxruntime\1.24.4
+if exist &quot;%ORT%\onnxruntime.dll&quot; for %%f in (onnxruntime.dll onnxruntime_providers_shared.dll DirectML.dll onnxruntime.license.txt directml.license.txt) do xcopy /y /d /q &quot;%ORT%\%%f&quot; &quot;$(OutDir).&quot; &gt;nul
+set VSR=$(SolutionDir)Temp\rtxvideo\bin\Windows\x64\rel
+if exist &quot;%VSR%\nvngx_vsr.dll&quot; xcopy /y /d /q &quot;%VSR%\nvngx_vsr.dll&quot; &quot;$(OutDir).&quot; &gt;nul
+set MODELS=$(SolutionDir)Temp\models\onnx
+if exist &quot;%MODELS%\realesr-animevideov3.onnx&quot; (
+  if not exist &quot;$(OutDir)models&quot; mkdir &quot;$(OutDir)models&quot;
+  for %%f in (realesr-animevideov3.onnx realesr-general-x4v3.onnx) do if exist &quot;%MODELS%\%%f&quot; xcopy /y /d /q &quot;%MODELS%\%%f&quot; &quot;$(OutDir)models\&quot; &gt;nul
+)
+exit /b 0" />
+  </Target>
+</Project>

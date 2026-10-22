@@ -18,7 +18,7 @@
 *****************************************************************************************************************/
 #include "ui/console_window.h"
 #include "app/app_icon.h"
-#include "ui/dpi.h"
+#include "emuwin32/ui/dpi.h"
 
 namespace psxemu {
 

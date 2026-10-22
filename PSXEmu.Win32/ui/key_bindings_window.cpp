@@ -20,7 +20,7 @@
 #include "app/app_icon.h"
 
 #include "app/win32_paths.h"   // Widen
-#include "ui/dpi.h"
+#include "emuwin32/ui/dpi.h"
 
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")

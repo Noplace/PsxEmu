@@ -82,7 +82,7 @@
 //                        one (Docs/Hardware-Renderer-Plan.md)
 //     --d3d12            ...the Direct3D 12 one instead; on its own it means --hw-raster too
 //     --one-device       ...with --shared-picture, drawing on a Direct3D 12 device made here, as
-//                        it draws on the Direct3D 12 renderer's own (graphics/shared_device.h),
+//                        it draws on the Direct3D 12 renderer's own (emuwin32/present/shared_device.h),
 //                        and handing its pictures over as they are; implies --d3d12
 //     --warp             ...on WARP, Windows' software Direct3D: no graphics card needed, and
 //                        the same pictures every run
@@ -166,7 +166,7 @@
 #include "render/texture_pack.h"
 #include "render/texture_tracker.h"
 #ifdef PSXEMU_HW_RASTER
-#include "graphics/adapters.h"
+#include "emuwin32/present/adapters.h"
 #include "graphics/hw_raster/hardware_raster.h"
 #include "graphics/upscale/texture/ai_textures.h"
 #include <d3d12.h>

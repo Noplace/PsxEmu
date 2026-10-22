@@ -46,7 +46,7 @@ namespace psxemu {
         // comparisons run on. Null, with `error` saying why, if it cannot be made. Asked for
         // shared pictures and unable to make them, it reads back instead.
         //
-        // Direct3D 12 can also be given `device`, the renderer's own (graphics/shared_device.h):
+        // Direct3D 12 can also be given `device`, the renderer's own (emuwin32/present/shared_device.h):
         // it then draws on that rather than a device of its own, and hands its pictures over as
         // they are, to that renderer only (SharedPictureSource::device). The card is the
         // device's; `options`' adapter and `warp` say nothing then.

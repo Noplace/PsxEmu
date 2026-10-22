@@ -39,10 +39,10 @@
 //
 // Exits 0 when AMD's DLLs loaded, 1 when they did not.
 
-#include "graphics/adapters.h"
-#include "graphics/third_party/d3dx12.h"
-#include "graphics/upscale/fsr/fidelityfx.h"
-#include "graphics/upscale/dlss/streamline.h"   // ExecutableFolder
+#include "emuwin32/present/adapters.h"
+#include "emuwin32/third_party/d3dx12.h"
+#include "emuwin32/upscale/fsr/fidelityfx.h"
+#include "emuwin32/upscale/dlss/streamline.h"   // ExecutableFolder
 
 #include <d3d12.h>
 #include <DirectXPackedVector.h>
@@ -61,7 +61,7 @@
 namespace {
 
     using Microsoft::WRL::ComPtr;
-    using psxemu::FidelityFx;
+    using emulation::win32::FidelityFx;
 
     float Pattern(float x, float y) {
         const float c = 0.9563f, s = 0.2924f;
@@ -161,7 +161,7 @@ namespace {
         }
     };
 
-    // The emulator's context flags (graphics/present/d3d12/d3d12_fsr.cpp): depth is 1/z, nearer larger, with
+    // The emulator's context flags (emuwin32/present/d3d12/d3d12_fsr.cpp): depth is 1/z, nearer larger, with
     // no far plane, and the picture is the console's own colours, gamma and all.
     const uint32_t kContextFlags = FFX_UPSCALE_ENABLE_DEPTH_INVERTED |
                                    FFX_UPSCALE_ENABLE_DEPTH_INFINITE |
@@ -191,7 +191,7 @@ namespace {
         *context = nullptr;
         const ffxReturnCode_t made = FidelityFx::Get().CreateContext(context, &create.header);
         if (made != FFX_API_RETURN_OK) {
-            printf("  the upscaler would not start: %s\n", psxemu::FfxResultText(made));
+            printf("  the upscaler would not start: %s\n", emulation::win32::FfxResultText(made));
             return false;
         }
         // Which one AMD made, said once.
@@ -215,12 +215,12 @@ namespace {
         ffxDispatchDescUpscale dispatch = {};
         dispatch.header.type = FFX_API_DISPATCH_DESC_TYPE_UPSCALE;
         dispatch.commandList = list;
-        dispatch.color = psxemu::FfxResource(colour, FFX_API_RESOURCE_STATE_PIXEL_READ);
-        dispatch.depth = psxemu::FfxResource(depth, FFX_API_RESOURCE_STATE_PIXEL_READ);
-        dispatch.motionVectors = psxemu::FfxResource(motion, FFX_API_RESOURCE_STATE_PIXEL_READ);
+        dispatch.color = emulation::win32::FfxResource(colour, FFX_API_RESOURCE_STATE_PIXEL_READ);
+        dispatch.depth = emulation::win32::FfxResource(depth, FFX_API_RESOURCE_STATE_PIXEL_READ);
+        dispatch.motionVectors = emulation::win32::FfxResource(motion, FFX_API_RESOURCE_STATE_PIXEL_READ);
         if (reactive != nullptr)
-            dispatch.reactive = psxemu::FfxResource(reactive, FFX_API_RESOURCE_STATE_PIXEL_READ);
-        dispatch.output = psxemu::FfxResource(output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
+            dispatch.reactive = emulation::win32::FfxResource(reactive, FFX_API_RESOURCE_STATE_PIXEL_READ);
+        dispatch.output = emulation::win32::FfxResource(output, FFX_API_RESOURCE_STATE_UNORDERED_ACCESS);
         dispatch.jitterOffset = { jx, jy };
         dispatch.motionVectorScale = { 1.0f, 1.0f };
         dispatch.renderSize = { static_cast<uint32_t>(in_w), static_cast<uint32_t>(in_h) };
@@ -299,7 +299,7 @@ namespace {
                 Upscale(&context, gpu.list.Get(), colour.Get(), depth.Get(), motion.Get(), nullptr,
                         output.Get(), kIn, kInH, kOut, kOutH, jx * sign_x, jy * sign_y, frame == 0);
             if (done != FFX_API_RETURN_OK) {
-                printf("  dispatch failed: %s\n", psxemu::FfxResultText(done));
+                printf("  dispatch failed: %s\n", emulation::win32::FfxResultText(done));
                 ok = false;
             }
             gpu.Run();
@@ -464,7 +464,7 @@ namespace {
 int wmain(int argc, wchar_t** argv) {
     // AMD's loader finds the upscaler and Frame Generation only beside the executable, not beside
     // itself: build_tools.bat copies them into Temp\tools.
-    std::wstring folder = argc > 1 && argv[1][0] != L'-' ? argv[1] : psxemu::ExecutableFolder();
+    std::wstring folder = argc > 1 && argv[1][0] != L'-' ? argv[1] : emulation::win32::ExecutableFolder();
     wchar_t full[MAX_PATH] = {};
     if (GetFullPathNameW(folder.c_str(), MAX_PATH, full, nullptr) != 0)
         folder = full;
@@ -493,10 +493,10 @@ int wmain(int argc, wchar_t** argv) {
     printf("Loaded, every DLL signed by AMD. Frame Generation's DLL %s.\n",
            FidelityFx::Get().has_frame_generation() ? "there" : "missing");
 
-    const std::vector<psxemu::GraphicsAdapter> adapters = psxemu::EnumerateGraphicsAdapters();
+    const std::vector<emulation::win32::GraphicsAdapter> adapters = emulation::win32::EnumerateGraphicsAdapters();
     bool tested = false;
     for (size_t i = 0; i < adapters.size(); ++i) {
-        const psxemu::GraphicsAdapter& adapter = adapters[i];
+        const emulation::win32::GraphicsAdapter& adapter = adapters[i];
         printf("\n[%zu] %s\n", i, adapter.name.c_str());
         const bool nvidia = adapter.name.find("NVIDIA") != std::string::npos;
         const bool asked = card >= 0 ? static_cast<int>(i) == card : (all || !nvidia);
@@ -504,7 +504,7 @@ int wmain(int argc, wchar_t** argv) {
             printf("    not asked about (--all, or --card %zu)\n", i);
             continue;
         }
-        ComPtr<IDXGIAdapter1> dxgi = psxemu::OpenAdapter(adapter.luid);
+        ComPtr<IDXGIAdapter1> dxgi = emulation::win32::OpenAdapter(adapter.luid);
         ComPtr<ID3D12Device> device;
         if (!dxgi || FAILED(D3D12CreateDevice(dxgi.Get(), D3D_FEATURE_LEVEL_11_0,
                                               IID_PPV_ARGS(&device)))) {

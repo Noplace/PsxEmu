@@ -3,16 +3,16 @@
 // shader_pass.h's rule for what an engine will run. Header-only, like dlss_choice_test; nothing
 // of the front end is linked. Whether the picture each makes looks right is a person's to judge.
 
-#include "graphics/filters/filter_chain.h"
+#include "emuwin32/filters/filter_chain.h"
 #include "emu/settings.h"
 
 #include <cstdio>
 #include <string>
 #include <vector>
 
-using psxemu::FilterChainPlan;
-using psxemu::PlanFilterChain;
-using psxemu::ShaderPass;
+using emulation::win32::FilterChainPlan;
+using emulation::win32::PlanFilterChain;
+using emulation::win32::ShaderPass;
 
 namespace {
 
@@ -46,13 +46,13 @@ void TestPlans() {
               Is(plan.passes[1], "superxbr_pass1", 2, -1) &&
               Is(plan.passes[2], "superxbr_pass2", 2, -1),
           "Super-xBR alone: three passes at 2x, the frame their original");
-    Check(psxemu::IsRunnableChain(plan.passes), "and an engine will run it");
+    Check(emulation::win32::IsRunnableChain(plan.passes), "and an engine will run it");
   }
   {
     const FilterChainPlan plan = PlanFilterChain({ "superxbr", "scanline" });
     Check(plan.passes.size() == 4 && Is(plan.passes[3], "scanline", 0, -1),
           "Super-xBR then Scanline: Scanline last, into the window");
-    Check(psxemu::IsRunnableChain(plan.passes), "runnable");
+    Check(emulation::win32::IsRunnableChain(plan.passes), "runnable");
   }
   {
     // xBRZ doubles; Super-xBR after it doubles again and looks back at xBRZ's picture.
@@ -62,7 +62,7 @@ void TestPlans() {
               Is(plan.passes[2], "superxbr_pass1", 4, 0) &&
               Is(plan.passes[3], "superxbr_pass2", 4, 0),
           "xBRZ then Super-xBR: 2x, then 4x with xBRZ's picture as the original");
-    Check(psxemu::IsRunnableChain(plan.passes), "runnable");
+    Check(emulation::win32::IsRunnableChain(plan.passes), "runnable");
   }
   {
     const FilterChainPlan plan = PlanFilterChain({ "crt", "eagle" });
@@ -75,7 +75,7 @@ void TestPlans() {
     Check(plan.dropped.size() == 1 && plan.dropped[0] == "eagle",
           "a third upscaler would pass 4x: left out, and said to be");
     Check(plan.passes.size() == 5 && Is(plan.passes[4], "scanline", 0, -1) &&
-              psxemu::IsRunnableChain(plan.passes),
+              emulation::win32::IsRunnableChain(plan.passes),
           "and the rest still runs, Scanline last");
   }
   {
@@ -87,14 +87,14 @@ void TestPlans() {
 
 void TestRunnable() {
   printf("what an engine runs\n");
-  Check(!psxemu::IsRunnableChain({}), "an empty chain is refused");
-  Check(!psxemu::IsRunnableChain({ { "a", 0, -1 }, { "b", 0, -1 } }),
+  Check(!emulation::win32::IsRunnableChain({}), "an empty chain is refused");
+  Check(!emulation::win32::IsRunnableChain({ { "a", 0, -1 }, { "b", 0, -1 } }),
         "only the last pass may draw into the window");
-  Check(!psxemu::IsRunnableChain({ { "a", 2, -1 }, { "b", 2, 1 } }),
+  Check(!emulation::win32::IsRunnableChain({ { "a", 2, -1 }, { "b", 2, 1 } }),
         "an original must be an earlier pass");
-  Check(!psxemu::IsRunnableChain({ { "a", -1, -1 } }), "a negative scale is refused");
-  Check(!psxemu::IsRunnableChain({ { "a", 2, -2 } }), "an original below -1 is refused");
-  Check(psxemu::IsRunnableChain({ { "a", 2, -1 }, { "b", 4, 0 }, { "c", 0, 1 } }),
+  Check(!emulation::win32::IsRunnableChain({ { "a", -1, -1 } }), "a negative scale is refused");
+  Check(!emulation::win32::IsRunnableChain({ { "a", 2, -2 } }), "an original below -1 is refused");
+  Check(emulation::win32::IsRunnableChain({ { "a", 2, -1 }, { "b", 4, 0 }, { "c", 0, 1 } }),
         "earlier passes as originals are fine");
 }
 

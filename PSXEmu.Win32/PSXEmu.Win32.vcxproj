@@ -50,8 +50,9 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
-      <!-- Own headers first, core headers second, the shared library's third. -->
-      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)PSXEmu.Core;$(SolutionDir)Emu.Core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- Own headers first, core headers second, the shared libraries' after: emucore/ and
+           emuwin32/. -->
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)PSXEmu.Core;$(SolutionDir)Emu.Core;$(SolutionDir)Emu.Frontend.Win32;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
@@ -60,34 +61,13 @@
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
   </ItemDefinitionGroup>
-  <!-- NVIDIA DLSS's DLLs beside the executable, when they have been fetched into Temp\streamline
-       (graphics\upscale\dlss\fetch_streamline.ps1): NVIDIA's, under NVIDIA's licence, so never in the
-       repository. Without them the emulator builds and runs, and says DLSS's files are missing.
-       AMD FSR's the same way, from Temp\fidelityfx (graphics\upscale\fsr\fetch_fidelityfx.ps1): MIT, but
-       69 MB, so fetched too - and AMD's loader finds its effect DLLs only beside the executable.
-       ONNX Runtime and DirectML for the AI texture upscaler, from Temp\onnxruntime
-       (graphics\upscale\texture\fetch_onnxruntime.ps1), and its models into models\, converted in
-       Temp\models\onnx by ai_probe - the emulator fetches all of them itself otherwise. -->
+  <!-- Beside the executable: the MMPX texture filter's notice, for the hardware rasteriser that
+       runs it. The DLLs and models Emu.Frontend.Win32 needs are copied by its own targets file,
+       imported at the end. -->
   <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
     <PostBuildEvent>
-      <Command>set SL=$(SolutionDir)Temp\streamline\v2.14.1\bin\x64
-if exist "%SL%\sl.interposer.dll" for %%f in (sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll nvngx_dlss.license.txt sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll reflex.license.txt) do xcopy /y /d /q "%SL%\%%f" "$(OutDir)." &gt;nul
-if exist "%SL%\sl.interposer.dll" copy /y "%SL%\..\..\license.txt" "$(OutDir)streamline.license.txt" &gt;nul
-set AMD=$(SolutionDir)Temp\fidelityfx\v2.3.0
-if exist "%AMD%\amd_fidelityfx_loader_dx12.dll" for %%f in (amd_fidelityfx_loader_dx12.dll amd_fidelityfx_upscaler_dx12.dll amd_fidelityfx_framegeneration_dx12.dll) do xcopy /y /d /q "%AMD%\%%f" "$(OutDir)." &gt;nul
-if exist "%AMD%\amd_fidelityfx_loader_dx12.dll" copy /y "$(ProjectDir)graphics\third_party\fidelityfx\LICENSE.txt" "$(OutDir)fidelityfx.license.txt" &gt;nul
-copy /y "$(ProjectDir)graphics\third_party\mmpx\LICENSE.md" "$(OutDir)mmpx.license.txt" &gt;nul
-set ORT=$(SolutionDir)Temp\onnxruntime\1.24.4
-if exist "%ORT%\onnxruntime.dll" for %%f in (onnxruntime.dll onnxruntime_providers_shared.dll DirectML.dll onnxruntime.license.txt directml.license.txt) do xcopy /y /d /q "%ORT%\%%f" "$(OutDir)." &gt;nul
-set VSR=$(SolutionDir)Temp\rtxvideo\bin\Windows\x64\rel
-if "$(Platform)"=="x64" if exist "%VSR%\nvngx_vsr.dll" xcopy /y /d /q "%VSR%\nvngx_vsr.dll" "$(OutDir)." &gt;nul
-set MODELS=$(SolutionDir)Temp\models\onnx
-if exist "%MODELS%\realesr-animevideov3.onnx" (
-  if not exist "$(OutDir)models" mkdir "$(OutDir)models"
-  for %%f in (realesr-animevideov3.onnx realesr-general-x4v3.onnx) do if exist "%MODELS%\%%f" xcopy /y /d /q "%MODELS%\%%f" "$(OutDir)models\" &gt;nul
-)
-exit /b 0</Command>
-      <Message>NVIDIA DLSS's and AMD FSR's DLLs, ONNX Runtime's, RTX Video's and the AI texture models, if fetched</Message>
+      <Command>copy /y "$(ProjectDir)graphics\third_party\mmpx\LICENSE.md" "$(OutDir)mmpx.license.txt" &gt;nul</Command>
+      <Message>The MMPX texture filter's notice</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <!-- NVIDIA's RTX Video SDK, a second backend for the AI texture upscaler, is behind NVIDIA's
@@ -130,45 +110,16 @@ exit /b 0</Command>
     <ClCompile Include="ui\controller_bindings_window.cpp" />
     <ClCompile Include="ui\emulation_settings_window.cpp" />
     <ClCompile Include="ui\cheats_window.cpp" />
-    <ClCompile Include="ui\dpi.cpp" />
     <ClCompile Include="ui\video_settings_window.cpp" />
-    <ClCompile Include="ui\overlay\memory_usage.cpp" />
-    <ClCompile Include="ui\overlay\overlay.cpp" />
-    <ClCompile Include="ui\overlay\overlay_atlas.cpp" />
     <ClCompile Include="ui\debugger_window.cpp" />
-    <ClCompile Include="graphics\present\d3d11\d3d11_engine.cpp" />
     <ClCompile Include="graphics\hw_raster\d3d11_raster.cpp" />
     <ClCompile Include="graphics\hw_raster\d3d12_raster.cpp" />
     <ClCompile Include="graphics\hw_raster\hardware_raster.cpp" />
-    <ClCompile Include="graphics\present\d3d12\d3d12_engine.cpp" />
-    <ClCompile Include="graphics\present\d3d12\d3d12_dlss.cpp" />
-    <ClCompile Include="graphics\upscale\dlss\streamline.cpp" />
-    <ClCompile Include="graphics\upscale\dlss\reflex_markers.cpp" />
-    <ClCompile Include="graphics\present\d3d12\d3d12_fsr.cpp" />
-    <ClCompile Include="graphics\upscale\fsr\fidelityfx.cpp" />
-    <ClCompile Include="graphics\upscale\fsr\fsr_download.cpp" />
     <ClCompile Include="graphics\upscale\texture\ai_textures.cpp" />
-    <!-- The packages' entries are inflated with Emu.Core's zlib. -->
-    <ClCompile Include="graphics\upscale\texture\ai_download.cpp">
-      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-    </ClCompile>
-    <ClCompile Include="graphics\upscale\texture\onnx_runtime.cpp" />
-    <ClCompile Include="graphics\upscale\texture\torch_model.cpp" />
-    <ClCompile Include="graphics\upscale\texture\rtx_video.cpp" />
-    <ClCompile Include="graphics\present\opengl\opengl_engine.cpp" />
-    <ClCompile Include="graphics\present\vulkan\vulkan_engine.cpp" />
-    <ClCompile Include="app\engine_factory.cpp" />
     <ClCompile Include="input\input_thread.cpp" />
-    <ClCompile Include="input\sony_pads.cpp" />
     <ClCompile Include="app\main.cpp" />
-    <ClCompile Include="graphics\present\video_presenter.cpp" />
-    <ClCompile Include="graphics\present\display_clock.cpp" />
     <ClCompile Include="app\menu.cpp" />
-    <ClCompile Include="app\screenshot.cpp" />
-    <ClCompile Include="app\win32_dialogs.cpp" />
     <ClCompile Include="app\win32_paths.cpp" />
-    <ClCompile Include="audio\dsoundaudioengine.cpp" />
-    <ClCompile Include="audio\wasapiaudioengine.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="app\app.h" />
@@ -182,74 +133,22 @@ exit /b 0</Command>
     <ClInclude Include="ui\emulation_settings_window.h" />
     <ClInclude Include="ui\cheats_window.h" />
     <ClInclude Include="ui\game_scope.h" />
-    <ClInclude Include="ui\dpi.h" />
     <ClInclude Include="ui\video_settings_window.h" />
-    <ClInclude Include="ui\overlay\memory_usage.h" />
-    <ClInclude Include="ui\overlay\overlay.h" />
-    <ClInclude Include="ui\overlay\overlay_atlas.h" />
-    <ClInclude Include="ui\overlay\overlay_draw.h" />
-    <ClInclude Include="ui\overlay\frame_stats_ring.h" />
     <ClInclude Include="ui\debugger_window.h" />
     <ClInclude Include="app\const.h" />
-    <ClInclude Include="graphics\present\d3d11\d3d11_engine.h" />
-    <ClInclude Include="graphics\adapters.h" />
-    <ClInclude Include="graphics\shared_device.h" />
     <ClInclude Include="graphics\hw_raster\d3d11_raster.h" />
     <ClInclude Include="graphics\hw_raster\d3d12_raster.h" />
     <ClInclude Include="graphics\hw_raster\hardware_raster.h" />
     <ClInclude Include="graphics\hw_raster\raster_common.h" />
     <ClInclude Include="graphics\hw_raster\replacement_atlas.h" />
-    <ClInclude Include="graphics\present\d3d12\d3d12_engine.h" />
-    <ClInclude Include="graphics\upscale\dlss\dlss_choice.h" />
-    <ClInclude Include="graphics\upscale\dlss\dlss_timing.h" />
-    <ClInclude Include="graphics\upscale\dlss\streamline.h" />
-    <ClInclude Include="graphics\upscale\dlss\reflex_markers.h" />
-    <ClInclude Include="graphics\upscale\fsr\fsr_choice.h" />
-    <ClInclude Include="graphics\upscale\fsr\fidelityfx.h" />
-    <ClInclude Include="graphics\upscale\fsr\fsr_download.h" />
     <ClInclude Include="graphics\upscale\texture\ai_textures.h" />
-    <ClInclude Include="graphics\upscale\texture\ai_download.h" />
-    <ClInclude Include="graphics\upscale\texture\onnx_runtime.h" />
-    <ClInclude Include="graphics\upscale\texture\texture_upscaler.h" />
-    <ClInclude Include="graphics\upscale\texture\torch_model.h" />
-    <ClInclude Include="graphics\upscale\texture\rtx_video.h" />
-    <ClInclude Include="graphics\present\opengl\opengl_engine.h" />
-    <ClInclude Include="graphics\present\opengl\gl_functions.h" />
-    <ClInclude Include="graphics\present\vulkan\vulkan_engine.h" />
-    <ClInclude Include="graphics\present\vulkan\vk_functions.h" />
-    <ClInclude Include="graphics\third_party\d3dx12.h" />
-    <ClInclude Include="app\engine_factory.h" />
     <ClInclude Include="app\framework.h" />
-    <ClInclude Include="input\gamepad.h" />
-    <ClInclude Include="graphics\present\igraphicsengine.h" />
-    <ClInclude Include="graphics\present\display_clock.h" />
-    <ClInclude Include="graphics\filters\filter_chain.h" />
-    <ClInclude Include="graphics\filters\shader_pass.h" />
     <ClInclude Include="input\input_thread.h" />
-    <ClInclude Include="input\sony_pads.h" />
     <ClInclude Include="input\keyboard.h" />
-    <ClInclude Include="graphics\present\video_presenter.h" />
     <ClInclude Include="app\menu.h" />
-    <ClInclude Include="app\screenshot.h" />
     <ClInclude Include="app\disc_set.h" />
-    <ClInclude Include="input\mouse.h" />
-    <ClInclude Include="graphics\filters\shaders\glsl_filters.h" />
-    <ClInclude Include="graphics\filters\shaders\spirv_filters.h" />
-    <ClInclude Include="ui\overlay\shaders\overlay_shaders.h" />
-    <ClInclude Include="ui\overlay\shaders\spirv_overlay.h" />
-    <ClInclude Include="ui\overlay\shaders\spirv_overlay_vert.h" />
-    <ClInclude Include="ui\overlay\shaders\spirv_overlay_frag.h" />
-    <ClInclude Include="graphics\filters\shaders\legacy_shaders.h" />
-    <ClInclude Include="graphics\filters\shaders\ps_scanline_filter.h" />
-    <ClInclude Include="graphics\filters\shaders\ps_xbrz_filter.h" />
-    <ClInclude Include="graphics\filters\shaders\superxbr_pass0.h" />
-    <ClInclude Include="graphics\filters\shaders\superxbr_pass1.h" />
-    <ClInclude Include="graphics\filters\shaders\superxbr_pass2.h" />
-    <ClInclude Include="app\win32_dialogs.h" />
     <ClInclude Include="app\win32_paths.h" />
     <ClInclude Include="app\bios_database.h" />
-    <ClInclude Include="audio\dsoundaudioengine.h" />
-    <ClInclude Include="audio\wasapiaudioengine.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\PSXEmu.Core\PSXEmu.Core.vcxproj">
@@ -258,99 +157,9 @@ exit /b 0</Command>
     <ProjectReference Include="..\Emu.Core\Emu.Core.vcxproj">
       <Project>{14fceedf-673e-4b07-a60c-2b90c1342f10}</Project>
     </ProjectReference>
-  </ItemGroup>
-  <ItemGroup>
-    <FxCompile Include="graphics\filters\shaders\ps_scanline_filter.hlsl">
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">g_%(Filename)</VariableName>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">5.0</ShaderModel>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.0</ShaderModel>
-    </FxCompile>
-    <FxCompile Include="graphics\filters\shaders\ps_xbrz_filter.hlsl">
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">5.0</ShaderModel>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">g_%(Filename)</VariableName>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.0</ShaderModel>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">g_%(Filename)</VariableName>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.0</ShaderModel>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">g_%(Filename)</VariableName>
-    </FxCompile>
-    <FxCompile Include="graphics\filters\shaders\superxbr\superxbr_pass0.hlsl">
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-    </FxCompile>
-    <FxCompile Include="graphics\filters\shaders\superxbr\superxbr_pass1.hlsl">
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-    </FxCompile>
-    <FxCompile Include="graphics\filters\shaders\superxbr\superxbr_pass2.hlsl">
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-      <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Pixel</ShaderType>
-      <ShaderModel Condition="'$(Configuration)|$(Platform)'=='Release|x64'">5.0</ShaderModel>
-      <VariableName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">g_%(Filename)</VariableName>
-      <HeaderFileOutput Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(ProjectDir)graphics\filters\shaders\%(Filename).h</HeaderFileOutput>
-    </FxCompile>
-    <None Include="graphics\filters\shaders\superxbr\superxbr_common.hlsli" />
+    <ProjectReference Include="..\Emu.Frontend.Win32\Emu.Frontend.Win32.vcxproj">
+      <Project>{52395c63-31f3-4f44-8fa1-6daa76b64d9f}</Project>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <Image Include="Resource\app_icon.ico" />
@@ -359,4 +168,5 @@ exit /b 0</Command>
     <ResourceCompile Include="Resource\psxemu.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="..\Emu.Frontend.Win32\Emu.Frontend.Win32.targets" />
 </Project>

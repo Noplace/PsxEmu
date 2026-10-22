@@ -19,7 +19,7 @@
 #include "ui/cheats_window.h"
 #include "app/app_icon.h"
 #include "app/win32_paths.h"   // Widen, Narrow
-#include "ui/dpi.h"
+#include "emuwin32/ui/dpi.h"
 
 #include <commctrl.h>
 #pragma comment(lib, "comctl32.lib")

@@ -345,7 +345,7 @@ struct EmuConfig {
   // screen's picture of it from the motion and depth the hardware rasteriser keeps beside VRAM.
   // An enhancement, like PGXP, and off by default: only what is shown changes. It runs in the
   // Direct3D 12 renderer on an NVIDIA RTX card, with the hardware rasteriser; while it does, it
-  // picks the rasteriser's resolution for the mode (graphics/upscale/dlss/dlss_choice.h) and turns on
+  // picks the rasteriser's resolution for the mode (emuwin32/upscale/dlss/dlss_choice.h) and turns on
   // PGXP's precise vertices, which the motion comes from. "off", "dlaa", "quality", "balanced",
   // "performance" or "ultra_performance".
   std::string dlss_mode = "off";

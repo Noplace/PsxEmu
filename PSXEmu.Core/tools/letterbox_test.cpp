@@ -5,7 +5,7 @@
 // common combination for 2D menus), letterboxing it far narrower than every
 // other screen even though real hardware shows it at the same width.
 
-#include "tools/letterbox.h"
+#include "emuwin32/present/letterbox.h"
 
 #include <cmath>
 #include <cstdio>

@@ -43,7 +43,8 @@
 // - **Upscale All** feeds it a folder of dumps instead: each a source with every cell it has
 //   filled read.
 
-#include "graphics/upscale/texture/texture_upscaler.h"
+#include "app/framework.h"   // emulation::win32's names, by their short ones
+#include "emuwin32/upscale/texture/texture_upscaler.h"
 #include "render/raster.h"
 #include "render/texture_upscale.h"
 

@@ -34,6 +34,7 @@
 
 #include "app/framework.h"
 #include "emucore/input/input_bindings.h"   // PadInput, the gamepad defaults in kKeyBindings
+#include "emuwin32/filters/filter_chain.h"   // RendererHasFilters
 
 namespace psxemu {
 
@@ -217,13 +218,6 @@ namespace psxemu {
         { "opengl", L"OpenGL" },
         { "vulkan", L"Vulkan" },
     };
-
-    // Whether a renderer runs the video filters: Direct3D 12 does, from HLSL; OpenGL does, from the
-    // GLSL ports of the same shaders; and Vulkan does, from that GLSL compiled to SPIR-V. Direct3D
-    // 11 has none.
-    inline bool RendererHasFilters(const std::string& key) {
-        return key == "d3d12" || key == "opengl" || key == "vulkan";
-    }
 
     // The filter choices - None plus the ones ported from GBAEmu (see shaders/) and the multi-pass
     // Super-xBR, in the order the Video Settings window and EmuConfig::kValidVideoFilters both

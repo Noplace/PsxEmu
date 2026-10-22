@@ -1,0 +1,169 @@
+/*****************************************************************************************************************
+* Copyright (c) 2012 Khalid Ali Al-Kooheji                                                                       *
+*                                                                                                                *
+* Permission is hereby granted, free of charge, to any person obtaining a copy of this software and              *
+* associated documentation files (the "Software"), to deal in the Software without restriction, including        *
+* without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell        *
+* copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the       *
+* following conditions:                                                                                          *
+*                                                                                                                *
+* The above copyright notice and this permission notice shall be included in all copies or substantial           *
+* portions of the Software.                                                                                      *
+*                                                                                                                *
+* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT          *
+* LIMITED TO THE WARRANTIES OF MERCHANTABILITY, * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.          *
+* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, * DAMAGES OR OTHER LIABILITY,      *
+* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE            *
+* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                                                         *
+*****************************************************************************************************************/
+#pragma once
+
+#include "emuwin32/present/igraphicsengine.h"
+
+#include <d3d11.h>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace emulation::win32 {
+
+    /*
+  Presents the core's framebuffer.
+
+  This is the *only* thing Direct3D does in this emulator. Every pixel is
+  rasterised on the CPU inside PSXEmu.Core, which owns VRAM; this class uploads
+  the finished frame into a texture and stretches it over the window. Nothing
+  about the PlayStation's drawing is expressed in shaders, which is what keeps
+  the core testable without a graphics device.
+
+  Implements IGraphicsEngine so the front end can hold this behind a pointer
+  alongside a D3D12 alternative and switch between them; the three-call frame
+  shape (BeginFrame/RenderFramebuffer/EndFrame) is new, but each was already
+  a distinct phase inside the old single-call Present, just not split out.
+
+  This does not support pixel-shader filters - SetPixelShader and the two
+  loaders are no-ops/failures here on purpose. The D3D12 engine is the one
+  that grew that capability; a caller offering filters as a choice is
+  expected to check which engine is active first, not call these blind.
+*/
+    class D3D11GraphicsEngine : public IGraphicsEngine {
+     public:
+        D3D11GraphicsEngine();
+        ~D3D11GraphicsEngine() override;
+
+        void SetPreferredAdapter(uint64_t luid, const std::string&) override {
+            preferred_luid_ = luid;
+        }
+        bool Initialize(HWND window, int width, int height) override;
+        void Shutdown() override;
+
+        void BeginFrame() override;
+        void RenderFramebuffer(const void* data, int width, int height) override;
+        void EndFrame() override;
+
+        // Drawn straight from the rasteriser's texture, opened on this device.
+        bool RenderSharedPicture(const emulation::image::SharedPicture& picture) override;
+        uint64_t SharedPictureAdapter() const override { return adapter_luid_; }
+
+        // Called when the window is resized; the back buffer follows the client area.
+        void Resize(int width, int height) override;
+
+        void SetVsync(bool enabled) override { vsync_ = enabled; }
+
+        // No filter support - see the class comment above.
+        void SetPixelShader(const std::string&) override {}
+        bool LoadCustomPixelShader(const std::string&, const uint8_t*, size_t) override {
+            return false;
+        }
+        bool LoadPixelShaderFromString(const std::string&, const char*) override { return false; }
+
+        bool ready() const { return device_ != nullptr; }
+
+        void SetOverlay(const OverlayDrawData* overlay) override { overlay_ = overlay; }
+
+     private:
+        // ---- the overlay (ui/overlay), drawn last in EndFrame ------------------------------
+        bool CreateOverlayPipeline();
+        void DrawOverlay();
+        void ReleaseOverlay();
+        const OverlayDrawData* overlay_ = nullptr;
+        ID3D11VertexShader* overlay_vs_ = nullptr;
+        ID3D11PixelShader* overlay_ps_ = nullptr;
+        ID3D11InputLayout* overlay_layout_ = nullptr;
+        ID3D11Buffer* overlay_vb_ = nullptr;
+        ID3D11Buffer* overlay_ib_ = nullptr;
+        size_t overlay_vb_capacity_ = 0;   // vertices
+        size_t overlay_ib_capacity_ = 0;   // indices
+        ID3D11Texture2D* overlay_atlas_ = nullptr;
+        ID3D11ShaderResourceView* overlay_atlas_view_ = nullptr;
+        uint64_t overlay_atlas_version_ = 0;
+        ID3D11SamplerState* overlay_sampler_ = nullptr;
+        ID3D11BlendState* overlay_blend_ = nullptr;
+        ID3D11RasterizerState* overlay_raster_ = nullptr;
+
+        HWND window_;
+        int back_buffer_width_;
+        int back_buffer_height_;
+        bool vsync_ = true;
+        // The swap chain was made able to present without waiting for a refresh.
+        bool tearing_support_ = false;
+
+        ID3D11Device* device_;
+        ID3D11DeviceContext* context_;
+        IDXGISwapChain* swap_chain_;
+        ID3D11RenderTargetView* render_target_;
+
+        // The frame, as a texture. Recreated whenever the core changes resolution -
+        // the PSX does that mid-boot, so it cannot be assumed fixed.
+        ID3D11Texture2D* frame_texture_;
+        ID3D11ShaderResourceView* frame_view_;
+        int texture_width_;
+        int texture_height_;
+
+        ID3D11VertexShader* vertex_shader_;
+        ID3D11PixelShader* pixel_shader_;
+        ID3D11SamplerState* sampler_;
+
+        bool CreateRenderTarget();
+        void ReleaseRenderTarget();
+        bool EnsureFrameTexture(int width, int height);
+        // Draws `view` - this frame's picture - letterboxed into the window.
+        void DrawFrame(ID3D11ShaderResourceView* view);
+
+        // What this frame shows, for the overlay's glass to read: frame_view_, or a shared
+        // picture's view. Not owned.
+        ID3D11ShaderResourceView* shown_view_ = nullptr;
+
+        // Shared pictures (emucore/image/shared_picture.h): the adapter this device is on; the
+        // rasteriser's textures opened here, by their ids - one source's at a time, a handful at
+        // most; and for each frame drawn from one, a query that says when the card is done with
+        // it, and the picture to hand back then.
+        uint64_t adapter_luid_ = 0;
+        uint64_t preferred_luid_ = 0;   // the card asked for; 0 leaves it to Windows
+        struct OpenedPicture {
+            uint64_t id;
+            ID3D11Texture2D* texture;
+            ID3D11ShaderResourceView* view;
+        };
+        std::vector<OpenedPicture> opened_pictures_;
+        const emulation::image::SharedPictureSource* opened_source_ = nullptr;
+        struct PendingRelease {
+            ID3D11Query* done;
+            std::shared_ptr<emulation::image::SharedPictureSource> source;
+            uint64_t serial;
+        };
+        std::vector<PendingRelease> pending_releases_;
+        // The last shared picture drawn, until a frame of pixels hands it back (HandBackTrail).
+        std::shared_ptr<emulation::image::SharedPictureSource> trail_source_;
+        uint64_t trail_serial_ = 0;
+        void HandBack(const std::shared_ptr<emulation::image::SharedPictureSource>& source,
+                      uint64_t serial);
+        void HandBackTrail();
+        std::vector<ID3D11Query*> spare_queries_;
+        void ForgetOpenedPictures();
+        // Hands back the pictures whose frames the card has finished - all of them if `all`.
+        void ReleasePictures(bool all);
+    };
+
+}   // namespace emulation::win32

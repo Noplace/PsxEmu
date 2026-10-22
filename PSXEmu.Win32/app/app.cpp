@@ -22,18 +22,18 @@
 #include "input/keyboard.h"
 #include "app/menu.h"
 #include "app/disc_set.h"
-#include "app/screenshot.h"
-#include "app/win32_dialogs.h"
+#include "emuwin32/app/screenshot.h"
+#include "emuwin32/app/win32_dialogs.h"
 #include "app/win32_paths.h"
-#include "graphics/filters/filter_chain.h"
-#include "graphics/upscale/dlss/reflex_markers.h"
-#include "graphics/upscale/fsr/fsr_download.h"
-#include "graphics/upscale/texture/ai_download.h"
+#include "emuwin32/filters/filter_chain.h"
+#include "emuwin32/upscale/dlss/reflex_markers.h"
+#include "emuwin32/upscale/fsr/fsr_download.h"
+#include "emuwin32/upscale/texture/ai_download.h"
 #include "graphics/upscale/texture/ai_textures.h"
-#include "graphics/upscale/texture/rtx_video.h"
+#include "emuwin32/upscale/texture/rtx_video.h"
 #include "graphics/hw_raster/hardware_raster.h"
-#include "graphics/shared_device.h"
-#include "ui/dpi.h"
+#include "emuwin32/present/shared_device.h"
+#include "emuwin32/ui/dpi.h"
 
 #include <shellapi.h>   // ShellExecuteA, to open the BIOS folder from its menu
 
@@ -488,7 +488,7 @@ namespace psxemu {
         // Direct3D 11 or 12, as it asks: on the card chosen, or with none chosen the renderer's,
         // handing its pictures over there when that is the renderer's card too
         // (UpdateRasteriserCard). A device of its own - except Direct3D 12's when the renderer
-        // is Direct3D 12 on that card: then one device does for both (graphics/shared_device.h),
+        // is Direct3D 12 on that card: then one device does for both (emuwin32/present/shared_device.h),
         // and it is made again whenever the renderer's device changes.
         system_->set_hardware_raster([this](uint16_t* vram,
                                              const emulation::psx::RasterOptions& options,
@@ -612,7 +612,7 @@ namespace psxemu {
             [](const std::string& backend, std::string* opened) {
                 return CreateAudioEngine(
                     (backend == "dsound") ? AudioBackend::kDirectSound : AudioBackend::kWasapi,
-                    opened);
+                    opened, emulation::psx::Spu::kSampleRate);
             },
             [this](const std::string& opened) {
                 // On the audio thread: hand it to the UI, which owns the menus and the settings.
@@ -4254,7 +4254,7 @@ namespace psxemu {
         }
     }
 
-    // The upscaler's files downloaded beside the emulator (graphics/upscale/texture/ai_download.h)
+    // The upscaler's files downloaded beside the emulator (emuwin32/upscale/texture/ai_download.h)
     // on a thread of their own, a dialog showing how far it has got and offering to cancel.
     void App::FetchAiFiles() {
         struct Fetch {
@@ -4571,7 +4571,7 @@ namespace psxemu {
             RetryFsr();
     }
 
-    // AMD's three files downloaded beside the emulator (graphics/upscale/fsr/fsr_download.h) on a thread
+    // AMD's three files downloaded beside the emulator (emuwin32/upscale/fsr/fsr_download.h) on a thread
     // of their own, a task dialog showing how far it has got and offering to cancel; then FSR
     // started with them, or what went wrong said.
     void App::FetchFsrFiles() {

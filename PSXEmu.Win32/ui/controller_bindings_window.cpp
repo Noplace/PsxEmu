@@ -20,7 +20,7 @@
 #include "app/app_icon.h"
 
 #include "app/menu.h"   // ParseControllerType, ParseInputSource
-#include "ui/dpi.h"
+#include "emuwin32/ui/dpi.h"
 
 #include <commctrl.h>
 #include <windowsx.h>   // GET_X_LPARAM

@@ -39,9 +39,9 @@
 //
 // Exits 0 when Streamline started, 1 when it did not.
 
-#include "graphics/adapters.h"
-#include "graphics/third_party/d3dx12.h"
-#include "graphics/upscale/dlss/streamline.h"
+#include "emuwin32/present/adapters.h"
+#include "emuwin32/third_party/d3dx12.h"
+#include "emuwin32/upscale/dlss/streamline.h"
 
 #include <d3d12.h>
 #include <DirectXPackedVector.h>
@@ -65,7 +65,7 @@ namespace {
     // "on", "off", "not supported", or "unknown" if the card will not say.
     const char* GpuScheduling(uint64_t luid) {
         D3DKMT_OPENADAPTERFROMLUID open = {};
-        open.AdapterLuid = psxemu::UnpackLuid(luid);
+        open.AdapterLuid = emulation::win32::UnpackLuid(luid);
         if (D3DKMTOpenAdapterFromLuid(&open) != 0)
             return "unknown";
         D3DKMT_WDDM_2_7_CAPS caps = {};
@@ -85,7 +85,7 @@ namespace {
         return caps.HwSchEnabled ? "on" : "off";
     }
 
-    void PrintSupport(const psxemu::Streamline& streamline, const char* what, sl::Feature feature,
+    void PrintSupport(const emulation::win32::Streamline& streamline, const char* what, sl::Feature feature,
                       uint64_t luid) {
         std::string why;
         if (streamline.Supports(feature, luid, &why))
@@ -94,7 +94,7 @@ namespace {
             printf("    %-20s no: %s\n", what, why.c_str());
     }
 
-    void PrintRequirements(const psxemu::Streamline& streamline, const char* what,
+    void PrintRequirements(const emulation::win32::Streamline& streamline, const char* what,
                            sl::Feature feature) {
         sl::FeatureRequirements requirements{};
         if (streamline.slGetFeatureRequirements(feature, requirements) != sl::Result::eOk) {
@@ -113,13 +113,13 @@ namespace {
                    ? ", v-sync off required" : "");
     }
 
-    void PrintOptimalSettings(psxemu::Streamline& streamline,
-                              const std::vector<psxemu::GraphicsAdapter>& adapters) {
-        for (const psxemu::GraphicsAdapter& adapter : adapters) {
+    void PrintOptimalSettings(emulation::win32::Streamline& streamline,
+                              const std::vector<emulation::win32::GraphicsAdapter>& adapters) {
+        for (const emulation::win32::GraphicsAdapter& adapter : adapters) {
             std::string why;
             if (!streamline.SupportsDlss(adapter.luid, &why))
                 continue;
-            Microsoft::WRL::ComPtr<IDXGIAdapter1> card = psxemu::OpenAdapter(adapter.luid);
+            Microsoft::WRL::ComPtr<IDXGIAdapter1> card = emulation::win32::OpenAdapter(adapter.luid);
             Microsoft::WRL::ComPtr<ID3D12Device> device;
             if (FAILED(D3D12CreateDevice(card.Get(), D3D_FEATURE_LEVEL_11_0,
                                          IID_PPV_ARGS(&device)))) {
@@ -154,7 +154,7 @@ namespace {
                     sl::DLSSOptimalSettings settings{};
                     const sl::Result result = streamline.slDLSSGetOptimalSettings(options, settings);
                     if (result != sl::Result::eOk) {
-                        printf("    %-18s %s\n", mode.name, psxemu::StreamlineResultText(result));
+                        printf("    %-18s %s\n", mode.name, emulation::win32::StreamlineResultText(result));
                         continue;
                     }
                     printf("    %-18s %ux%u, %ux%u - %ux%u\n", mode.name,
@@ -279,7 +279,7 @@ namespace {
     // to DLSS times (sign_x, sign_y) and the motion given times `motion_sign`, the pattern moving
     // `vx, vy` input pixels a frame. The mean difference of the last output from the pattern
     // drawn at the output's size, 0-1; negative if anything failed.
-    float JitterRun(psxemu::Streamline& streamline, TestGpu& gpu, float sign_x, float sign_y,
+    float JitterRun(emulation::win32::Streamline& streamline, TestGpu& gpu, float sign_x, float sign_y,
                     float vx, float vy, float motion_sign) {
         const int kIn = 192, kInH = 144, kOut = 288, kOutH = 216, kFrames = 48;
         ComPtr<ID3D12Resource> colour = gpu.Texture(kIn, kInH, DXGI_FORMAT_R8G8B8A8_UNORM,
@@ -434,7 +434,7 @@ namespace {
 
     // DLSS's own time on the card for one evaluation, in milliseconds, at these sizes and mode:
     // timestamps either side of it, the median of 30 after 10 to warm up. Negative if it failed.
-    double MeasureCost(psxemu::Streamline& streamline, TestGpu& gpu, sl::DLSSMode mode, int in_w,
+    double MeasureCost(emulation::win32::Streamline& streamline, TestGpu& gpu, sl::DLSSMode mode, int in_w,
                        int in_h, int out_w, int out_h) {
         const D3D12_RESOURCE_STATES read = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         ComPtr<ID3D12Resource> colour = gpu.Texture(in_w, in_h, DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -536,7 +536,7 @@ namespace {
         return samples[samples.size() / 2];
     }
 
-    void RunCostTest(psxemu::Streamline& streamline, TestGpu& gpu, const char* card) {
+    void RunCostTest(emulation::win32::Streamline& streamline, TestGpu& gpu, const char* card) {
         printf("\nDLSS's time on %s for one picture (median of 30, ms):\n", card);
         const struct { sl::DLSSMode mode; const char* name; int in_w, in_h, out_w, out_h; } runs[] = {
             { sl::DLSSMode::eMaxQuality, "Quality, 2x to a 709-line window", 640, 480, 945, 709 },
@@ -553,13 +553,13 @@ namespace {
                    MeasureCost(streamline, gpu, run.mode, run.in_w, run.in_h, run.out_w, run.out_h));
     }
 
-    void RunJitterTest(psxemu::Streamline& streamline,
-                       const std::vector<psxemu::GraphicsAdapter>& adapters, bool cost) {
-        for (const psxemu::GraphicsAdapter& adapter : adapters) {
+    void RunJitterTest(emulation::win32::Streamline& streamline,
+                       const std::vector<emulation::win32::GraphicsAdapter>& adapters, bool cost) {
+        for (const emulation::win32::GraphicsAdapter& adapter : adapters) {
             std::string why;
             if (!streamline.SupportsDlss(adapter.luid, &why))
                 continue;
-            ComPtr<IDXGIAdapter1> card = psxemu::OpenAdapter(adapter.luid);
+            ComPtr<IDXGIAdapter1> card = emulation::win32::OpenAdapter(adapter.luid);
             ComPtr<ID3D12Device> device;
             if (FAILED(D3D12CreateDevice(card.Get(), D3D_FEATURE_LEVEL_11_0,
                                          IID_PPV_ARGS(&device)))) {
@@ -574,7 +574,7 @@ namespace {
             }
             printf("\nThe signs DLSS means, on %s: the last of 48 frames against the pattern\n"
                    "(mean difference, 0-1; lower is better)\n", adapter.name.c_str());
-            // The renderer gives DLSS the picture's jitter negated (graphics/present/d3d12/d3d12_dlss.cpp), which
+            // The renderer gives DLSS the picture's jitter negated (emuwin32/present/d3d12/d3d12_dlss.cpp), which
             // is what this settled on 2026-09-30.
             const struct { float x, y; const char* name; } signs[] = {
                 { 1, 1, "jitter as the picture's (+x, +y)" },
@@ -615,15 +615,15 @@ namespace {
 int wmain(int argc, wchar_t** argv) {
     std::wstring folder = argc > 1 && argv[1][0] != L'-'
                               ? argv[1]
-                              : psxemu::ExecutableFolder() + L"\\..\\streamline\\v2.14.1\\bin\\x64";
+                              : emulation::win32::ExecutableFolder() + L"\\..\\streamline\\v2.14.1\\bin\\x64";
     // The signature check wants a full path, not a relative one.
     wchar_t full[MAX_PATH] = {};
     if (GetFullPathNameW(folder.c_str(), MAX_PATH, full, nullptr) != 0)
         folder = full;
     printf("Streamline from %ls\n", folder.c_str());
 
-    const std::vector<psxemu::GraphicsAdapter> adapters = psxemu::EnumerateGraphicsAdapters();
-    psxemu::Streamline streamline;
+    const std::vector<emulation::win32::GraphicsAdapter> adapters = emulation::win32::EnumerateGraphicsAdapters();
+    emulation::win32::Streamline streamline;
     std::string error;
     const bool started = streamline.Start(folder, true, &error);
     if (!started) {
@@ -635,9 +635,9 @@ int wmain(int argc, wchar_t** argv) {
                streamline.Version(sl::kFeatureDLSS_G).c_str());
     }
 
-    for (const psxemu::GraphicsAdapter& adapter : adapters) {
+    for (const emulation::win32::GraphicsAdapter& adapter : adapters) {
         printf("\n%s\n", adapter.name.c_str());
-        printf("    %-20s %s\n", "LUID", psxemu::CounterLuid(adapter.luid).c_str());
+        printf("    %-20s %s\n", "LUID", emulation::win32::CounterLuid(adapter.luid).c_str());
         printf("    %-20s %llu MB\n", "video memory",
                static_cast<unsigned long long>(adapter.video_memory >> 20));
         printf("    %-20s %s\n", "GPU scheduling", GpuScheduling(adapter.luid));

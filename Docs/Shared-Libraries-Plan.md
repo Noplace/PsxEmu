@@ -1,6 +1,6 @@
 # Shared libraries: Emu.Core and Emu.Frontend.Win32
 
-> **Status: phase 4 done, 2026-10-22**: Emu.Core holds the vendored libraries, everything that was already generic, disc images, and `host::Machine`, which runs any console through `ICore` (emucore/core.h); PSXEmu.Core's `psx::PsxCore` is the PlayStation's. Emu.Core includes nothing from either PSX project. The baseline of phase 0 is recorded at `5babf24`. Phase 6, the front-end library, is next (phase 5 waits for a second emulator). Every phase is a move, not a
+> **Status: phase 6 done, 2026-10-22**: Emu.Core holds the vendored libraries, everything that was already generic, disc images, and `host::Machine`, which runs any console through `ICore`; Emu.Frontend.Win32 holds the presenters, filters, DLSS and FSR, the texture upscaler's backends, the audio devices, host input, the overlay and the dialogs. Neither includes anything of PSXEmu's. The baseline of phase 0 is recorded at `5babf24`. Phase 7, the documents, is next; phase 5 waits for a second emulator. Every phase is a move, not a
 > change: it ends with the same twelve-disc table, the same harness counts and the same pictures
 > as before it, and a phase that changes a single checksum is wrong, however tidy it looks.
 
@@ -527,6 +527,53 @@ FSR and FSR Frame Generation, and the AI texture upscaler. A DualSense, an XInpu
 mouse as a PSX mouse. `filter_chain_test`, `dlss_choice_test`, `fsr_choice_test`,
 `letterbox_test`, `ai_textures_test` and `hw_raster_test` pass. DLSS and Frame Generation on the
 RTX 4060, in one run.
+
+**Done 2026-10-22, in one commit.** 132 files moved as renames into `Emu.Frontend.Win32/emuwin32/`,
+keeping the folders they had under `graphics/`: `present/` (the four engines, the presenter, the
+display clock, `adapters.h`, `shared_device.h`, `letterbox.h`), `filters/` with its shaders,
+`upscale/dlss/`, `upscale/fsr/`, `upscale/texture/` (everything but `ai_textures`), `third_party/`
+(but MMPX's notice, which is the hardware rasteriser's), `audio/`, `ui/overlay/`, `ui/dpi`,
+`app/` (dialogs, screenshot, engine factory) and `input/` (gamepad, Sony pads, mouse, and the key
+names split out of `keyboard.h`). The library includes nothing of PSXEmu's. How it went:
+
+- **Namespaces.** `psxemu` became `emulation::win32`, written as a nested-namespace definition so
+  every closing brace stayed as it was. The nine files that were in the global namespace (the
+  Direct3D 12 engine, `IGraphicsEngine`, the two audio engines) were wrapped in it, after their
+  forward declarations of NVIDIA's `sl` namespace. The app's `framework.h` has
+  `namespace psxemu { using namespace emulation::win32; }`, so the app's code, which names these
+  types unqualified or as `psxemu::`, did not change.
+- **Cut from the app:** the dialogs take their title from `SetDialogTitle`, which `wWinMain` calls
+  with `kWindowTitle` before anything else. `CreateAudioEngine` is given the sample rate the
+  console makes, where it read `psx::Spu::kSampleRate`. `RendererHasFilters` moved from `const.h`
+  to `filter_chain.h`. `video_presenter.cpp` lost an unused `psx/gpu_core.h` include.
+- **The shaders' build rules** moved with them into `Emu.Frontend.Win32.vcxproj`, writing their
+  headers in `emuwin32/filters/shaders/`. `make_spirv` writes the new namespace into what it
+  generates, and `build_spirv.bat` finds the overlay's shaders in their new place.
+- **`Emu.Frontend.Win32.targets`**, imported by `PSXEmu.Win32.vcxproj`, copies the DLLs and models
+  beside the executable (Streamline, FidelityFX, ONNX Runtime and DirectML, RTX Video, the AI
+  models). A fresh build copied the same set as before. MMPX's notice stays in the app's own
+  post-build step.
+- **The tools:** `build_tools.bat` has `/I Emu.Frontend.Win32` and the new source paths. The six
+  harnesses that include only moved headers (`dlss_choice_test`, `fsr_choice_test`,
+  `filter_chain_test`, `sl_probe`, `ffx_probe`, `ai_probe`) name `emulation::win32::`.
+- **Not moved yet:** `input/input_thread` (it maps through the PSX controller bindings) and
+  `ui/console_window` (the BIOS console), until there is a reason to split them.
+
+**Checked:**
+
+- Release x64 and Release Win32 build from clean, and all 36 harnesses build.
+- Every harness, the seven CHDs and the two `.cue` discs give phase 0's results. One
+  `host_test` run failed its three-seconds-of-sound check, which it does now and then: on runs
+  alternating with phase 4's binary, that one failed once and this one passed three times.
+- In the app, Ridge Racer on the Radeon through all four renderers - Direct3D 11, Direct3D 12 with
+  xBRZ, OpenGL with scanlines, Vulkan with Super-xBR's three passes - each at 100%, each picture
+  filtered as it should be, the overlay's "Saved to slot 1" drawn over it, and a clean exit.
+  DLSS Quality once on the RTX 4060, with the hardware rasteriser on it: 4.3 ms a picture, the
+  picture right. The phase 0 build, run the same way on Vulkan and with DLSS, gave the same
+  speeds and the same dropped and short counts (each has some at start-up), and the 4060 stayed
+  healthy throughout. Everything the runs wrote was deleted.
+- **Not done:** FSR and Frame Generation (AMD's DLLs are not fetched here), the AI upscaler in the
+  app (`ai_textures_test` passes), and the pads and the mouse, which need a person holding them.
 
 ## Phase 7: the documents
 

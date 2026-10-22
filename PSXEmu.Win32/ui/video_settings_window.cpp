@@ -20,7 +20,7 @@
 #include "app/app_icon.h"
 
 #include "app/const.h"   // the choice tables, RendererHasFilters
-#include "ui/dpi.h"
+#include "emuwin32/ui/dpi.h"
 
 #include <algorithm>
 #include <commctrl.h>

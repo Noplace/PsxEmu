@@ -30,9 +30,9 @@
 //
 // --rtx-video puts NVIDIA's RTX Video Super Resolution through the same tests as a model, at
 // quality 0-4 (0 is bicubic) and --scale (4) times larger, with nvngx_vsr.dll from `folder`. Only a
-// build that found the SDK in Temp\rtxvideo\ has it (graphics/upscale/texture/rtx_video.h).
+// build that found the SDK in Temp\rtxvideo\ has it (emuwin32/upscale/texture/rtx_video.h).
 //
-// --convert reads a PyTorch .pth upscaler as data (graphics/upscale/texture/torch_model.h) and
+// --convert reads a PyTorch .pth upscaler as data (emuwin32/upscale/texture/torch_model.h) and
 // writes it as ONNX; no card is needed.
 //
 // --model, as many as wanted, loads each ONNX upscaler onto the first card asked about - the
@@ -56,10 +56,10 @@
 //
 // Exits 0 when ONNX Runtime loaded and everything asked for worked, 1 otherwise.
 
-#include "graphics/adapters.h"
-#include "graphics/upscale/texture/onnx_runtime.h"
-#include "graphics/upscale/texture/rtx_video.h"
-#include "graphics/upscale/texture/torch_model.h"
+#include "emuwin32/present/adapters.h"
+#include "emuwin32/upscale/texture/onnx_runtime.h"
+#include "emuwin32/upscale/texture/rtx_video.h"
+#include "emuwin32/upscale/texture/torch_model.h"
 
 #include <d3d12.h>
 #include <wincodec.h>
@@ -242,7 +242,7 @@ namespace {
 
     // ---- The tests ----------------------------------------------------------------------------
 
-    bool Cost(psxemu::TextureUpscaler& upscaler, const std::vector<int>& sizes, int runs) {
+    bool Cost(emulation::win32::TextureUpscaler& upscaler, const std::vector<int>& sizes, int runs) {
         printf("    %-11s %-11s %10s %10s %10s\n", "in", "out", "first ms", "median ms",
                "Mpx/s out");
         bool ok = true;
@@ -284,7 +284,7 @@ namespace {
 
     // Two models on the same 64x48 picture - not square, so a height and width swapped shows - and
     // how far apart their outputs are.
-    bool Compare(psxemu::TextureUpscaler& a, psxemu::TextureUpscaler& b) {
+    bool Compare(emulation::win32::TextureUpscaler& a, emulation::win32::TextureUpscaler& b) {
         const int w = 64, h = 48;
         std::vector<float> rgb(static_cast<size_t>(w) * h * 3);
         for (int c = 0; c < 3; ++c)
@@ -317,7 +317,7 @@ namespace {
         return largest < 0.5 / 255.0;
     }
 
-    bool Upscale(psxemu::TextureUpscaler& upscaler, const std::wstring& in,
+    bool Upscale(emulation::win32::TextureUpscaler& upscaler, const std::wstring& in,
                  const std::wstring& folder, int pad, int tile) {
         Picture picture;
         if (!ReadImage(in, &picture)) {
@@ -456,12 +456,12 @@ int wmain(int argc, wchar_t** argv) {
 
     bool ok = true;
     if (!convert_in.empty()) {
-        std::map<std::string, psxemu::TorchTensor> weights;
+        std::map<std::string, emulation::win32::TorchTensor> weights;
         std::string error, onnx;
-        psxemu::UpscalerArchitecture architecture;
+        emulation::win32::UpscalerArchitecture architecture;
         const double start = Now();
-        if (!psxemu::ReadTorchStateDict(convert_in, &weights, &error) ||
-            !psxemu::ExportUpscalerOnnx(weights, &onnx, &architecture, &error)) {
+        if (!emulation::win32::ReadTorchStateDict(convert_in, &weights, &error) ||
+            !emulation::win32::ExportUpscalerOnnx(weights, &onnx, &architecture, &error)) {
             printf("%ls: %s\n", convert_in.c_str(), error.c_str());
             return 1;
         }
@@ -488,22 +488,22 @@ int wmain(int argc, wchar_t** argv) {
     printf("ONNX Runtime from %ls\n", folder.c_str());
     std::string error;
     if (!models.empty() || !compare.empty() || rtx_quality < 0) {
-        if (!psxemu::OnnxRuntime::Get().Load(folder, &error)) {
+        if (!emulation::win32::OnnxRuntime::Get().Load(folder, &error)) {
             printf("Not loaded: %s\n", error.c_str());
             return 1;
         }
         printf("Loaded ONNX Runtime %s with DirectML, every DLL signed by Microsoft.\n",
-               psxemu::OnnxRuntime::Get().version().c_str());
+               emulation::win32::OnnxRuntime::Get().version().c_str());
     }
-    printf("RTX Video: %s.\n", psxemu::RtxVideoUpscaler::Built()
+    printf("RTX Video: %s.\n", emulation::win32::RtxVideoUpscaler::Built()
                                    ? "built in"
                                    : "not built in (no SDK in Temp\\rtxvideo when built)");
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
 
-    const std::vector<psxemu::GraphicsAdapter> adapters = psxemu::EnumerateGraphicsAdapters();
+    const std::vector<emulation::win32::GraphicsAdapter> adapters = emulation::win32::EnumerateGraphicsAdapters();
     bool tested = false;
     for (size_t i = 0; i < adapters.size(); ++i) {
-        const psxemu::GraphicsAdapter& adapter = adapters[i];
+        const emulation::win32::GraphicsAdapter& adapter = adapters[i];
         printf("\n[%zu] %s, %llu MB\n", i, adapter.name.c_str(),
                static_cast<unsigned long long>(adapter.video_memory >> 20));
         const bool nvidia = adapter.name.find("NVIDIA") != std::string::npos;
@@ -515,7 +515,7 @@ int wmain(int argc, wchar_t** argv) {
         if ((models.empty() && rtx_quality < 0) || tested)
             continue;
         tested = true;
-        ComPtr<IDXGIAdapter1> dxgi = psxemu::OpenAdapter(adapter.luid);
+        ComPtr<IDXGIAdapter1> dxgi = emulation::win32::OpenAdapter(adapter.luid);
         ComPtr<ID3D12Device> device;
         if (!dxgi || FAILED(D3D12CreateDevice(dxgi.Get(), D3D_FEATURE_LEVEL_11_0,
                                               IID_PPV_ARGS(&device)))) {
@@ -524,10 +524,10 @@ int wmain(int argc, wchar_t** argv) {
             continue;
         }
         // What each backend is put through; its pictures go into a folder of its own under --out.
-        auto exercise = [&](psxemu::TextureUpscaler& upscaler, const std::wstring& name) {
+        auto exercise = [&](emulation::win32::TextureUpscaler& upscaler, const std::wstring& name) {
             if (!compare.empty()) {
-                std::unique_ptr<psxemu::OnnxUpscaler> other =
-                    psxemu::OnnxUpscaler::Create(compare, device.Get(), &error);
+                std::unique_ptr<emulation::win32::OnnxUpscaler> other =
+                    emulation::win32::OnnxUpscaler::Create(compare, device.Get(), &error);
                 if (!other) {
                     printf("    %ls: %s\n", compare.c_str(), error.c_str());
                     ok = false;
@@ -548,8 +548,8 @@ int wmain(int argc, wchar_t** argv) {
         // Every backend on the one device: a run makes one device on a card, however many.
         for (const std::wstring& model : models) {
             const double start = Now();
-            std::unique_ptr<psxemu::OnnxUpscaler> upscaler =
-                psxemu::OnnxUpscaler::Create(model, device.Get(), &error);
+            std::unique_ptr<emulation::win32::OnnxUpscaler> upscaler =
+                emulation::win32::OnnxUpscaler::Create(model, device.Get(), &error);
             if (!upscaler) {
                 printf("    %ls: %s\n", model.c_str(), error.c_str());
                 ok = false;
@@ -564,7 +564,7 @@ int wmain(int argc, wchar_t** argv) {
         }
         if (rtx_quality >= 0) {
             const double start = Now();
-            std::unique_ptr<psxemu::RtxVideoUpscaler> upscaler = psxemu::RtxVideoUpscaler::Create(
+            std::unique_ptr<emulation::win32::RtxVideoUpscaler> upscaler = emulation::win32::RtxVideoUpscaler::Create(
                 device.Get(), folder, rtx_scale, rtx_quality, &error);
             if (!upscaler) {
                 printf("    RTX Video: %s\n", error.c_str());
