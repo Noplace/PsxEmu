@@ -1,6 +1,6 @@
 # Shared libraries: Emu.Core and Emu.Frontend.Win32
 
-> **Status: phase 6 done, 2026-10-22**: Emu.Core holds the vendored libraries, everything that was already generic, disc images, and `host::Machine`, which runs any console through `ICore`; Emu.Frontend.Win32 holds the presenters, filters, DLSS and FSR, the texture upscaler's backends, the audio devices, host input, the overlay and the dialogs. Neither includes anything of PSXEmu's. The baseline of phase 0 is recorded at `5babf24`. Phase 7, the documents, is next; phase 5 waits for a second emulator. Every phase is a move, not a
+> **Status: built, 2026-10-22** (phases 0-4, 6 and 7): Emu.Core holds the vendored libraries, everything that was already generic, disc images, and `host::Machine`, which runs any console through `ICore`; Emu.Frontend.Win32 holds the presenters, filters, DLSS and FSR, the texture upscaler's backends, the audio devices, host input, the overlay and the dialogs. Neither includes anything of PSXEmu's. The baseline of phase 0 is recorded at `5babf24`. Each has a README.md guide and a CLAUDE.md. Phase 5 waits for a second emulator. Every phase is a move, not a
 > change: it ends with the same twelve-disc table, the same harness counts and the same pictures
 > as before it, and a phase that changes a single checksum is wrong, however tidy it looks.
 
@@ -585,6 +585,20 @@ names split out of `keyboard.h`). The library includes nothing of PSXEmu's. How 
   section 1: two shared libraries under every emulator's two projects.
 - [Test-Suite.md](Test-Suite.md): which harnesses live in `Emu.Core/tools/`.
 - [README.md](README.md): this plan's status.
+
+**Done 2026-10-22.** All of the above. Project-Layout.md's tree was rewritten for the four
+projects (its stale `audio/` and `utilities/` lines with it), with a table of what each is and how
+the include roots and namespaces fit. Architecture.md's split and component diagram show the four,
+with the machine thread running `PsxCore` through `ICore`. Emulator-Project-Standards section 1 has
+the shared libraries under every emulator. Test-Suite.md's harness paths follow.
+
+Added on the way, as asked: **each library has a `README.md`**, the developer guide - what is in
+it, folder by folder, the types to start from, how to use it from a project, and, for Emu.Core,
+how to implement `ICore` and run `Machine`; for Emu.Frontend.Win32, how to wire a front end around
+the machine in six steps - **and a `CLAUDE.md`**, telling Claude in another emulator's project how
+to use the library, the rules for changing it, how to check a change, and the gotchas that cost
+time here. Emu.Frontend.Win32 also has the `.clang-format` its code came with, and an ignore list
+for its vendored headers and generated shaders.
 
 ## What a second emulator would take on day one
 

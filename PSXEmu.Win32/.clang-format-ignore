@@ -1,11 +1,5 @@
 # Files that must not be reformatted, however the rest of this directory is styled.
 
-# Other people's code, vendored verbatim: Microsoft's D3D12 helper header, NVIDIA's Streamline and
-# AMD's FidelityFX headers. Reformatting them would make every future update a merge conflict
-# against files nobody here maintains.
+# Other people's words, kept as they came: the MMPX texture filter's notice. (The vendored
+# headers and the generated shaders moved to Emu.Frontend.Win32, which has its own ignore list.)
 graphics/third_party/*
-
-# Shaders as C++ headers: FXC's, generated at build time from the .hlsl beside them and overwritten
-# on every build, glslang's SPIR-V, and the sources they are kept beside.
-graphics/filters/shaders/*.h
-ui/overlay/shaders/*.h

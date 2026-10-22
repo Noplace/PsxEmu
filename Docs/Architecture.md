@@ -46,38 +46,49 @@ PSXEmu is a **low-level emulator**: it runs a real PlayStation BIOS image and th
 on a model of the console's chips. Nothing of the game or the BIOS is replaced by a host
 reimplementation ("HLE"). BIOS calls are watched and logged, never intercepted.
 
-The source is split in two, and the split is enforced:
+The source is split in four, and the split is enforced: two libraries any emulator here can
+share, which know nothing of the PlayStation ([Shared-Libraries-Plan.md](Shared-Libraries-Plan.md)),
+and PSXEmu's own two on top of them.
 
-| | `PSXEmu.Core` (static library) | `PSXEmu.Win32` (the application) |
-|---|---|---|
-| **What** | The whole machine, the threads that run it, sound devices, settings | Window, menus, settings windows, four renderers, the hardware rasteriser, input, overlay, DLSS and FSR |
-| **Knows about** | No window, no graphics API, no UI framework | The core, through a few narrow interfaces |
-| **Tested by** | 20+ headless harnesses in `PSXEmu.Core/tools` | The same harnesses for its header-only parts, and by driving the real app |
+| | `Emu.Core` | `Emu.Frontend.Win32` | `PSXEmu.Core` | `PSXEmu.Win32` (the application) |
+|---|---|---|---|---|
+| **What** | The machine's thread and its channels, pacing, save states and rewind, settings, disc images, PNGs, host input, an x64 emitter | The four renderers, filters, DLSS and FSR, the texture upscaler's backends, sound devices, pads and mouse, the overlay, DPI, dialogs | The PlayStation: every chip, the HLE BIOS, the recompiler, the enhancements, and `PsxCore`, which the machine runs | Window, menus, settings windows, the hardware rasteriser, the PSX controller bindings, the input thread |
+| **Knows about** | No console, no window, no graphics API, no UI framework | Emu.Core and Windows; no console | Emu.Core; no window, no graphics API, no UI framework | All three, through a few narrow interfaces |
+| **Tested by** | Its own three harnesses, and PSXEmu's | PSXEmu's harnesses for its header-only parts, and by driving the real app | 30+ headless harnesses in `PSXEmu.Core/tools` | The same harnesses for its header-only parts, and by driving the real app |
 
 ```mermaid
 flowchart LR
   subgraph Win32["PSXEmu.Win32 - the front end"]
     App["App<br/>(UI thread: window, menus,<br/>settings, notifications)"]
-    Presenter["VideoPresenter + engines<br/>D3D11 · D3D12 · OpenGL · Vulkan"]
     HWR["Hardware rasteriser<br/>D3D11 / D3D12"]
-    Input["Input thread<br/>keyboard · XInput · DS4/DualSense · mouse"]
-    Upscale["DLSS (Streamline) · FSR (FidelityFX)"]
+    Input["Input thread<br/>PSX controller bindings"]
   end
-  subgraph Core["PSXEmu.Core - the machine"]
+  subgraph FE["Emu.Frontend.Win32"]
+    Presenter["VideoPresenter + engines<br/>D3D11 · D3D12 · OpenGL · Vulkan"]
+    Upscale["DLSS (Streamline) · FSR (FidelityFX)"]
+    Audio["WASAPI · DirectSound"]
+    Devices["XInput · DS4/DualSense · mouse"]
+  end
+  subgraph EC["Emu.Core"]
     Host["host/: Machine, VideoOutput,<br/>AudioOutput, channels"]
+    Shared["state · timing · media · image · rec back end"]
+  end
+  subgraph Core["PSXEmu.Core - the console"]
+    PsxCore["PsxCore (ICore)"]
     PSX["psx/: System and every chip<br/>CPU · GTE · GPU · DMA · CD · SPU · MDEC · SIO · timers"]
-    Rec["rec/: x64 recompiler"]
-    Audio["audio/: WASAPI · DirectSound"]
+    Rec["rec/: R3000A recompiler"]
   end
   Tools["tools/: boot_runner + test harnesses"]
   App --> Host
-  Host --> PSX
+  Host -- "ICore" --> PsxCore
+  PsxCore --> PSX
   PSX --> Rec
   Host --> Audio
   Host --> Presenter
   PSX -- "DrawJobs" --> HWR
   HWR -- "shared pictures" --> Presenter
   Presenter --> Upscale
+  Devices --> Input
   Input --> Host
   Tools --> PSX
 ```
@@ -103,7 +114,7 @@ its objects outright; nothing is shared under a lock except where a channel says
 | Thread | Owns | Wakes on |
 |---|---|---|
 | **UI** (`App`) | The window, menus, settings windows, `psxemu.ini`, the display clock's control | Window messages, and work posted to it (`PostToUi`) |
-| **Machine** (`host::Machine`) | `psx::System`: every chip, VRAM, RAM, the frame limiter | Its request queue; otherwise it runs frames back to back |
+| **Machine** (`host::Machine`, Emu.Core) | The console, through `ICore` (PSXEmu: `psx::PsxCore` over `psx::System`: every chip, VRAM, RAM), and the frame limiter | Its request queue; otherwise it runs frames back to back |
 | **Video** (`host::VideoOutput`) | The graphics engine (device, swap chain, filters, overlay) | A new frame in the mailbox, or a request |
 | **Audio** (`host::AudioOutput`) | The sound device | The device asking for more |
 | **Input** (`InputThread`) | XInput, HID pads, raw mouse | A 1 ms timer |
@@ -113,7 +124,7 @@ its objects outright; nothing is shared under a lock except where a channel says
 ```mermaid
 flowchart TB
   UI["UI thread<br/>App"]
-  M["Machine thread<br/>host::Machine → psx::System"]
+  M["Machine thread<br/>host::Machine → PsxCore → psx::System"]
   V["Video thread<br/>VideoOutput → VideoPresenter → engine"]
   A["Audio thread<br/>AudioOutput → WASAPI/DirectSound"]
   I["Input thread<br/>InputThread"]
@@ -201,9 +212,10 @@ RunPending(batch):
 
 ### A frame
 
-The machine thread runs `RunOneFrame`: step until the GPU's frame counter moves, which happens at
-the start of vblank. Then it publishes the picture, pumps the sound, flushes memory cards and
-waits out the frame limiter.
+The machine thread runs `RunOneFrame`, which asks the core for a frame (`ICore::RunFrame`): for
+the PSX, `PsxCore` steps until the GPU's frame counter moves, which happens at the start of
+vblank. Then it publishes the picture, pumps the sound, lets the core write its memory cards
+behind (`ICore::OnFrameEnd`) and waits out the frame limiter.
 
 ### Clocks and rates
 
@@ -670,11 +682,12 @@ flowchart TB
   - "Match the display" runs it at the monitor's refresh when that is within 2%, each frame held
     1 ms after the vblank that `DisplayClock` watches.
   - "Variable refresh" presents every frame the moment it is drawn, for G-Sync and FreeSync.
-- **Audio** (`audio/`, `host/audio_output`): the device pulls from the `SampleRing`; the machine
-  trims its resampling by up to 0.5% to hold the ring at its target.
-- **Input** (`input/`): read 1,000 times a second, bound per port and per device, with rumble sent
-  back to the pads.
-- **The overlay** (`ui/overlay`): notifications, the controllers in each port, and a performance
+- **Audio** (Emu.Frontend.Win32's `emuwin32/audio/`, Emu.Core's `emucore/host/audio_output`): the
+  device pulls from the `SampleRing`; the machine trims its resampling by up to 0.5% to hold the
+  ring at its target.
+- **Input** (`input/`, over Emu.Frontend.Win32's `emuwin32/input/` devices): read 1,000 times a
+  second, bound per port and per device, with rumble sent back to the pads.
+- **The overlay** (Emu.Frontend.Win32's `emuwin32/ui/overlay`): notifications, the controllers in each port, and a performance
   panel (frame rate, frame time split, audio buffer, CPU MIPS, memory). It is drawn by each engine
   in one small pass, in a Classic or a Glass look.
 

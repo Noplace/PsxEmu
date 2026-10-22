@@ -172,6 +172,9 @@
     <ClInclude Include="emuwin32\upscale\texture\torch_model.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="CLAUDE.md" />
+    <None Include="Emu.Frontend.Win32.targets" />
+    <None Include="README.md" />
     <None Include="emuwin32\filters\shaders\build_spirv.bat" />
     <None Include="emuwin32\ui\overlay\shaders\overlay.frag" />
     <None Include="emuwin32\ui\overlay\shaders\overlay.vert" />

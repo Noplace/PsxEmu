@@ -50,6 +50,24 @@ Solution/
   Tools/                    one-off utilities, not built by the solution
 ```
 
+### Under every emulator: the shared libraries
+
+Since 2026-10-22 two more projects sit under an emulator's own, shared by every
+emulator in this family (PSXEmu's `Docs/Shared-Libraries-Plan.md` has how they
+were taken out of it):
+
+| Project | What it is |
+|---|---|
+| `Emu.Core` | Static library. What any emulator shares: the machine's thread (`host::Machine`, which runs a console through `ICore`), pacing, save states and rewind, the settings file, disc images, PNGs, host input, an x64 emitter. Knows no console. |
+| `Emu.Frontend.Win32` | Static library. What any Windows front end shares: Direct3D 11/12, OpenGL and Vulkan presenters, filters, DLSS and FSR, sound devices, pads and mouse, the overlay, DPI, dialogs. Knows Emu.Core, no console. |
+
+A new emulator's `<Name>.Core` implements `ICore` and links Emu.Core; its
+`<Name>.Win32` links both and imports `Emu.Frontend.Win32.targets`. Each library
+has a `README.md` (the developer guide) and a `CLAUDE.md` (how Claude should use
+it from another project). The same rule holds one level down: **the shared
+libraries never know which console is running**, and code moves into them the
+moment a second emulator wants it, not before.
+
 ## 2. Upgrading to VS2026
 
 The GBAEmu solution is `Format Version 12.00`, `# Visual Studio Version 18`. An

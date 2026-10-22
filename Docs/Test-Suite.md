@@ -555,7 +555,7 @@ What it does not measure:
 | `--cd-mednafen` | Time the drive as Mednafen's is (`EmuConfig::cdrom_mednafen_timing`, bug 151): its seeks, pauses and command delays, in place of either model above. What a BizHawk movie's loads were recorded under, so `--movie` turns it on by itself |
 | `--load-state <file>` | Resume from a save state instead of booting - skips `--disc`/`--boot-disc`/`--auto-boot`/`--exe` entirely |
 | `--save-state <file>` | Write a save state after the run finishes |
-| `--rewind-test <n>` | Rewind's store (`emu/rewind_buffer.h`, Rewind-and-Run-Ahead-Plan.md): a state every frame of the run, each made the newest before the next; at the end, n steps back must give the frame n before the end, byte for byte, and n frames played on from it the run's own end. Reports the states held, their megabytes, a delta's mean size and time on the worker, and a step back's time |
+| `--rewind-test <n>` | Rewind's store (`emucore/state/rewind_buffer.h`, Rewind-and-Run-Ahead-Plan.md): a state every frame of the run, each made the newest before the next; at the end, n steps back must give the frame n before the end, byte for byte, and n frames played on from it the run's own end. Reports the states held, their megabytes, a delta's mean size and time on the worker, and a step back's time |
 | `--run-ahead <n>` | Run-ahead, as the front end will (Rewind-and-Run-Ahead-Plan.md, phase 2): after each frame, n more run on its input and their last picture is the one shown, then the machine goes back. Everything the run reports is the real frames' - frame-log pictures, instructions, final state - and must be exactly the run without it; the frame log's counters and the recompiler's statistics count the frames ahead too. Refused with `--movie`, the debugger's options and `--shared-picture` |
 | `--shown-log <file>` | A line per frame: the frame, and the checksum and non-black pixels of the picture shown - with `--run-ahead`, the one n frames ahead. Against a plain run's, every line should be that run's n frames on, except where a button changed inside those n frames |
 | `--memory-state-every <n>` | Every n frames, save a state in memory, cards and all (`System::SaveMemoryState`), and load it straight back (`LoadMemoryState`). The run must be exactly the run without it: on the twelve discs, under either CPU, every report line and the final state byte for byte (Rewind-and-Run-Ahead-Plan.md, phase 1). Reports what the round trips cost |
@@ -570,7 +570,7 @@ What it does not measure:
 | `--pgxp` | With `--hw-raster`: PGXP's precise vertices (phase 5, bug 125) - polygons drawn from the GTE's unrounded positions, with perspective-correct textures. The machine runs exactly as without it, on the interpreter or with `--recompiler` (phase 6); the report adds how many polygon vertices were drawn precisely, and how many of those were found by value in the GTE's cache rather than arriving with a shadow |
 | `--gpu <name>` | With `--hw-raster`: draw on the graphics card with `<name>` anywhere in its name, any case - what Settings > Video > Graphics Card does (bug 128). The report's `gpu` line names the card. An unknown name is refused with a hint to `--list-gpus` |
 | `--list-gpus` | Print the graphics cards and their LUIDs, and exit. The LUID is spelt as Windows' `\GPU Engine` and `\GPU Process Memory` performance counters spell it, for finding which card a process is really using |
-| `--shared-picture` | With `--scale`: hand the sharper picture over on the graphics card (render/shared_picture.h, phase 6, bug 127), as to a renderer that can take it there, rather than reading it back - for timing that path. `--ppm` reads the last picture back the way a screenshot does; the report adds how many frames' pictures were shared |
+| `--shared-picture` | With `--scale`: hand the sharper picture over on the graphics card (emucore/image/shared_picture.h, phase 6, bug 127), as to a renderer that can take it there, rather than reading it back - for timing that path. `--ppm` reads the last picture back the way a screenshot does; the report adds how many frames' pictures were shared |
 | `--planes` | With `--hw-raster`: keep the plane beside VRAM that DLSS will use - depth and motion per sub-pixel (Docs/DLSS-Plan.md, phase 1) - and with `--shared-picture` hand it over beside each picture; the report adds how many were. The machine runs exactly as without it, and not a pixel of native VRAM changes. Above 1x a 480-line picture drawn a field at a time is filled into a whole frame (bug 138); the report's `interlaced` line counts the 480-line pictures, those drawn a field at a time, and those still half the last field's |
 | `--view depth\|motion` | With `--hw-raster` above 1x: the plane shown in place of the picture, as View > Depth and Motion do, so `--ppm` writes it. Depth is brighter nearer, dark blue where there is none; motion's hue is its direction, dim purple where it is not known |
 | `--motion` | With `--hw-raster` above 1x, and `--pgxp` for 3D: keep the plane, and run the warp check (Docs/DLSS-Plan.md, phase 2) - each new picture compared with the last one moved by its motion and left still. The report's `warp` line gives both, per pixel and channel in 8-bit steps, and their ratio: below 1 the motion helps. Slow, since it reads every new picture back. The `motion` line says how many new pictures there were and how many started afresh, and how many vertices and 2D primitives were found in the picture before |
@@ -655,7 +655,9 @@ this tool gets pointed at. It depends on nothing, not even the core.
 
     frame_limiter_test
 
-Eight checks on `platform/frame_limiter.h`: that a loop is held to 59.29 Hz and
+Emu.Core's own, like `speed_resampler_test` and `mouse_scaling_test`: its source is
+`Emu.Core/tools/`, built by `Emu.Core\tools\build_tools.bat`, which PSXEmu's
+`build_tools.bat` calls first. Eight checks on `emucore/timing/frame_limiter.h`: that a loop is held to 59.29 Hz and
 to PAL's 49.76 rather than run flat out, that work done inside the frame comes
 out of the wait rather than on top of it, that a host too slow to make the
 deadline runs slow instead of sprinting to catch up, and that `Reset` and a
@@ -670,7 +672,7 @@ time, and a busy host can fail it once with a single late frame; run it again
 before believing it.
 
 Since bug 148, 22 more on Frame Pacing's "Match the display"
-(`platform/display_sync.h`): which displays a game is run in step with and at
+(`emucore/timing/display_sync.h`): which displays a game is run in step with and at
 what rate - 60 and 59.94 Hz at one refresh a frame, 119.88 at two, 240 at four,
 PAL at 50 and 100, and not 144, 165, PAL at 60, a display slower than the game,
 or past the 2% line - the phase step that holds each frame's start just after
@@ -696,8 +698,9 @@ enough that only a real regression should cross them.
 
     host_test [bios]
 
-Thirty-eight checks on `PSXEmu.Core/host/` - the channels the front end's threads
-talk through, and the threads themselves (Docs/Threading-Plan.md). Every other
+Thirty-eight checks on Emu.Core's `emucore/host/` - the channels the front end's threads
+talk through, and the threads themselves, with the machine running a `PsxCore`
+(Docs/Threading-Plan.md, Docs/Shared-Libraries-Plan.md). Every other
 harness here is single-threaded by construction, and a checksum cannot see a
 race: a lost sample, a frame read while it was being written, a request run out
 of order. So each channel is driven the way it will be used, one thread on each
@@ -910,10 +913,12 @@ the other four rewind's: off by default with 256 MB, the round trip, values not 
 not a game's key.)
 
 Smaller harnesses cover the host-side headers the front end leans on and
-are not counted above, since they test no emulation: `letterbox_test` (12
+are not counted above, since they test no emulation (most of what they test is Emu.Core's or
+Emu.Frontend.Win32's now; `frame_limiter_test`, `speed_resampler_test` and `mouse_scaling_test`
+live in `Emu.Core/tools/`): `letterbox_test` (12
 checks, aspect ratio), `frame_limiter_test` (30 checks - the average rate, since bug 62 the
 spacing between frames too, and since bug 148 matching the display), `filter_chain_test` (27
-checks, bug 148 - the custom filter chain's passes in `graphics/filters/filter_chain.h`: each stage's
+checks, bug 148 - the custom filter chain's passes in `emuwin32/filters/filter_chain.h`: each stage's
 size, Super-xBR's original once it is not first, the stage past 4x left out, the rule an engine
 runs a chain by, and the chain and Frame Pacing in the settings file), `speed_resampler_test` (13 checks, the audio
 arithmetic behind 50-300% speed - the frame counts, that a minute at 150% does
@@ -948,7 +953,7 @@ threads and the channels between them - its own section above), and `hw_raster_t
 checks, 94 with `--d3d12`, bugs 122-123, 127, 137 and 138 - the hardware rasteriser against the software one, every pixel of VRAM
 after each scene of random primitives, and the plane beside VRAM that DLSS will use; its own section above, as is `gpu_test --hw-raster`,
 which runs gpu_test's 98 through it), and `dlss_choice_test` (42 checks, the
-arithmetic of sizes around DLSS in `graphics/upscale/dlss/dlss_choice.h` - the rasteriser's
+arithmetic of sizes around DLSS in `emuwin32/upscale/dlss/dlss_choice.h` - the rasteriser's
 scale for each mode and window, never 1x, always inside the range DLSS 310.9.1 gave
 on the RTX 4060; the jitter's length; and the output asked for, the screen's or the
 mode's own ratio's).
@@ -966,7 +971,7 @@ times DLSS at the sizes the emulator gives it. Each makes one device, once: on t
 4060, never in a loop.
 
 `fsr_choice_test` (36 checks) is AMD FSR's arithmetic of sizes in
-`graphics/upscale/fsr/fsr_choice.h`: the settings' names, the rasteriser's scale for each mode and
+`emuwin32/upscale/fsr/fsr_choice.h`: the settings' names, the rasteriser's scale for each mode and
 window (never 1x or 7x), the jitter's length against AMD's own table (18, 32 and 72 at 1.5,
 2 and 3), and the output - the screen's rectangle unless the input is larger. `ffx_probe` is
 AMD's side, as `sl_probe` is NVIDIA's (Docs/FSR-Plan.md, phase 0): the versions AMD offers on
@@ -1015,7 +1020,7 @@ never committed; build_tools.bat then copies its `rel` `nvngx_vsr.dll` into `Tem
   bringing back the uploads VRAM still holds - a joined upload as one, not its strips - or
   exactly those given from the file beside a save state, and none VRAM no longer holds
 - PNGs of every colour type and depth, each row filtered each of the five ways, interlaced or not,
-  with palettes and colour keys, read by `render/png_file.h`'s reader
+  with palettes and colour keys, read by `emucore/image/png_file.h`'s reader
 
 `boot_runner --textures` runs the tracker over a disc and reports the share of textured pixels
 named, and why the rest are not. `--texture-dump <dir>` writes the textures, `--texture-log <n>`

@@ -233,6 +233,8 @@
     <ClInclude Include="emucore\timing\speed_resampler.h" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="CLAUDE.md" />
+    <None Include="README.md" />
     <None Include="emucore\lib\README-chd.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
