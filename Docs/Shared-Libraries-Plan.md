@@ -197,6 +197,19 @@ carry both forward unchanged:
   instructions. Every build since at least 2026-10-17 gives that, which is most likely bug 152's
   textured tint. Test-Suite.md's BIOS table has the same stale value. The threads are fine.
   It is the constant that has to be brought up to date, after the picture is checked by eye.
+  **Fixed 2026-10-22**, after the plan: bug 152 (`7edc673`) confirmed by building it and its
+  parent, the picture checked by eye, and the constant and Test-Suite.md's table updated. From
+  then on those four pass; the phase 0 binaries in `Temp\p0` still have the old constant, so
+  compare the other 34 checks against them. Two determinism checks were then seen failing once
+  each in eight runs - run-ahead recompiled on the phase 0 binary, rewind on the new one - so they
+  predate this plan's binaries or do not depend on them; see Test-Suite.md, host_test.
+
+**The twelve-disc table, run 2026-10-22 from local copies** (`Temp\discs`, copied from the share
+as asked; `Temp\discs\twelve.txt`): every checkpoint, sector and macroblock count exactly as
+Test-Suite.md has it, and phase 0's binary and master identical across all four sets. A real
+`.mds` (Captain Tsubasa J) and a real `.ecm` (Metal Gear Solid Integral disc 1, directly and
+through its `.cue`) boot, identically on both binaries. The share's Crash Bandicoot `.bin.ecm` is
+not ECM data (no `ECM\0` header) and was left out.
 
 **BIOS boot** (`boot_runner bios/SCPH1001.BIN --frames 400 --quiet`): 92,822,656 instructions,
 640x478, checksum `4a65781bfb98db5a`, 305,920 non-black of 305,920.

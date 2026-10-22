@@ -715,7 +715,7 @@ side, with a sequence number in every item.
   to the rasteriser); mouse motion adding up exactly across a racing
   publisher and taker; a doorbell that does not lose a ring that came first.
 - **The machine's thread.** A threaded BIOS boot lands on **boot_runner's own
-  instruction count and checksum** - 92,822,656 and `435bad9a6c5e4004` - which
+  instruction count and checksum** - 92,822,656 and `4a65781bfb98db5a` - which
   is the assertion that threading changed nothing about what the machine
   computes. Then again with pause and resume requests thrown at it from another
   thread as fast as it will take them (432 of them, same numbers), and again
@@ -734,11 +734,21 @@ side, with a sequence number in every item.
   not matter. 100 frames shown later the whole machine is as a straight run to frame 351 has it,
   and not as at 400. The picture alone could not tell: the BIOS shows the same screen at both.
 
-**The baseline above is stale on master since mid-October** (found 2026-10-16): the 400-frame boot
-now ends on `4a65781bfb98db5a`, the same 92,822,656 instructions, so the four checks against
-those two constants fail on master and on the rewind-run-ahead branch alike. The run-ahead
-checks compare runs with each other and do not depend on it. Which commit moved the picture is
-not yet looked into.
+**The baseline was stale from 2026-10-14 to 10-22**: bug 152 (commit `7edc673`, the textured
+tint) moved the 400-frame boot's picture to `4a65781bfb98db5a` on the same 92,822,656
+instructions, and `kBaselineChecksum` still said `435bad9a6c5e4004`, so four checks failed on
+every build in between. Brought up to date 2026-10-22, after the picture was checked by eye; the
+run-ahead checks compare runs with each other and never depended on it.
+
+**Two determinism checks are flaky (seen 2026-10-22), not yet chased:** in eight runs, "two frames
+of run-ahead leave a recompiled boot's frames exactly as they were" failed once (on the phase 0
+binary, so older than the shared libraries), and "rewinding 50 frames and letting go plays on
+exactly" failed once. The rewind one may be the test's own assumption: with the frame limiter
+off, the rewind store's worker can fall behind and replace a state it never got to
+(`RewindBuffer::Stats::replaced`), and then 50 steps back are more than 50 frames. The run-ahead
+one is recompiled, like `cpu_test`'s flaky `overflowslot` pair. The real-time checks (the frame
+limiter's rate, three seconds of sound) fail under load from anything else on the machine; run
+`host_test` alone.
 - **Stopping.** Forty machines stopped mid-frame, mid-pace and paused; the
   slowest came back in 17 ms. A paused machine answers a request in under a
   millisecond, because it waits on its doorbell rather than polling.
@@ -1133,7 +1143,7 @@ and what they decided, are in the plan's step 6.
 |---|---|
 | instructions | 92,822,656 |
 | resolution | 640x478 |
-| framebuffer checksum | `435bad9a6c5e4004` |
+| framebuffer checksum | `4a65781bfb98db5a` |
 | non-black (visible) | 305,920 of 305,920 |
 | unimplemented paths | 0 |
 | GTE commands | 0 - the shell menu is entirely 2D |
@@ -1142,11 +1152,19 @@ and what they decided, are in the plan's step 6.
 | final I_STAT / I_MASK / SR | `00000001` / `0000000D` / `40000401` |
 | GP0 words / GP1 words | 16,913 / 2,320 |
 | primitives / pixels | 1,153 / 42,416,188 |
-| texels 4-bit / 15-bit | 3,159,000 / 0 |
+| texels 4-bit / 15-bit | 1,572,480 / 0 |
 | CD-ROM commands | 3 |
-| SPU | 297,483 frames, 64 key-ons, peak 28,916/24,337 |
+| SPU | 297,483 frames, 64 key-ons, peak 27,193/24,184 |
 
-**The checksum moved to `435bad9a6c5e4004`** with bug 105, the fill rule applied to
+**The checksum moved to `4a65781bfb98db5a`** with bug 152 (commit `7edc673`, the textured
+tint), and nothing else did: built at that commit and at its parent, the 400-frame boot gives
+`4a65781bfb98db5a` and `435bad9a6c5e4004` on the same 92,822,656 instructions. Checked by eye
+on 2026-10-22: the SCE logo part-way through the intro's fade, nothing missing or wrong.
+Re-recorded at the same time, both moved at some point since and not chased, neither a pixel
+nor an instruction: the 4-bit texels read (3,159,000 before) and the SPU's peak (28,916/24,337
+before, most likely the voice fixes of bugs 154-158).
+
+**Before that it moved to `435bad9a6c5e4004`** with bug 105, the fill rule applied to
 opaque triangles too, and nothing else did: the same instructions, the same
 305,920 non-black pixels. What changed is 349 pixels on the right-hand edges of
 the shell's orange diamond, which lose the one-pixel fringe - and the single
@@ -1503,7 +1521,11 @@ slightly different point at each checkpoint. Every changed frame 3000 was
 checked by eye against the old one, and each is the same scene a moment apart.
 Captain Tsubasa J alternates between two frames and has simply swapped them.
 
-Images are the ones under `\\superserverx\D\Games\Sony\PSX\ISO`; Area 51 and
+**Local copies since 2026-10-22**: all twelve are in `Temp\discs\<the share's folder>\`
+(gitignored, 13 GB, `Temp\discs\twelve.txt` lists them for a batch; `Temp\discs\copy_discs.sh`
+copies anything missing), with every disc of FF7, FF8 and Wild Arms 2, and a real `.mds` and
+`.ecm` in `extra.txt`. Run from there they give this table exactly, and need neither the share nor
+its three-at-a-time limit. Images are the ones under `\\superserverx\D\Games\Sony\PSX\ISO`; Area 51 and
 Wild Arms 2 are mounted from their `.ccd`, which gives byte-identical results to
 their `.img`. Bug 60 moved Ridge Racer's frames 2000 and 3000 and nothing else
 in this table - its primitives reach the drawing area's edge where the other
