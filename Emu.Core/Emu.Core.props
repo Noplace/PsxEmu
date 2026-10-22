@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What a project that uses Emu.Core imports, wherever Emu.Core sits: beside the solution, or in
+     an EmuLib submodule. Import it in the project's PropertySheets group and add a ProjectReference
+     to Emu.Core.vcxproj (README.md, "Using it from a project"):
+
+       <Import Project="..\EmuLib\Emu.Core\Emu.Core.props" />
+
+     It puts this folder on the include path, after the project's own, so every include of Emu.Core
+     is written "emucore/...", and names it $(EmuCoreDir) for the files that need one of the vendored
+     libraries' folders: $(EmuCoreDir)emucore\lib\zlib, ...\lib\libchdr\include.
+
+     Emu.Frontend.Win32.props imports this one; a project importing both gets it once. -->
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <EmuCorePropsImported>true</EmuCorePropsImported>
+    <EmuCoreDir>$(MSBuildThisFileDirectory)</EmuCoreDir>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories);$(EmuCoreDir)</AdditionalIncludeDirectories>
+    </ClCompile>
+  </ItemDefinitionGroup>
+</Project>

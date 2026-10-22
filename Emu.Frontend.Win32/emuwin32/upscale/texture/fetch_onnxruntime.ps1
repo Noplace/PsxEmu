@@ -26,7 +26,11 @@ $Packages = @(
 $Rename = @{ 'LICENSE' = 'onnxruntime.license.txt'; 'ThirdPartyNotices.txt' = 'onnxruntime.notices.txt';
              'LICENSE.txt' = 'directml.license.txt' }
 
-$Root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')
+# The repository that has EmuLib as its submodule, where the build looks for Temp\ (Emu.Frontend.Win32.props);
+# EmuLib's own when it stands alone.
+$Root = $null
+try { $Root = git -C $PSScriptRoot rev-parse --show-superproject-working-tree 2>$null } catch { }
+if (-not $Root) { $Root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..') }
 $Folder = Join-Path $Root 'Temp\onnxruntime\1.24.4'
 $Dlls = @('onnxruntime.dll', 'onnxruntime_providers_shared.dll', 'DirectML.dll')
 

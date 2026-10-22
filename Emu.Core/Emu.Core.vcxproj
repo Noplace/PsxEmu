@@ -234,6 +234,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="CLAUDE.md" />
+    <None Include="Emu.Core.props" />
     <None Include="README.md" />
     <None Include="emucore\lib\README-chd.md" />
   </ItemGroup>

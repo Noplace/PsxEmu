@@ -8,9 +8,11 @@ developer guide: read it, then the header of each type you touch.
 
 ## When you build a new emulator's Windows front end
 
-1. **Reference both libraries and import the targets file** (README, "Using it from a front end").
-   The executable links both; the targets file copies NVIDIA's, AMD's and ONNX Runtime's DLLs and
-   the models beside it.
+1. **Import `Emu.Frontend.Win32.props`, reference both libraries and import the targets file**
+   (README, "Using it from a front end"), all from the EmuLib submodule at `EmuLib\`. The
+   executable links both; the targets file copies NVIDIA's, AMD's and ONNX Runtime's DLLs and the
+   models beside it from `$(EmuFrontendSdkDir)`. Never write `$(SolutionDir)Emu.Frontend.Win32`:
+   use `$(EmuFrontendWin32Dir)`.
 2. **Include through `emuwin32/`** and open your own files with your app's `framework.h`, which
    includes `emuwin32/framework.h` and has `namespace yourapp { using namespace emulation::win32; }`
    (PSXEmu.Win32: `app/framework.h`).
@@ -29,6 +31,7 @@ developer guide: read it, then the header of each type you touch.
 
 ## When you change this library
 
+- **It is in the EmuLib submodule**: branch, commit and pin as `../Emu.Core/CLAUDE.md` says.
 - **Nothing of any console or any one app goes in.** No `psx/`, no `app/`, no `ui/` of an app, no
   console constants. What it needs, it is handed (a window, a title, a sample rate, a callback to
   the UI thread). Check with

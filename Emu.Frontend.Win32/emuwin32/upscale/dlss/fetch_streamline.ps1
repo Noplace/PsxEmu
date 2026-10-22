@@ -14,7 +14,11 @@ $Name = "streamline-sdk-v$Version.zip"
 $Url = "https://github.com/NVIDIA-RTX/Streamline/releases/download/v$Version/$Name"
 $Size = 275994000   # as GitHub's release lists it
 
-$Root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')
+# The repository that has EmuLib as its submodule, where the build looks for Temp\ (Emu.Frontend.Win32.props);
+# EmuLib's own when it stands alone.
+$Root = $null
+try { $Root = git -C $PSScriptRoot rev-parse --show-superproject-working-tree 2>$null } catch { }
+if (-not $Root) { $Root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..') }
 $Folder = Join-Path $Root 'Temp\streamline'
 $Zip = Join-Path $Folder $Name
 $Sdk = Join-Path $Folder "v$Version"

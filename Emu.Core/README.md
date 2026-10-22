@@ -25,26 +25,56 @@ user and the reference for every pattern below. Its Windows front-end half is
 
 ## Using it from a project
 
-In the project that uses it (`.vcxproj`):
+Emu.Core lives in the EmuLib repository (github.com/Noplace/EmuLib) beside Emu.Frontend.Win32. An
+emulator has EmuLib as a git submodule, at `EmuLib\` in its repository root (PSXEmu does):
+
+```
+git submodule add https://github.com/Noplace/EmuLib.git EmuLib
+```
+
+In the project that uses it (`.vcxproj`), import `Emu.Core.props` in the `PropertySheets` group and
+reference the project:
 
 ```xml
-<AdditionalIncludeDirectories>$(SolutionDir)Emu.Core;...</AdditionalIncludeDirectories>
+<ImportGroup Label="PropertySheets">
+  ...
+  <Import Project="..\EmuLib\Emu.Core\Emu.Core.props" />
+</ImportGroup>
 
-<ProjectReference Include="..\Emu.Core\Emu.Core.vcxproj">
+<ProjectReference Include="..\EmuLib\Emu.Core\Emu.Core.vcxproj">
   <Project>{14fceedf-673e-4b07-a60c-2b90c1342f10}</Project>
   <!-- In a static library that uses Emu.Core: build order only. The executable links it. -->
   <LinkLibraryDependencies>false</LinkLibraryDependencies>
 </ProjectReference>
 ```
 
-An executable references Emu.Core itself (without `LinkLibraryDependencies`), so it links it. A
-file that uses zlib (`#include "zlib.h"`) or libchdr also needs
-`$(SolutionDir)Emu.Core\emucore\lib\zlib` or `...\lib\libchdr\include` on its own include path, as
-Emu.Core's own `png_file.cpp` and `rewind_buffer.cpp` have.
+The props file puts Emu.Core on the include path after the project's own folders, wherever it
+sits, and names its folder `$(EmuCoreDir)`. An executable references Emu.Core itself (without
+`LinkLibraryDependencies`), so it links it. A file that uses zlib (`#include "zlib.h"`) or libchdr
+also needs `$(EmuCoreDir)emucore\lib\zlib` or `...\lib\libchdr\include` on its own include path,
+as Emu.Core's own `png_file.cpp` and `rewind_buffer.cpp` have. Build output goes to the
+consumer's `$(SolutionDir)Build\`.
 
 The headless harnesses build without the solution: `Emu.Core\tools\build_tools.bat [out folder]`
-builds Emu.Core's own (frame limiter, speed resampler, mouse scaling) into `Temp\tools` or the
-folder given. PSXEmu's `PSXEmu.Core\tools\build_tools.bat` calls it first.
+builds Emu.Core's own (frame limiter, speed resampler, mouse scaling) into EmuLib's `Temp\tools`
+or the folder given. PSXEmu's `PSXEmu.Core\tools\build_tools.bat` calls it first, with its own.
+
+### Changing it without breaking another emulator
+
+Each emulator pins the EmuLib commit it was checked with, so a change made for one reaches another
+only when that one moves its pin forward:
+
+1. Change EmuLib inside the emulator you are working in (`EmuLib\` is a full clone): make a
+   branch there first (`git -C EmuLib switch -c my-change`), since a submodule is checked out at a
+   bare commit and commits made there belong to no branch.
+2. Check it in that emulator, commit in EmuLib, push EmuLib, then commit the new pin in the
+   emulator (`git add EmuLib`).
+3. In another emulator, move its pin when you choose: `git -C EmuLib pull`, run that emulator's
+   own checks, commit `EmuLib`.
+
+Prefer adding to changing. A change that breaks a caller (a renamed type, a new required
+argument, a different result) goes in `CHANGELOG.md` at EmuLib's root under the date, so the next
+emulator to move its pin knows what to fix.
 
 ## What is in it
 

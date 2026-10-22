@@ -42,6 +42,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\Emu.Core\Emu.Core.props" />
   </ImportGroup>
   <PropertyGroup>
     <!-- MSBuild puts x64 output under $(SolutionDir)x64\ but Win32 output
@@ -57,8 +58,8 @@
       <ConformanceMode>true</ConformanceMode>
       <!-- The core folder is the include root: every include, here and in every
            consumer, is written relative to it. Emu.Core's is the second, its
-           headers all under "emucore/". -->
-      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)Emu.Core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+           headers all under "emucore/", put there by Emu.Core.props. -->
+      <AdditionalIncludeDirectories>$(ProjectDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
@@ -104,7 +105,7 @@
     <ClCompile Include="bios\hle\hle_font_data.cpp" />
     <!-- A .bk2 movie is a zip: read with the zlib that CHD images already bring. -->
     <ClCompile Include="emu\movie.cpp">
-      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(EmuCoreDir)emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="psx\root_counter.cpp" />
     <ClCompile Include="psx\sio.cpp" />

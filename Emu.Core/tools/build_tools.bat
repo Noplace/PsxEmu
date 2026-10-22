@@ -1,13 +1,14 @@
 @echo off
 REM Builds Emu.Core's own headless harnesses - the ones that test nothing but Emu.Core - into
-REM Temp\tools, or into the folder given, relative to the repository root. Run from anywhere.
-REM PSXEmu.Core\tools\build_tools.bat calls this first, so it still builds every harness.
+REM Temp\tools under this library's repository root, or into the folder given (relative to where
+REM it is run from). Run from anywhere. PSXEmu.Core\tools\build_tools.bat calls this first, with
+REM its own Temp\tools, so it still builds every harness.
 REM
 REM Independent of the solution, as PSXEmu's is: each harness compiles the sources it tests.
 setlocal
 
 set OUT=Temp\tools
-if not "%~1"=="" set OUT=%~1
+if not "%~1"=="" set OUT=%~f1
 
 if defined VCINSTALLDIR goto have_vcvars
 set VCVARS=C:\Program Files\Microsoft Visual Studio\18\Insiders\VC\Auxiliary\Build\vcvars64.bat

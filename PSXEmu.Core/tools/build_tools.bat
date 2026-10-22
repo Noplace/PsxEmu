@@ -18,8 +18,12 @@ call "%VCVARS%" >nul
 
 cd /d "%~dp0..\.."
 
+rem The shared libraries, from the repository root.
+set EMUCORE=Emu.Core
+set EMUWIN32=Emu.Frontend.Win32
+
 rem Emu.Core's own harnesses, the ones that test nothing of the PlayStation.
-call Emu.Core\tools\build_tools.bat Temp\tools
+call %EMUCORE%\tools\build_tools.bat Temp\tools
 if errorlevel 1 exit /b 1
 
 if not exist Temp\tools\obj_boot mkdir Temp\tools\obj_boot
@@ -28,7 +32,7 @@ rem The vendored C libraries under Emu.Core\emucore\lib that disc.cpp reads CHD
 rem images through - libchdr, and the zlib, LZMA and (stub) zstd it decodes
 rem with - compiled once into one library every harness links. Warnings off:
 rem they are other people's code, kept as it came.
-set THIRD=Emu.Core\emucore\lib
+set THIRD=%EMUCORE%\emucore\lib
 if not exist Temp\tools\obj_thirdparty mkdir Temp\tools\obj_thirdparty
 cl /nologo /c /O2 /MD /DNDEBUG /D_CRT_SECURE_NO_WARNINGS /DZ7_ST /W0 ^
    /I %THIRD%\libchdr\include /I %THIRD%\zlib /I %THIRD%\lzma /I %THIRD%\zstd_stub ^
@@ -40,17 +44,17 @@ if errorlevel 1 exit /b 1
 
 set CORE=PSXEmu.Core\psx\cpu.cpp PSXEmu.Core\psx\gte.cpp PSXEmu.Core\psx\gpu.cpp ^
  PSXEmu.Core\render\software_raster.cpp PSXEmu.Core\render\texture_tracker.cpp ^
- Emu.Core\emucore\image\png_file.cpp PSXEmu.Core\render\texture_pack.cpp ^
+ %EMUCORE%\emucore\image\png_file.cpp PSXEmu.Core\render\texture_pack.cpp ^
  PSXEmu.Core\psx\dma.cpp PSXEmu.Core\psx\io_interface.cpp PSXEmu.Core\bios\kernel.cpp ^
  PSXEmu.Core\psx\mc.cpp PSXEmu.Core\media\mc_directory.cpp PSXEmu.Core\psx\spu.cpp PSXEmu.Core\psx\system.cpp ^
- PSXEmu.Core\psx\cdrom.cpp Emu.Core\emucore\media\disc.cpp PSXEmu.Core\psx\sio.cpp PSXEmu.Core\psx\sio1.cpp ^
- Emu.Core\emucore\media\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
- Emu.Core\emucore\state\state_io.cpp PSXEmu.Core\debug\debug_assist.cpp PSXEmu.Core\debug\debugger.cpp ^
+ PSXEmu.Core\psx\cdrom.cpp %EMUCORE%\emucore\media\disc.cpp PSXEmu.Core\psx\sio.cpp PSXEmu.Core\psx\sio1.cpp ^
+ %EMUCORE%\emucore\media\iso9660.cpp PSXEmu.Core\psx\mdec.cpp PSXEmu.Core\psx\root_counter.cpp ^
+ %EMUCORE%\emucore\state\state_io.cpp PSXEmu.Core\debug\debug_assist.cpp PSXEmu.Core\debug\debugger.cpp ^
  PSXEmu.Core\bios\bios_calls.cpp PSXEmu.Core\bios\hle\hle_bios.cpp PSXEmu.Core\bios\hle\hle_bios_libc.cpp ^
- PSXEmu.Core\bios\hle\hle_bios_io.cpp PSXEmu.Core\bios\hle\hle_bios_timing.cpp PSXEmu.Core\bios\hle\hle_shell.cpp PSXEmu.Core\bios\hle\hle_font_data.cpp Emu.Core\emucore\media\ecm.cpp PSXEmu.Core\emu\movie.cpp Emu.Core\emucore\state\rewind_buffer.cpp
+ PSXEmu.Core\bios\hle\hle_bios_io.cpp PSXEmu.Core\bios\hle\hle_bios_timing.cpp PSXEmu.Core\bios\hle\hle_shell.cpp PSXEmu.Core\bios\hle\hle_font_data.cpp %EMUCORE%\emucore\media\ecm.cpp PSXEmu.Core\emu\movie.cpp %EMUCORE%\emucore\state\rewind_buffer.cpp
 
 set FLAGS=/nologo /std:c++20 /permissive- /EHsc /O2 /MD /DNDEBUG /D_CONSOLE ^
- /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I Emu.Core /I Emu.Frontend.Win32 /I %THIRD%\libchdr\include ^
+ /D_CRT_SECURE_NO_WARNINGS /I PSXEmu.Core /I %EMUCORE% /I %EMUWIN32% /I %THIRD%\libchdr\include ^
  /I %THIRD%\zlib /I %THIRD%\lzma
 set LIBS=/link /SUBSYSTEM:CONSOLE user32.lib psapi.lib Temp\tools\thirdparty.lib
 
@@ -65,8 +69,8 @@ rem phases 3 and 4), and its test. NVIDIA's RTX Video SDK cannot be fetched (it 
 rem sign-in) or committed: with it unpacked by hand into Temp\rtxvideo\ the RTX Video backend is
 rem built in, and its release DLL copied; without, rtx_video.cpp is a backend that says so.
 set AITEXTURES=PSXEmu.Win32\graphics\upscale\texture\ai_textures.cpp ^
- Emu.Frontend.Win32\emuwin32\upscale\texture\onnx_runtime.cpp ^
- Emu.Frontend.Win32\emuwin32\upscale\texture\rtx_video.cpp
+ %EMUWIN32%\emuwin32\upscale\texture\onnx_runtime.cpp ^
+ %EMUWIN32%\emuwin32\upscale\texture\rtx_video.cpp
 set RTXVIDEO=
 if exist Temp\rtxvideo\include\nvsdk_ngx.h set RTXVIDEO=/DPSXEMU_RTX_VIDEO=1 /I Temp\rtxvideo\include
 
@@ -200,8 +204,8 @@ rem Emu.Core's emucore\host, the part of the cores that knows about threads, wit
 rem PSXEmu's psx_core for the machine to run: the channels between the front end's
 rem threads, stress-tested with a thread on each side, and the machine, audio and
 rem video threads run for real against a BIOS.
-set HOST=Emu.Core\emucore\host\machine.cpp PSXEmu.Core\emu\psx_core.cpp Emu.Core\emucore\host\audio_output.cpp ^
- Emu.Core\emucore\host\video_output.cpp
+set HOST=%EMUCORE%\emucore\host\machine.cpp PSXEmu.Core\emu\psx_core.cpp %EMUCORE%\emucore\host\audio_output.cpp ^
+ %EMUCORE%\emucore\host\video_output.cpp
 if not exist Temp\tools\obj_host mkdir Temp\tools\obj_host
 cl %FLAGS% /Fo:Temp\tools\obj_host\ /Fe:Temp\tools\host_test.exe ^
    PSXEmu.Core\tools\host_test.cpp %HOST% %CORE% %LIBS%
@@ -230,7 +234,7 @@ rem What NVIDIA Streamline says about each card - Docs/DLSS-Plan.md, phase 0. Ne
 rem Emu.Frontend.Win32\emuwin32\upscale\dlss\fetch_streamline.ps1 run first to find anything, but builds without.
 if not exist Temp\tools\obj_slprobe mkdir Temp\tools\obj_slprobe
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_slprobe\ /Fe:Temp\tools\sl_probe.exe ^
-   PSXEmu.Core\tools\sl_probe.cpp Emu.Frontend.Win32\emuwin32\upscale\dlss\streamline.cpp %LIBS%
+   PSXEmu.Core\tools\sl_probe.cpp %EMUWIN32%\emuwin32\upscale\dlss\streamline.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem The arithmetic of sizes around AMD FSR: Emu.Frontend.Win32's emuwin32\upscale\fsr\fsr_choice.h, header-only.
@@ -251,14 +255,14 @@ rem on a VRAM of its own, its dumps read back, and PNGs of every kind read.
 if not exist Temp\tools\obj_ttracker mkdir Temp\tools\obj_ttracker
 cl %FLAGS% /Fo:Temp\tools\obj_ttracker\ /Fe:Temp\tools\texture_tracker_test.exe ^
    PSXEmu.Core\tools\texture_tracker_test.cpp PSXEmu.Core\render\texture_tracker.cpp ^
-   Emu.Core\emucore\image\png_file.cpp %LIBS%
+   %EMUCORE%\emucore\image\png_file.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem The AI texture upscaler's own work, with a model that only repeats pixels - phase 3.
 if not exist Temp\tools\obj_aitextures mkdir Temp\tools\obj_aitextures
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_aitextures\ /Fe:Temp\tools\ai_textures_test.exe ^
    PSXEmu.Core\tools\ai_textures_test.cpp %AITEXTURES% PSXEmu.Core\render\texture_pack.cpp ^
-   PSXEmu.Core\render\texture_tracker.cpp Emu.Core\emucore\image\png_file.cpp %LIBS%
+   PSXEmu.Core\render\texture_tracker.cpp %EMUCORE%\emucore\image\png_file.cpp %LIBS%
 if errorlevel 1 exit /b 1
 
 rem What AMD's FidelityFX runtime says about each card - Docs/FSR-Plan.md, phase 0. Needs
@@ -266,8 +270,8 @@ rem Emu.Frontend.Win32\emuwin32\upscale\fsr\fetch_fidelityfx.ps1 run first to fi
 rem AMD's loader finds its effects only beside the executable, so they are copied here.
 if not exist Temp\tools\obj_ffxprobe mkdir Temp\tools\obj_ffxprobe
 cl %FLAGS% /I PSXEmu.Win32 /Fo:Temp\tools\obj_ffxprobe\ /Fe:Temp\tools\ffx_probe.exe ^
-   PSXEmu.Core\tools\ffx_probe.cpp Emu.Frontend.Win32\emuwin32\upscale\fsr\fidelityfx.cpp ^
-   Emu.Frontend.Win32\emuwin32\upscale\dlss\streamline.cpp %LIBS%
+   PSXEmu.Core\tools\ffx_probe.cpp %EMUWIN32%\emuwin32\upscale\fsr\fidelityfx.cpp ^
+   %EMUWIN32%\emuwin32\upscale\dlss\streamline.cpp %LIBS%
 if errorlevel 1 exit /b 1
 rem A block, not a caret: a caret at a line's end escapes the next line's first character too, and
 rem after "if exist x ^" that escaped space is taken for the command, so the copy never ran.
@@ -281,9 +285,9 @@ rem anything, but builds without; DirectML must be beside ONNX Runtime, so both 
 rem RTX Video's backend as boot_runner's, above.
 if not exist Temp\tools\obj_aiprobe mkdir Temp\tools\obj_aiprobe
 cl %FLAGS% /I PSXEmu.Win32 %RTXVIDEO% /Fo:Temp\tools\obj_aiprobe\ /Fe:Temp\tools\ai_probe.exe ^
-   PSXEmu.Core\tools\ai_probe.cpp Emu.Frontend.Win32\emuwin32\upscale\texture\onnx_runtime.cpp ^
-   Emu.Frontend.Win32\emuwin32\upscale\texture\torch_model.cpp ^
-   Emu.Frontend.Win32\emuwin32\upscale\texture\rtx_video.cpp %LIBS% /LIBPATH:Temp\rtxvideo\lib\Windows\x64
+   PSXEmu.Core\tools\ai_probe.cpp %EMUWIN32%\emuwin32\upscale\texture\onnx_runtime.cpp ^
+   %EMUWIN32%\emuwin32\upscale\texture\torch_model.cpp ^
+   %EMUWIN32%\emuwin32\upscale\texture\rtx_video.cpp %LIBS% /LIBPATH:Temp\rtxvideo\lib\Windows\x64
 if errorlevel 1 exit /b 1
 if exist Temp\onnxruntime\1.24.4\onnxruntime.dll (
    xcopy /y /d /q Temp\onnxruntime\1.24.4\*.dll Temp\tools\ >nul

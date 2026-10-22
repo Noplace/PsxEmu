@@ -8,9 +8,11 @@ header explains itself at the top).
 
 ## When you are in another emulator's project and want to use it
 
-1. **Reference it, don't copy it.** Add `$(SolutionDir)Emu.Core` to the include path and a
-   `ProjectReference` to `Emu.Core.vcxproj` (README, "Using it from a project"). A static library of
-   yours referencing it sets `LinkLibraryDependencies` to false; the executable links it.
+1. **Reference it, don't copy it.** Emu.Core is in the EmuLib repository, a git submodule at the
+   emulator's `EmuLib\`. Import `..\EmuLib\Emu.Core\Emu.Core.props` in the project's
+   `PropertySheets` group and add a `ProjectReference` to `Emu.Core.vcxproj` (README, "Using it from
+   a project"). A static library of yours referencing it sets `LinkLibraryDependencies` to false;
+   the executable links it. Never write `$(SolutionDir)Emu.Core`: use `$(EmuCoreDir)`.
 2. **Include through `emucore/`**: `#include "emucore/host/machine.h"`. Never put Emu.Core's
    folders themselves on an include path.
 3. **To run the console on the shared machine thread, implement `emulation::ICore`**
@@ -31,6 +33,13 @@ header explains itself at the top).
 
 ## When you change Emu.Core itself
 
+- **It is a submodule: commit in EmuLib, then pin it in the emulator.** `EmuLib\` is checked out
+  at a bare commit; switch to a branch before committing there (`git -C EmuLib switch -c <name>`,
+  or `main` to continue it), then commit the emulator's new pin (`git add EmuLib`). A new worktree
+  of the emulator has an empty `EmuLib\` until `git submodule update --init`. Never push EmuLib or
+  the emulator without the user's yes. Every other emulator keeps its own pin until it moves it;
+  a change that breaks a caller goes in EmuLib's `CHANGELOG.md` (README, "Changing it without
+  breaking another emulator").
 - **Nothing of any console goes in.** No `psx/`, no console types, no console constants. If shared
   code needs a console's number, make it a parameter or ask through `ICore`. Check with:
   `git grep -nE '#include "(psx|emu|render|bios|debug|enhance|media|app|ui)/' -- 'Emu.Core/*.h' 'Emu.Core/*.cpp'`
@@ -51,8 +60,8 @@ header explains itself at the top).
 
 ## Gotchas that cost time here
 
-- The project folder is the include root, so `"emucore/..."` resolves from any project that has
-  `$(SolutionDir)Emu.Core` on its path. A file in Emu.Core that includes `"zlib.h"` or libchdr needs
+- The project folder is the include root, so `"emucore/..."` resolves from any project that imports
+  `Emu.Core.props`. A file in Emu.Core that includes `"zlib.h"` or libchdr needs
   the lib folder on its own `AdditionalIncludeDirectories` (see `png_file.cpp` in the vcxproj).
 - Files are CRLF in the working copy and LF in git (`core.autocrlf=true`). GNU `sed -i` in Git Bash
   rewrites them LF; use `perl -pi` (keeps `\r`) or the Edit tool.

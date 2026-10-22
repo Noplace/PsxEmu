@@ -27,24 +27,34 @@ everything below: `PSXEmu.Win32/app/app.cpp`, `App::StartThreads`, wires all of 
 
 ## Using it from a front end
 
-In the executable's `.vcxproj`:
+The library lives in the EmuLib repository beside Emu.Core, which an emulator has as a git
+submodule at `EmuLib\` (Emu.Core's README, "Using it from a project", has the command and how to
+change EmuLib without breaking another emulator). In the executable's `.vcxproj`:
 
 ```xml
-<AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)Emu.Core;$(SolutionDir)Emu.Frontend.Win32;...</AdditionalIncludeDirectories>
+<ImportGroup Label="PropertySheets">
+  ...
+  <!-- Emu.Core's include path too: it imports Emu.Core.props -->
+  <Import Project="..\EmuLib\Emu.Frontend.Win32\Emu.Frontend.Win32.props" />
+</ImportGroup>
 
-<ProjectReference Include="..\Emu.Core\Emu.Core.vcxproj">
+<ProjectReference Include="..\EmuLib\Emu.Core\Emu.Core.vcxproj">
   <Project>{14fceedf-673e-4b07-a60c-2b90c1342f10}</Project>
 </ProjectReference>
-<ProjectReference Include="..\Emu.Frontend.Win32\Emu.Frontend.Win32.vcxproj">
+<ProjectReference Include="..\EmuLib\Emu.Frontend.Win32\Emu.Frontend.Win32.vcxproj">
   <Project>{52395c63-31f3-4f44-8fa1-6daa76b64d9f}</Project>
 </ProjectReference>
 
 <!-- after Microsoft.Cpp.targets: the fetched DLLs and models beside the executable -->
-<Import Project="..\Emu.Frontend.Win32\Emu.Frontend.Win32.targets" />
+<Import Project="..\EmuLib\Emu.Frontend.Win32\Emu.Frontend.Win32.targets" />
 ```
 
-For NVIDIA RTX Video, the executable also links `Temp\rtxvideo\lib\Windows\x64` where that SDK is
-unpacked (see `PSXEmu.Win32.vcxproj`). In the app's own code:
+The props file names `$(EmuFrontendSdkDir)`, where the hand-fetched SDKs are: the solution's
+`Temp\` unless the project sets it before the import (two emulators can share one set of SDKs that
+way). The fetch scripts in `emuwin32\upscale\` put them in the `Temp\` of the repository that has
+EmuLib as its submodule. For NVIDIA RTX Video, the executable also links
+`$(EmuFrontendSdkDir)rtxvideo\lib\Windows\x64` where that SDK is unpacked (see
+`PSXEmu.Win32.vcxproj`). In the app's own code:
 
 ```cpp
 // framework.h of the app: take the library's names by their short ones

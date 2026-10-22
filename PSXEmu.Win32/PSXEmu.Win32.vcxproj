@@ -40,6 +40,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="..\Emu.Frontend.Win32\Emu.Frontend.Win32.props" />
   </ImportGroup>
   <PropertyGroup>
     <OutDir>$(SolutionDir)Build\$(Platform)\$(Configuration)\</OutDir>
@@ -50,9 +51,9 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
-      <!-- Own headers first, core headers second, the shared libraries' after: emucore/ and
-           emuwin32/. -->
-      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)PSXEmu.Core;$(SolutionDir)Emu.Core;$(SolutionDir)Emu.Frontend.Win32;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- Own headers first, core headers second, the shared libraries' after: emuwin32/ and
+           emucore/, put there by Emu.Frontend.Win32.props. -->
+      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)PSXEmu.Core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
@@ -71,16 +72,17 @@
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <!-- NVIDIA's RTX Video SDK, a second backend for the AI texture upscaler, is behind NVIDIA's
-       sign-in and may not be committed: unpacked by hand into Temp\rtxvideo, it is built in and its
-       release DLL copied beside the executable; without it rtx_video.cpp is a backend that says so.
-       x64 only: NVIDIA ships the SDK's library for x64 and arm64, so a Win32 build is one without. -->
-  <ItemDefinitionGroup Condition="Exists('$(SolutionDir)Temp\rtxvideo\include\nvsdk_ngx.h') And '$(Platform)'=='x64'">
+       sign-in and may not be committed: unpacked by hand into Temp\rtxvideo ($(EmuFrontendSdkDir),
+       as Emu.Frontend.Win32 looks for it), it is built in and its release DLL copied beside the
+       executable; without it rtx_video.cpp is a backend that says so. x64 only: NVIDIA ships the
+       SDK's library for x64 and arm64, so a Win32 build is one without. -->
+  <ItemDefinitionGroup Condition="Exists('$(EmuFrontendSdkDir)rtxvideo\include\nvsdk_ngx.h') And '$(Platform)'=='x64'">
     <ClCompile>
       <PreprocessorDefinitions>PSXEMU_RTX_VIDEO=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)Temp\rtxvideo\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(EmuFrontendSdkDir)rtxvideo\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
-      <AdditionalLibraryDirectories>$(SolutionDir)Temp\rtxvideo\lib\Windows\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalLibraryDirectories>$(EmuFrontendSdkDir)rtxvideo\lib\Windows\x64;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">

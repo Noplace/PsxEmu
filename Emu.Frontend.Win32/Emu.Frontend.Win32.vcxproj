@@ -44,6 +44,7 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="PropertySheets">
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+    <Import Project="Emu.Frontend.Win32.props" />
   </ImportGroup>
   <PropertyGroup>
     <OutDir>$(SolutionDir)Build\$(Platform)\$(Configuration)\</OutDir>
@@ -54,18 +55,18 @@
       <WarningLevel>Level3</WarningLevel>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <ConformanceMode>true</ConformanceMode>
-      <!-- Own headers first, all under emuwin32/; Emu.Core's second. -->
-      <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)Emu.Core;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- Own headers first, all under emuwin32/; Emu.Core's second: both put there by
+           Emu.Frontend.Win32.props, as in every project that uses this one. -->
       <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <MultiProcessorCompilation>true</MultiProcessorCompilation>
     </ClCompile>
   </ItemDefinitionGroup>
   <!-- NVIDIA's RTX Video SDK, as PSXEmu.Win32.vcxproj has it: built in where it is unpacked by hand
-       into Temp\rtxvideo, x64 only. The executable links its library. -->
-  <ItemDefinitionGroup Condition="Exists('$(SolutionDir)Temp\rtxvideo\include\nvsdk_ngx.h') And '$(Platform)'=='x64'">
+       into Temp\rtxvideo ($(EmuFrontendSdkDir)), x64 only. The executable links its library. -->
+  <ItemDefinitionGroup Condition="Exists('$(EmuFrontendSdkDir)rtxvideo\include\nvsdk_ngx.h') And '$(Platform)'=='x64'">
     <ClCompile>
       <PreprocessorDefinitions>PSXEMU_RTX_VIDEO=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>$(SolutionDir)Temp\rtxvideo\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(EmuFrontendSdkDir)rtxvideo\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
@@ -108,7 +109,7 @@
     <ClCompile Include="emuwin32\upscale\fsr\fsr_download.cpp" />
     <!-- The packages' entries are inflated with Emu.Core's zlib. -->
     <ClCompile Include="emuwin32\upscale\texture\ai_download.cpp">
-      <AdditionalIncludeDirectories>$(SolutionDir)Emu.Core\emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(EmuCoreDir)emucore\lib\zlib;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <ClCompile Include="emuwin32\upscale\texture\onnx_runtime.cpp" />
     <ClCompile Include="emuwin32\upscale\texture\rtx_video.cpp" />
@@ -173,6 +174,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="CLAUDE.md" />
+    <None Include="Emu.Frontend.Win32.props" />
     <None Include="Emu.Frontend.Win32.targets" />
     <None Include="README.md" />
     <None Include="emuwin32\filters\shaders\build_spirv.bat" />

@@ -19,7 +19,11 @@ $Files = @(
     @{ Name = 'amd_fidelityfx_framegeneration_dx12.dll'; Size = 40085776; Blob = '1a06b72761086cb5561f8984ce0dc6a24a370e9e' }
 )
 
-$Root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')
+# The repository that has EmuLib as its submodule, where the build looks for Temp\ (Emu.Frontend.Win32.props);
+# EmuLib's own when it stands alone.
+$Root = $null
+try { $Root = git -C $PSScriptRoot rev-parse --show-superproject-working-tree 2>$null } catch { }
+if (-not $Root) { $Root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..') }
 $Folder = Join-Path $Root "Temp\fidelityfx\v$Version"
 
 # Git's id for a file: SHA-1 over "blob <size>\0" and the bytes.
