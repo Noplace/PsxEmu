@@ -49,6 +49,8 @@ namespace psxemu {
     using emulation::psx::System;
     using emulation::host::HostInput;
     using emulation::host::Machine;
+    using emulation::psx::CoreOf;
+    using emulation::psx::SystemOf;
     using emulation::host::MachineReport;
     using emulation::host::Presenter;
     using emulation::host::VideoOutput;
@@ -215,7 +217,7 @@ namespace psxemu {
             host.request = [this](DebuggerWindow::Change change, uint32_t center) {
                 PostToMachine([this, change = std::move(change), center](Machine& machine) {
                     if (change)
-                        change(machine.system().debugger());
+                        change(SystemOf(machine).debugger());
                     if (center != DebuggerWindow::kNoSnapshot)
                         SendDebuggerSnapshot(machine, center, false);
                 });
@@ -224,7 +226,7 @@ namespace psxemu {
                                        uint32_t center) {
                 PostToMachine([this, address, bytes = std::move(bytes), center](Machine& machine) {
                     std::string error;
-                    if (!machine.system().debugger().WriteMemory(
+                    if (!SystemOf(machine).debugger().WriteMemory(
                             address, bytes.data(), static_cast<uint32_t>(bytes.size()), &error)) {
                         const std::wstring message(error.begin(), error.end());
                         PostToUi([this, message] {
@@ -712,9 +714,7 @@ namespace psxemu {
             });
 
         Machine::Hooks hooks;
-        hooks.apply_input = [this](System& system, const HostInput& input) {
-            ApplyInput(system, input);
-        };
+        hooks.apply_input = [this](const HostInput& input) { ApplyInput(*system_, input); };
         hooks.report = [this](const MachineReport& report) { OnMachineReport(report); };
         hooks.frame_done = [this](const emulation::host::FrameSample& sample) {
             frame_stats_.Push(sample);
@@ -722,10 +722,10 @@ namespace psxemu {
         // Once a frame shown, on the real frame: what it printed and wrote. Cheats after every
         // frame emulated, so the frames run ahead have them too (EmuConfig::run_ahead).
         hooks.after_frame = [this](Machine& machine) {
-            CollectConsoleText(machine.system());
-            WatchMemoryCardWrites(machine.system());
+            CollectConsoleText(SystemOf(machine));
+            WatchMemoryCardWrites(SystemOf(machine));
         };
-        hooks.after_each_frame = [this](Machine& machine) { ApplyCheats(machine.system()); };
+        hooks.after_each_frame = [this](Machine& machine) { ApplyCheats(SystemOf(machine)); };
         // A movie's input is by frame number: run-ahead and rewind wait until it is over.
         hooks.may_run_ahead = [this] { return !movie_.playing(); };
         hooks.may_rewind = [this] { return !movie_.playing(); };
@@ -738,8 +738,10 @@ namespace psxemu {
         // Still the only thread: the boot already set up is the one the console starts in, and
         // needs no marker above it.
         console_session_ = system_->kernel().session();
-        machine_ = std::make_unique<Machine>(system_.get(), &video_->frames(), &audio_->samples(),
-                                             hooks);
+        core_ = std::make_unique<emulation::psx::PsxCore>(system_.get());
+        machine_ = std::make_unique<Machine>(core_.get(),
+                                             emulation::psx::MachineConfigFrom(system_->config()),
+                                             &video_->frames(), &audio_->samples(), hooks);
         input_ = std::make_unique<InputThread>(&machine_->input(), window_);
         input_->SetKeysInUse(KeysInUse(bindings_));
         input_->SetPadConnectionHandler(
@@ -864,7 +866,7 @@ namespace psxemu {
             config.pgxp_vertices = true;
         }
         SendFrameGenerationAllowed();
-        PostToMachine([config](Machine& machine) { machine.ApplyConfig(config); });
+        PostToMachine([config](Machine& machine) { emulation::psx::ApplyConfig(machine, config); });
     }
 
     // On the machine's thread. Nothing here may touch the window or the menus, so the whole report
@@ -1378,7 +1380,7 @@ namespace psxemu {
         // A port that has just become a multitap gets the disc's cards B-D, as SetControllerType
         // does for one chosen by hand.
         if (config_.controller_type != before.controller_type)
-            PostToMachine([this](Machine& machine) { SyncMultitapCards(machine.system(), false); });
+            PostToMachine([this](Machine& machine) { SyncMultitapCards(SystemOf(machine), false); });
         UpdateVolumeMenu();
         UpdateMultitapCardsMenu();
         UpdateFrameLimiterMenu();
@@ -1581,8 +1583,8 @@ namespace psxemu {
         SaveSettingsIfChanged();
         SendConfigToMachine();
         PostToMachine([this](Machine& machine) {
-            const bool hardware = machine.system().gpu().hardware_raster();
-            const std::string error = machine.system().gpu().raster_error();
+            const bool hardware = SystemOf(machine).gpu().hardware_raster();
+            const std::string error = SystemOf(machine).gpu().raster_error();
             PostToUi([this, hardware, error] { ReportRasteriser(hardware, error, true); });
         });
     }
@@ -1670,7 +1672,7 @@ namespace psxemu {
         std::shared_ptr<emulation::psx::TextureUpscaleQueue> ai = ai_textures_;
         const uint64_t budget = static_cast<uint64_t>(config_.texture_budget_mb) << 20;
         PostToMachine([dump, replace, budget, ai_folder, ai](Machine& machine) {
-            machine.SetTextures(dump, replace, budget, ai_folder, ai);
+            CoreOf(machine).SetTextures(dump, replace, budget, ai_folder, ai);
         });
     }
 
@@ -1727,7 +1729,7 @@ namespace psxemu {
         const emulation::psx::PlaneView shown = view == 1   ? emulation::psx::PlaneView::kDepth
                                                 : view == 2 ? emulation::psx::PlaneView::kMotion
                                                             : emulation::psx::PlaneView::kPicture;
-        PostToMachine([shown](Machine& machine) { machine.set_plane_view(shown); });
+        PostToMachine([shown](Machine& machine) { CoreOf(machine).set_plane_view(shown); });
     }
 
     // The Video Settings window's NVIDIA DLSS. The renderer is told, and says whether it runs;
@@ -2017,7 +2019,7 @@ namespace psxemu {
         upscaler_active_ = active;
         upscaler_scale_ = scale;
         upscaler_phases_ = phases;
-        PostToMachine([active, phases](Machine& machine) { machine.set_dlss(active, phases); });
+        PostToMachine([active, phases](Machine& machine) { CoreOf(machine).set_dlss(active, phases); });
         // The scale and PGXP: a new scale makes the rasteriser again, between frames.
         if (rescaled)
             SendConfigToMachine();
@@ -2212,8 +2214,8 @@ namespace psxemu {
         SaveSettingsIfChanged();
         SendConfigToMachine();
         PostToMachine([this, done](Machine& machine) {
-            const bool hardware = machine.system().gpu().hardware_raster();
-            const std::string error = machine.system().gpu().raster_error();
+            const bool hardware = SystemOf(machine).gpu().hardware_raster();
+            const std::string error = SystemOf(machine).gpu().raster_error();
             PostToUi([this, hardware, error, done] {
                 ReportRasteriser(hardware, error, false);
                 if (error.empty())
@@ -2279,9 +2281,9 @@ namespace psxemu {
         if (!config_.hardware_raster())
             return;
         PostToMachine([this](Machine& machine) {
-            machine.system().gpu().ChooseRasteriser();
-            const bool hardware = machine.system().gpu().hardware_raster();
-            const std::string error = machine.system().gpu().raster_error();
+            SystemOf(machine).gpu().ChooseRasteriser();
+            const bool hardware = SystemOf(machine).gpu().hardware_raster();
+            const std::string error = SystemOf(machine).gpu().raster_error();
             PostToUi([this, hardware, error] { ReportRasteriser(hardware, error, false); });
         });
     }
@@ -2359,7 +2361,7 @@ namespace psxemu {
         SendConfigToMachine();
         // A port just given a multitap gets the disc's cards B-D in its three new sockets.
         if (key == "multitap")
-            PostToMachine([this](Machine& machine) { SyncMultitapCards(machine.system(), false); });
+            PostToMachine([this](Machine& machine) { SyncMultitapCards(SystemOf(machine), false); });
         // Whether any port is a mouse decides whether the cursor may be captured.
         SendMouseSettingsToInput();
         controller_bindings_.OnConfigChanged();
@@ -2519,7 +2521,7 @@ namespace psxemu {
     // The ANALOG button from the menu, for a pad the keyboard is not driving - an XInput pad has
     // no spare button to put it on. On a multitap port it presses player A's (bug 97).
     void App::PressAnalogButton(int port) {
-        PostToMachine([port](Machine& machine) { machine.system().sio().PressAnalogButton(port); });
+        PostToMachine([port](Machine& machine) { SystemOf(machine).sio().PressAnalogButton(port); });
     }
 
     void App::UpdateShowTimingsMenu() { TickShowTimings(window_, config_.show_timings); }
@@ -2626,7 +2628,7 @@ namespace psxemu {
 
     void App::RefreshMemoryCardEditor() {
         PostToMachine([this](Machine& machine) {
-            auto cards = SnapshotCards(machine.system());
+            auto cards = SnapshotCards(SystemOf(machine));
             PostToUi([this, cards = std::move(cards)] { card_editor_.SetCards(cards); });
         });
     }
@@ -2636,7 +2638,7 @@ namespace psxemu {
     // before - and saved at once, since an editor's change is one the person means to keep.
     void App::EditMemoryCard(int card, MemoryCardEditor::Edit edit) {
         PostToMachine([this, card, edit = std::move(edit)](Machine& machine) {
-            emulation::psx::MC& mc = machine.system().mc(card / 4, card % 4);
+            emulation::psx::MC& mc = SystemOf(machine).mc(card / 4, card % 4);
             std::string error;
             bool ok = false;
             if (!mc.connected()) {
@@ -2648,7 +2650,7 @@ namespace psxemu {
                 if (!ok)
                     error = "The change was made, but the card file could not be written.";
             }
-            auto cards = SnapshotCards(machine.system());
+            auto cards = SnapshotCards(SystemOf(machine));
             PostToUi([this, cards = std::move(cards), ok, error] {
                 card_editor_.SetCards(cards);
                 const std::wstring message(error.begin(), error.end());
@@ -2667,7 +2669,7 @@ namespace psxemu {
             return;
         PostToMachine([this, card, path](Machine& machine) {
             // Inserting ejects - and so saves - whatever card was in the slot first.
-            const bool ok = machine.system().mc(card / 4, card % 4).LoadFile(path.c_str()) == S_OK;
+            const bool ok = SystemOf(machine).mc(card / 4, card % 4).LoadFile(path.c_str()) == S_OK;
             PostToUi([this, ok, path, card] {
                 if (ok) {
                     Notify(OverlayIcon::kCard, ToastKind::kSuccess,
@@ -2721,7 +2723,7 @@ namespace psxemu {
         if (path.empty())
             return;
         PostToMachine([this, card, path](Machine& machine) {
-            const bool ok = machine.system().mc(card / 4, card % 4).CreateFile(path.c_str()) == S_OK;
+            const bool ok = SystemOf(machine).mc(card / 4, card % 4).CreateFile(path.c_str()) == S_OK;
             PostToUi([this, ok, path, card] {
                 if (!ok)
                     ShowWarning(window_, L"Could not create that memory card file.");
@@ -2737,7 +2739,7 @@ namespace psxemu {
 
     void App::EjectMemoryCard(int card) {
         PostToMachine([this, card](Machine& machine) {
-            machine.system().mc(card / 4, card % 4).Eject();
+            SystemOf(machine).mc(card / 4, card % 4).Eject();
             PostToUi([this, card] {
                 Notify(OverlayIcon::kCard, ToastKind::kInfo,
                        L"Memory card ejected from port " + std::to_wstring(card / 4 + 1));
@@ -2836,9 +2838,9 @@ namespace psxemu {
 
     // On the machine's thread, like everything the debugger window asks for.
     void App::SendDebuggerSnapshot(Machine& machine, uint32_t center, bool from_halt) {
-        emulation::psx::Debugger& debugger = machine.system().debugger();
+        emulation::psx::Debugger& debugger = SystemOf(machine).debugger();
         if (center == DebuggerWindow::kAtPc)
-            center = machine.system().cpu().context()->pc;
+            center = SystemOf(machine).cpu().context()->pc;
         auto snapshot = std::make_shared<emulation::psx::Debugger::Snapshot>();
         debugger.Capture(snapshot.get(), center, DebuggerWindow::kLines);
         PostToUi([this, snapshot, from_halt] {
@@ -2862,7 +2864,7 @@ namespace psxemu {
     void App::ResetMachine() {
         const std::string bios = bios_path_;
         PostToMachine([this, bios](Machine& machine) {
-            System& system = machine.system();
+            System& system = SystemOf(machine);
             DropMovie();
             system.Deinitialize();
             if (system.Initialize(bios.c_str()) != 0) {
@@ -2886,7 +2888,7 @@ namespace psxemu {
         const EmuConfig global = GlobalConfig();
         const std::string settings_dir = game_settings_dir_;
         PostToMachine([this, bios, path, global, settings_dir](Machine& machine) {
-            System& system = machine.system();
+            System& system = SystemOf(machine);
             DropMovie();
             system.Deinitialize();
             if (system.Initialize(bios.c_str()) != 0) {
@@ -2911,7 +2913,7 @@ namespace psxemu {
             // hand-off below reads skip_bios_intro, before the memory cards (a multitap port
             // gets three more), and before a single instruction runs.
             GameLookup game = LookUpGame(system, path, global, settings_dir);
-            machine.ApplyConfig(game.config);
+            emulation::psx::ApplyConfig(machine, game.config);
 
             // Already mounted, so there is nothing left for the hand-off to load itself - just arm
             // it before the machine starts running.
@@ -2960,7 +2962,7 @@ namespace psxemu {
         LeaveGame();
         const std::string bios = bios_path_;
         PostToMachine([this, bios](Machine& machine) {
-            System& system = machine.system();
+            System& system = SystemOf(machine);
             DropMovie();
             system.Deinitialize();
             if (system.Initialize(bios.c_str()) != 0) {
@@ -3001,7 +3003,7 @@ namespace psxemu {
         LeaveGame();
         const std::string bios = bios_path_;
         PostToMachine([this, bios, path](Machine& machine) {
-            System& system = machine.system();
+            System& system = SystemOf(machine);
             DropMovie();
             system.Deinitialize();
             if (system.Initialize(bios.c_str()) != 0) {
@@ -3042,7 +3044,7 @@ namespace psxemu {
             images.push_back(bios_root_ + "\\" + file);
         PostToMachine([this, path, selected = bios, cards, images](Machine& machine) {
             using emulation::psx::Movie;
-            System& system = machine.system();
+            System& system = SystemOf(machine);
             std::string bios = selected;
             auto refuse = [this](const std::wstring& why) {
                 PostToUi([this, why] { ShowWarning(window_, why.c_str()); });
@@ -3652,17 +3654,17 @@ namespace psxemu {
 
     void App::SaveOrLoadState(int slot, bool save) {
         PostToMachine([this, slot, save](Machine& machine) {
-            const std::string path = SaveStateSlotPath(machine.system(), slot);
+            const std::string path = SaveStateSlotPath(SystemOf(machine), slot);
             // Which texture uploads are live, beside the state, so a load names - and upscales -
             // its textures from its first frame (Docs/Texture-Upscaling-Plan.md).
             if (!save)
-                machine.LoadTextureUploads(path + ".textures");
-            const std::string error = save ? machine.system().SaveState(path)
-                                           : machine.system().LoadState(path);
+                CoreOf(machine).LoadTextureUploads(path + ".textures");
+            const std::string error = save ? SystemOf(machine).SaveState(path)
+                                           : SystemOf(machine).LoadState(path);
             if (save && error.empty())
-                machine.SaveTextureUploads(path + ".textures");
+                CoreOf(machine).SaveTextureUploads(path + ".textures");
             if (!save && !error.empty())
-                machine.LoadTextureUploads(std::string());   // not kept for another load
+                CoreOf(machine).LoadTextureUploads(std::string());   // not kept for another load
             if (!save) {
                 machine.ResetPacing();
                 machine.ForgetHistory();
@@ -5052,7 +5054,7 @@ namespace psxemu {
             machine.SetPaused(emulation::host::kPausedForPicker, true);
             std::vector<std::string> paths;
             for (int slot = 1; slot <= 8; ++slot)
-                paths.push_back(SaveStateSlotPath(machine.system(), slot));
+                paths.push_back(SaveStateSlotPath(SystemOf(machine), slot));
             PostToUi([this, paths] {
                 if (!picker_open_)
                     return;
@@ -5174,8 +5176,8 @@ namespace psxemu {
                 if (path.empty())
                     break;
                 PostToMachine([this, path](Machine& machine) {
-                    if (!machine.system().LoadDisc(path.c_str())) {
-                        const std::string reason = machine.system().cdrom().disc().open_error();
+                    if (!SystemOf(machine).LoadDisc(path.c_str())) {
+                        const std::string reason = SystemOf(machine).cdrom().disc().open_error();
                         PostToUi([this, reason] {
                             ShowWarning(window_, DiscFailureText(reason).c_str());
                         });
@@ -5191,7 +5193,7 @@ namespace psxemu {
 
             case kCommandEjectDisc:
                 PostToMachine([this](Machine& machine) {
-                    machine.system().EjectDisc();
+                    SystemOf(machine).EjectDisc();
                     PostToUi([this] { SetWindowTitleForPath(std::string()); });
                 });
                 break;
@@ -5290,7 +5292,7 @@ namespace psxemu {
                                   MF_BYCOMMAND | (view_vram_ ? MF_CHECKED : MF_UNCHECKED));
                 }
                 const bool on = view_vram_;
-                PostToMachine([on](Machine& machine) { machine.set_view_vram(on); });
+                PostToMachine([on](Machine& machine) { machine.set_raw_view(on); });
                 break;
             }
 
@@ -5308,7 +5310,7 @@ namespace psxemu {
                            L"View > Video Settings > Textures to turn them on");
                     break;
                 }
-                PostToMachine([](Machine& machine) { machine.ReloadTextures(); });
+                PostToMachine([](Machine& machine) { CoreOf(machine).ReloadTextures(); });
                 Notify(OverlayIcon::kScreen, ToastKind::kInfo, L"Textures reloaded");
                 break;
 

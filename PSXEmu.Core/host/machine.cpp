@@ -1,11 +1,7 @@
 #include "host/machine.h"
 
-#include "psx/psx.h"
 #include "emucore/state/rewind_buffer.h"
-#include "render/texture_pack.h"
-#include "render/texture_tracker.h"
 
-#include <cstdio>
 #include <utility>
 
 namespace emulation {
@@ -13,38 +9,29 @@ namespace host {
 
 namespace {
 
-// One read of the SPU's buffer: a frame at 30 fps, more than a frame ever
-// makes. A frame that ran long - the instruction guard - leaves the rest for
-// the next read, which PumpAudio does straight away.
-const int kScratchFrames = psx::Spu::kSampleRate / 30;
-
 double Ms(std::chrono::steady_clock::duration d) {
   return std::chrono::duration<double, std::milli>(d).count();
 }
 
 }  // namespace
 
-// Run-ahead's kept state, and rewind's: the one being taken for its store, or stepped back to.
-struct Machine::Ahead {
-  psx::System::MemoryState state;
-  psx::System::MemoryState rewind_state;
-};
-
-Machine::Machine(psx::System* system, FrameMailbox* video, SampleRing* audio, Hooks hooks)
-    : system_(system), video_(video), audio_(audio), hooks_(std::move(hooks)) {
-  scratch_.resize(static_cast<size_t>(kScratchFrames) * SampleRing::kChannels);
+Machine::Machine(ICore* core, const MachineConfig& config, FrameMailbox* video, SampleRing* audio,
+                 Hooks hooks)
+    : core_(core),
+      video_(video),
+      audio_(audio),
+      hooks_(std::move(hooks)),
+      scratch_frames_(core->sample_rate() / 30),
+      audio_target_frames_(core->sample_rate() * 40 / 1000),
+      config_(config) {
+  scratch_.resize(static_cast<size_t>(scratch_frames_) * SampleRing::kChannels);
   // What the trim steers for, and what the audio thread catches up to if the
   // ring ever runs far past it.
-  audio_->set_target_frames(kAudioTargetFrames);
-  // What is shown is picture() (PublishFrame); the native framebuffer beside a sharper one is
-  // for measuring, and costs a wait for the hardware rasteriser every frame.
-  system_->gpu().set_native_picture(false);
+  audio_->set_target_frames(audio_target_frames_);
 }
 
 Machine::~Machine() {
   Stop();
-  // The GPU outlives this: nothing of the machine's may be left watching it.
-  SetTextures(std::string(), std::string(), 0, std::string(), nullptr);
 }
 
 void Machine::Start(uint32_t pause_reasons) {
@@ -70,19 +57,11 @@ void Machine::SetPaused(uint32_t reason, bool on) {
     pause_reasons_ &= ~reason;
 }
 
-void Machine::ApplyConfig(const psx::EmuConfig& config) {
-  psx::EmuConfig& current = system_->config();
-  const bool pacing_changed = current.frame_limiter != config.frame_limiter ||
-                              current.emulation_speed != config.emulation_speed ||
-                              current.frame_pacing != config.frame_pacing;
-  const bool rasteriser_changed = current.gpu_rasteriser != config.gpu_rasteriser ||
-                                  current.resolution_scale != config.resolution_scale ||
-                                  current.true_color != config.true_color ||
-                                  current.texture_budget_mb != config.texture_budget_mb ||
-                                  current.texture_filter != config.texture_filter;
-  current = config;
-  if (rasteriser_changed)
-    system_->gpu().ChooseRasteriser();
+void Machine::ApplyConfig(const MachineConfig& config) {
+  const bool pacing_changed = config_.frame_limiter != config.frame_limiter ||
+                              config_.emulation_speed != config.emulation_speed ||
+                              config_.frame_pacing != config.frame_pacing;
+  config_ = config;
   if (pacing_changed) {
     ResetPacing();
     // Start the sound at the new setting rather than letting it slide there over
@@ -106,7 +85,7 @@ void Machine::Run() {
       break;
     // The debugger's pause follows the debugger: a request that stepped, resumed or reset the
     // machine has un-halted it, and that is all it needs to do to set it running again.
-    if ((pause_reasons_ & kPausedByDebugger) != 0 && !system_->debugger().halted())
+    if ((pause_reasons_ & kPausedByDebugger) != 0 && !core_->halted())
       pause_reasons_ &= ~kPausedByDebugger;
 
     if (pause_reasons_ != 0) {
@@ -114,9 +93,7 @@ void Machine::Run() {
         idle = true;
         audio_->set_producing(false);
         // A save made just before pausing is on disk now, not a second of running later.
-        for (int port = 0; port < 2; ++port)
-          for (int slot = 0; slot < psx::System::kCardSlotsPerPort; ++slot)
-            system_->mc(port, slot).Flush();
+        core_->FlushSaves();
         Report(true);
       }
       // Requests ring the bell, so this is only how long an idle machine goes
@@ -150,22 +127,22 @@ void Machine::Run() {
     }
     // NVIDIA Reflex, while DLSS Frame Generation runs (emucore/host/latency_markers.h): the next
     // picture's simulation starts at the first vblank after the last one was drawn.
-    if (latency_ != nullptr && latency_picture_ <= system_->gpu().picture_number()) {
-      latency_picture_ = system_->gpu().picture_number() + 1;
+    if (latency_ != nullptr && latency_picture_ <= core_->picture_number()) {
+      latency_picture_ = core_->picture_number() + 1;
       latency_->Sleep(latency_picture_);
       latency_->Mark(LatencyMarkers::Marker::kSimulationStart, latency_picture_);
     }
     if (hooks_.apply_input)
-      hooks_.apply_input(*system_, input_.Take());
+      hooks_.apply_input(input_.Take());
     if (latency_ != nullptr)
       latency_->Mark(LatencyMarkers::Marker::kInputSample, latency_picture_);
     const Clock::time_point input_taken = Clock::now();
     RunOneFrame();
     const Clock::time_point emulated = Clock::now();
     // ...and ends at the vblank that resolved it.
-    if (latency_ != nullptr && system_->gpu().picture_number() >= latency_picture_)
+    if (latency_ != nullptr && core_->picture_number() >= latency_picture_)
       latency_->Mark(LatencyMarkers::Marker::kSimulationEnd, latency_picture_);
-    if (system_->debugger().halted()) {
+    if (core_->halted()) {
       // Mid-frame: nothing to publish, no sound to pump, no pace to keep.
       SetPaused(kPausedByDebugger, true);
       if (hooks_.halted)
@@ -193,11 +170,10 @@ void Machine::Run() {
       hooks_.after_frame(*this);
     if (ahead > 0)
       RunAhead(ahead);
-    // Memory cards go to disk a second after the game stops writing them (psx/mc.h) - on the
-    // real frames' account: after run-ahead's load back, never with a frame ahead's write in.
-    for (int port = 0; port < 2; ++port)
-      for (int slot = 0; slot < psx::System::kCardSlotsPerPort; ++slot)
-        system_->mc(port, slot).OnFrame();
+    // What the console writes behind - PSXEmu's memory cards, a second after the game stops
+    // writing them (psx/mc.h) - on the real frames' account: after run-ahead's load back, never
+    // with a frame ahead's write in.
+    core_->OnFrameEnd();
     // Rewind's store: the end of a real frame, every rewind_interval of them.
     KeepForRewind();
     const Clock::time_point handed_over = Clock::now();
@@ -208,7 +184,7 @@ void Machine::Run() {
     // covered: the speed the machine is managing, whatever it was asked for.
     // Measured after Pace so the limiter's sleep counts - a machine with
     // headroom is running at exactly the speed it was told to.
-    const double refresh = system_->gpu().refresh_hz();
+    const double refresh = core_->refresh_hz();
     const double real_seconds = Ms(paced - start) / 1000.0;
     const double asked = PacedSpeed();
     if (refresh > 0.0 && real_seconds > 0.0) {
@@ -266,45 +242,26 @@ void Machine::Run() {
   audio_->set_producing(false);
 }
 
-// Runs the machine until the GPU says a frame is finished - the same loop
-// boot_runner runs, which is what makes the two comparable.
+// Runs the console until its frame is finished - for the PSX, the same loop boot_runner runs,
+// which is what makes the two comparable. A halt returns mid-frame, with the steps run so far
+// kept, and the next call carries on towards the same frame's end.
 void Machine::RunOneFrame() {
-  const uint64_t target = system_->gpu().frame_count() + 1;
-  // Nothing arms the debugger in the middle of a frame - the window's requests are drained
-  // between frames - so an unarmed one is asked once here, not once an instruction.
-  if (!system_->debugger().armed()) {
-    while (system_->gpu().frame_count() < target &&
-           frame_instructions_ < kMaxInstructionsPerFrame) {
-      system_->StepInstructionUnarmed();
-      ++frame_instructions_;
-      ++instructions_;
-    }
+  const uint64_t before = frame_instructions_;
+  const bool finished = core_->RunFrame(&frame_instructions_, kMaxInstructionsPerFrame);
+  instructions_ += frame_instructions_ - before;
+  if (finished)
     frame_instructions_ = 0;
-    return;
-  }
-  while (system_->gpu().frame_count() < target &&
-         frame_instructions_ < kMaxInstructionsPerFrame) {
-    // A halt ran nothing, so it is not an instruction; the frame carries on from here when the
-    // debugger lets it, towards the same frame boundary.
-    if (!system_->StepInstruction())
-      return;
-    ++frame_instructions_;
-    ++instructions_;
-  }
-  frame_instructions_ = 0;
 }
 
 int Machine::RunAheadFrames() {
-  const psx::EmuConfig& config = system_->config();
-  int frames = config.run_ahead;
+  int frames = config_.run_ahead;
   if (frames <= 0 || run_ahead_failed_)
     return 0;
-  if (frames > psx::EmuConfig::kMaxRunAhead)
-    frames = psx::EmuConfig::kMaxRunAhead;
-  // Interpreted, even one frame ahead does not fit in a frame (Docs/Rewind-and-Run-Ahead-Plan.md:
-  // Ridge Racer's frame alone was 24 ms) - and with PGXP on the interpreter is what runs. An
-  // armed debugger could halt in a frame that never happens.
-  if (!system_->recompiler_enabled() || system_->debugger().armed())
+  if (frames > MachineConfig::kMaxRunAhead)
+    frames = MachineConfig::kMaxRunAhead;
+  // A core too slow for it (the PSX's interpreter: Docs/Rewind-and-Run-Ahead-Plan.md, Ridge
+  // Racer's frame alone was 24 ms). An armed debugger could halt in a frame that never happens.
+  if (!core_->RunAheadFits() || core_->debugger_armed())
     return 0;
   if (hooks_.may_run_ahead && !hooks_.may_run_ahead())
     return 0;
@@ -317,39 +274,29 @@ int Machine::RunAheadFrames() {
 // one shown, and the machine goes back. Nothing in the real frames changes for it:
 // boot_runner --run-ahead, which does the same, leaves the twelve-disc table exactly as it was.
 void Machine::RunAhead(int frames) {
-  if (ahead_ == nullptr)
-    ahead_.reset(new Ahead());
-  system_->SaveMemoryState(&ahead_->state, /*with_cards=*/true);
-  // The save waited for the rasteriser. The texture tracker keeps its records for the load back,
-  // so replacements carry on rather than starting over every frame.
-  if (texture_tracker_)
-    texture_tracker_->Hold();
+  if (ahead_state_ == nullptr)
+    ahead_state_ = core_->NewMemoryState();
+  core_->SaveBeforeRunAhead(ahead_state_.get());
   const Clock::time_point start = Clock::now();
   for (int i = 0; i < frames; ++i) {
     // As RunOneFrame does it, unarmed (RunAheadFrames), and not counted as the machine's.
-    const uint64_t target = system_->gpu().frame_count() + 1;
     uint64_t steps = 0;
-    while (system_->gpu().frame_count() < target && steps < kMaxInstructionsPerFrame) {
-      system_->StepInstructionUnarmed();
-      ++steps;
-    }
+    core_->RunFrame(&steps, kMaxInstructionsPerFrame);
     if (hooks_.after_each_frame)
       hooks_.after_each_frame(*this);
-    while (system_->spu().ReadSamples(scratch_.data(), kScratchFrames) > 0) {
+    while (core_->ReadSamples(scratch_.data(), scratch_frames_) > 0) {
     }
   }
   ahead_ms_ = Ms(Clock::now() - start);
   PublishFrame();
   // Only a disc that has gone could fail this, and then the machine is wherever the load
   // stopped: run-ahead stays off from then on rather than doing it again every frame.
-  if (!system_->LoadMemoryState(ahead_->state, /*continuing=*/true).empty())
+  if (!core_->LoadAfterRunAhead(*ahead_state_))
     run_ahead_failed_ = true;
-  if (texture_tracker_)
-    texture_tracker_->Release();
 }
 
 bool Machine::RewindAllowed() const {
-  if (system_->config().rewind_interval <= 0 || system_->debugger().armed())
+  if (config_.rewind_interval <= 0 || core_->debugger_armed())
     return false;
   return !hooks_.may_rewind || hooks_.may_rewind();
 }
@@ -358,42 +305,41 @@ bool Machine::RewindAllowed() const {
 // rewind's store, every rewind_interval frames. The save is all it costs here (0.13-0.29 ms);
 // making its delta is the store's worker's. Without the cards: rewind leaves them as they are.
 void Machine::KeepForRewind() {
-  const psx::EmuConfig& config = system_->config();
-  if (config.rewind_interval <= 0) {
+  if (config_.rewind_interval <= 0) {
     rewind_.reset();   // turned off: the memory goes back
     return;
   }
   if (!RewindAllowed())
     return;
-  const size_t budget = static_cast<size_t>(config.rewind_budget_mb) << 20;
+  const size_t budget = static_cast<size_t>(config_.rewind_budget_mb) << 20;
   if (rewind_ == nullptr)
     rewind_.reset(new state::RewindBuffer(budget));
   else
     rewind_->set_budget(budget);
   if (--rewind_countdown_ > 0)
     return;
-  rewind_countdown_ = config.rewind_interval;
-  if (ahead_ == nullptr)
-    ahead_.reset(new Ahead());
-  system_->SaveMemoryState(&ahead_->rewind_state, /*with_cards=*/false);
-  rewind_->Push(&ahead_->rewind_state.payload);
+  rewind_countdown_ = config_.rewind_interval;
+  if (rewind_state_ == nullptr)
+    rewind_state_ = core_->NewMemoryState();
+  core_->SaveForRewind(rewind_state_.get());
+  rewind_->Push(rewind_state_->payload());
 }
 
 // One step back: the newest state kept is loaded and shown, and the one before becomes the
 // newest, so holding Backspace walks back a kept state a frame. At the oldest it stays there.
-// The SPU's output since is dropped and the device plays silence until Backspace is let go.
+// The core's sound since is dropped and the device plays silence until Backspace is let go.
 bool Machine::StepBack() {
   if (rewind_ == nullptr || !RewindAllowed())
     return false;
-  if (ahead_ == nullptr)
-    ahead_.reset(new Ahead());
-  if (!rewind_->Pop(&ahead_->rewind_state.payload))
+  if (rewind_state_ == nullptr)
+    rewind_state_ = core_->NewMemoryState();
+  if (!rewind_->Pop(rewind_state_->payload()))
     return false;
-  if (!system_->LoadMemoryState(ahead_->rewind_state).empty()) {
+  if (!core_->LoadForRewind(*rewind_state_)) {
     rewind_->Clear();
     return false;
   }
-  while (system_->spu().ReadSamples(scratch_.data(), kScratchFrames) > 0) {
+  while (core_->ReadSamples(scratch_.data(), scratch_frames_) > 0) {
   }
   audio_->set_producing(false);
   PublishFrame();
@@ -406,150 +352,12 @@ void Machine::ForgetHistory() {
   rewind_countdown_ = 0;
 }
 
-void Machine::set_plane_view(psx::PlaneView view) {
-  plane_view_ = view;
-  system_->gpu().SetPlanes(dlss_, view);
-}
-
-void Machine::SetTextures(const std::string& dump, const std::string& replace,
-                          uint64_t memory_budget, const std::string& ai_folder,
-                          std::shared_ptr<psx::TextureUpscaleQueue> ai) {
-  psx::Gpu& gpu = system_->gpu();
-  if (ai_folder.empty())
-    ai.reset();
-  // An upscaler going, or another coming: the old one told of nothing more, and given no pack.
-  if (ai != texture_ai_) {
-    if (texture_tracker_) {
-      gpu.set_raster_observer(texture_tracker_.get());   // waits for the rasteriser
-      texture_tracker_->set_upscale_queue(nullptr);
-    }
-    if (texture_ai_)
-      texture_ai_->set_pack(nullptr);
-    texture_ai_ = ai;
-  }
-  if (dump.empty() && replace.empty() && !texture_ai_) {
-    gpu.set_texture_replacer(nullptr);
-    gpu.set_raster_observer(nullptr);   // waits for the rasteriser
-    texture_pack_.reset();
-    if (texture_tracker_)
-      texture_tracker_->Flush();   // what it was gathering written first
-    texture_tracker_.reset();
-    texture_dump_.clear();
-    texture_replace_.clear();
-    texture_ai_folder_.clear();
-    replacement_error_.clear();
-    return;
-  }
-  if (!texture_tracker_) {
-    // Records start empty: what the game uploaded before is not known, and is named once it
-    // uploads it again - the next level, the next scene.
-    texture_tracker_ = std::make_unique<psx::TextureTracker>(gpu.vram());
-    gpu.set_raster_observer(texture_tracker_.get());
-  }
-  if (dump != texture_dump_) {
-    texture_tracker_->Flush();   // waits for the rasteriser; what was gathered written where it was going
-    texture_tracker_->set_dump_folder(dump, 8, true);
-    texture_dump_ = dump;
-  }
-  // The pack: the game's own replacements, the upscaler's, or both.
-  if (replace.empty() && !texture_ai_) {
-    gpu.set_texture_replacer(nullptr);
-    texture_pack_.reset();
-    texture_replace_.clear();
-    texture_ai_folder_.clear();
-    replacement_error_.clear();
-    return;
-  }
-  if (!texture_pack_) {
-    texture_pack_ = std::make_unique<psx::TexturePack>(texture_tracker_.get());
-    texture_replace_.clear();
-    texture_ai_folder_.clear();
-    pack_opened_ = false;
-  }
-  texture_pack_->set_memory_budget(memory_budget);
-  const std::string upscaled = texture_ai_ ? ai_folder : std::string();
-  if (!pack_opened_ || replace != texture_replace_ || upscaled != texture_ai_folder_) {
-    texture_replace_ = replace;
-    texture_ai_folder_ = upscaled;
-    pack_opened_ = true;
-    ReloadTextures();
-  }
-  if (texture_ai_) {
-    gpu.set_raster_observer(texture_tracker_.get());   // waits for the rasteriser
-    texture_ai_->set_pack(texture_pack_.get());
-    texture_tracker_->set_upscale_queue(texture_ai_.get());
-  }
-}
-
-void Machine::ReloadTextures() {
-  if (!texture_pack_)
-    return;
-  psx::Gpu& gpu = system_->gpu();
-  gpu.set_texture_replacer(nullptr);   // waits for the rasteriser
-  if (texture_pack_->Open(texture_replace_, &replacement_error_, texture_ai_folder_)) {
-    replacement_error_.clear();
-    gpu.set_texture_replacer(texture_pack_.get());
-  } else {
-    texture_pack_->Close();
-  }
-}
-
-void Machine::SaveTextureUploads(const std::string& path) const {
-  // The save has just waited for the rasteriser; nothing is being drawn.
-  if (!texture_tracker_ || !psx::TextureTracker::WriteUploads(path, texture_tracker_->LiveUploads()))
-    std::remove(path.c_str());   // an older one would say nothing true of this state
-}
-
-void Machine::LoadTextureUploads(const std::string& path) {
-  // Without the file - or with an empty path, after a load that failed - the next load brings
-  // back what this run saw.
-  std::vector<psx::TextureTracker::Upload> uploads;
-  if (!texture_tracker_)
-    return;
-  texture_tracker_->ForgetNextLoad();
-  if (!path.empty() && psx::TextureTracker::ReadUploads(path, &uploads))
-    texture_tracker_->NextLoad(std::move(uploads));
-}
-
-void Machine::set_dlss(bool on, int jitter_phases) {
-  dlss_ = on;
-  system_->gpu().SetPlanes(on, plane_view_);
-  system_->gpu().SetJitter(on ? jitter_phases : 0);
-}
-
-// The frame is resolved at the start of vblank, which is exactly when
-// RunOneFrame returns - so this copies a finished picture, never a half-drawn
-// one. About a tenth of a millisecond for 640x480.
+// RunOneFrame returns as the console's frame is finished, so what the core fills this with is a
+// finished picture, never a half-drawn one.
 void Machine::PublishFrame() {
   VideoFrame& frame = video_->back();
   frame.number = ++frame_number_;
-  if (view_vram_) {
-    const int width = psx::GpuCore::kVramWidth;
-    const int height = psx::GpuCore::kVramHeight;
-    const uint16_t* vram = system_->gpu().vram();
-    frame.raw.assign(vram, vram + static_cast<size_t>(width) * height);
-    frame.raw_format = VideoFrame::RawFormat::kBgr555;
-    frame.shared = image::SharedPicture();
-    frame.width = width;
-    frame.height = height;
-  } else if (const image::SharedPicture& shared = system_->gpu().shared_picture()) {
-    // Left on the graphics card by the hardware rasteriser: nothing to copy.
-    frame.pixels.clear();
-    frame.shared = shared;
-    frame.raw_format = VideoFrame::RawFormat::kNone;
-    frame.width = shared.width;
-    frame.height = shared.height;
-  } else {
-    int width = 0;
-    int height = 0;
-    // At the hardware rasteriser's resolution, when that is higher than native.
-    const uint32_t* pixels = system_->gpu().picture(width, height);
-    frame.pixels.assign(pixels, pixels + static_cast<size_t>(width) * height);
-    frame.shared = image::SharedPicture();
-    frame.raw_format = VideoFrame::RawFormat::kNone;
-    frame.width = width;
-    frame.height = height;
-  }
+  core_->FillFrame(&frame, raw_view_);
   published_shared_ = static_cast<bool>(frame.shared);
   // The slot handed back to fill next held either a frame the video thread never took - whose
   // picture on the card nobody will read, so the rasteriser can draw the next into it at once -
@@ -561,8 +369,8 @@ void Machine::PublishFrame() {
   returned.shared = image::SharedPicture();
 }
 
-// The SPU makes 44,100 samples per *emulated* second and the device drains
-// 44,100 per real one, so anything but 100% is resampled on the way out.
+// The core makes its sample rate's worth per *emulated* second - the PSX's SPU 44,100 - and the
+// device drains as many per real one, so anything but 100% is resampled on the way out.
 //
 // The ratio is the speed the machine is *managing*, not the one it was asked
 // for. Where the host keeps up those are the same number and nothing changes.
@@ -581,11 +389,11 @@ void Machine::PublishFrame() {
 // is why it can stay that small.
 void Machine::PumpAudio() {
   for (;;) {
-    const int frames = system_->spu().ReadSamples(scratch_.data(), kScratchFrames);
+    const int frames = core_->ReadSamples(scratch_.data(), scratch_frames_);
     if (frames <= 0)
       break;
     const double error =
-        static_cast<double>(audio_->Available() - kAudioTargetFrames) / kAudioTargetFrames;
+        static_cast<double>(audio_->Available() - audio_target_frames_) / audio_target_frames_;
     // Two regimes, and the line between them is whether the host keeps up.
     //
     // Keeping up - nearly always: resample by exactly the speed asked for, and
@@ -618,19 +426,19 @@ void Machine::PumpAudio() {
 // limiter off it is paced by nothing, and the deadline is dropped so turning it
 // back on starts a fresh one rather than owing however long it ran unpaced.
 //
-// Matching the display (EmuConfig::frame_pacing, emucore/timing/display_sync.h) changes the rate to
+// Matching the display (MachineConfig::frame_pacing, emucore/timing/display_sync.h) changes the rate to
 // the display's, or a whole fraction of it, when that is near enough the console's - and then
 // moves each deadline a little towards a fixed point after the display's vblank, so the frames
 // stay where the refreshes are rather than only as many. Only at 100%: any other speed is not
 // meant to keep step with anything.
 void Machine::Pace() {
-  const psx::EmuConfig& config = system_->config();
+  const MachineConfig& config = config_;
   if (!config.frame_limiter) {
     display_match_ = timing::DisplayMatch();
     limiter_.Reset();
     return;
   }
-  const double console_hz = system_->gpu().refresh_hz();
+  const double console_hz = core_->refresh_hz();
   timing::DisplayTiming display;
   timing::DisplayMatch match;
   if (config.frame_pacing == "display" && hooks_.display_timing &&
@@ -683,7 +491,7 @@ void Machine::Pace() {
 
 double Machine::PacedSpeed() const {
   const double asked =
-      system_->config().emulation_speed > 0.0 ? system_->config().emulation_speed : 1.0;
+      config_.emulation_speed > 0.0 ? config_.emulation_speed : 1.0;
   return display_match_.locked ? asked * display_match_.ratio : asked;
 }
 
@@ -696,7 +504,7 @@ void Machine::Resume() {
   // whether the machine keeps up. What was learned before the pause stands:
   // pausing does not change what the host can manage.
   behind_frames_ = ahead_frames_ = 0;
-  const int missing = kAudioTargetFrames - audio_->Available();
+  const int missing = audio_target_frames_ - audio_->Available();
   if (missing > 0)
     audio_->WriteSilence(missing);
   audio_->set_producing(true);
@@ -709,7 +517,7 @@ void Machine::Report(bool paused) {
   const Clock::time_point now = Clock::now();
   MachineReport report;
   report.paused = paused;
-  report.refresh_hz = system_->gpu().refresh_hz();
+  report.refresh_hz = core_->refresh_hz();
   if (!paused && report_frames_ > 0) {
     const double seconds = std::chrono::duration<double>(now - report_since_).count();
     const double n = static_cast<double>(report_frames_);
@@ -728,27 +536,14 @@ void Machine::Report(bool paused) {
   if (rewind_ != nullptr && report.refresh_hz > 0.0) {
     const size_t held = rewind_->count();
     report.rewind_seconds = held > 1 ? static_cast<double>(held - 1) *
-                                           system_->config().rewind_interval / report.refresh_hz
+                                           config_.rewind_interval / report.refresh_hz
                                      : 0.0;
   }
-  report.hardware_raster = system_->gpu().hardware_raster();
-  report.raster_error = system_->gpu().raster_error();
   report.shared_picture = published_shared_;
   report.display_hz = display_hz_;
   report.display_refreshes = display_match_.locked ? display_match_.refreshes : 0;
   report.pace_ratio = display_match_.locked ? display_match_.ratio : 1.0;
-  if (texture_tracker_) {
-    // Read while the rasteriser may be drawing: only what may be.
-    report.textures = true;
-    report.textures_named = texture_tracker_->named_so_far();
-    report.textures_dumped = texture_tracker_->written_so_far();
-    if (texture_pack_) {
-      const psx::TexturePack::Counts pack = texture_pack_->counts();
-      report.replacements = pack.files;
-      report.jobs_replaced = pack.jobs_replaced;
-    }
-    report.replacement_error = replacement_error_;
-  }
+  core_->FillReport(&report);
   if (hooks_.report)
     hooks_.report(report);
 

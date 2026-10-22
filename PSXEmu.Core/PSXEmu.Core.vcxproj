@@ -80,6 +80,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="host\machine.cpp" />
+    <ClCompile Include="emu\psx_core.cpp" />
     <ClCompile Include="psx\cdrom.cpp" />
     <ClCompile Include="psx\cpu.cpp" />
     <ClCompile Include="debug\debug_assist.cpp" />
@@ -114,6 +115,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="host\machine.h" />
+    <ClInclude Include="emu\psx_core.h" />
     <ClInclude Include="emu\cheats.h" />
     <ClInclude Include="psx\cdrom.h" />
     <ClInclude Include="psx\component.h" />

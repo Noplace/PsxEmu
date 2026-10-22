@@ -56,6 +56,7 @@
 #include "app/engine_factory.h"
 #include "emucore/host/audio_output.h"
 #include "host/machine.h"
+#include "emu/psx_core.h"
 #include "emucore/host/video_output.h"
 #include "input/input_thread.h"
 #include "graphics/adapters.h"
@@ -469,6 +470,10 @@ namespace psxemu {
         // The emulated machine. Created here, then driven only by the machine's thread until
         // StopThreads has returned.
         std::unique_ptr<emulation::psx::System> system_;
+        // The console as the machine's thread runs it (emu/psx_core.h), and what the front end asks
+        // of it beyond that - textures, DLSS's planes - in a request. Made with the machine, and
+        // declared before it, so it outlives it and goes before the System it runs.
+        std::unique_ptr<emulation::psx::PsxCore> core_;
 
         // The display the picture is on, for Frame Pacing's "Match the display" - its rate and
         // vblanks, which the machine's thread asks for once a frame. Declared before the machine,

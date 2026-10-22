@@ -13,6 +13,7 @@
 #include "emucore/host/doorbell.h"
 #include "emucore/host/frame_mailbox.h"
 #include "emucore/host/input_exchange.h"
+#include "emu/psx_core.h"
 #include "host/machine.h"
 #include "emucore/host/request_queue.h"
 #include "emucore/host/sample_ring.h"
@@ -545,10 +546,11 @@ MachineRun RunBios(const std::string& bios, int frames,
   hooks.halted = on_halt;
   if (each_frames != nullptr)
     hooks.after_each_frame = [each_frames](Machine&) { ++*each_frames; };
-  Machine machine(&system, &mailbox, &ring, hooks);
+  emulation::psx::PsxCore core(&system);
+  Machine machine(&core, emulation::psx::MachineConfigFrom(system.config()), &mailbox, &ring, hooks);
   if (!load_state_first.empty()) {
     machine.Post([load_state_first](Machine& m) {
-      m.system().LoadState(load_state_first);
+      emulation::psx::SystemOf(m).LoadState(load_state_first);
     });
   }
   machine.Start(0);
@@ -614,7 +616,7 @@ void MachineChecks(const std::string& bios) {
         bios, 400,
         [&](Machine& machine) {
           if (++frame == 100)
-            machine.system().debugger().AddBreakpoint(0xB0);   // the BIOS's B0 call vector
+            emulation::psx::SystemOf(machine).debugger().AddBreakpoint(0xB0);   // the BIOS's B0 call vector
         },
         [&](Machine& machine) {
           // Cleared before the request goes, so a halt that follows it is never missed.
@@ -625,7 +627,7 @@ void MachineChecks(const std::string& bios) {
           std::this_thread::sleep_for(std::chrono::microseconds(random() % 2000));
           const int n = halts.load();
           machine.Post([n, &hits](Machine& m) {
-            emulation::psx::Debugger& debugger = m.system().debugger();
+            emulation::psx::Debugger& debugger = emulation::psx::SystemOf(m).debugger();
             if (n >= 60) {
               if (!debugger.breakpoints().empty())
                 hits = debugger.breakpoints()[0].hits;
@@ -661,7 +663,7 @@ void MachineChecks(const std::string& bios) {
     int frame = 0;
     const MachineRun saved = RunBios(bios, 400, [&](Machine& machine) {
       if (++frame == 200)
-        save_error = machine.system().SaveState(path);
+        save_error = emulation::psx::SystemOf(machine).SaveState(path);
     });
     const MachineRun resumed = RunBios(bios, 200, nullptr, nullptr, path);
     std::remove(path.c_str());
@@ -727,7 +729,8 @@ void MachineChecks(const std::string& bios) {
         if (++steps == kBack)
           machine.set_rewinding(false);
       };
-      Machine machine(&system, &mailbox, &ring, hooks);
+      emulation::psx::PsxCore core(&system);
+      Machine machine(&core, emulation::psx::MachineConfigFrom(system.config()), &mailbox, &ring, hooks);
       machine.Start(0);
       const Clock::time_point start = Clock::now();
       while (!reached.load() && MsSince(start) < 120000.0)
@@ -763,7 +766,8 @@ void MachineChecks(const std::string& bios) {
       system.config().frame_limiter = (i % 2) == 0;
       FrameMailbox mailbox;
       SampleRing ring(8192);
-      Machine machine(&system, &mailbox, &ring, Machine::Hooks());
+      emulation::psx::PsxCore core(&system);
+      Machine machine(&core, emulation::psx::MachineConfigFrom(system.config()), &mailbox, &ring, Machine::Hooks());
       machine.Start((i % 5) == 0 ? emulation::host::kPausedByUser : 0);
       std::this_thread::sleep_for(std::chrono::milliseconds(random() % 40));
       const Clock::time_point stop_at = Clock::now();
@@ -786,7 +790,8 @@ void MachineChecks(const std::string& bios) {
     system.Initialize(bios.c_str());
     FrameMailbox mailbox;
     SampleRing ring(8192);
-    Machine machine(&system, &mailbox, &ring, Machine::Hooks());
+    emulation::psx::PsxCore core(&system);
+    Machine machine(&core, emulation::psx::MachineConfigFrom(system.config()), &mailbox, &ring, Machine::Hooks());
     machine.Start(emulation::host::kPausedByUser);
     std::this_thread::sleep_for(std::chrono::milliseconds(150));
     std::atomic<double> latency_ms{-1.0};
@@ -844,7 +849,8 @@ void PipelineChecks(const std::string& bios) {
     std::lock_guard<std::mutex> lock(reports_mutex);
     reports.push_back(report);
   };
-  Machine machine(&system, &video.frames(), &audio.samples(), hooks);
+  emulation::psx::PsxCore core(&system);
+  Machine machine(&core, emulation::psx::MachineConfigFrom(system.config()), &video.frames(), &audio.samples(), hooks);
 
   audio.Start("clocked");
   video.Start();

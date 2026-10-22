@@ -200,7 +200,7 @@ rem host\, the part of the cores that knows about threads (Emu.Core's emucore\ho
 rem and PSXEmu.Core's machine): the channels between the front end's threads,
 rem stress-tested with a thread on each side, and the machine, audio and video
 rem threads run for real against a BIOS.
-set HOST=PSXEmu.Core\host\machine.cpp Emu.Core\emucore\host\audio_output.cpp ^
+set HOST=PSXEmu.Core\host\machine.cpp PSXEmu.Core\emu\psx_core.cpp Emu.Core\emucore\host\audio_output.cpp ^
  Emu.Core\emucore\host\video_output.cpp
 if not exist Temp\tools\obj_host mkdir Temp\tools\obj_host
 cl %FLAGS% /Fo:Temp\tools\obj_host\ /Fe:Temp\tools\host_test.exe ^

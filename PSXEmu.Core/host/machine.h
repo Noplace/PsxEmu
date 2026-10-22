@@ -1,4 +1,4 @@
-// The machine's thread: runs the emulated PlayStation, and nothing else
+// The machine's thread: runs the emulated console, and nothing else
 // touches it while it does (Docs/Threading-Plan.md, phase 5).
 //
 // Each iteration: run what was asked for (boot, reset, save, settings), take
@@ -7,12 +7,14 @@
 // used to run between messages, minus everything that is not emulation -
 // presenting, the sound device and the pads each have a thread of their own.
 //
-// `psx/` stays exactly as single-threaded as it was: this is the only thread
-// that calls into a System, so every baseline in Docs/Test-Suite.md still
-// means what it did, and host_test checks that a threaded run lands on the
-// same instruction and the same checksum as boot_runner.
+// Which console it runs it knows only through ICore (emucore/core.h), which is the only thing
+// that calls into the console for it. The console stays exactly as single-threaded as it was:
+// this is the only thread that calls into it, so every baseline in Docs/Test-Suite.md still
+// means what it did, and host_test checks that a threaded run lands on the same instruction and
+// the same checksum as boot_runner.
 #pragma once
 
+#include "emucore/core.h"
 #include "emucore/host/doorbell.h"
 #include "emucore/host/frame_mailbox.h"
 #include "emucore/host/input_exchange.h"
@@ -22,7 +24,6 @@
 #include "emucore/timing/display_sync.h"
 #include "emucore/timing/frame_limiter.h"
 #include "emucore/timing/speed_resampler.h"
-#include "render/raster.h"
 
 #include <atomic>
 #include <chrono>
@@ -34,18 +35,30 @@
 #include <vector>
 
 namespace emulation {
-namespace psx {
-class System;
-struct EmuConfig;
-class TextureTracker;
-class TexturePack;
-class TextureUpscaleQueue;
-}  // namespace psx
 namespace state {
 class RewindBuffer;
 }  // namespace state
 
 namespace host {
+
+// What the machine paces and keeps by: the part of a console's settings that is the machine's
+// rather than the console's (PSXEmu: psx::MachineConfigFrom, from EmuConfig).
+struct MachineConfig {
+  // Times the console's own rate: 2.0 runs it twice as fast. Not above 16.
+  float emulation_speed = 1.0f;
+  // Off runs the machine as fast as it goes (Tab held, say).
+  bool frame_limiter = true;
+  // Settings > Video > Frame Pacing: "display" runs in step with the display the picture is on
+  // when that is near enough the console's rate (emucore/timing/display_sync.h); anything else,
+  // the console's own clock.
+  std::string frame_pacing = "console";
+  // Frames run ahead of each one shown, 0 for none; held to kMaxRunAhead.
+  int run_ahead = 0;
+  static const int kMaxRunAhead = 3;
+  // Rewind: a state kept every this many frames, 0 for off, in this much memory.
+  int rewind_interval = 0;
+  int rewind_budget_mb = 256;
+};
 
 // Why the machine is not running. It runs only while none is set, so a pause
 // the user asked for survives a menu opening and closing on top of it.
@@ -69,19 +82,21 @@ struct MachineReport {
   uint64_t audio_dropped_frames = 0;   // samples the ring had no room for, ever
   uint64_t frames_dropped = 0;         // frames the video thread never showed, ever
   uint64_t instructions = 0;           // stepped since the thread started, real frames only
-  // Frames run ahead of each one shown (EmuConfig::run_ahead) - 0 when it is off, or held off:
-  // the interpreter, the debugger armed, a movie playing.
+  // Frames run ahead of each one shown (MachineConfig::run_ahead) - 0 when it is off, or held
+  // off: the core too slow for it (the PSX's interpreter), the debugger armed, a movie playing.
   int run_ahead = 0;
-  // Rewind (EmuConfig::rewind_interval): whether Backspace has it stepping back now, and how many
-  // seconds of play its store holds.
+  // Rewind (MachineConfig::rewind_interval): whether Backspace has it stepping back now, and how
+  // many seconds of play its store holds.
   bool rewinding = false;
   double rewind_seconds = 0.0;
+  // The rest of this group is the core's to fill (ICore::FillReport), and stays as it is for a
+  // core with none.
   // Which rasteriser is drawing, and if the hardware one was asked for and is not - it could
   // not be made, or its graphics card went - why.
   bool hardware_raster = false;
   std::string raster_error;
-  // Whether the last frame's picture was handed over on the graphics card rather than in memory
-  // (emucore/image/shared_picture.h).
+  // The machine's again: whether the last frame's picture was handed over on the graphics card
+  // rather than in memory (emucore/image/shared_picture.h).
   bool shared_picture = false;
   // Settings > Video > Frame Pacing, "Match the display" (emucore/timing/display_sync.h): the display's
   // refresh as the front end last gave it, 0 if it gave none; and the refreshes each frame is
@@ -91,9 +106,9 @@ struct MachineReport {
   double display_hz = 0.0;
   int display_refreshes = 0;
   double pace_ratio = 1.0;
-  // Textures (Docs/Texture-Upscaling-Plan.md, phase 2), while dumping or replacing: the textures
-  // named so far, written so far, the replacements the pack has, and the textured jobs drawn
-  // with one since it was opened.
+  // The core's: textures (Docs/Texture-Upscaling-Plan.md, phase 2), while dumping or replacing -
+  // the textures named so far, written so far, the replacements the pack has, and the textured
+  // jobs drawn with one since it was opened.
   bool textures = false;
   uint64_t textures_named = 0;
   uint64_t textures_dumped = 0;
@@ -117,14 +132,14 @@ struct FrameSample {
 class Machine {
  public:
   struct Hooks {
-    // Before each frame: this frame's reading of the host's devices, to map
-    // onto the ports the way the front end's settings say.
-    std::function<void(psx::System&, const HostInput&)> apply_input;
+    // Before each frame: this frame's reading of the host's devices, to map onto the console's
+    // ports the way the front end's settings say - into the console the front end holds itself.
+    std::function<void(const HostInput&)> apply_input;
 
     // After each frame, with the machine itself - a harness uses it to stop at
     // an exact frame; the front end has no need of it. Once a frame shown: with run-ahead
-    // (EmuConfig::run_ahead), after the real frame and before any frame ahead, so what it reads
-    // - the BIOS console's text, a card's writes - is the real frame's, once.
+    // (MachineConfig::run_ahead), after the real frame and before any frame ahead, so what it
+    // reads - the BIOS console's text, a card's writes - is the real frame's, once.
     std::function<void(class Machine&)> after_frame;
 
     // After every frame emulated, real or run ahead: what belongs to the game's own frames,
@@ -154,9 +169,11 @@ class Machine {
     std::function<bool(timing::DisplayTiming*)> display_timing;
   };
 
-  // `video` and `audio` are the output threads' inboxes. `system` must outlive
-  // the thread, and nothing else may call into it while the thread runs.
-  Machine(psx::System* system, FrameMailbox* video, SampleRing* audio, Hooks hooks);
+  // `video` and `audio` are the output threads' inboxes. `core` must outlive
+  // the thread, and nothing else may call into its console while the thread runs. `config` is
+  // what the machine paces and keeps by until ApplyConfig changes it.
+  Machine(ICore* core, const MachineConfig& config, FrameMailbox* video, SampleRing* audio,
+          Hooks hooks);
   ~Machine();
 
   Machine(const Machine&) = delete;
@@ -179,25 +196,27 @@ class Machine {
 
   // ---- The machine's thread only: inside a request or a hook -------------
 
-  psx::System& system() { return *system_; }
+  // The console it runs: the front end's own (PSXEmu: psx::CoreOf).
+  ICore& core() { return *core_; }
 
   void SetPaused(uint32_t reason, bool on);
   uint32_t pause_reasons() const { return pause_reasons_; }
 
-  // Replaces the machine's settings with the front end's. A change of speed
-  // or frame limiter restarts the pacing, since both were pacing to the old
-  // rate.
-  void ApplyConfig(const psx::EmuConfig& config);
+  // Replaces the machine's settings with the front end's. A change of speed, frame limiter or
+  // Frame Pacing restarts the pacing, since all three were pacing to the old rate. Before Start
+  // too, from the thread that will start it.
+  void ApplyConfig(const MachineConfig& config);
 
   // Forgets the frame limiter's deadline and the resampler's position - after
   // anything that moved the machine's clock without running frames, a state
   // load for one.
   void ResetPacing();
 
-  // View > VRAM: ship the whole of VRAM instead of the display.
-  void set_view_vram(bool on) { view_vram_ = on; }
+  // Ship the console's video memory, as it holds it, instead of its picture (PSXEmu: View > VRAM;
+  // ICore::FillFrame).
+  void set_raw_view(bool on) { raw_view_ = on; }
 
-  // Rewind (EmuConfig::rewind_interval, Docs/Rewind-and-Run-Ahead-Plan.md): while on, each frame
+  // Rewind (MachineConfig::rewind_interval, Docs/Rewind-and-Run-Ahead-Plan.md): while on, each frame
   // shown is a step back - the state kept before the last one loaded and shown, the sound muted -
   // instead of a frame run. Off, the machine plays on from wherever that left it.
   void set_rewinding(bool on) { rewinding_ = on; }
@@ -205,42 +224,18 @@ class Machine {
   // from a file, a movie started: the states kept so far are thrown away.
   void ForgetHistory();
 
-  // View > Depth and Motion: the plane beside VRAM that DLSS will use, shown in
-  // place of the picture (Docs/DLSS-Plan.md) - by the hardware rasteriser, above 1x.
-  void set_plane_view(psx::PlaneView view);
-  // DLSS running in the renderer (Docs/DLSS-Plan.md, phase 4): the plane kept beside VRAM, with
-  // motion, for every picture, and the triangles jittered through `jitter_phases` offsets.
-  // Nothing the machine sees changes. Off: neither.
-  void set_dlss(bool on, int jitter_phases);
   // NVIDIA Reflex's markers while DLSS Frame Generation runs (emucore/host/latency_markers.h), null for
   // none. Outlives the machine, or is set to null first; the machine's thread calls it.
   void set_latency_markers(LatencyMarkers* markers) { latency_ = markers; }
-  // Textures (Docs/Texture-Upscaling-Plan.md, phases 2 and 3): every texture named as it is drawn,
-  // written into `dump` - in the background - and drawn from the pack in `replace` by the hardware
-  // rasteriser; and upscaled by `ai` (render/texture_upscale.h), its images kept in `ai_folder`
-  // and drawn under the pack's own. Any empty or null for not; all of them, and nothing watches
-  // the drawing at all. Kept across boots and changes of rasteriser; a folder that is the same as
-  // before is left as it is.
-  void SetTextures(const std::string& dump, const std::string& replace, uint64_t memory_budget,
-                   const std::string& ai_folder, std::shared_ptr<psx::TextureUpscaleQueue> ai);
-  // The pack read again from its folder: what changed on disk drawn from the next job on.
-  void ReloadTextures();
-  // A save state's texture uploads (render/texture_tracker.h): which uploads are live, written
-  // to `path` as the state is saved - and the file taken away without textures on - and read
-  // back before it is loaded, so the textures it holds are named, and replaced, from its first
-  // frame. Without the file - a state from before this, or an empty path, which drops one read
-  // for a load that then failed - the load brings back the uploads this run saw.
-  void SaveTextureUploads(const std::string& path) const;
-  void LoadTextureUploads(const std::string& path);
 
   // Instructions stepped since the thread started. The machine's thread, or
   // anyone once Stop has returned.
   uint64_t instructions() const { return instructions_; }
 
-  // The level the sample ring is held at: 40 ms. Enough to ride out the
-  // machine's once-a-frame bursts - 17 ms of sound at a time - plus the device
-  // taking its 10 ms, with room to spare.
-  static const int kAudioTargetFrames = 44100 * 40 / 1000;
+  // The level the sample ring is held at: 40 ms of the core's sound. Enough to ride out the
+  // machine's once-a-frame bursts - 17 ms of sound at a time - plus the device taking its 10 ms,
+  // with room to spare.
+  int audio_target_frames() const { return audio_target_frames_; }
 
   // How long a frame may run before it is given up on. A machine that has
   // stopped producing frames at all - the display off - would otherwise never
@@ -252,7 +247,7 @@ class Machine {
 
   void Run();
   void RunOneFrame();
-  // Run-ahead (EmuConfig::run_ahead, Docs/Rewind-and-Run-Ahead-Plan.md): how many frames to run
+  // Run-ahead (MachineConfig::run_ahead, Docs/Rewind-and-Run-Ahead-Plan.md): how many frames to run
   // ahead of this one, 0 when it is off or held off; and running them - the state kept, the
   // frames run on the same input, the last one's picture published, the state loaded back.
   int RunAheadFrames();
@@ -269,30 +264,24 @@ class Machine {
   void Resume();
   void Report(bool paused);
 
-  psx::System* system_;
+  ICore* core_;
   FrameMailbox* video_;
   SampleRing* audio_;
   Hooks hooks_;
+  // One read of the core's sound: a frame at 30 fps, more than a frame ever makes. A frame that
+  // ran long - the instruction guard - leaves the rest for the next read, which PumpAudio does
+  // straight away.
+  const int scratch_frames_;
+  const int audio_target_frames_;
 
   Doorbell doorbell_;
   RequestQueue<Machine> requests_{&doorbell_};
   InputExchange input_;
 
   // Everything below is the machine thread's.
+  MachineConfig config_;
   uint32_t pause_reasons_ = 0;
-  bool view_vram_ = false;
-  psx::PlaneView plane_view_ = psx::PlaneView::kPicture;
-  bool dlss_ = false;
-  // SetTextures': the tracker naming each job and dumping, and the pack it names them for, with
-  // the folders they were given. The pack is dropped before the tracker it reads.
-  std::unique_ptr<psx::TextureTracker> texture_tracker_;
-  std::unique_ptr<psx::TexturePack> texture_pack_;
-  std::string texture_dump_, texture_replace_;
-  std::string replacement_error_;
-  // ...and the upscaler, shared with the front end, which reads how far it has got.
-  std::shared_ptr<psx::TextureUpscaleQueue> texture_ai_;
-  std::string texture_ai_folder_;
-  bool pack_opened_ = false;
+  bool raw_view_ = false;
   LatencyMarkers* latency_ = nullptr;
   // The picture whose simulation is under way, 0 before the first starts (latency_ only).
   uint32_t latency_picture_ = 0;
@@ -325,7 +314,7 @@ class Machine {
   int ahead_frames_ = 0;
   static const int kBehindFrames = 30;
 
-  std::vector<int16_t> scratch_;     // one read of the SPU's samples
+  std::vector<int16_t> scratch_;     // one read of the core's samples
   std::vector<int16_t> resampled_;   // the same, stretched for the speed
   uint64_t frame_number_ = 0;        // frames published
   bool published_shared_ = false;    // the last one's picture was on the card
@@ -335,10 +324,10 @@ class Machine {
   // RunOneFrame mid-frame: restarting it would reset the per-frame guard on every step.
   uint64_t frame_instructions_ = 0;
 
-  // Run-ahead's state, kept and reused frame to frame (defined in machine.cpp: a nested type of
-  // System's cannot be named here without the whole of the core). Made on first use.
-  struct Ahead;
-  std::unique_ptr<Ahead> ahead_;
+  // Run-ahead's state, and rewind's - the one being taken for its store, or stepped back to -
+  // kept and reused frame to frame. Each made by the core on first use.
+  std::unique_ptr<MemoryState> ahead_state_;
+  std::unique_ptr<MemoryState> rewind_state_;
   // Rewind's store, made when rewind is turned on and freed when it is turned off, and where the
   // machine is in its interval.
   std::unique_ptr<state::RewindBuffer> rewind_;

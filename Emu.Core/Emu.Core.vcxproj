@@ -201,6 +201,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="emucore\core.h" />
     <ClInclude Include="emucore\audio\iaudioengine.h" />
     <ClInclude Include="emucore\config\settings_file.h" />
     <ClInclude Include="emucore\host\audio_output.h" />
