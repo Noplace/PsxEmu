@@ -53,13 +53,20 @@ DLSS was the first idea, and it cannot do this; the first section says why.
 
 Every phase is built and committed. What remains, gathered from each phase's "left for later":
 
-**Planned, and not built**
+**Planned, and built since (2026-10-23)**
 
-1. **Help > About credits** (phase 3's Settings and the menus): ONNX Runtime's MIT licence,
-   DirectML's licence and its data clause, Real-ESRGAN's BSD-3 notice for the two models, and
-   NVIDIA's marks for RTX Video. Only MMPX's notice is there now. Needed before anyone else is given
-   a copy. Small.
-2. **Emulation > Show Timings**: the upscaler's milliseconds a frame and its queue. Small.
+1. ~~**Help > About credits**~~: ONNX Runtime's MIT licence, DirectML's licence and its data
+   clause, Real-ESRGAN's BSD-3 notice for the two models - `models\Real-ESRGAN.license.txt`, which
+   the build now copies beside them from `graphics\third_party\real-esrgan\` as the emulator's own
+   download already wrote it - and NVIDIA's marks for RTX Video, each linked where it is.
+2. ~~**Emulation > Show Timings**~~: `ai N ms/s, M waiting` in the title - the model's time in each
+   second, on its own card, and the tiles waiting - while the upscaler has work.
+
+And Settings > Video > Textures made plain: it is three groups now - **AI upscaling** (an on/off
+switch, Scale, Model, a line saying where it runs and how far it has got, and that it is
+automatic), **Texture filter**, and **Texture packs** (draw and dump, the folder and Reload as
+links) - where it was one list whose first entry, Off, was how to turn AI upscaling off, greyed
+with no game running. The model is kept while upscaling is off; nothing needs a game running.
 
 **Not yet seen**
 
@@ -790,7 +797,8 @@ recompiler, as phase 1 measured): every disc's share the same as phase 1's, to t
   as `fetch_onnxruntime.ps1` fetches, byte for byte.
 - **The app**: `texture_ai_scale` (Off, 2x, 4x) and `texture_ai_model` (`anime`, the default,
   or `general`, sharper), per game; `texture_ai_share` and `texture_ai_card` in psxemu.ini.
-  Settings > Video > Textures has an "AI upscaling" choice, and "Get the AI files..." in its status
+  Settings > Video > Textures has an "AI upscaling" choice (since 2026-10-23 a switch, Scale and
+  Model - What is left, above), and "Get the AI files..." in its status
   line while any are missing; View > Upscale All Dumped Textures. The status line counts tiles
   done and waiting. With Textures added, Settings > Video was 1,493 lines tall at 200%, nearly
   the whole screen, so it became a page each - Renderer, Rasteriser, NVIDIA DLSS, AMD FSR,

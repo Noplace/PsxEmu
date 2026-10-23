@@ -63,12 +63,18 @@
     </Link>
   </ItemDefinitionGroup>
   <!-- Beside the executable: the MMPX texture filter's notice, for the hardware rasteriser that
-       runs it. The DLLs and models Emu.Frontend.Win32 needs are copied by its own targets file,
+       runs it; and beside the AI models Real-ESRGAN's, which its licence asks to go with them. The
+       DLLs and models Emu.Frontend.Win32 needs are copied by its own targets file,
        imported at the end. -->
   <ItemDefinitionGroup Condition="'$(Platform)'=='x64'">
     <PostBuildEvent>
-      <Command>copy /y "$(ProjectDir)graphics\third_party\mmpx\LICENSE.md" "$(OutDir)mmpx.license.txt" &gt;nul</Command>
-      <Message>The MMPX texture filter's notice</Message>
+      <Command>copy /y "$(ProjectDir)graphics\third_party\mmpx\LICENSE.md" "$(OutDir)mmpx.license.txt" &gt;nul
+if exist "$(EmuFrontendSdkDir)models\onnx\realesr-animevideov3.onnx" (
+  if not exist "$(OutDir)models" mkdir "$(OutDir)models"
+  copy /y "$(ProjectDir)graphics\third_party\real-esrgan\LICENSE.txt" "$(OutDir)models\Real-ESRGAN.license.txt" &gt;nul
+)
+exit /b 0</Command>
+      <Message>The MMPX texture filter's and Real-ESRGAN's notices</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <!-- NVIDIA's RTX Video SDK, a second backend for the AI texture upscaler, is behind NVIDIA's

@@ -90,7 +90,8 @@ namespace psxemu {
             bool texture_dump = false;
             bool texture_replacement = false;
             bool game_running = false;
-            std::wstring texture_status;
+            std::wstring texture_status;         // the packs': what is named, written, replaced
+            std::wstring ai_status;              // the AI upscaler's: where it runs, how far
             int texture_ai_scale = 0;            // 0, 2 or 4
             std::string texture_ai_model;        // EmuConfig::kValidTextureAiModels
             bool ai_files_missing = false;       // ONNX Runtime or the model not beside PSXEmu
@@ -133,6 +134,8 @@ namespace psxemu {
             std::function<void(bool on)> set_texture_replacement;
             std::function<void(int scale, const std::string& model)> set_texture_ai;
             std::function<void()> get_ai_files;
+            // A menu command of the App's (app/const.h): Open Texture Folder, Reload Textures.
+            std::function<void(int command)> run_command;
             std::function<void(const std::string& key)> set_texture_filter;
             std::function<void(int mode)> set_stats;
             std::function<void(bool on)> set_notifications;
@@ -218,8 +221,12 @@ namespace psxemu {
         std::array<HWND, 4> fsr_labels_ = {};
         HWND texture_dump_ = nullptr;
         HWND texture_replace_ = nullptr;
-        HWND texture_status_ = nullptr;
-        HWND texture_ai_ = nullptr;
+        HWND texture_status_ = nullptr;   // the AI upscaler's, a link while its files are missing
+        HWND ai_on_ = nullptr;
+        HWND ai_scale_ = nullptr;
+        HWND ai_model_ = nullptr;
+        HWND pack_status_ = nullptr;
+        HWND pack_links_ = nullptr;
         HWND texture_filter_ = nullptr;
         HWND stats_ = nullptr;
         HWND notifications_ = nullptr;
@@ -233,6 +240,8 @@ namespace psxemu {
         std::vector<std::string> generation_items_;
         // The AI upscaling choices listed, by their place in the table of them.
         std::vector<int> ai_items_;
+        // The scale AI upscaling turns on at: the last one chosen, kept while it is off.
+        int ai_scale_choice_ = 4;
         HFONT font_ = nullptr;
         HFONT bold_font_ = nullptr;
         HFONT small_font_ = nullptr;

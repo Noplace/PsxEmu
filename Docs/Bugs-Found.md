@@ -10041,3 +10041,63 @@ rasteriser, so only the flat and texturing-off cases change a pixel.
   by one 5-bit step each. By eye, its faces lose the checkered pattern and show their facets' own
   flat colours, banded where the pattern used to blur them. Every other report line, and the BIOS
   boot (`4a65781bfb98db5a`, 92,822,656 instructions), unchanged.
+
+## 167. Texture upscaling's switch, its credits and its timings
+
+`ui/video_settings_window.h/.cpp`, `app/app.cpp`, `app/app.h`, `PSXEmu.Win32.vcxproj`,
+`graphics/third_party/real-esrgan/LICENSE.txt` (new)
+
+Not a bug: a request - "in the settings, it's not clear how to enable/disable scaling, so revise
+the GUI, and confirm: is upscaling automated?", with the two small items left of the texture
+upscaling plan (Docs/Texture-Upscaling-Plan.md, What is left).
+
+**The Textures page.** AI upscaling was one list - Off, 2x, 4x, each with a model - under two pack
+check boxes, so turning it off meant choosing "Off" from a list, and the list was greyed until a
+game ran. It is three groups now: **AI upscaling**, a switch ("Upscale the game's textures with
+AI"), a Scale list and a Model list, a status line - off, or on and on which card, how many tiles
+are done and waiting and how many draws use them, and what stops it (its files, the software
+rasteriser, no game yet, 1x) - and a line saying it is all automatic; **Texture filter**; and
+**Texture packs**, draw and dump, with Open the game's texture folder and Reload textures as links.
+Scale and model are kept while upscaling is off, so the switch turns on what was chosen; nothing
+waits for a game.
+
+**Automatic, confirmed**: with the switch on, each texture is upscaled the first time it is drawn
+and kept in `textures\<game>\ai\`; the next run, a state load and a rewind draw it from the start;
+the game's dumps not yet upscaled are done in the background each start. Dumping is not needed.
+
+**Help > About** names ONNX Runtime (MIT), DirectML and its data clause, Real-ESRGAN's two models
+(BSD-3) and NVIDIA's RTX Video marks, each licence linked. Real-ESRGAN's notice was beside the
+models only when the emulator had downloaded them; the build copies it there too now. An `&` in
+MMPX's credit showed as an underlined letter - a task dialog's accelerator - and is "and".
+
+**Emulation > Show Timings** adds `ai N ms/s, M waiting` while the upscaler has work.
+
+**Checked** on the scratch front end, Ridge Racer from Temp\discs at 4x: the switch clicked on -
+the upscaler on the RTX 4060, 36 tiles and 2,916 draws within 20 s, the title showing `ai 267
+ms/s` - and off again, psxemu.ini following both; the model list with RTX Video in it; the page
+and the About box captured.
+
+## 168. Turning AI upscaling off with RTX Video crashed the emulator under DLSS
+
+`EmuLib/Emu.Frontend.Win32/emuwin32/upscale/texture/rtx_video.cpp`
+
+**Seen by the user**: FF7 with DLSS Quality on the RTX 4060, AI upscaling turned on with NVIDIA RTX
+Video as its model - working - then off: the emulator closed. Windows' log: an access violation
+(c0000005) in `_nvngx.dll`, the driver's NGX runtime.
+
+**Why.** RTX Video and DLSS both run through NGX, which is one runtime in the process: DLSS
+through Streamline, RTX Video through NGX's own API on a device of the upscaler's. Turning AI
+upscaling off destroyed the RTX Video backend, and its destructor called
+`NVSDK_NGX_D3D12_Shutdown1` - which took NGX away from under DLSS's feature on the same card.
+Reproduced on the scratch front end (Ridge Racer, Direct3D 12 on the 4060, DLSS Quality): DLSS's
+time per picture in the title fell from 3-5 ms to 0.16 ms the second after AI upscaling went off,
+and then DLSS drew nothing; on the user's FF7 the next evaluation crashed.
+
+**Fixed**: NGX is started for a device once for the process and never shut down
+(`StartNgx`), the device kept so NGX's stays valid - D3D12 gives back the same device for a card,
+so it is one per card, however often upscaling is turned on and off. A backend going away
+releases only its feature and parameters.
+
+**Checked** on the scratch front end, the same setup: on, off, on again and off again in one run -
+DLSS drawing at 3.8-6 ms throughout and after each, the second time on upscaling 20 new tiles,
+367,255 draws drawn with them, on the NGX already running.

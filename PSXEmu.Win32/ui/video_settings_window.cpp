@@ -61,32 +61,32 @@ namespace psxemu {
         const int kIdChainFirst = 128;   // four
         const int kIdTextureDump = 132;
         const int kIdTextureReplace = 133;
-        const int kIdTextureAi = 134;
+        const int kIdAiModel = 134;
         const int kIdTextureStatus = 135;
         const int kIdPages = 136;
         const int kIdTextureFilter = 137;
+        const int kIdAiOn = 138;
+        const int kIdAiScale = 139;
+        const int kIdPackLinks = 140;
 
         // The pages, in the list's order.
         enum Page { kPageRenderer, kPageRasteriser, kPageDlss, kPageFsr, kPageTextures, kPageOsd };
         const wchar_t* const kPageNames[] = { L"Renderer",  L"Rasteriser", L"NVIDIA DLSS",
                                               L"AMD FSR",   L"Textures",   L"On-screen display" };
 
-        // Settings > Video > Textures > AI upscaling: off, or the scale and the model. RTX Video
-        // (Texture-Upscaling-Plan.md, phase 4) only where it can run - a build with NVIDIA's SDK,
-        // and an NVIDIA card - or while it is set.
-        struct TextureAiChoice {
-            int scale;
-            const char* model;
+        // Settings > Video > Textures > AI upscaling: on or off, the scale, and the model - RTX
+        // Video (Texture-Upscaling-Plan.md, phase 4) only where it can run, a build with NVIDIA's
+        // SDK and an NVIDIA card, or while it is set.
+        const int kAiScales[] = { 2, 4 };
+        const wchar_t* const kAiScaleLabels[] = { L"2x", L"4x" };
+        struct AiModelChoice {
+            const char* key;   // EmuConfig::kValidTextureAiModels
             const wchar_t* label;
         };
-        const TextureAiChoice kTextureAiChoices[] = {
-            { 0, "anime", L"Off" },
-            { 2, "anime", L"2x, Real-ESRGAN" },
-            { 4, "anime", L"4x, Real-ESRGAN" },
-            { 2, "general", L"2x, Real-ESRGAN, the sharper model" },
-            { 4, "general", L"4x, Real-ESRGAN, the sharper model" },
-            { 2, "rtx_video", L"2x, NVIDIA RTX Video (RTX cards)" },
-            { 4, "rtx_video", L"4x, NVIDIA RTX Video (RTX cards)" },
+        const AiModelChoice kAiModelChoices[] = {
+            { "anime", L"Real-ESRGAN: clean and smooth (any graphics card)" },
+            { "general", L"Real-ESRGAN, sharper: more detail, 1.5 times the work (any card)" },
+            { "rtx_video", L"NVIDIA RTX Video: quickest, softer (RTX cards)" },
         };
         const int kIdHintFirst = 300;   // the grey lines, which WM_CTLCOLORSTATIC finds by id
         const int kIdHintLast = 399;
@@ -390,28 +390,45 @@ namespace psxemu {
         // Textures: the game's own written out, drawn from a pack, and upscaled
         // (Docs/Texture-Upscaling-Plan.md).
         page = kPageTextures;
-        Group textures = begin_group(L"Textures", kPageLeft, kPageWidth, kGroupsTop);
-        texture_dump_ = switch_row(textures, L"Dump te&xtures: each one the game reads, as a PNG",
-                                   BS_AUTOCHECKBOX, kIdTextureDump);
-        texture_replace_ = switch_row(textures, L"Draw the pac&k: the PNGs in replace\\ in their place",
-                                      BS_AUTOCHECKBOX, kIdTextureReplace);
-        textures.y += 4;
-        texture_filter_ = list_row(textures, L"Texture fi&lter:", kIdTextureFilter);
-        texture_ai_ = list_row(textures, L"A&I upscaling:", kIdTextureAi);
-        // What it is doing - and, while the upscaler's files are not here, the way to them.
-        texture_status_ = make(WC_LINK, L"", WS_TABSTOP, kIdTextureStatus, textures.x + kInset,
-                               textures.y + 2, textures.width - kInset * 2, kHintLine * 2,
-                               small_font_);
-        textures.y += 2 + kHintLine * 2 + 4;
-        text_row(textures, 5,
-                 L"Each game's are in Documents\\My Games\\PSXEmu\\textures\\<game>: dump\\, "
-                 L"replace\\ and ai\\. Packs, AI upscaling and the texture filter need the hardware "
-                 L"rasteriser, above 1x to be seen. The filter smooths the game's own textures as "
-                 L"they are drawn; a pack's and the AI's images are drawn as they are. AI upscaling "
-                 L"runs on a card the game is not drawing on, if there is one: a texture is "
-                 L"upscaled a moment after it is first drawn, and kept for every run after; dumped "
-                 L"ones not yet upscaled are done in the background.",
+        // The AI upscaler first, as what most want from the page: on or off, how much, and with
+        // what; then the filter, which needs no files; then packs, which are a modder's.
+        Group ai = begin_group(L"AI upscaling", kPageLeft, kPageWidth, kGroupsTop);
+        ai_on_ = switch_row(ai, L"&Upscale the game's textures with AI", BS_AUTOCHECKBOX,
+                            kIdAiOn);
+        ai.y += 2;
+        ai_scale_ = list_row(ai, L"&Scale:", kIdAiScale);
+        ai_model_ = list_row(ai, L"&Model:", kIdAiModel);
+        // Where it runs and how far it has got - and, while its files are not here, the way to
+        // them.
+        texture_status_ = make(WC_LINK, L"", WS_TABSTOP, kIdTextureStatus, ai.x + kInset,
+                               ai.y + 2, ai.width - kInset * 2, kHintLine * 2, small_font_);
+        ai.y += 2 + kHintLine * 2 + 4;
+        text_row(ai, 3,
+                 L"All automatic: each texture is upscaled in the background the first time the "
+                 L"game draws it, and drawn from then on - kept in the game's textures\\ai\\ folder, "
+                 L"so the next run has it from the start. Needs the hardware rasteriser, above 1x.",
                  hint_id++);
+        Group filter = begin_group(L"Texture filter", kPageLeft, kPageWidth,
+                                   end_group(ai, 0) + kGroupGap);
+        texture_filter_ = list_row(filter, L"Fi&lter:", kIdTextureFilter);
+        text_row(filter, 1,
+                 L"Smooths the game's own textures as they are drawn, with no AI. Upscaled ones are "
+                 L"drawn as they are.",
+                 hint_id++);
+        Group textures = begin_group(L"Texture packs", kPageLeft, kPageWidth,
+                                     end_group(filter, 0) + kGroupGap);
+        texture_replace_ = switch_row(textures, L"Draw the game's replacement pac&k (replace\\)",
+                                      BS_AUTOCHECKBOX, kIdTextureReplace);
+        texture_dump_ = switch_row(textures, L"Dump te&xtures as PNGs (dump\\), to make a pack",
+                                   BS_AUTOCHECKBOX, kIdTextureDump);
+        pack_status_ = text_row(textures, 1, L"", 0);
+        pack_links_ = make(WC_LINK,
+                           L"<a id=\"open\">Open the game's texture folder</a>    "
+                           L"<a id=\"reload\">Reload textures</a>",
+                           WS_TABSTOP, kIdPackLinks, textures.x + kInset, textures.y + 4,
+                           textures.width - kInset * 2, 20, font_);
+        textures.y += 4 + 20 + 2;
+        text_row(textures, 1, L"In Documents\\My Games\\PSXEmu\\textures\\<game>.", hint_id++);
         feet.push_back(textures);
 
         // On-screen display: what is drawn over the picture.
@@ -485,6 +502,10 @@ namespace psxemu {
             for (const TextureFilterChoice& choice : kTextureFilterChoices)
                 items.push_back(choice.label);
             SetItems(texture_filter_, items);
+            items.clear();
+            for (const wchar_t* label : kAiScaleLabels)
+                items.push_back(label);
+            SetItems(ai_scale_, items);
             items.clear();
             for (const DlssModeChoice& choice : kDlssModeChoices)
                 items.push_back(choice.label);
@@ -646,48 +667,55 @@ namespace psxemu {
                            : L"The hardware rasteriser draws at up to 8x the console's "
                              L"resolution. Experimental.");
 
-        // Textures: a game's own, so there is nothing to dump or replace without one.
-        Check(texture_dump_, state.texture_dump);
-        Check(texture_replace_, state.texture_replacement);
-        // The listed choices, and the one set if it is not among them.
-        int set = 0;
-        for (size_t i = 0; i < std::size(kTextureAiChoices); ++i)
-            if (kTextureAiChoices[i].scale == state.texture_ai_scale &&
-                (state.texture_ai_scale == 0 || state.texture_ai_model == kTextureAiChoices[i].model))
-                set = static_cast<int>(i);
-        std::vector<int> ai_items;
-        for (size_t i = 0; i < std::size(kTextureAiChoices); ++i)
-            if (std::string(kTextureAiChoices[i].model) != "rtx_video" ||
-                state.rtx_video_available || static_cast<int>(i) == set)
-                ai_items.push_back(static_cast<int>(i));
-        if (ai_items != ai_items_) {
-            ai_items_ = ai_items;
+        // Textures. AI upscaling on or off; while off, its scale and model are what turning it
+        // on gives.
+        const bool ai_on = state.texture_ai_scale != 0;
+        Check(ai_on_, ai_on);
+        if (ai_on)
+            ai_scale_choice_ = state.texture_ai_scale;
+        Select(ai_scale_, ai_scale_choice_ == 2 ? 0 : 1);
+        std::vector<int> models;
+        for (size_t i = 0; i < std::size(kAiModelChoices); ++i)
+            if (std::string(kAiModelChoices[i].key) != "rtx_video" || state.rtx_video_available ||
+                state.texture_ai_model == "rtx_video")
+                models.push_back(static_cast<int>(i));
+        if (models != ai_items_) {
+            ai_items_ = models;
             std::vector<std::wstring> labels;
-            for (int i : ai_items)
-                labels.push_back(kTextureAiChoices[i].label);
-            SetItems(texture_ai_, labels);
+            for (int i : models)
+                labels.push_back(kAiModelChoices[i].label);
+            SetItems(ai_model_, labels);
         }
-        Select(texture_ai_, static_cast<int>(std::find(ai_items_.begin(), ai_items_.end(), set) -
-                                             ai_items_.begin()));
-        EnableWindow(texture_ai_, state.game_running);
-        // The filter is the rasteriser's, so it can be chosen with no game running.
-        Select(texture_filter_, IndexOf(kTextureFilterChoices, state.texture_filter));
-        EnableWindow(texture_filter_, state.hardware);
-        EnableWindow(texture_dump_, state.game_running);
-        EnableWindow(texture_replace_, state.game_running);
+        int model = 0;
+        for (size_t i = 0; i < ai_items_.size(); ++i)
+            if (state.texture_ai_model == kAiModelChoices[ai_items_[i]].key)
+                model = static_cast<int>(i);
+        Select(ai_model_, model);
         // A link's text is markup: the status as text, and the way to the files as a link.
-        std::wstring status;
-        for (wchar_t c : state.texture_status) {
-            if (c == L'<')
-                status += L"&lt;";
-            else if (c == L'&')
-                status += L"&amp;";
-            else
-                status += c;
-        }
+        auto escaped = [](const std::wstring& text) {
+            std::wstring out;
+            for (wchar_t c : text) {
+                if (c == L'<')
+                    out += L"&lt;";
+                else if (c == L'&')
+                    out += L"&amp;";
+                else
+                    out += c;
+            }
+            return out;
+        };
+        std::wstring status = escaped(state.ai_status);
         if (state.ai_files_missing)
             status += L" <a>Get the AI files...</a>";
         SetWindowTextW(texture_status_, status.c_str());
+        // The filter is the rasteriser's.
+        Select(texture_filter_, IndexOf(kTextureFilterChoices, state.texture_filter));
+        EnableWindow(texture_filter_, state.hardware);
+        // Packs.
+        Check(texture_dump_, state.texture_dump);
+        Check(texture_replace_, state.texture_replacement);
+        SetWindowTextW(pack_status_, state.texture_status.c_str());
+        EnableWindow(pack_links_, state.game_running);
 
         // NVIDIA DLSS. Frame generation past 2x, and Dynamic, only once the card says it makes
         // them - and whatever is chosen, so the list never shows something else.
@@ -842,10 +870,18 @@ namespace psxemu {
                         host_.set_texture_filter)
                         host_.set_texture_filter(kTextureFilterChoices[index].key);
                     break;
-                case kIdTextureAi:
+                case kIdAiScale:
+                    // Kept while off; taken up at once while on.
+                    ai_scale_choice_ = kAiScales[std::min(index, 1)];
+                    if (Checked(ai_on_) && host_.set_texture_ai && !ai_items_.empty())
+                        host_.set_texture_ai(
+                            ai_scale_choice_,
+                            kAiModelChoices[ai_items_[std::max(0, Selected(ai_model_))]].key);
+                    break;
+                case kIdAiModel:
                     if (index < static_cast<int>(ai_items_.size()) && host_.set_texture_ai)
-                        host_.set_texture_ai(kTextureAiChoices[ai_items_[index]].scale,
-                                             kTextureAiChoices[ai_items_[index]].model);
+                        host_.set_texture_ai(Checked(ai_on_) ? ai_scale_choice_ : 0,
+                                             kAiModelChoices[ai_items_[index]].key);
                     break;
                 case kIdFsrMode:
                     if (index < static_cast<int>(std::size(kFsrModeChoices)) && host_.set_fsr_mode)
@@ -908,6 +944,13 @@ namespace psxemu {
             case kIdTextureReplace:
                 if (host_.set_texture_replacement)
                     host_.set_texture_replacement(Checked(texture_replace_));
+                break;
+            case kIdAiOn:
+                if (host_.set_texture_ai && !ai_items_.empty()) {
+                    const int model = std::max(0, Selected(ai_model_));
+                    host_.set_texture_ai(Checked(ai_on_) ? ai_scale_choice_ : 0,
+                                         kAiModelChoices[ai_items_[model]].key);
+                }
                 break;
             case kIdNotifications:
                 if (host_.set_notifications)
@@ -997,6 +1040,14 @@ namespace psxemu {
                 if (chosen && header->idFrom == static_cast<UINT_PTR>(kIdTextureStatus) &&
                     self->host_.get_ai_files)
                     self->host_.get_ai_files();
+                // The packs' two links, by their ids.
+                if (chosen && header->idFrom == static_cast<UINT_PTR>(kIdPackLinks) &&
+                    self->host_.run_command) {
+                    const NMLINK* link = reinterpret_cast<const NMLINK*>(lparam);
+                    self->host_.run_command(wcscmp(link->item.szID, L"reload") == 0
+                                                ? kCommandReloadTextures
+                                                : kCommandOpenTextureFolder);
+                }
                 return 0;
             }
 

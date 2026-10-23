@@ -338,6 +338,9 @@ namespace psxemu {
                 SetTextureFilter(filter);
             };
             host.get_ai_files = [this] { ShowAiFiles(); };
+            host.run_command = [this](int command) {
+                PostMessageW(window_, WM_COMMAND, static_cast<WPARAM>(command), 0);
+            };
             host.set_stats = [this](int mode) { SetStatsMode(static_cast<StatsMode>(mode)); };
             host.set_notifications = [this](bool on) { SetOverlayNotifications(on); };
             host.set_controllers_always = [this](bool on) { SetControllersAlwaysVisible(on); };
@@ -956,6 +959,28 @@ namespace psxemu {
                 if (generated_per_present_ > 0.0) {
                     swprintf(dlss, std::size(dlss), L"  frame gen %.1fx", generated_per_present_);
                     title += dlss;
+                }
+
+                // The AI texture upscaler (Docs/Texture-Upscaling-Plan.md), while it is on: its
+                // model's milliseconds in each second since the last title, on its own card, and
+                // the tiles waiting. Nothing once it has nothing to do.
+                if (ai_textures_) {
+                    const AiTextures::Counts c = ai_textures_->counts();
+                    const auto now = std::chrono::steady_clock::now();
+                    const double seconds =
+                        std::chrono::duration<double>(now - ai_timing_at_).count();
+                    const double ms_per_second =
+                        seconds > 0.0 && c.call_ms >= ai_timing_ms_
+                            ? (c.call_ms - ai_timing_ms_) / seconds
+                            : 0.0;
+                    ai_timing_at_ = now;
+                    ai_timing_ms_ = c.call_ms;
+                    if (ms_per_second >= 0.05 || c.queued > 0) {
+                        wchar_t ai[96] = {};
+                        swprintf(ai, std::size(ai), L"  |  ai %.0f ms/s, %llu waiting",
+                                 ms_per_second, static_cast<unsigned long long>(c.queued));
+                        title += ai;
+                    }
                 }
 
                 // Only when there is something to say: a frame the video thread never showed, or
@@ -1687,23 +1712,19 @@ namespace psxemu {
         ShellExecuteW(window_, L"open", Wide(folder).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
 
+    // Settings > Video > Textures' two status lines. The packs': what is named and written, and
+    // what is drawn in their place, or why not.
     std::wstring App::TextureStatus() const {
+        if (!config_.texture_dump && !config_.texture_replacement)
+            return L"Off.";
         if (game_cheat_key_.empty())
-            return L"No game running.";
-        const bool ai = config_.texture_ai_scale != 0;
-        if (!config_.texture_dump && !config_.texture_replacement && !ai)
-            return L"Off for this game.";
-        if (ai && !MissingAiFiles().empty())
-            return L"The AI upscaler's files are not here.";
-        if (ai && !ai_textures_error_.empty())
-            return L"The AI upscaler could not start.";
+            return L"On; starts with the next game.";
         if (!have_report_ || !report_.textures)
             return L"Starting...";
-        // One line: what is named and written, and what is drawn in their place or why not.
-        std::wstring status = std::to_wstring(report_.textures_named) + L" named";
+        std::wstring status = std::to_wstring(report_.textures_named) + L" textures named";
         if (config_.texture_dump)
             status += L", " + std::to_wstring(report_.textures_dumped) + L" written";
-        if (config_.texture_replacement || ai) {
+        if (config_.texture_replacement) {
             if (!report_.replacement_error.empty())
                 status += L"; the pack could not be read";
             else if (!report_.hardware_raster)
@@ -1711,15 +1732,42 @@ namespace psxemu {
             else
                 status += L"; " + std::to_wstring(report_.jobs_replaced) + L" draws replaced";
         }
-        if (ai && ai_textures_) {
-            const AiTextures::Counts c = ai_textures_->counts();
-            status += L"; " + std::to_wstring(c.tiles) + L" tiles upscaled";
-            if (c.queued > 0)
-                status += L", " + std::to_wstring(c.queued) + L" waiting";
-        }
         return status + L".";
     }
 
+    // ...and the AI upscaler's: off, or on and where it runs, what stops it, and how far it has
+    // got with this game's textures.
+    std::wstring App::AiStatus() const {
+        if (config_.texture_ai_scale == 0)
+            return L"Off.";
+        if (!MissingAiFiles().empty())
+            return L"On, but its files are not here yet.";
+        std::wstring card;
+        const uint64_t adapter = AiAdapter();
+        for (const GraphicsAdapter& a : adapters_)
+            if (a.luid == adapter)
+                card = Wide(a.name);
+        const std::wstring on = card.empty() ? std::wstring(L"On") : L"On, on the " + card;
+        if (!config_.hardware_raster())
+            return on + L" - but nothing is drawn with it: it needs the hardware rasteriser "
+                        L"(the Rasteriser page).";
+        if (game_cheat_key_.empty())
+            return on + L"; starts with the next game.";
+        if (!ai_textures_error_.empty())
+            return L"On, but it could not start: " + Wide(ai_textures_error_);
+        if (!ai_textures_)
+            return on + L"; starting...";
+        const AiTextures::Counts c = ai_textures_->counts();
+        std::wstring status = on + L": " + std::to_wstring(c.tiles) + L" tiles upscaled";
+        if (c.queued > 0)
+            status += L", " + std::to_wstring(c.queued) + L" waiting";
+        if (have_report_ && report_.textures)
+            status += L"; " + std::to_wstring(report_.jobs_replaced) + L" draws drawn with them";
+        status += L".";
+        if (config_.resolution_scale <= 1)
+            status += L" At 1x they look no different: raise the internal resolution.";
+        return status;
+    }
     // View > Depth and Motion, one at a time or neither: the hardware rasteriser shows
     // the plane beside VRAM - what DLSS will be told about each pixel - in place of the picture.
     // The machine keeps it across boots and changes of rasteriser; above 1x only.
@@ -2075,6 +2123,7 @@ namespace psxemu {
         state.texture_replacement = config_.texture_replacement;
         state.game_running = !game_cheat_key_.empty();
         state.texture_status = TextureStatus();
+        state.ai_status = AiStatus();
         state.texture_ai_scale = config_.texture_ai_scale;
         state.texture_ai_model = config_.texture_ai_model;
         state.texture_filter = config_.texture_filter;
@@ -4100,15 +4149,18 @@ namespace psxemu {
         return best != nullptr ? best->luid : presenter_adapter_;
     }
 
+    // The model is kept while it is off, so turning it on again gives the one chosen.
     void App::SetTextureAi(int scale, const std::string& model) {
-        if (scale == config_.texture_ai_scale && (scale == 0 || model == config_.texture_ai_model))
+        if (scale == config_.texture_ai_scale && model == config_.texture_ai_model)
             return;
+        const bool toggled_or_rescaled = scale != config_.texture_ai_scale;
         config_.texture_ai_scale = scale;
-        if (scale != 0)
-            config_.texture_ai_model = model;
+        config_.texture_ai_model = model;
         SaveSettingsIfChanged();
         SendTexturesToMachine();
         UpdateVideoSettings();
+        if (scale == 0 && !toggled_or_rescaled)
+            return;   // the model changed while off: nothing to say
         Notify(OverlayIcon::kScreen, ToastKind::kInfo,
                scale == 0 ? std::wstring(L"AI upscaling off")
                           : L"AI upscaling at " + std::to_wstring(scale) + L"x" +
@@ -4118,7 +4170,6 @@ namespace psxemu {
         if (scale != 0 && !MissingAiFiles().empty())
             ShowAiFiles();
     }
-
     // The upscaler for what the settings and the game say now: kept if it is the one made for
     // that, let go if there is to be none, and made again on a thread of its own otherwise - which
     // hands it over to the machine when it is ready.
@@ -4697,11 +4748,30 @@ namespace psxemu {
             nvidia += L" Its licence: <a href=\"" + folder + L"fidelityfx.license.txt\">"
                       L"fidelityfx.license.txt</a>.";
         // The MMPX texture filter's rules are MIT-licensed code's (graphics/third_party/mmpx).
-        nvidia += L"\n\nThe MMPX texture filter follows MMPX, copyright 2020 Morgan McGuire & Mara "
+        nvidia += L"\n\nThe MMPX texture filter follows MMPX, copyright 2020 Morgan McGuire and Mara "
                   L"Gagiu, as Kyle Moore's port has it, copyright 2021, under the MIT licence";
         if (GetFileAttributesW((folder + L"mmpx.license.txt").c_str()) != INVALID_FILE_ATTRIBUTES)
             nvidia += L": <a href=\"" + folder + L"mmpx.license.txt\">mmpx.license.txt</a>";
         nvidia += L".";
+        // The AI texture upscaler's (Docs/Texture-Upscaling-Plan.md): ONNX Runtime's MIT notice,
+        // DirectML's licence - whose data clause says the runtime may send Microsoft information
+        // about its use - Real-ESRGAN's BSD-3 notice, which its licence asks to go with the
+        // models, and NVIDIA's marks for RTX Video. Each linked where it is beside the program.
+        auto link = [&](const std::wstring& file) {
+            return GetFileAttributesW((folder + file).c_str()) != INVALID_FILE_ATTRIBUTES
+                       ? L" (<a href=\"" + folder + file + L"\">" + file + L"</a>)"
+                       : std::wstring();
+        };
+        nvidia += L"\n\nAI texture upscaling uses Microsoft ONNX Runtime, copyright Microsoft "
+                  L"Corporation, under the MIT licence" + link(L"onnxruntime.license.txt") +
+                  L", and Microsoft DirectML, under Microsoft's licence" +
+                  link(L"directml.license.txt") +
+                  L", which says DirectML may collect information about its use and send it to "
+                  L"Microsoft (https://aka.ms/privacy). Its models are Real-ESRGAN's "
+                  L"realesr-animevideov3 and realesr-general-x4v3, copyright 2021 Xintao Wang, "
+                  L"under the BSD 3-Clause licence" + link(L"models\\Real-ESRGAN.license.txt") +
+                  L". RTX Video upscaling uses NVIDIA RTX Video Super Resolution; NVIDIA RTX and "
+                  L"RTX Video are trademarks of NVIDIA Corporation.";
 
         TASKDIALOGCONFIG config = {};
         config.cbSize = sizeof(config);

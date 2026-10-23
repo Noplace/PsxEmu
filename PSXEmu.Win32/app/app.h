@@ -173,6 +173,7 @@ namespace psxemu {
         std::string GameTextureFolder() const;
         void OpenTextureFolder();
         std::wstring TextureStatus() const;
+        std::wstring AiStatus() const;
         // The AI upscaler (phase 3): its setting; it made - on a thread, as ONNX Runtime and the
         // model take a moment to load - for what the settings and the game say, or let go; the
         // files it needs and which are missing, and the dialog that says where they go; and View >
@@ -515,6 +516,9 @@ namespace psxemu {
         std::string ai_textures_error_;
         std::string ai_textures_folder_;
         std::thread ai_textures_maker_;
+        // Show Timings' upscaler figure: its model's time at the last title, and when that was.
+        std::chrono::steady_clock::time_point ai_timing_at_ = std::chrono::steady_clock::now();
+        double ai_timing_ms_ = 0.0;
 
         // Whichever backends are actually open, as the threads that opened them reported. Not the
         // requested ones: opening can fall back.
